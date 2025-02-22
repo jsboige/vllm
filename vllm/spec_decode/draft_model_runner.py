@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from typing import List, Optional
 
 import torch
@@ -20,8 +22,9 @@ except (ModuleNotFoundError, ImportError) as err:
 from vllm.logger import init_logger
 from vllm.multimodal import MultiModalKwargs
 from vllm.sequence import ExecuteModelRequest, IntermediateTensors
-from vllm.worker.model_runner import (ModelInputForGPUWithSamplingMetadata,
-                                      ModelRunner)
+from vllm.worker.model_runner_base import (ModelRunnerBase,
+                                           ModelRunnerInputBase,
+                                           ModelRunnerWrapperBase)
 
 logger = init_logger(__name__)
 
@@ -33,7 +36,7 @@ debug_advance_input = False
 allow_gpu_advance_step = True
 
 
-class TP1DraftModelRunner(ModelRunner):
+class TP1DraftModelRunner(ModelRunnerWrapperBase):
     """Specialized model runner for speculative decoding draft model.
     Since the draft model always execute k forward passes consecutively to
     generate k speculative tokens in a single speculative decoding step,
@@ -46,13 +49,14 @@ class TP1DraftModelRunner(ModelRunner):
        any broadcasting inside execute_model).
     """
 
-    def __init__(self, *args, **kwargs):
-        if kwargs.get("return_hidden_states"):
+    def __init__(self, model_runner: ModelRunnerBase):
+        if hasattr(
+                model_runner,
+                "return_hidden_states") and model_runner.return_hidden_states:
             raise ValueError(
                 "return_hidden_states is not supported for TP1DraftModelRunner."
             )
-
-        super().__init__(*args, **kwargs)
+        super().__init__(model_runner)
 
         self.indices_of_seq_with_bonus_tokens = None
 
@@ -73,10 +77,8 @@ class TP1DraftModelRunner(ModelRunner):
             assert seq_group.prompt_logprob_indices == []  # No prompt
             assert seq_group.sample_indices == [i]  # Simple
 
-    def _gpu_advance_step(
-            self, model_input: ModelInputForGPUWithSamplingMetadata,
-            last_output: SamplerOutput
-    ) -> ModelInputForGPUWithSamplingMetadata:
+    def _gpu_advance_step(self, model_input: ModelRunnerInputBase,
+                          last_output: SamplerOutput) -> ModelRunnerInputBase:
         # Currently, we expect "decode mode" only
         assert not model_input.is_prompt
 
@@ -151,7 +153,7 @@ class TP1DraftModelRunner(ModelRunner):
                 return False
 
         # TODO: Add support for other attn backends
-        if self.attn_backend.get_name() != "FLASH_ATTN":
+        if self.attn_backend.get_name() not in ("FLASH_ATTN", "TRITON_MLA"):
             return False
 
         # TODO: Add support for LORA
@@ -168,11 +170,12 @@ class TP1DraftModelRunner(ModelRunner):
     @torch.inference_mode()
     def execute_model(
         self,
-        model_input: ModelInputForGPUWithSamplingMetadata,
+        model_input: ModelRunnerInputBase,
         kv_caches: List[torch.Tensor],
         previous_hidden_states: Optional[torch.Tensor] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         num_steps: int = 1,
+        **kwargs,
     ) -> Optional[List[SamplerOutput]]:
         """Executes num_steps forward passes with advacement of input tensors 
         on the GPU. Look at supports_gpu_multi_step(..) for pre-conditions.
@@ -269,10 +272,17 @@ class TP1DraftModelRunner(ModelRunner):
         for step in range(num_steps):
             multi_modal_kwargs = model_input.multi_modal_kwargs or {}
 
-            kwargs = {"previous_hidden_states": hidden_states} \
+            model_execute_kwargs = {"previous_hidden_states": hidden_states} \
                 if previous_hidden_states is not None else {}
 
+            compute_logits_kwargs = {}
             # Run model
+            if hasattr(self.model.config, "num_nextn_predict_layers"):
+                # for DeepSeek MTP only to use the corresponding layer for
+                # each step
+                spec_step_idx = kwargs.get("spec_step_idx", step)
+                model_execute_kwargs["spec_step_idx"] = spec_step_idx
+                compute_logits_kwargs["spec_step_idx"] = spec_step_idx
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config):
                 hidden_states = model_executable(
@@ -283,13 +293,15 @@ class TP1DraftModelRunner(ModelRunner):
                     intermediate_tensors=intermediate_tensors,
                     **MultiModalKwargs.as_kwargs(multi_modal_kwargs,
                                                  device=self.device),
-                    **kwargs,
+                    **model_execute_kwargs,
                 )
 
             # Compute the logits.
             logits = self.model.compute_logits(hidden_states,
-                                               model_input.sampling_metadata)
-
+                                               model_input.sampling_metadata,
+                                               **compute_logits_kwargs)
+            if not self.is_driver_worker:
+                return []
             # Sample the next token.
             output = self.model.sample(
                 logits=logits,

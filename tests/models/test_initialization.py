@@ -1,26 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from unittest.mock import patch
 
 import pytest
-import transformers
 from transformers import PretrainedConfig
 
 from vllm import LLM
 
+from ..conftest import MODELS_ON_S3
 from .registry import HF_EXAMPLE_MODELS
 
 
 @pytest.mark.parametrize("model_arch", HF_EXAMPLE_MODELS.get_supported_archs())
 def test_can_initialize(model_arch):
-    if (model_arch == "Idefics3ForConditionalGeneration"
-            and transformers.__version__ < "4.46.0"):
-        pytest.skip(reason="Model introduced in HF >= 4.46.0")
-
     model_info = HF_EXAMPLE_MODELS.get_hf_info(model_arch)
-    if not model_info.is_available_online:
-        pytest.skip("Model is not available online")
+    model_info.check_available_online(on_fail="skip")
+    model_info.check_transformers_version(on_fail="skip")
 
     # Avoid OOM
     def hf_overrides(hf_config: PretrainedConfig) -> PretrainedConfig:
+        hf_config.update(model_info.hf_overrides)
+
         if hasattr(hf_config, "text_config"):
             text_config: PretrainedConfig = hf_config.text_config
         else:
@@ -43,8 +43,11 @@ def test_can_initialize(model_arch):
 
     with patch.object(LLM.get_engine_class(), "_initialize_kv_caches",
                       _initialize_kv_caches):
+        model_name = model_info.default
+        if model_name in MODELS_ON_S3:
+            model_name = f"s3://vllm-ci-model-weights/{model_name.split('/')[-1]}"
         LLM(
-            model_info.default,
+            model_name,
             tokenizer=model_info.tokenizer,
             tokenizer_mode=model_info.tokenizer_mode,
             speculative_model=model_info.speculative_model,
