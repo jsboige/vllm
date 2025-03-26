@@ -9,14 +9,18 @@ std::string init_cpu_threads_env(const std::string& cpu_ids);
 void int8_scaled_mm(torch::Tensor& c, const torch::Tensor& a,
                     const torch::Tensor& b, const torch::Tensor& a_scales,
                     const torch::Tensor& b_scales,
-                    const c10::optional<torch::Tensor>& bias);
+                    const std::optional<torch::Tensor>& bias);
 
 void int8_scaled_mm_azp(torch::Tensor& c, const torch::Tensor& a,
                         const torch::Tensor& b, const torch::Tensor& a_scales,
                         const torch::Tensor& b_scales,
                         const torch::Tensor& azp_adj,
-                        const c10::optional<torch::Tensor>& azp,
-                        const c10::optional<torch::Tensor>& bias);
+                        const std::optional<torch::Tensor>& azp,
+                        const std::optional<torch::Tensor>& bias);
+
+void mla_decode_kvcache(torch::Tensor& out, torch::Tensor& query,
+                        torch::Tensor& kv_cache, double scale,
+                        torch::Tensor& block_tables, torch::Tensor& seq_lens);
 
 TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // vLLM custom ops
@@ -30,7 +34,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "    Tensor value_cache, int num_kv_heads, float scale,"
       "    Tensor block_tables, Tensor seq_lens, int block_size,"
       "    int max_seq_len, Tensor? alibi_slopes,"
-      "    str kv_cache_dtype, float k_scale, float v_scale,"
+      "    str kv_cache_dtype, Tensor k_scale, Tensor v_scale,"
       "    int tp_rank, int blocksparse_local_blocks,"
       "    int blocksparse_vert_stride, int blocksparse_block_size,"
       "    int blocksparse_head_sliding_step) -> ()");
@@ -44,7 +48,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "    Tensor value_cache, int num_kv_heads, float scale,"
       "    Tensor block_tables, Tensor seq_lens, int block_size,"
       "    int max_seq_len, Tensor? alibi_slopes,"
-      "    str kv_cache_dtype, float k_scale, float v_scale,"
+      "    str kv_cache_dtype, Tensor k_scale, Tensor v_scale,"
       "    int tp_rank, int blocksparse_local_blocks,"
       "    int blocksparse_vert_stride, int blocksparse_block_size,"
       "    int blocksparse_head_sliding_step) -> ()");
@@ -148,13 +152,29 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
       "                  Tensor! key_cache, Tensor! value_cache,"
       "                  Tensor slot_mapping,"
       "                  str kv_cache_dtype,"
-      "                  float k_scale, float v_scale) -> ()");
+      "                  Tensor k_scale, Tensor v_scale) -> ()");
   cache_ops.impl("reshape_and_cache", torch::kCPU, &reshape_and_cache);
+
+  cache_ops.def(
+      "concat_and_cache_mla(Tensor kv_c, Tensor k_pe,"
+      "                     Tensor! kv_cache,"
+      "                     Tensor slot_mapping,"
+      "                     str kv_cache_dtype,"
+      "                     Tensor scale) -> ()");
+  cache_ops.impl("concat_and_cache_mla", torch::kCPU, &concat_and_cache_mla);
 }
 
 TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _utils), utils) {
   // CPU utils
   utils.def("init_cpu_threads_env(str cpu_ids) -> str", &init_cpu_threads_env);
+}
+
+TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cpu), cpu_ops) {
+  cpu_ops.def(
+      "mla_decode_kvcache("
+      "   Tensor! out, Tensor query, Tensor kv_cache,"
+      "   float scale, Tensor block_tables, Tensor seq_lens) -> ()");
+  cpu_ops.impl("mla_decode_kvcache", torch::kCPU, &mla_decode_kvcache);
 }
 
 REGISTER_EXTENSION(TORCH_EXTENSION_NAME)

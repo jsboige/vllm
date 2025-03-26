@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import asyncio
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, List, Mapping, Optional
@@ -11,13 +13,12 @@ from vllm.inputs.preprocess import InputPreprocessor
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.outputs import (CompletionOutput, EmbeddingRequestOutput,
-                          RequestOutput)
+from vllm.outputs import CompletionOutput, PoolingRequestOutput, RequestOutput
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.transformers_utils.tokenizer import AnyTokenizer
-from vllm.utils import collect_from_async_generator, random_uuid
+from vllm.utils import Device, collect_from_async_generator, random_uuid
 
 logger = init_logger(__name__)
 
@@ -80,10 +81,7 @@ class EngineClient(ABC):
         if is_explicit_encoder_decoder_prompt(prompt):
             raise NotImplementedError
         else:
-            processed_inputs = preprocessor._prompt_to_llm_inputs(
-                prompt,
-                request_id=request_id,
-            )
+            processed_inputs = preprocessor._prompt_to_llm_inputs(prompt)
 
         prompt_token_ids = processed_inputs["prompt_token_ids"]
         prompt_text = processed_inputs.get("prompt")
@@ -209,8 +207,8 @@ class EngineClient(ABC):
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
-    ) -> AsyncGenerator[EmbeddingRequestOutput, None]:
-        """Generate outputs for a request from an embedding model."""
+    ) -> AsyncGenerator[PoolingRequestOutput, None]:
+        """Generate outputs for a request from a pooling model."""
         ...
 
     @abstractmethod
@@ -270,4 +268,30 @@ class EngineClient(ABC):
     @abstractmethod
     async def stop_profile(self) -> None:
         """Start profiling the engine"""
+        ...
+
+    @abstractmethod
+    async def reset_prefix_cache(self,
+                                 device: Optional[Device] = None) -> None:
+        """Reset the prefix cache"""
+        ...
+
+    @abstractmethod
+    async def sleep(self, level: int = 1) -> None:
+        """Sleep the engine"""
+        ...
+
+    @abstractmethod
+    async def wake_up(self) -> None:
+        """Wake up the engine"""
+        ...
+
+    @abstractmethod
+    async def is_sleeping(self) -> bool:
+        """Check whether the engine is sleeping"""
+        ...
+
+    @abstractmethod
+    async def add_lora(self, lora_request: LoRARequest) -> None:
+        """Load a new LoRA adapter into the engine for future requests."""
         ...

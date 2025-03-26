@@ -126,15 +126,10 @@ struct MacheteKernelTemplate {
            std::is_same_v<ElementSChannel, ElementSToken>),
       "Currently token and channel scales (if present) must be the same type");
 
-  using EpilogueDescriptor =
-      cutlass::epilogue::collective::detail::EpilogueDescriptor<
-          TileShape, cutlass::epilogue::collective::EpilogueTileAuto, ElementD,
-          ElementD, EpilogueSchedule>;
-
   // Currently only supports float scales
   using ChTokScalesEpilogue =
       typename vllm::c3x::ScaledEpilogue<ElementAccumulator, ElementD,
-                                         EpilogueDescriptor>;
+                                         TileShape>;
   static_assert((with_channel_scales || with_token_scales) ||
                     (std::is_same_v<ElementSChannel, float> &&
                      std::is_same_v<ElementSToken, float>),
@@ -183,11 +178,11 @@ struct MacheteKernelTemplate {
       torch::Tensor const& A,  // MxK matrix
       torch::Tensor const& B,  // KxN prepacked matrix
       torch::Tensor& D,        // MxN matrix
-      c10::optional<torch::Tensor> const& maybe_g_scales,  // scale_KxN matrix
-      c10::optional<torch::Tensor> const& maybe_g_zeros,   // scale_KxN matrix
-      c10::optional<int64_t> maybe_group_size,
-      c10::optional<torch::Tensor> const& maybe_ch_scales,   // len N vector
-      c10::optional<torch::Tensor> const& maybe_tok_scales)  // len M vector
+      std::optional<torch::Tensor> const& maybe_g_scales,  // scale_KxN matrix
+      std::optional<torch::Tensor> const& maybe_g_zeros,   // scale_KxN matrix
+      std::optional<int64_t> maybe_group_size,
+      std::optional<torch::Tensor> const& maybe_ch_scales,   // len N vector
+      std::optional<torch::Tensor> const& maybe_tok_scales)  // len M vector
   {
     static_assert(!with_group_zeropoints || with_group_scales);
 
