@@ -1,0 +1,28 @@
+Metadata-Version: 2.4
+Name: myia_vllm_benchmark
+Version: 0.1.0
+Summary: A benchmark and validation framework for vLLM services on Myia.
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+
+# Projet MYIA-vLLM
+
+Ce répertoire contient l'ensemble des configurations, scripts et documentations nécessaires au déploiement et à la gestion des services vLLM.
+
+## Arborescence du Projet
+
+*   **`/configs`**: Contient tous les fichiers de configuration.
+    *   **`/docker/profiles`**: Fichiers de profil (`.yml`) pour chaque service (micro, mini, medium), définissant les paramètres spécifiques à chaque déploiement.
+    *   **`.env`**: Fichier **critique** et **non versionné** contenant les secrets et les variables d'environnement locales. Ne jamais le supprimer ou le modifier sans précaution.
+*   **`/scripts`**: Regroupe tous les scripts d'automatisation.
+    *   **`/powershell`**: Scripts PowerShell pour le déploiement, les tests et la maintenance.
+    *   **`/python`**: Scripts Python utilisés pour les tests de validation fonctionnelle.
+*   **`/doc`**: Centralise toute la documentation du projet (guides, rapports, plans).
+*   **`/reports`**: (Créé dynamiquement) Contient les journaux et les rapports générés par les scripts.
+*   **`/src`**: Code source principal de l'application (si applicable).
+*   **`/tests`**: Suite de tests unitaires et d'intégration.
+*   **`docker-compose.yml`**: Fichier de base pour l'orchestration des conteneurs Docker.
+*   **`run_benchmark.ps1`**: Script pour lancer des benchmarks de performance.
+
+> [!IMPORTANT]
+> Le bon fonctionnement de l'écosystème repose sur la structure de ce répertoire. Toute modification doit être effectuée avec une compréhension claire de ses impacts.

@@ -1,15 +1,22 @@
+(arch-overview)=
+
 # Architecture Overview
 
 This document provides an overview of the vLLM architecture.
 
-[TOC]
+:::{contents} Table of Contents
+:depth: 2
+:local: true
+:::
 
 ## Entrypoints
 
 vLLM provides a number of entrypoints for interacting with the system. The
 following diagram shows the relationship between them.
 
-![Entrypoints Diagram](../assets/design/arch_overview/entrypoints.excalidraw.png)
+:::{image} /assets/design/arch_overview/entrypoints.excalidraw.png
+:alt: Entrypoints Diagram
+:::
 
 ### LLM Class
 
@@ -19,35 +26,34 @@ server.
 
 Here is a sample of `LLM` class usage:
 
-??? code
+```python
+from vllm import LLM, SamplingParams
 
-    ```python
-    from vllm import LLM, SamplingParams
+# Define a list of input prompts
+prompts = [
+    "Hello, my name is",
+    "The capital of France is",
+    "The largest ocean is",
+]
 
-    # Define a list of input prompts
-    prompts = [
-        "Hello, my name is",
-        "The capital of France is",
-        "The largest ocean is",
-    ]
+# Define sampling parameters
+sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
 
-    # Define sampling parameters
-    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+# Initialize the LLM engine with the OPT-125M model
+llm = LLM(model="facebook/opt-125m")
 
-    # Initialize the LLM engine with the OPT-125M model
-    llm = LLM(model="facebook/opt-125m")
+# Generate outputs for the input prompts
+outputs = llm.generate(prompts, sampling_params)
 
-    # Generate outputs for the input prompts
-    outputs = llm.generate(prompts, sampling_params)
+# Print the generated outputs
+for output in outputs:
+    prompt = output.prompt
+    generated_text = output.outputs[0].text
+    print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+```
 
-    # Print the generated outputs
-    for output in outputs:
-        prompt = output.prompt
-        generated_text = output.outputs[0].text
-        print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
-    ```
-
-More API details can be found in the [Offline Inference](#offline-inference-api) section of the API docs.
+More API details can be found in the [Offline Inference]
+(#offline-inference-api) section of the API docs.
 
 The code for the `LLM` class can be found in <gh-file:vllm/entrypoints/llm.py>.
 
@@ -71,14 +77,16 @@ python -m vllm.entrypoints.openai.api_server --model <model>
 
 That code can be found in <gh-file:vllm/entrypoints/openai/api_server.py>.
 
-More details on the API server can be found in the [OpenAI-Compatible Server](../serving/openai_compatible_server.md) document.
+More details on the API server can be found in the [OpenAI-Compatible Server](#openai-compatible-server) document.
 
 ## LLM Engine
 
 The `LLMEngine` and `AsyncLLMEngine` classes are central to the functioning of
 the vLLM system, handling model inference and asynchronous request processing.
 
-![LLMEngine Diagram](../assets/design/arch_overview/llm_engine.excalidraw.png)
+:::{image} /assets/design/arch_overview/llm_engine.excalidraw.png
+:alt: LLMEngine Diagram
+:::
 
 ### LLMEngine
 
@@ -129,16 +137,18 @@ input tensors and capturing cudagraphs.
 ## Model
 
 Every model runner object has one model object, which is the actual
-`torch.nn.Module` instance. See [huggingface_integration](huggingface_integration.md) for how various
+`torch.nn.Module` instance. See [huggingface_integration](#huggingface-integration) for how various
 configurations affect the class we ultimately get.
 
 ## Class Hierarchy
 
 The following figure shows the class hierarchy of vLLM:
 
-> <figure markdown="span">
->   ![](../assets/design/hierarchy.png){ align="center" alt="query" width="100%" }
-> </figure>
+> :::{figure} /assets/design/hierarchy.png
+> :align: center
+> :alt: query
+> :width: 100%
+> :::
 
 There are several important design choices behind this class hierarchy:
 
@@ -168,45 +178,44 @@ of a vision model and a language model. By making the constructor uniform, we
 can easily create a vision model and a language model and compose them into a
 vision-language model.
 
-!!! note
-    To support this change, all vLLM models' signatures have been updated to:
+:::{note}
+To support this change, all vLLM models' signatures have been updated to:
 
-    ```python
+```python
+def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+```
+
+To avoid accidentally passing incorrect arguments, the constructor is now keyword-only. This ensures that the constructor will raise an error if old configurations are passed. vLLM developers have already made this change for all models within vLLM. For out-of-tree registered models, developers need to update their models, for example by adding shim code to adapt the old constructor signature to the new one:
+
+```python
+class MyOldModel(nn.Module):
+    def __init__(
+        self,
+        config,
+        cache_config: Optional[CacheConfig] = None,
+        quant_config: Optional[QuantizationConfig] = None,
+        lora_config: Optional[LoRAConfig] = None,
+        prefix: str = "",
+    ) -> None:
+        ...
+
+from vllm.config import VllmConfig
+class MyNewModel(MyOldModel):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-    ```
+        config = vllm_config.model_config.hf_config
+        cache_config = vllm_config.cache_config
+        quant_config = vllm_config.quant_config
+        lora_config = vllm_config.lora_config
+        super().__init__(config, cache_config, quant_config, lora_config, prefix)
 
-    To avoid accidentally passing incorrect arguments, the constructor is now keyword-only. This ensures that the constructor will raise an error if old configurations are passed. vLLM developers have already made this change for all models within vLLM. For out-of-tree registered models, developers need to update their models, for example by adding shim code to adapt the old constructor signature to the new one:
+if __version__ >= "0.6.4":
+    MyModel = MyNewModel
+else:
+    MyModel = MyOldModel
+```
 
-    ??? code
-
-        ```python
-        class MyOldModel(nn.Module):
-            def __init__(
-                self,
-                config,
-                cache_config: Optional[CacheConfig] = None,
-                quant_config: Optional[QuantizationConfig] = None,
-                lora_config: Optional[LoRAConfig] = None,
-                prefix: str = "",
-            ) -> None:
-                ...
-
-        from vllm.config import VllmConfig
-        class MyNewModel(MyOldModel):
-            def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-                config = vllm_config.model_config.hf_config
-                cache_config = vllm_config.cache_config
-                quant_config = vllm_config.quant_config
-                lora_config = vllm_config.lora_config
-                super().__init__(config, cache_config, quant_config, lora_config, prefix)
-
-        if __version__ >= "0.6.4":
-            MyModel = MyNewModel
-        else:
-            MyModel = MyOldModel
-        ```
-
-    This way, the model can work with both old and new versions of vLLM.
+This way, the model can work with both old and new versions of vLLM.
+:::
 
 3\. **Sharding and Quantization at Initialization**: Certain features require
 changing the model weights. For example, tensor parallelism needs to shard the

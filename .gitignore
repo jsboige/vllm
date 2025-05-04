@@ -83,6 +83,9 @@ venv.bak/
 /site
 docs/argparse
 docs/examples
+docs/_build/
+docs/source/getting_started/examples/
+docs/source/api/vllm
 
 # mypy
 .mypy_cache/
@@ -145,4 +148,5 @@ csrc/moe/marlin_moe_wna16/kernel_*
 
 # Permettre les fichiers de config essentiels
 !huggingface.env
+!env/
 !docker-compose/build/

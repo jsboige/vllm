@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Annotated, Literal, Optional, Union
+from typing import Literal, Optional, Set, Tuple, TypedDict, Union
 
 import torch
 import torch.nn as nn
@@ -22,7 +21,6 @@ from vllm.multimodal.processing import (BaseMultiModalProcessor,
                                         PromptInsertion, PromptUpdate)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
-from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from .blip import BlipVisionModel
 from .interfaces import (MultiModalEmbeddings, SupportsMultiModal, SupportsPP,
@@ -35,27 +33,19 @@ from .utils import (AutoWeightsLoader, flatten_bn, init_vllm_registered_model,
 _IMAGE_TOKEN_ID = 50265
 
 
-class Blip2ImagePixelInputs(TensorSchema):
-    """
-    Dimensions:
-        - bn: Batch size * number of images
-        - c: Number of channels (3)
-        - h: Height of each image
-        - w: Width of each image
-    """
+class Blip2ImagePixelInputs(TypedDict):
     type: Literal["pixel_values"]
-    data: Annotated[torch.Tensor, TensorShape("bn", 3, "h", "w")]
+    data: torch.Tensor
+    """Shape: `(batch_size * num_images, num_channels, height, width)`"""
 
 
-class Blip2ImageEmbeddingInputs(TensorSchema):
-    """
-    Dimensions:
-        - bn: Batch size * number of images
-        - f: Image feature size
-        - h: Hidden size (must match the hidden size of language model backbone)
-    """
+class Blip2ImageEmbeddingInputs(TypedDict):
     type: Literal["image_embeds"]
-    data: Annotated[torch.Tensor, TensorShape("bn", "f", "h")]
+    data: torch.Tensor
+    """Shape: `(batch_size * num_images, image_feature_size, hidden_size)`
+
+    `hidden_size` must match the hidden size of language model backbone.
+    """
 
 
 Blip2ImageInputs = Union[Blip2ImagePixelInputs, Blip2ImageEmbeddingInputs]
@@ -196,7 +186,7 @@ class Blip2QFormerAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
-    ) -> tuple[torch.Tensor]:
+    ) -> Tuple[torch.Tensor]:
         self_output = self.attention(
             hidden_states,
             encoder_hidden_states=encoder_hidden_states,
@@ -463,7 +453,6 @@ class Blip2MultiModalProcessor(BaseMultiModalProcessor[Blip2ProcessingInfo]):
         prompt: str,
         mm_data: Mapping[str, object],
         mm_kwargs: Mapping[str, object],
-        tok_kwargs: Mapping[str, object],
     ) -> BatchFeature:
         if not mm_data:
             # HF processor always adds placeholders even when there's no image
@@ -475,7 +464,6 @@ class Blip2MultiModalProcessor(BaseMultiModalProcessor[Blip2ProcessingInfo]):
             prompt=prompt,
             mm_data=mm_data,
             mm_kwargs=mm_kwargs,
-            tok_kwargs=tok_kwargs,
         )
 
     def _get_mm_fields_config(
@@ -516,13 +504,6 @@ class Blip2MultiModalProcessor(BaseMultiModalProcessor[Blip2ProcessingInfo]):
 class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
                                     SupportsQuant):
 
-    @classmethod
-    def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
-        if modality.startswith("image"):
-            return None
-
-        raise ValueError("Only image modality is supported")
-
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
 
         super().__init__()
@@ -560,8 +541,21 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
         self.make_empty_intermediate_tensors = (
             self.language_model.make_empty_intermediate_tensors)
 
-    def _create_image_input(self,
-                            **kwargs: object) -> Optional[Blip2ImageInputs]:
+    def _validate_pixel_values(self, data: torch.Tensor) -> torch.Tensor:
+        h = w = self.config.vision_config.image_size
+        expected_dims = (3, h, w)
+        actual_dims = tuple(data.shape[1:])
+
+        if actual_dims != expected_dims:
+            expected_expr = ("batch_size", *map(str, expected_dims))
+            raise ValueError(
+                f"The expected shape of pixel values is {expected_expr}. "
+                f"You supplied {tuple(data.shape)}.")
+
+        return data
+
+    def _parse_and_validate_image_input(
+            self, **kwargs: object) -> Optional[Blip2ImageInputs]:
         pixel_values = kwargs.pop("pixel_values", None)
         image_embeds = kwargs.pop("image_embeds", None)
 
@@ -569,19 +563,27 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
             return None
 
         if pixel_values is not None:
-            expected_h = expected_w = self.config.vision_config.image_size
-            return Blip2ImagePixelInputs(type="pixel_values",
-                                         data=flatten_bn(pixel_values,
-                                                         concat=True),
-                                         resolve_bindings={
-                                             "h": expected_h,
-                                             "w": expected_w
-                                         })
+            if not isinstance(pixel_values, (torch.Tensor, list)):
+                raise ValueError("Incorrect type of pixel values. "
+                                 f"Got type: {type(pixel_values)}")
+
+            pixel_values = flatten_bn(pixel_values, concat=True)
+
+            return Blip2ImagePixelInputs(
+                type="pixel_values",
+                data=self._validate_pixel_values(pixel_values),
+            )
 
         if image_embeds is not None:
+            if not isinstance(image_embeds, (torch.Tensor, list)):
+                raise ValueError("Incorrect type of image embeddings. "
+                                 f"Got type: {type(image_embeds)}")
+
+            image_embeds = flatten_bn(image_embeds, concat=True)
+
             return Blip2ImageEmbeddingInputs(
                 type="image_embeds",
-                data=flatten_bn(image_embeds, concat=True),
+                data=image_embeds,
             )
 
         raise AssertionError("This line should be unreachable.")
@@ -624,11 +626,11 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
     def get_language_model(self) -> torch.nn.Module:
         return self.language_model
 
-    def get_multimodal_embeddings(self,
-                                  **kwargs: object) -> MultiModalEmbeddings:
+    def get_multimodal_embeddings(
+            self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
         image_input = self._parse_and_validate_image_input(**kwargs)
         if image_input is None:
-            return []
+            return None
         vision_embeddings = self._process_image_input(image_input)
         return vision_embeddings
 
@@ -638,8 +640,7 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
         multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
     ) -> torch.Tensor:
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
-        if multimodal_embeddings is not None \
-            and len(multimodal_embeddings) != 0:
+        if multimodal_embeddings is not None:
             inputs_embeds = merge_multimodal_embeddings(
                 input_ids, inputs_embeds, multimodal_embeddings,
                 _IMAGE_TOKEN_ID)
@@ -680,8 +681,9 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
                 batch.
             pixel_values: The pixels in each input image.
         
-        Info:
-            [Blip2ImageInputs][]
+        :::{seealso}
+        {class}`Blip2ImageInputs`
+        :::
         """
 
         if intermediate_tensors is not None:
@@ -710,7 +712,7 @@ class Blip2ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP,
         return self.language_model.compute_logits(hidden_states,
                                                   sampling_metadata)
 
-    def load_weights(self, weights: Iterable[tuple[str,
-                                                   torch.Tensor]]) -> set[str]:
+    def load_weights(self, weights: Iterable[Tuple[str,
+                                                   torch.Tensor]]) -> Set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights)
