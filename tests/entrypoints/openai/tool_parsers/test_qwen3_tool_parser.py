@@ -9,11 +9,11 @@ from tests.entrypoints.openai.tool_parsers.utils import (
 from vllm.entrypoints.openai.protocol import FunctionCall
 from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
 
-# Format des appels d'outils pour Qwen3
+# Format of tool calls for Qwen3
 TOOL_CALL_FORMAT = '<tool_call>{{"name": "{name}", "arguments": {arguments}}}</tool_call>'
 FUNCTION_CALL_FORMAT = '<function_call>{{"name": "{name}", "arguments": {arguments}}}</function_call>'
 
-# Cas de test simples
+# Simple test cases
 SIMPLE_TOOL_CALL = TOOL_CALL_FORMAT.format(
     name="get_weather",
     arguments='{"city": "San Francisco", "metric": "celsius"}'
@@ -27,7 +27,7 @@ SIMPLE_FUNCTION_CALL_OBJ = FunctionCall(
     arguments='{"city": "San Francisco", "metric": "celsius"}',
 )
 
-# Cas de test avec différents types de données
+# Test cases with different data types
 COMPLEX_TOOL_CALL = TOOL_CALL_FORMAT.format(
     name="register_user",
     arguments='{"name": "John Doe", "age": 37, "address": {"city": "San Francisco", "state": "CA"}, "role": null, "passed_test": true, "aliases": ["John", "Johnny"]}'
@@ -41,7 +41,7 @@ COMPLEX_FUNCTION_CALL_OBJ = FunctionCall(
     arguments='{"name": "John Doe", "age": 37, "address": {"city": "San Francisco", "state": "CA"}, "role": null, "passed_test": true, "aliases": ["John", "Johnny"]}',
 )
 
-# Cas de test sans paramètres
+# Test cases without parameters
 PARAMETERLESS_TOOL_CALL = TOOL_CALL_FORMAT.format(
     name="get_weather",
     arguments='{}'
@@ -59,7 +59,7 @@ PARAMETERLESS_FUNCTION_CALL_OBJ = FunctionCall(
 @pytest.mark.parametrize("streaming", [True, False])
 def test_no_tool_call(streaming: bool):
     mock_tokenizer = MagicMock()
-    # Configurer le mock pour simuler les tokens spéciaux
+    # Configure the mock to simulate special tokens
     mock_tokenizer.tokenize.return_value = []
     mock_vocab = {"<tool_call>": 1, "</tool_call>": 2, "<function_call>": 3, "</function_call>": 4}
     mock_tokenizer.get_vocab.return_value = mock_vocab
@@ -67,14 +67,14 @@ def test_no_tool_call(streaming: bool):
     tool_parser: ToolParser = ToolParserManager.get_tool_parser("qwen3")(
         mock_tokenizer)
     
-    # Simuler les IDs de tokens
+    # Simulate token IDs
     tool_parser.tool_call_start_token_id = 1
     tool_parser.tool_call_end_token_id = 2
     tool_parser.function_call_start_token_id = 3
     tool_parser.function_call_end_token_id = 4
     tool_parser.vocab = mock_vocab
     
-    model_output = "Comment puis-je vous aider aujourd'hui ?"
+    model_output = "How can I help you today?"
 
     content, tool_calls = run_tool_extraction(tool_parser,
                                              model_output,
@@ -122,23 +122,23 @@ TEST_CASES = [
                  PARAMETERLESS_FUNCTION_CALL, [PARAMETERLESS_FUNCTION_CALL_OBJ],
                  id="parameterless_function_call_nonstreaming"),
     pytest.param(True,
-                 f"Voici la météo : {SIMPLE_TOOL_CALL}", [SIMPLE_FUNCTION_CALL_OBJ],
+                 f"Here is the weather: {SIMPLE_TOOL_CALL}", [SIMPLE_FUNCTION_CALL_OBJ],
                  id="tool_call_with_prefix_streaming"),
     pytest.param(False,
-                 f"Voici la météo : {SIMPLE_TOOL_CALL}", [SIMPLE_FUNCTION_CALL_OBJ],
+                 f"Here is the weather: {SIMPLE_TOOL_CALL}", [SIMPLE_FUNCTION_CALL_OBJ],
                  id="tool_call_with_prefix_nonstreaming"),
     pytest.param(True,
-                 f"{SIMPLE_TOOL_CALL} Voici les informations demandées.", [SIMPLE_FUNCTION_CALL_OBJ],
+                 f"{SIMPLE_TOOL_CALL} Here is the requested information.", [SIMPLE_FUNCTION_CALL_OBJ],
                  id="tool_call_with_suffix_streaming"),
     pytest.param(False,
-                 f"{SIMPLE_TOOL_CALL} Voici les informations demandées.", [SIMPLE_FUNCTION_CALL_OBJ],
+                 f"{SIMPLE_TOOL_CALL} Here is the requested information.", [SIMPLE_FUNCTION_CALL_OBJ],
                  id="tool_call_with_suffix_nonstreaming"),
     pytest.param(True,
-                 f"Voici la météo : {SIMPLE_TOOL_CALL} et l'utilisateur : {COMPLEX_TOOL_CALL}",
+                 f"Here is the weather: {SIMPLE_TOOL_CALL} and the user: {COMPLEX_TOOL_CALL}",
                  [SIMPLE_FUNCTION_CALL_OBJ, COMPLEX_FUNCTION_CALL_OBJ],
                  id="multiple_tool_calls_streaming"),
     pytest.param(False,
-                 f"Voici la météo : {SIMPLE_TOOL_CALL} et l'utilisateur : {COMPLEX_TOOL_CALL}",
+                 f"Here is the weather: {SIMPLE_TOOL_CALL} and the user: {COMPLEX_TOOL_CALL}",
                  [SIMPLE_FUNCTION_CALL_OBJ, COMPLEX_FUNCTION_CALL_OBJ],
                  id="multiple_tool_calls_nonstreaming"),
 ]
@@ -149,7 +149,7 @@ TEST_CASES = [
 def test_tool_call(streaming: bool, model_output: str,
                   expected_tool_calls: list[FunctionCall]):
     mock_tokenizer = MagicMock()
-    # Configurer le mock pour simuler les tokens spéciaux
+    # Configure the mock to simulate special tokens
     mock_tokenizer.tokenize.return_value = []
     mock_vocab = {"<tool_call>": 1, "</tool_call>": 2, "<function_call>": 3, "</function_call>": 4}
     mock_tokenizer.get_vocab.return_value = mock_vocab
@@ -157,7 +157,7 @@ def test_tool_call(streaming: bool, model_output: str,
     tool_parser: ToolParser = ToolParserManager.get_tool_parser("qwen3")(
         mock_tokenizer)
     
-    # Simuler les IDs de tokens
+    # Simulate token IDs
     tool_parser.tool_call_start_token_id = 1
     tool_parser.tool_call_end_token_id = 2
     tool_parser.function_call_start_token_id = 3
@@ -173,7 +173,7 @@ def test_tool_call(streaming: bool, model_output: str,
         assert len(tool_calls) == 0
         return
 
-    # Vérifier que le contenu est extrait correctement
+    # Verify that the content is extracted correctly
     if "<tool_call>" in model_output:
         prefix = model_output.split("<tool_call>")[0]
         if prefix:
@@ -187,12 +187,12 @@ def test_tool_call(streaming: bool, model_output: str,
         else:
             assert content is None or content == ""
 
-    # Vérifier les appels d'outils
+    # Verify tool calls
     assert len(tool_calls) == len(expected_tool_calls)
     for actual, expected in zip(tool_calls, expected_tool_calls):
         assert actual.type == "function"
         assert actual.function.name == expected.name
-        # Comparer les arguments JSON (en ignorant les différences de formatage)
+        # Compare JSON arguments (ignoring formatting differences)
         import json
         actual_args = json.loads(actual.function.arguments)
         expected_args = json.loads(expected.arguments)
@@ -201,7 +201,7 @@ def test_tool_call(streaming: bool, model_output: str,
 
 def test_streaming_tool_call_with_large_steps():
     mock_tokenizer = MagicMock()
-    # Configurer le mock pour simuler les tokens spéciaux
+    # Configure the mock to simulate special tokens
     mock_tokenizer.tokenize.return_value = []
     mock_vocab = {"<tool_call>": 1, "</tool_call>": 2, "<function_call>": 3, "</function_call>": 4}
     mock_tokenizer.get_vocab.return_value = mock_vocab
@@ -209,7 +209,7 @@ def test_streaming_tool_call_with_large_steps():
     tool_parser: ToolParser = ToolParserManager.get_tool_parser("qwen3")(
         mock_tokenizer)
     
-    # Simuler les IDs de tokens
+    # Simulate token IDs
     tool_parser.tool_call_start_token_id = 1
     tool_parser.tool_call_end_token_id = 2
     tool_parser.function_call_start_token_id = 3
@@ -217,14 +217,14 @@ def test_streaming_tool_call_with_large_steps():
     tool_parser.vocab = mock_vocab
     
     model_output_deltas = [
-        "Voici la météo : <tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"San",
+        "Here is the weather: <tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"San",
         " Francisco\", \"metric\": \"celsius\"}}</tool_call>"
     ]
 
     reconstructor = run_tool_extraction_streaming(
         tool_parser, model_output_deltas, assert_one_tool_per_delta=False)
 
-    assert "Voici la météo : " in reconstructor.other_content
+    assert "Here is the weather: " in reconstructor.other_content
     assert len(reconstructor.tool_calls) == 1
     assert reconstructor.tool_calls[0].function.name == "get_weather"
     assert "San Francisco" in reconstructor.tool_calls[0].function.arguments

@@ -33,13 +33,13 @@ class Qwen3ToolParser(ToolParser):
         self.current_tool_id: int = -1
         self.streamed_args_for_tool: list[str] = []
 
-        # Définir les tokens pour tool_call et function_call
+        # Define tokens for tool_call and function_call
         self.tool_call_start_token: str = "<tool_call>"
         self.tool_call_end_token: str = "</tool_call>"
         self.function_call_start_token: str = "<function_call>"
         self.function_call_end_token: str = "</function_call>"
 
-        # Regex pour capturer à la fois <tool_call> et <function_call>
+        # Regex to capture both <tool_call> and <function_call>
         self.tool_call_regex = re.compile(
             r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)|<function_call>(.*?)</function_call>|<function_call>(.*)", 
             re.DOTALL)
@@ -51,13 +51,13 @@ class Qwen3ToolParser(ToolParser):
                 "The model tokenizer must be passed to the ToolParser "
                 "constructor during construction.")
         
-        # Obtenir les IDs des tokens pour les balises tool_call et function_call
+        # Get token IDs for tool_call and function_call tags
         self.tool_call_start_token_id = self.vocab.get(self.tool_call_start_token)
         self.tool_call_end_token_id = self.vocab.get(self.tool_call_end_token)
         self.function_call_start_token_id = self.vocab.get(self.function_call_start_token)
         self.function_call_end_token_id = self.vocab.get(self.function_call_end_token)
         
-        # Vérifier si au moins un des formats est supporté
+        # Check if at least one of the formats is supported
         if ((self.tool_call_start_token_id is None or self.tool_call_end_token_id is None) and
             (self.function_call_start_token_id is None or self.function_call_end_token_id is None)):
             logger.warning(
@@ -70,7 +70,7 @@ class Qwen3ToolParser(ToolParser):
         request: ChatCompletionRequest,
     ) -> ExtractedToolCallInformation:
 
-        # Vérifier si l'un des formats d'appel d'outil est présent
+        # Check if one of the tool call formats is present
         if (self.tool_call_start_token not in model_output and 
             self.function_call_start_token not in model_output):
             return ExtractedToolCallInformation(tools_called=False,
@@ -78,13 +78,13 @@ class Qwen3ToolParser(ToolParser):
                                                 content=model_output)
         else:
             try:
-                # Rechercher les appels d'outils avec les deux formats possibles
+                # Search for tool calls with both possible formats
                 function_call_tuples = self.tool_call_regex.findall(model_output)
 
-                # Traiter les résultats de la regex
+                # Process regex results
                 raw_function_calls = []
                 for match in function_call_tuples:
-                    # La regex peut capturer jusqu'à 4 groupes (2 formats x 2 cas)
+                    # The regex can capture up to 4 groups (2 formats x 2 cases)
                     content = next((m for m in match if m), None)
                     if content:
                         try:
@@ -107,7 +107,7 @@ class Qwen3ToolParser(ToolParser):
                     except KeyError as e:
                         logger.warning(f"Missing key in function call: {e}. Function call: {function_call}")
 
-                # Déterminer le contenu avant le premier appel d'outil
+                # Determine content before the first tool call
                 first_tool_pos = min(
                     model_output.find(self.tool_call_start_token) if self.tool_call_start_token in model_output else float('inf'),
                     model_output.find(self.function_call_start_token) if self.function_call_start_token in model_output else float('inf')
@@ -141,7 +141,7 @@ class Qwen3ToolParser(ToolParser):
         logger.debug("delta_text: %s", delta_text)
         logger.debug("delta_token_ids: %s", delta_token_ids)
         
-        # Vérifier si nous avons des tokens d'appel d'outil
+        # Check if we have tool call tokens
         has_tool_call_tokens = False
         if self.tool_call_start_token_id is not None:
             has_tool_call_tokens = has_tool_call_tokens or (self.tool_call_start_token_id in current_token_ids)
@@ -153,7 +153,7 @@ class Qwen3ToolParser(ToolParser):
             return DeltaMessage(content=delta_text)
 
         try:
-            # Compter les occurrences des tokens de début et de fin
+            # Count occurrences of start and end tokens
             prev_tool_start_count = 0
             prev_tool_end_count = 0
             cur_tool_start_count = 0
@@ -176,7 +176,7 @@ class Qwen3ToolParser(ToolParser):
             tool_call_portion = None
             text_portion = None
 
-            # Cas : si nous générons du texte, OU terminons un appel d'outil
+            # Case: if we are generating text, OR finishing a tool call
             if (cur_tool_start_count == cur_tool_end_count
                     and prev_tool_end_count == cur_tool_end_count
                     and self.tool_call_end_token not in delta_text
@@ -184,12 +184,12 @@ class Qwen3ToolParser(ToolParser):
                 logger.debug("Generating text content! skipping tool parsing.")
                 return DeltaMessage(content=delta_text)
 
-            # Cas : si nous terminons un appel d'outil
+            # Case: if we are finishing a tool call
             if self.tool_call_end_token in delta_text or self.function_call_end_token in delta_text:
                 logger.debug("tool_call_end_token or function_call_end_token in delta_text")
                 full_text = current_text + delta_text
                 
-                # Trouver la portion d'appel d'outil
+                # Find the tool call portion
                 if self.tool_call_start_token in full_text and self.tool_call_end_token in delta_text:
                     tool_call_portion = full_text.split(
                         self.tool_call_start_token)[-1].split(
@@ -207,11 +207,11 @@ class Qwen3ToolParser(ToolParser):
                     text_portion = delta_text.split(
                         self.function_call_end_token)[-1].lstrip()
 
-            # Drapeaux pour l'analyse JSON partielle
+            # Flags for partial JSON parsing
             flags = Allow.ALL if self.current_tool_name_sent \
                 else Allow.ALL & ~Allow.STR
 
-            # Cas : nous commençons un nouvel appel d'outil
+            # Case: we are starting a new tool call
             if (cur_tool_start_count > cur_tool_end_count
                     and cur_tool_start_count > prev_tool_start_count):
                 if len(delta_token_ids) > 1:
@@ -227,17 +227,17 @@ class Qwen3ToolParser(ToolParser):
 
                 text_portion = None
 
-                # Mettre à jour les curseurs et l'état
+                # Update cursors and state
                 self.current_tool_id += 1
                 self.current_tool_name_sent = False
                 self.streamed_args_for_tool.append("")
                 logger.debug("Starting on a new tool %s", self.current_tool_id)
 
-            # Cas : nous mettons à jour un appel d'outil existant
+            # Case: we are updating an existing tool call
             elif (cur_tool_start_count > cur_tool_end_count
                   and cur_tool_start_count == prev_tool_start_count):
 
-                # Obtenir la portion de texte qui est l'appel d'outil
+                # Get the text portion that is the tool call
                 if self.tool_call_start_token in current_text:
                     tool_call_portion = current_text.split(
                         self.tool_call_start_token)[-1]
@@ -246,7 +246,7 @@ class Qwen3ToolParser(ToolParser):
                         self.function_call_start_token)[-1]
                 text_portion = None
 
-            # Cas : l'appel d'outil actuel est en train d'être fermé
+            # Case: the current tool call is being closed
             elif (cur_tool_start_count == cur_tool_end_count
                   and cur_tool_end_count >= prev_tool_end_count):
                 if (self.prev_tool_call_arr is None
@@ -275,7 +275,7 @@ class Qwen3ToolParser(ToolParser):
                                                exclude_none=True))
                     ])
 
-            # Cas : sinon nous générons simplement du texte
+            # Case: otherwise we are simply generating text
             else:
                 text = delta_text.replace(self.tool_call_start_token, "")
                 text = text.replace(self.tool_call_end_token, "")
@@ -296,8 +296,8 @@ class Qwen3ToolParser(ToolParser):
                 logger.debug("unable to parse JSON")
                 return None
 
-            # Cas - nous n'avons pas encore envoyé le nom de l'outil. S'il est disponible, l'envoyer.
-            # Sinon, attendre qu'il soit disponible.
+            # Case - we haven't sent the tool name yet. If it's available, send it.
+            # Otherwise, wait until it's available.
             if not self.current_tool_name_sent:
                 if (current_tool_call is None):
                     return None
@@ -314,29 +314,29 @@ class Qwen3ToolParser(ToolParser):
                     ])
                 else:
                     return None
-            # Cas -- sinon, envoyer le delta de l'appel d'outil
+            # Case -- otherwise, send the delta of the tool call
 
-            # Si la portion d'appel d'outil est None, envoyer le delta comme texte
+            # If the tool call portion is None, send the delta as text
             if tool_call_portion is None:
-                # S'il y a du texte mais pas d'appels d'outils, envoyer cela -
-                # sinon None pour sauter le morceau
+                # If there is text but no tool calls, send that -
+                # otherwise None to skip the chunk
                 delta = DeltaMessage(content=delta_text) \
                     if text_portion is not None else None
                 return delta
 
-            # Maintenant, le détail des appels d'outils
-            # Maintenant nous avons la portion à analyser comme appel d'outil.
+            # Now, the details of tool calls
+            # Now we have the portion to parse as a tool call.
 
             logger.debug("Trying to parse current tool call with ID %s",
                          self.current_tool_id)
 
-            # Si nous commençons un nouvel appel d'outil, pousser un objet vide comme
-            # placeholder pour les arguments
+            # If we are starting a new tool call, push an empty object as
+            # placeholder for arguments
             if len(self.prev_tool_call_arr) <= self.current_tool_id:
                 self.prev_tool_call_arr.append({})
 
-            # Logique principale pour l'analyse d'outils ici - comparer le JSON partiellement analysé
-            # précédent avec le JSON partiellement analysé actuel
+            # Main logic for tool parsing here - compare the previously partially parsed JSON
+            # with the currently partially parsed JSON
             prev_arguments = (
                 self.prev_tool_call_arr[self.current_tool_id].get("arguments"))
             cur_arguments = current_tool_call.get("arguments")
@@ -344,20 +344,20 @@ class Qwen3ToolParser(ToolParser):
             logger.debug("diffing old arguments: %s", prev_arguments)
             logger.debug("against new ones: %s", cur_arguments)
 
-            # Cas -- aucun argument n'a encore été créé. Sauter l'envoi d'un delta.
+            # Case -- no arguments have been created yet. Skip sending a delta.
             if not cur_arguments and not prev_arguments:
                 logger.debug("Skipping text %s - no arguments", delta_text)
                 delta = None
 
-            # Cas -- les arguments précédents sont définis, mais aucun ne l'est maintenant.
-            # Probablement impossible, mais pas une erreur fatale - continuer
+            # Case -- previous arguments are defined, but none are now.
+            # Probably impossible, but not a fatal error - continue
             elif not cur_arguments and prev_arguments:
                 logger.error("should be impossible to have arguments reset "
                              "mid-call. skipping streaming anything.")
                 delta = None
 
-            # Cas -- nous avons maintenant les premières informations sur les arguments disponibles
-            # à partir de l'autocomplétion du JSON
+            # Case -- we now have the first information about available arguments
+            # from JSON autocompletion
             elif cur_arguments and not prev_arguments:
 
                 cur_arguments_json = json.dumps(cur_arguments,
@@ -365,14 +365,14 @@ class Qwen3ToolParser(ToolParser):
                 logger.debug("finding %s in %s", delta_text,
                              cur_arguments_json)
 
-                # Obtenir l'emplacement où les arguments précédents diffèrent des actuels
+                # Get the location where previous arguments differ from current ones
                 if (delta_text not in cur_arguments_json[:-2]):
                     return None
                 args_delta_start_loc = cur_arguments_json[:-2]. \
                                            rindex(delta_text) + \
                                            len(delta_text)
 
-                # Utiliser cela pour trouver le delta réel
+                # Use that to find the actual delta
                 arguments_delta = cur_arguments_json[:args_delta_start_loc]
                 logger.debug("First tokens in arguments received: %s",
                              arguments_delta)
@@ -386,7 +386,7 @@ class Qwen3ToolParser(ToolParser):
                 self.streamed_args_for_tool[self.current_tool_id] \
                     += arguments_delta
 
-            # Dernier cas -- nous avons une mise à jour des arguments existants.
+            # Last case -- we have an update to existing arguments.
             elif cur_arguments and prev_arguments:
                 if isinstance(delta_text, str) and len(delta_text.rstrip(
                 )) >= 1 and delta_text.rstrip()[-1] == '}':
@@ -403,8 +403,8 @@ class Qwen3ToolParser(ToolParser):
                 self.streamed_args_for_tool[self.current_tool_id] \
                     += delta_text
 
-            # Gérer la sauvegarde de l'état pour l'outil actuel dans
-            # la liste "prev" pour l'utiliser dans la comparaison pour la prochaine itération
+            # Handle saving the state for the current tool in
+            # the "prev" list to use in comparison for the next iteration
             if self.current_tool_id == len(self.prev_tool_call_arr) - 1:
                 self.prev_tool_call_arr[self.current_tool_id] = \
                     current_tool_call
@@ -415,4 +415,4 @@ class Qwen3ToolParser(ToolParser):
 
         except Exception as e:
             logger.exception("Error trying to handle streaming tool call: %s", e)
-            return None  # ne pas streamer de delta. sauter cet ID de token.
+            return None  # don't stream delta. skip this token ID.
