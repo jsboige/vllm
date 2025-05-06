@@ -2,6 +2,9 @@
 # Ce script documente les étapes nécessaires pour configurer le dépôt distant
 # et créer une pull request de la branche feature/secure-configs vers develop.
 
+# Forcer l'encodage en sortie à UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 Write-Host "Réorganisation Git du projet vLLM" -ForegroundColor Green
 Write-Host "=======================================" -ForegroundColor Green
 Write-Host ""
