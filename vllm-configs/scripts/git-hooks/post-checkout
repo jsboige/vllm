@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Hook post-checkout pour restaurer automatiquement les secrets
+# Ce script est exécuté après chaque checkout
+
+# Chemin vers le script de restauration des secrets
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+RESTORE_SCRIPT="$ROOT_DIR/scripts/restore-secrets.sh"
+ENV_FILE="$ROOT_DIR/.env"
+
+echo "Hook post-checkout: Vérification des secrets..."
+
+# Vérifier si le fichier .env existe
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Avertissement: Le fichier $ENV_FILE n'existe pas."
+    echo "Veuillez créer ce fichier en copiant .env.example et en le modifiant selon vos besoins."
+    echo "Ou exécutez le script save-secrets.sh pour extraire les secrets des fichiers docker-compose."
+    exit 0
+fi
+
+# Vérifier si le script de restauration existe
+if [ -f "$RESTORE_SCRIPT" ]; then
+    # Demander à l'utilisateur s'il souhaite restaurer les secrets
+    read -p "Voulez-vous restaurer les secrets depuis $ENV_FILE ? (o/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Oo]$ ]]; then
+        # Exécuter le script de restauration
+        bash "$RESTORE_SCRIPT"
+    else
+        echo "Les secrets n'ont pas été restaurés."
+    fi
+else
+    echo "Erreur: Le script de restauration $RESTORE_SCRIPT n'existe pas."
+    exit 1
+fi
+
+exit 0

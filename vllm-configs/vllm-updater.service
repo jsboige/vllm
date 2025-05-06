@@ -1,0 +1,14 @@
+[Unit]
+Description=Service de mise à jour automatique pour vLLM
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /chemin/vers/vllm-configs/update-vllm.sh --auto
+User=votre_utilisateur
+Group=votre_groupe
+WorkingDirectory=/chemin/vers/vllm-configs
+Environment="HUGGING_FACE_HUB_TOKEN=votre_token_huggingface"
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,86 @@
+services:
+  vllm-medium:
+    image: vllm-patched:speculative
+    # image: vllm/vllm-openai:latest
+    ipc: host
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      --model ${MODEL_NAME:-Qwen/QwQ-32B-AWQ}
+      --tensor-parallel-size ${NUM_GPUS:-2}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-${GPU_MEMORY_UTILIZATION_MEDIUM}}
+      --enable-chunked-prefill true
+      --max-model-len 73728
+      --max-num-batched-tokens 73728
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --dtype ${DATATYPE:-float16}
+      --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      --enable-reasoning
+      --reasoning-parser qwen3
+      --kv_cache_dtype fp8
+      # --uvicorn_log_level debug
+      # --speculative_config "{'model':'PJMixers-Dev/Qwen2.5-QwQ-RP-Draft-v0.1-0.5B','num_speculative_tokens':5,'draft_tensor_parallel_size':2}"
+      # --speculative_config "{'model':'PJMixers-Dev/Qwen2.5-QwQ-RP-Draft-v0.1-0.5B','num_speculative_tokens':5,'draft_tensor_parallel_size':2,'draft_dtype':'float16','max-model-len':32768,'enable-chunked-prefill':True,'enable-prefix-caching':True,'enable-auto-tool-choice':True,'tool-call-parser':'hermes','rope-scaling':{'rope_type':'yarn','factor':4.0,'original_max_position_embeddings':32768},'enable-reasoning':True,'reasoning-parser':'deepseek_r1'}"
+      # --speculative-model PJMixers-Dev/Qwen2.5-QwQ-RP-Draft-v0.1-0.5B
+      # --num_speculative_tokens 5
+      # --kv_cache_dtype fp8
+      # --enforce-eager
+      # --speculative-model tugstugi/Qwen2.5-Coder-0.5B-QwQ-draft
+      # --num_speculative_tokens 5
+      # --speculative-model tugstugi/Qwen2.5-Coder-0.5B-QwQ-draft
+      # --max-model-len 73728
+      # --speculative-model InfiniAILab/QwQ-0.5B
+      # --num_speculative_tokens 5 
+      # --rope-theta 1000000
+      # --trust-remote-code
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN}}}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-${VLLM_API_KEY_MEDIUM}}
+      - VLLM_PORT= ${VLLM_PORT:-${VLLM_PORT_MEDIUM}}
+      - GPU_PERCENTAGE=  ${GPU_PERCENTAGE:-0.9999}
+      - CUDA_VISIBLE_DEVICES= ${CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES_MEDIUM}}
+      - VLLM_ATTENTION_BACKEND= ${VLLM_ATTENTION_BACKEND:-FLASHINFER}
+      # - UVICORN_ACCESS_LOG=true
+      # - VLLM_ATTENTION_BACKEND= ${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
+      # - VLLM_ATTENTION_BACKEND=FLASHINFER
+      # - HF_MODEL= ${HF_MODEL:-unsloth/Qwen2.5-3B-Instruct-unsloth-bnb-4bit}
+      # - MAX_MODEL_LEN= ${MAX_MODEL_LEN:-1024}
+
+    ports:
+      - "${VLLM_PORT:-${VLLM_PORT_MEDIUM}}:8000"
+    # expose:
+    #   - "8000"
+    restart: on-failure:5
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['0','1']
+              driver: nvidia
+ 
+ 
+  # mitmproxy:
+  #   image: mitmproxy/mitmproxy:9.0.1
+  #   # Vous pouvez adapter la version à votre convenance
+  #   depends_on:
+  #     - vllm-medium
+
+  #   # On mappe le port 5002 sur le port 8080 de mitmproxy (mode reverse)
+  #   # => Sur l'hôte : :5002 => Container :8080
+  #   ports:
+  #     - "5002:8080"  # Le "vrai" port REST
+  #     - "5010:8081"  # Port interface web de mitmproxy (optionnel)
+
+  #   command: >
+  #     mitmweb
+  #     --mode reverse:http://vllm-medium:8000
+  #     --web-host 0.0.0.0
+  #     --web-port 8081
+  #     --showhost
+  #     --set console_eventlog_verbosity=debug
+
+  #   restart: on-failure:5

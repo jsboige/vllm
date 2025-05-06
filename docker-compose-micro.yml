@@ -1,0 +1,41 @@
+services:
+  vllm-micro:
+    image: vllm/vllm-openai:latest
+    ipc: host
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      --model ${MODEL_NAME:-Qwen/Qwen2.5-3B-Instruct-AWQ}
+      --tensor-parallel-size ${NUM_GPUS:-1}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.399}
+      --enable-chunked-prefill true
+      --max-model-len 32768
+      --max-num-batched-tokens 32768
+      --enable-prefix-caching
+      --dtype ${DATATYPE:-float16}
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --kv_cache_dtype fp8
+      # --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      #--compilation-config 3
+      # --device cuda:0
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-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}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-32885271D7845A3839F1AE0274676D87}
+      - VLLM_PORT= ${VLLM_PORT:-5000}
+      - GPU_PERCENTAGE=  ${GPU_PERCENTAGE:-0.399}
+      - CUDA_VISIBLE_DEVICES= ${CUDA_VISIBLE_DEVICES:-2}
+      - VLLM_ATTENTION_BACKEND=FLASHINFER
+      # - MAX_MODEL_LEN= ${MAX_MODEL_LEN:-1024}
+      # - HF_MODEL= ${HF_MODEL:-unsloth/Qwen2.5-3B-Instruct-unsloth-bnb-4bit}
+    ports:
+      - "${VLLM_PORT:-5000}:8000"
+    restart: on-failure:5
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['2']
+              driver: nvidia

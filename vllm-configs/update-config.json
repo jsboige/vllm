@@ -1,0 +1,6 @@
+{
+  "settings": {
+    "docker_compose_project": "vllm",
+    "huggingface_token": "${HUGGING_FACE_HUB_TOKEN:-hf_default_token}"
+  }
+}

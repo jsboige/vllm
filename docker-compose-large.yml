@@ -1,0 +1,54 @@
+services:
+  vllm-large:
+    image: vllm/vllm-openai:latest
+    ipc: host
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      # --model ${MODEL_NAME:-unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit}
+      # --model ${MODEL_NAME:-unsloth/Mistral-Small-24B-Instruct-2501-bnb-4bit}
+      --model ${MODEL_NAME:-Qwen/QwQ-32B-AWQ}
+      --tensor-parallel-size ${NUM_GPUS:-1}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.9999}
+      --enable-chunked-prefill true
+      --max-model-len 15200
+      --max-num-batched-tokens 15200
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --kv_cache_dtype fp8
+      --dtype ${DATATYPE:-float16}
+      # --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      # --rope-theta 1000000
+      # --enable-reasoning
+      # --reasoning-parser deepseek_r1
+      # --trust-remote-code
+      # --kv_cache_dtype fp8
+      # --tool-call-parser llama3_json
+      # --tool-call-parser mistral
+      # --chat-template examples/tool_chat_template_mistral_parallel.jinja
+      # --quantization bitsandbytes
+      # --load-format bitsandbytes
+      # --dtype ${DATATYPE:-bfloat16}
+      # --compilation-config 3
+      # --device cuda:2
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-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}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-2NEQLFX1OONFHLFCMMW9U7L15DOC9ECB}
+      - VLLM_PORT= ${VLLM_PORT:-5003}
+      - GPU_PERCENTAGE=  ${GPU_PERCENTAGE:-0.9999}
+      - CUDA_VISIBLE_DEVICES= ${CUDA_VISIBLE_DEVICES:-2}
+      - VLLM_ATTENTION_BACKEND=FLASHINFER
+      # - HF_MODEL= ${HF_MODEL:-unsloth/Qwen2.5-3B-Instruct-unsloth-bnb-4bit}
+      # - MAX_MODEL_LEN= ${MAX_MODEL_LEN:-1024}
+    ports:
+      - "${VLLM_PORT:-5003}:8000"
+    restart: on-failure:5
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['2']
+              driver: nvidia

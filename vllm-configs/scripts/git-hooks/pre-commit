@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# Hook pre-commit pour sauvegarder automatiquement les secrets
+# Ce script est exécuté avant chaque commit
+
+# Chemin vers le script de sauvegarde des secrets
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+SAVE_SCRIPT="$ROOT_DIR/scripts/save-secrets.sh"
+
+echo "Hook pre-commit: Sauvegarde des secrets..."
+
+# Vérifier si le script de sauvegarde existe
+if [ -f "$SAVE_SCRIPT" ]; then
+    # Exécuter le script de sauvegarde
+    bash "$SAVE_SCRIPT"
+    
+    # Vérifier si le fichier .env a été créé ou modifié
+    if git diff --quiet -- "$ROOT_DIR/.env"; then
+        echo "Aucun changement dans les secrets."
+    else
+        echo "Les secrets ont été sauvegardés dans $ROOT_DIR/.env"
+        echo "Ce fichier ne sera pas commité (il est dans .gitignore)."
+    fi
+else
+    echo "Erreur: Le script de sauvegarde $SAVE_SCRIPT n'existe pas."
+    exit 1
+fi
+
+# Vérifier si des fichiers docker-compose contiennent encore des secrets
+SECRETS_FOUND=0
+for file in "$ROOT_DIR"/docker-compose/docker-compose-*.yml; do
+    if grep -q "hf_[a-zA-Z0-9]\{30,\}" "$file"; then
+        echo "Avertissement: Le fichier $file contient encore un token Hugging Face."
+        SECRETS_FOUND=1
+    fi
+    
+    if grep -q "[A-Z0-9]\{32\}" "$file"; then
+        echo "Avertissement: Le fichier $file contient encore une clé API."
+        SECRETS_FOUND=1
+    fi
+done
+
+if [ $SECRETS_FOUND -eq 1 ]; then
+    echo "Des secrets ont été trouvés dans les fichiers docker-compose."
+    echo "Veuillez exécuter le script restore-secrets.sh pour les remplacer par des variables d'environnement."
+    echo "Vous pouvez forcer le commit avec git commit --no-verify"
+    exit 1
+fi
+
+exit 0

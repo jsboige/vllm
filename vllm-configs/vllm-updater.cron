@@ -1,0 +1,2 @@
+# Exécuter le script de mise à jour vLLM tous les dimanches à 3h du matin
+0 3 * * 0 /bin/bash /chemin/vers/vllm-configs/update-vllm.sh --auto >> /chemin/vers/vllm-configs/cron-update.log 2>&1

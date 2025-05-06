@@ -1,0 +1,15 @@
+FROM vllm/vllm-openai:latest
+
+# Optimisation des couches Docker
+# Copier tous les fichiers en une seule couche pour réduire la taille de l'image
+COPY tool_parsers/qwen3_tool_parser.py /vllm/vllm/entrypoints/openai/tool_parsers/
+COPY tool_parsers/__init__.py /vllm/vllm/entrypoints/openai/tool_parsers/
+COPY reasoning/qwen3_reasoning_parser.py /vllm/vllm/reasoning/
+
+# Définir le répertoire de travail
+WORKDIR /vllm
+
+# Optimisation pour le démarrage rapide
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONOPTIMIZE=1

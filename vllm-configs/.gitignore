@@ -1,0 +1,39 @@
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Environnements virtuels
+venv/
+env/
+ENV/
+
+# Fichiers de cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Fichiers de logs
+*.log
+
+# Fichiers temporaires
+*.tmp
+*.bak
+*.swp
+*~
+
+# Fichiers d'IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Fichiers d'environnement (contenant des informations sensibles)
+.env
+*.env
+!.env.example
+
+# Ne pas ignorer le dossier env/ du projet
+!env/

@@ -1,0 +1,17 @@
+FROM vllm/vllm-openai:v0.8.5
+
+# Installer git
+RUN apt-get update && apt-get install -y git
+
+# Cloner la PR et pip-install la branche
+RUN git clone https://github.com/vllm-project/vllm.git /tmp/vllm \
+    && cd /tmp/vllm \
+    && git fetch origin pull/13849/head:pr13849 \
+    && git checkout pr13849 \
+    && pip install --no-deps --force-reinstall . \
+    && rm -rf /tmp/vllm
+
+# Vérifier que le reasoning-parser qwen3 est bien disponible
+# Si ce n'est pas le cas, nous pourrions avoir besoin d'installer des dépendances supplémentaires
+RUN python -c "from vllm.reasoning import qwen3_reasoning_parser; print('Qwen3 reasoning parser is available')" || \
+    echo "Warning: Qwen3 reasoning parser might not be available, check your installation"

@@ -1,0 +1,63 @@
+services:
+  vllm-medium:
+    image: vllm-transformers-latest
+    ipc: host
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      # --model ${MODEL_NAME:-Poly-Math/Deepseek-r1-distill-qwen-14b-awq-improved}
+      # --model ${MODEL_NAME:-unsloth/DeepSeek-R1-Distill-Qwen-14B-bnb-4bit}
+      # --model ${MODEL_NAME:-Qwen/Qwen2.5-Coder-32B-Instruct-AWQ}
+      # --model ${MODEL_NAME:-OPEA/Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-awq-sym}
+      # --model ${MODEL_NAME:-unsloth/Mistral-Small-3.1-24B-Instruct-2503-bnb-4bit}
+      # --model ${MODEL_NAME:-unsloth/gemma-3-27b-it-bnb-4bit}
+      --model ${MODEL_NAME:-abhishekchohan/gemma-3-27b-it-quantized-W4A16}
+      --tensor-parallel-size ${NUM_GPUS:-1}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.999}
+      --enable-chunked-prefill true
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --chat-template examples/gemma3.jinja  
+      --tool-call-parser gemma 
+      --tool-parser-plugin examples/gemma_tool_parser.py
+      --max-model-len 8000 
+      --max-num-batched-tokens 8000
+      --kv_cache_dtype fp8     
+      --dtype ${DATATYPE:-bfloat16}
+      # --quantization bitsandbytes
+      # --load-format bitsandbytes
+      # --chat-template examples/tool_chat_template_gemma3_pythonic.jinja
+      # --enable-auto-tool-choice
+      # --tool-call-parser pythonic
+      # --config-format mistral
+      # --tokenizer-mode mistral
+      # --load_format mistral
+      # --limit_mm_per_prompt 'image=10'
+      # --tool-call-parser hermes
+      # --chat-template examples/tool_chat_template_gemma3_pythonic.jinja
+      # --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      # --dtype ${DATATYPE:-float16}
+      # --compilation-config 3
+      # --device cuda:1
+      # --trust-remote-code
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-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}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-X0EC4YYP068CPD5TGARP9VQB5U4MAGHY}
+      - VLLM_PORT= ${VLLM_PORT:-5002}
+      - GPU_PERCENTAGE=  ${GPU_PERCENTAGE:-0.999}
+      - CUDA_VISIBLE_DEVICES= ${CUDA_VISIBLE_DEVICES:-1}
+      # - VLLM_ATTENTION_BACKEND=FLASHINFER
+      # - MAX_MODEL_LEN= ${MAX_MODEL_LEN:-1024}
+      # - HF_MODEL= ${HF_MODEL:-unsloth/Qwen2.5-3B-Instruct-unsloth-bnb-4bit}
+    ports:
+      - "${VLLM_PORT:-5002}:8000"
+    restart: on-failure:5
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+      - .\examples:/vllm-workspace/examples
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['1']
+              driver: nvidia
