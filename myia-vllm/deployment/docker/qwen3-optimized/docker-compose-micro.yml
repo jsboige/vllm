@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  vllm-qwen3-1.7b-awq:
+    image: vllm/vllm-openai:latest
+    container_name: myia-vllm_vllm-qwen3-1.7b-awq
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "5003:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=2
+      - VLLM_API_KEY=32885271D7845A3839F1AE0274676D87
+      - GPU_MEMORY_UTILIZATION=0.35
+      - PYTHONUNBUFFERED=1
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - TZ=
+      - VLLM_ATTENTION_BACKEND=FLASHINFER
+    command: >
+      --model Qwen/Qwen1.5-1.8B
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.35
+      --enable-chunked-prefill
+      --max-model-len 7680
+      --max-num-batched-tokens 4096
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser pythonic
+      --dtype float16
+      --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      --enable-reasoning
+      --reasoning-parser granite
+      --kv_cache_dtype fp8
+      --host 0.0.0.0
+      --port 8000
+      --api-key 32885271D7845A3839F1AE0274676D87
+      --served-model-name vllm-qwen3-1.7b-awq
+      --disable-log-requests
+      --disable-log-stats
+      --trust-remote-code
+      --block-size 32
+      --enforce-eager
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ['2']
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-H", "Authorization: Bearer 32885271D7845A3839F1AE0274676D87", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
