@@ -1,5 +1,6 @@
 # Secrets et fichiers sensibles
 G/
+G*/
 *.log
 logs/
 __pycache__/
