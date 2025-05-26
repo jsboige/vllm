@@ -12,3 +12,8 @@ huggingface_cache/
 *.tmp
 *.bak
 *.swp
+
+# Permettre les fichiers de config essentiels
+!.env
+!huggingface.env
+!env/
