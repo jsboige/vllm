@@ -17,3 +17,4 @@ huggingface_cache/
 !.env
 !huggingface.env
 !env/
+!docker-compose/build/
