@@ -1,0 +1,14 @@
+# Secrets et fichiers sensibles
+G/
+*.log
+logs/
+__pycache__/
+
+# Caches
+huggingface_cache/
+.cache/
+
+# Fichiers temporaires
+*.tmp
+*.bak
+*.swp
