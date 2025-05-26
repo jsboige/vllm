@@ -1,0 +1,14 @@
+FROM vllm/vllm-openai:latest
+
+# Copier les fichiers corrigés du code source local
+COPY vllm/entrypoints/openai/api_server.py /vllm/vllm/entrypoints/openai/api_server.py
+COPY vllm/entrypoints/openai/tool_parsers/ /vllm/vllm/entrypoints/openai/tool_parsers/
+
+# Définir le répertoire de travail
+WORKDIR /vllm
+
+# Exposer le port par défaut
+EXPOSE 8000
+
+# Commande par défaut
+CMD ["python3", "-m", "vllm.entrypoints.openai.api_server"]

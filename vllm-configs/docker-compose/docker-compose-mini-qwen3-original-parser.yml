@@ -1,0 +1,28 @@
+version: '3'
+
+services:
+  vllm-mini-qwen3:
+    image: vllm/vllm-openai:qwen3-final
+    container_name: myia-vllm-mini-qwen3
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - VLLM_PORT=${VLLM_PORT_MINI:-5001}
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION_MINI:-0.9999}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_MINI:-1}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-18000}
+      - MODEL_PATH=Qwen/Qwen3-32B-Instruct
+    volumes:
+      - ./huggingface_cache:/root/.cache/huggingface
+      - ../../vllm-configs/start-with-qwen3-parser.sh:/workspace/start-with-qwen3-parser.sh
+      - ../../qwen3/parsers:/qwen3/parsers
+    entrypoint: ["/bin/bash", "/workspace/start-with-qwen3-parser.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

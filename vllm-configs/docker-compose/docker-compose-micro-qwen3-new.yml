@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  vllm-micro-qwen3:
+    image: vllm/vllm-openai:qwen3
+    container_name: myia-vllm_vllm-micro-qwen3
+    restart: unless-stopped
+    ports:
+      - "${VLLM_PORT_MICRO:-5000}:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_MICRO:-2}
+      - VLLM_API_KEY=${VLLM_API_KEY_MICRO:-KEY_REMOVED_FOR_SECURITY}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION_MICRO:-0.9}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./G:/models:/models
+    command: >
+      python -m vllm.entrypoints.openai.api_server
+      --model Qwen/Qwen3-1.7B-Base
+      --tensor-parallel-size 1
+      --max-model-len 16000
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION_MICRO:-0.9}
+      --host 0.0.0.0
+      --port 8000
+      --api-key ${VLLM_API_KEY_MICRO:-KEY_REMOVED_FOR_SECURITY}
+      --served-model-name vllm-micro-qwen3
+      --disable-log-requests
+      --disable-log-stats
+      --trust-remote-code
+      --tool-call-parser qwen3
+      --reasoning-parser qwen3
+      --enable-reasoning
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

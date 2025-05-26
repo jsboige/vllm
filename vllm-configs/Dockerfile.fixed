@@ -1,0 +1,13 @@
+FROM vllm/vllm-openai:qwen3-final
+
+# Copier le fichier improved_cli_args_patch.py corrigé
+COPY improved_cli_args_patch.py /workspace/improved_cli_args_patch.py
+
+# Créer un script de démarrage qui force l'utilisation du parser llama3_json
+RUN echo '#!/bin/bash\n\
+echo "Starting vLLM with llama3_json parser..." && \
+vllm-openai --model Qwen/Qwen3-7B-Instruct --tool-call-parser llama3_json\
+' > /workspace/start.sh && chmod +x /workspace/start.sh
+
+# Définir la commande par défaut
+CMD ["/workspace/start.sh"]

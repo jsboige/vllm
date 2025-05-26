@@ -1,0 +1,37 @@
+version: '3'
+
+services:
+  vllm-medium-qwen3:
+    image: vllm/vllm-openai:qwen3-final
+    container_name: myia-vllm-medium-qwen3
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "5002:5002"
+    environment:
+      - VLLM_PORT=${VLLM_PORT_MEDIUM:-5002}
+      - VLLM_API_KEY=${VLLM_API_KEY_MEDIUM}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION_MEDIUM:-0.99}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_MEDIUM:-0,1}
+      - MAX_MODEL_LEN=131072
+      - MAX_NUM_BATCHED_TOKENS=40960
+      - MODEL_PATH=Qwen/Qwen3-32B-AWQ
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - SWAP_SPACE=16
+      - TENSOR_PARALLEL_SIZE=2
+      - KV_CACHE_DTYPE=fp8
+      - ENABLE_CHUNKED_PREFILL=true
+      - ENABLE_PREFIX_CACHING=true
+      - ROPE_SCALING={"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}
+    volumes:
+      - ./huggingface_cache:/root/.cache/huggingface
+      - ../../vllm-configs/start-with-qwen3-parser-memory-optimized.sh:/workspace/start-with-qwen3-parser.sh
+      - ../../qwen3:/qwen3
+    entrypoint: ["/bin/bash", "/workspace/start-with-qwen3-parser.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
