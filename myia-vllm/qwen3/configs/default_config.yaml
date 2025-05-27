@@ -1,0 +1,82 @@
+# Configuration par défaut pour les tests de performance Qwen3
+# Ce fichier centralise tous les paramètres utilisés par l'architecture de tests
+
+# Endpoints des modèles
+endpoints:
+  micro:
+    url: "http://localhost:5000"
+    api_key: "test-key-micro"
+    model: "Qwen/Qwen3-1.7B-FP8"
+    gpu_id: "2"
+  mini:
+    url: "http://localhost:5001"
+    api_key: "test-key-mini"
+    model: "Qwen/Qwen3-8B-AWQ"
+    gpu_id: "1"
+  medium:
+    url: "http://localhost:5002"
+    api_key: "test-key-medium"
+    model: "Qwen/Qwen3-32B-AWQ"
+    gpu_id: "0,1"
+
+# Paramètres de test
+test_parameters:
+  # Nombre d'itérations pour chaque test
+  num_iterations: 3
+  
+  # Timeout pour les requêtes API (en secondes)
+  request_timeout: 120
+  
+  # Paramètres pour la génération de texte
+  generation:
+    max_tokens: 100
+    temperature: 0.7
+  
+  # Paramètres pour la recherche du contexte maximal
+  max_context_search:
+    start_length: 10000
+    step: 10000
+    max_attempts: 10
+
+# Longueurs de contexte à tester par défaut
+context_lengths:
+  default: [1000, 5000, 10000, 20000, 30000, 50000, 70000]
+  micro: [1000, 5000, 10000, 20000, 30000]
+  mini: [1000, 5000, 10000, 20000, 30000, 50000]
+  medium: [1000, 5000, 10000, 20000, 30000, 50000, 70000, 100000]
+
+# Paramètres d'optimisation
+optimization:
+  # Marge de sécurité pour le contexte maximal (0.0-1.0)
+  safety_margin: 0.9
+  
+  # Paramètres RoPE par défaut
+  rope_scaling:
+    rope_type: "yarn"
+    factor: 4.0
+    original_max_position_embeddings: 32768
+  
+  # Paramètres avancés pour l'optimisation des performances
+  advanced:
+    kv_cache_dtype: "fp8"
+    enable_chunked_prefill: true
+    enable_prefix_caching: true
+    gpu_memory_utilization: 0.95
+
+# Chemins de sortie
+output_paths:
+  # Répertoire pour les résultats des tests
+  results_dir: "results"
+  
+  # Formats de noms de fichiers
+  report_file: "qwen3_context_benchmark_report.md"
+  json_results: "qwen3_context_benchmark_{timestamp}.json"
+  
+  # Répertoire pour les configurations optimisées
+  optimized_configs_dir: "optimized_configs"
+
+# Templates pour les fichiers docker-compose
+docker_compose_templates:
+  micro: "vllm-configs/docker-compose/docker-compose-micro-qwen3-optimized.yml"
+  mini: "vllm-configs/docker-compose/docker-compose-mini-qwen3-optimized.yml"
+  medium: "vllm-configs/docker-compose/docker-compose-medium-qwen3-optimized.yml"

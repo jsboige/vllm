@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            line-height: 1.5;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        h1, h2, h3, h4 {
+            color: #2c3e50;
+            margin-top: 1.5em;
+            page-break-after: avoid;
+        }
+        h1 {
+            text-align: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #3498db;
+        }
+        .info-box {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            page-break-inside: avoid;
+        }
+        th, td {
+            padding: 8px 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .visualization {
+            text-align: center;
+            margin: 30px 0;
+            page-break-inside: avoid;
+        }
+        .visualization img {
+            max-width: 100%;
+            height: auto;
+        }
+        .recommendations {
+            background-color: #e8f4f8;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 30px 0;
+            page-break-inside: avoid;
+        }
+        .recommendations ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .conclusion {
+            background-color: #f0f0f0;
+            padding: 20px;
+            border-radius: 4px;
+            margin-top: 30px;
+            page-break-inside: avoid;
+        }
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+        /* Styles spécifiques pour l'impression PDF */
+        section {
+            margin-bottom: 20px;
+        }
+        .page-break {
+            page-break-before: always;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>{{ title }}</h1>
+    </header>
+
+    <section>
+        <h2>Informations générales</h2>
+        <div class="info-box">
+            <p><strong>Modèle:</strong> {{ model_name }}</p>
+            <p><strong>Date du benchmark:</strong> {{ timestamp }}</p>
+            {% if results.get("version") %}
+            <p><strong>Version:</strong> {{ results.get("version") }}</p>
+            {% endif %}
+            {% if results.get("environment") %}
+            <p><strong>Environnement:</strong> {{ results.get("environment") }}</p>
+            {% endif %}
+        </div>
+    </section>
+
+    <section>
+        <h2>Résumé des performances</h2>
+        
+        {% if metrics.get("llm_metrics") %}
+        <h3>Métriques LLM</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key, value in metrics.get("llm_metrics", {}).items() %}
+                <tr>
+                    <td>{{ key }}</td>
+                    <td>{{ value }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {% if metrics.get("resource_metrics") %}
+        <h3>Métriques de ressources</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key, value in metrics.get("resource_metrics", {}).items() %}
+                <tr>
+                    <td>{{ key }}</td>
+                    <td>{{ value }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+
+    <div class="page-break"></div>
+
+    <section>
+        <h2>Détails des tests</h2>
+        
+        {% if results.get("api_results") %}
+        <h3>Résultats par API</h3>
+        
+        {% for api_type, api_data in results.get("api_results", {}).items() %}
+        <h4>API {{ api_type }}</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Nombre de tests</td>
+                    <td>{{ api_data|length }}</td>
+                </tr>
+                {% if api_data and api_data|length > 0 %}
+                {% set exec_times_list = [] %}
+                {% for item in api_data %}{% do exec_times_list.append(item.get("execution_time", 0)) %}{% endfor %}
+                <tr>
+                    <td>Temps d'exécution moyen</td>
+                    <td>{{ (exec_times_list|sum / exec_times_list|length)|round(2) }} s</td>
+                </tr>
+                {% if api_type in ["completions", "chat"] %}
+                {% set tokens_generated_list = [] %}
+                {% for item in api_data %}{% do tokens_generated_list.append(item.get("tokens_generated", 0)) %}{% endfor %}
+                <tr>
+                    <td>Tokens générés moyen</td>
+                    <td>{{ (tokens_generated_list|sum / tokens_generated_list|length)|round(0) }}</td>
+                </tr>
+                <tr>
+                    {% set valid_items_api = [] %}
+                    {% for item in api_data %}{% if item.get("execution_time", 0) > 0 %}{% do valid_items_api.append(item) %}{% endif %}{% endfor %}
+                    <td>Tokens par seconde moyen</td>
+                    <td>{% if valid_items_api|length > 0 %}{% set tps_num = [] %}{% for item in valid_items_api %}{% do tps_num.append(item.get("tokens_generated", 0)) %}{% endfor %}{% set tps_den = [] %}{% for item in valid_items_api %}{% do tps_den.append(item.get("execution_time", 0)) %}{% endfor %}{{ (tps_num|sum / tps_den|sum)|round(2) }}{% else %}0{% endif %}</td>
+                </tr>
+                {% endif %}
+                {% else %}
+                <tr>
+                    <td>Temps d'exécution moyen</td>
+                    <td>0 s</td>
+                </tr>
+                {% if api_type in ["completions", "chat"] %}
+                <tr>
+                    <td>Tokens générés moyen</td>
+                    <td>0</td>
+                </tr>
+                <tr>
+                    <td>Tokens par seconde moyen</td>
+                    <td>0</td>
+                </tr>
+                {% endif %}
+                {% endif %}
+            </tbody>
+        </table>
+        {% endfor %}
+        {% endif %}
+
+        {% if results.get("context_results") %}
+        <h3>Impact de la longueur de contexte</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Longueur de contexte</th>
+                    <th>Temps d'exécution moyen</th>
+                    <th>Tokens générés moyen</th>
+                    <th>Tokens par seconde moyen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for length, items in results.get("context_results", {}).items() %}
+                {% if items and items|length > 0 %}
+                {% set ctx_exec_times = [] %}{% for item in items %}{% do ctx_exec_times.append(item.get("execution_time", 0)) %}{% endfor %}
+                {% set ctx_tokens_gen = [] %}{% for item in items %}{% do ctx_tokens_gen.append(item.get("tokens_generated", 0)) %}{% endfor %}
+                <tr>
+                    <td>{{ length }}</td>
+                    <td>{{ (ctx_exec_times|sum / ctx_exec_times|length)|round(2) }} s</td>
+                    <td>{{ (ctx_tokens_gen|sum / ctx_tokens_gen|length)|round(0) }}</td>
+                    {% set valid_items_ctx = [] %}{% for item in items %}{% if item.get("execution_time", 0) > 0 %}{% do valid_items_ctx.append(item) %}{% endif %}{% endfor %}
+                    <td>{% if valid_items_ctx|length > 0 %}{% set tps_ctx_num = [] %}{% for item in valid_items_ctx %}{% do tps_ctx_num.append(item.get("tokens_generated", 0)) %}{% endfor %}{% set tps_ctx_den = [] %}{% for item in valid_items_ctx %}{% do tps_ctx_den.append(item.get("execution_time", 0)) %}{% endfor %}{{ (tps_ctx_num|sum / tps_ctx_den|sum)|round(2) }}{% else %}0{% endif %}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td>{{ length }}</td>
+                    <td>0 s</td>
+                    <td>0</td>
+                    <td>0</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+
+    <div class="page-break"></div>
+
+    <section>
+        <h2>Visualisations</h2>
+        
+        {% if visualizations.get("execution_time") %}
+        <div class="visualization">
+            <h3>Temps d'exécution</h3>
+            <img src="{{ visualizations.get("execution_time") }}" alt="Temps d'exécution">
+        </div>
+        {% endif %}
+
+        {% if visualizations.get("throughput") %}
+        <div class="visualization">
+            <h3>Débit (tokens par seconde)</h3>
+            <img src="{{ visualizations.get("throughput") }}" alt="Débit">
+        </div>
+        {% endif %}
+
+        {% if visualizations.get("context_impact") %}
+        <div class="visualization">
+            <h3>Impact de la longueur de contexte</h3>
+            <img src="{{ visualizations.get("context_impact") }}" alt="Impact de la longueur de contexte">
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="recommendations">
+        <h2>Recommandations</h2>
+        <ul>
+            {% if metrics.get("llm_metrics", {}).get("recommended_batch_size") %}
+            <li><strong>Taille de batch recommandée:</strong> {{ metrics.get("llm_metrics", {}).get("recommended_batch_size") }}</li>
+            {% endif %}
+
+            {% if metrics.get("llm_metrics", {}).get("recommended_context_length") %}
+            <li><strong>Longueur de contexte recommandée:</strong> {{ metrics.get("llm_metrics", {}).get("recommended_context_length") }}</li>
+            {% endif %}
+
+            {% if metrics.get("resource_metrics", {}).get("recommended_memory") %}
+            <li><strong>Mémoire recommandée:</strong> {{ metrics.get("resource_metrics", {}).get("recommended_memory") }} MB</li>
+            {% endif %}
+        </ul>
+    </section>
+
+    <section class="conclusion">
+        <h2>Conclusion</h2>
+        <p>Ce rapport présente les résultats des benchmarks pour le modèle {{ model_name }}. Les tests ont été effectués pour évaluer les performances du modèle dans différentes configurations et avec différentes longueurs de contexte.</p>
+
+        {% if metrics.get("llm_metrics", {}).get("overall_performance_score") %}
+        <p>Le score global de performance est de <strong>{{ metrics.get("llm_metrics", {}).get("overall_performance_score") }}/10</strong>.</p>
+        {% endif %}
+    </section>
+
+    <footer>
+        <p>Rapport généré automatiquement par qwen3_benchmark</p>
+    </footer>
+</body>
+</html>

@@ -1,0 +1,60 @@
+services:
+  vllm-medium-qwen3:
+    image: vllm/vllm-openai:qwen3-fixed
+    ipc: host
+    init: true
+    stop_grace_period: 30s
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      --model ${MODEL_NAME:-Qwen/Qwen3-32B-AWQ}
+      --tensor-parallel-size ${NUM_GPUS:-2}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.99}
+      --enable-chunked-prefill
+      --max-model-len 70000
+      --max-num-batched-tokens 70000
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser granite
+      --dtype ${DATATYPE:-float16}
+      --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      --enable-reasoning
+      --reasoning-parser deepseek_r1
+      --kv_cache_dtype fp8
+      # --speculative_config "{'model':'PJMixers-Dev/Qwen3-Draft-0.5B','num_speculative_tokens':5,'draft_tensor_parallel_size':1}"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-${VLLM_API_KEY_MEDIUM}}
+      - VLLM_PORT=${VLLM_PORT:-${VLLM_PORT_MEDIUM}}
+      - GPU_PERCENTAGE=${GPU_PERCENTAGE:-0.99}
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-FLASHINFER}
+      # Optimisations pour le démarrage rapide
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONOPTIMIZE=1
+    ports:
+      - "${VLLM_PORT:-${VLLM_PORT_MEDIUM}}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-H", "Authorization: Bearer ${VLLM_API_KEY_MEDIUM}", "http://localhost:8000/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['0','1']
+              driver: nvidia
+        limits:
+          cpus: '8.0'
+          memory: 32G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de benchmark - QWEN3-MEDIUM</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        h1, h2, h3, h4 {
+            color: #2c3e50;
+            margin-top: 1.5em;
+        }
+        h1 {
+            text-align: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #3498db;
+        }
+        .info-box {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .visualization {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .visualization img {
+            max-width: 100%;
+            height: auto;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            border-radius: 4px;
+        }
+        .recommendations {
+            background-color: #e8f4f8;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 30px 0;
+        }
+        .recommendations ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .conclusion {
+            background-color: #f0f0f0;
+            padding: 20px;
+            border-radius: 4px;
+            margin-top: 30px;
+        }
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Rapport de benchmark - QWEN3-MEDIUM</h1>
+    </header>
+
+    <section>
+        <h2>Informations générales</h2>
+        <div class="info-box">
+            <p><strong>Modèle:</strong> QWEN3-MEDIUM</p>
+            <p><strong>Date du benchmark:</strong> 2025-05-27T17:14:51.143838</p>
+            <p><strong>Version:</strong> 0.1.0</p>
+            <p><strong>Environnement:</strong> Test Environment</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Résumé des performances</h2>
+        
+        <h3>Métriques LLM</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>tokens_per_second</td>
+                    <td>150.75</td>
+                </tr>
+                <tr>
+                    <td>latency_p50</td>
+                    <td>0.8</td>
+                </tr>
+                <tr>
+                    <td>latency_p90</td>
+                    <td>1.2</td>
+                </tr>
+                <tr>
+                    <td>latency_p99</td>
+                    <td>1.5</td>
+                </tr>
+                <tr>
+                    <td>throughput</td>
+                    <td>1000</td>
+                </tr>
+                <tr>
+                    <td>accuracy</td>
+                    <td>0.95</td>
+                </tr>
+                <tr>
+                    <td>recommended_batch_size</td>
+                    <td>16</td>
+                </tr>
+                <tr>
+                    <td>recommended_context_length</td>
+                    <td>8192</td>
+                </tr>
+                <tr>
+                    <td>overall_performance_score</td>
+                    <td>8.5</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Métriques de ressources</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>gpu_utilization_avg</td>
+                    <td>75.5</td>
+                </tr>
+                <tr>
+                    <td>gpu_memory_used_avg</td>
+                    <td>8192</td>
+                </tr>
+                <tr>
+                    <td>cpu_utilization_avg</td>
+                    <td>45.0</td>
+                </tr>
+                <tr>
+                    <td>recommended_memory</td>
+                    <td>16384</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Détails des tests</h2>
+        
+        <h3>Résultats par API</h3>
+        
+        <h4>API completions</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Nombre de tests</td>
+                    <td>2</td>
+                </tr>
+                <tr>
+                    <td>Temps d'exécution moyen</td>
+                    <td>11.25 s</td>
+                </tr>
+                <tr>
+                    <td>Tokens générés moyen</td>
+                    <td>1100.0</td>
+                </tr>
+                <tr>
+                    <td>Tokens par seconde moyen</td>
+                    <td>97.78</td>
+                </tr>
+            </tbody>
+        </table>
+        <h4>API chat</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Nombre de tests</td>
+                    <td>2</td>
+                </tr>
+                <tr>
+                    <td>Temps d'exécution moyen</td>
+                    <td>16.95 s</td>
+                </tr>
+                <tr>
+                    <td>Tokens générés moyen</td>
+                    <td>1650.0</td>
+                </tr>
+                <tr>
+                    <td>Tokens par seconde moyen</td>
+                    <td>97.35</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Impact de la longueur de contexte</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Longueur de contexte</th>
+                    <th>Temps d'exécution moyen</th>
+                    <th>Tokens générés moyen</th>
+                    <th>Tokens par seconde moyen</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>4096</td>
+                    <td>21.25 s</td>
+                    <td>2100.0</td>
+                    <td>98.82</td>
+                </tr>
+                <tr>
+                    <td>8192</td>
+                    <td>31.75 s</td>
+                    <td>3100.0</td>
+                    <td>97.64</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Visualisations</h2>
+        
+        <div class="visualization">
+            <h3>Temps d'exécution</h3>
+            <img src="resources/qwen3-medium_execution_time.png" alt="Temps d'exécution">
+        </div>
+
+        <div class="visualization">
+            <h3>Débit (tokens par seconde)</h3>
+            <img src="resources/qwen3-medium_throughput.png" alt="Débit">
+        </div>
+
+        <div class="visualization">
+            <h3>Impact de la longueur de contexte</h3>
+            <img src="resources/qwen3-medium_context_impact.png" alt="Impact de la longueur de contexte">
+        </div>
+    </section>
+
+    <section class="recommendations">
+        <h2>Recommandations</h2>
+        <ul>
+            <li><strong>Taille de batch recommandée:</strong> 16</li>
+
+            <li><strong>Longueur de contexte recommandée:</strong> 8192</li>
+
+            <li><strong>Mémoire recommandée:</strong> 16384 MB</li>
+        </ul>
+    </section>
+
+    <section class="conclusion">
+        <h2>Conclusion</h2>
+        <p>Ce rapport présente les résultats des benchmarks pour le modèle QWEN3-MEDIUM. Les tests ont été effectués pour évaluer les performances du modèle dans différentes configurations et avec différentes longueurs de contexte.</p>
+
+        <p>Le score global de performance est de <strong>8.5/10</strong>.</p>
+    </section>
+
+    <footer>
+        <p>Rapport généré automatiquement par qwen3_benchmark</p>
+    </footer>
+</body>
+</html>
