@@ -87,7 +87,7 @@ def run_benchmark(model: Optional[str], context_lengths: List[int], find_max_con
     """
     Exécute le benchmark pour un modèle spécifique ou tous les modèles
     """
-    command = ["python", "test_performance/qwen3_context_benchmark.py"]
+    command = ["python", "tests/performance/qwen3_context_benchmark.py"]
     
     if model:
         command.extend(["--model", model])
@@ -122,7 +122,7 @@ def run_optimization(results_file: str, model: Optional[str], output_dir: str, s
     """
     Exécute l'optimisation des configurations
     """
-    command = ["python", "test_performance/qwen3_optimize_config.py"]
+    command = ["python", "tests/performance/qwen3_optimize_config.py"]
     command.extend(["--input", results_file])
     
     if model:

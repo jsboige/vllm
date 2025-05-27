@@ -2,7 +2,7 @@
 # Version améliorée pour l'automatisation via tâche planifiée
 
 # Configuration de la journalisation
-$logDir = "D:\vllm\vllm-configs\logs"
+$logDir = "myia-vllm\logs"
 $logFile = Join-Path -Path $logDir -ChildPath "backup-env-log-$(Get-Date -Format 'yyyyMMdd').txt"
 
 # Fonction de journalisation

@@ -5,7 +5,7 @@ Write-Host "Validation des configurations optimisées pour Qwen3..." -Foreground
 
 # Chargement des variables d'environnement depuis le fichier .env
 Write-Host "Chargement des variables d'environnement..." -ForegroundColor Yellow
-$envFile = "vllm-configs/.env"
+$envFile = "myia-vllm/qwen3/.env"
 if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
         if ($_ -match '^\s*([^#][^=]+)=(.*)$') {

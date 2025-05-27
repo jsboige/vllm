@@ -195,7 +195,7 @@ Pour les déploiements futurs, il serait intéressant d'évaluer l'impact de dif
 ### Liens vers les rapports détaillés
 - Documentation complète : `qwen3-configuration-documentation.md`
 - Rapport de performance détaillé : `qwen3-performance-report.md`
-- Scripts de test : `test_performance/test_qwen3_performance.py` et `test_performance/qwen3_quick_test.py`
+- Scripts de test : `tests/performance/test_qwen3_performance.py` et `tests/performance/qwen3_quick_test.py`
 
 ### Configuration Docker Compose détaillée
 

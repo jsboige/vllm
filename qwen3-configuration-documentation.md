@@ -30,7 +30,7 @@ Le projet est organisé comme suit:
     - `build/tool_parsers/`: Parsers d'outils personnalisés
       - `qwen3_tool_parser.py`: Parser d'outils personnalisé pour Qwen3
   - `scripts/`: Scripts PowerShell pour le déploiement et la maintenance
-- `test_performance/`: Scripts de test de performance
+- `tests/performance/`: Scripts de test de performance
   - `qwen3_quick_test.py`: Script de test rapide pour les endpoints Qwen3
 
 ## Endpoints configurés

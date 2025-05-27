@@ -196,13 +196,13 @@ function Checkout-ConsolidatedBranch {
 function Initialize-HuggingFaceToken {
     param (
         [Parameter(Mandatory = $false)]
-        [string]$ConfigPath = "vllm-configs"
+        [string]$ConfigPath = "myia-vllm/qwen3"
     )
     
     Write-ColorOutput "Configuration du token Hugging Face..." "Cyan"
     
-    $envFilePath = "$ConfigPath\huggingface.env"
-    $envExamplePath = "$ConfigPath\huggingface.env.example"
+    $envFilePath = "$ConfigPath\configs\huggingface.env"
+    $envExamplePath = "$ConfigPath\configs\huggingface.env.example"
     
     # Vérifier si le fichier huggingface.env existe déjà
     if (-not (Test-Path -Path $envFilePath)) {
@@ -261,13 +261,13 @@ function Initialize-HuggingFaceToken {
 function Deploy-Containers {
     param (
         [Parameter(Mandatory = $false)]
-        [string]$ConfigPath = "vllm-configs"
+        [string]$ConfigPath = "myia-vllm/qwen3"
     )
     
     Write-ColorOutput "Déploiement des containers Qwen3..." "Cyan"
     
     # Vérifier si le script de déploiement existe
-    $deployScriptPath = "$ConfigPath\scripts\deploy-qwen3-containers.ps1"
+    $deployScriptPath = "$ConfigPath\deployment\scripts\deploy-qwen3-containers.ps1"
     if (Test-Path -Path $deployScriptPath) {
         # Exécuter le script de déploiement
         Write-ColorOutput "Exécution du script de déploiement $deployScriptPath..." "Cyan"
@@ -286,7 +286,7 @@ function Deploy-Containers {
         
         # Déployer le container micro
         Write-ColorOutput "Déploiement du container micro..." "Cyan"
-        docker compose -p myia-vllm -f "$ConfigPath\docker-compose\docker-compose-micro-qwen3.yml" up -d
+        docker compose -p myia-vllm -f "$ConfigPath\deployment\docker\docker-compose-micro-qwen3.yml" up -d
         
         if ($LASTEXITCODE -ne 0) {
             Write-ColorOutput "Erreur lors du déploiement du container micro." "Red"
@@ -297,7 +297,7 @@ function Deploy-Containers {
         
         # Déployer le container mini
         Write-ColorOutput "Déploiement du container mini..." "Cyan"
-        docker compose -p myia-vllm -f "$ConfigPath\docker-compose\docker-compose-mini-qwen3.yml" up -d
+        docker compose -p myia-vllm -f "$ConfigPath\deployment\docker\docker-compose-mini-qwen3.yml" up -d
         
         if ($LASTEXITCODE -ne 0) {
             Write-ColorOutput "Erreur lors du déploiement du container mini." "Red"
@@ -308,7 +308,7 @@ function Deploy-Containers {
         
         # Déployer le container medium avec la configuration optimisée
         Write-ColorOutput "Déploiement du container medium avec la configuration optimisée..." "Cyan"
-        docker compose -p myia-vllm -f "$ConfigPath\docker-compose\docker-compose-medium-qwen3-memory-optimized.yml" up -d
+        docker compose -p myia-vllm -f "$ConfigPath\deployment\docker\docker-compose-medium-qwen3-memory-optimized.yml" up -d
         
         if ($LASTEXITCODE -ne 0) {
             Write-ColorOutput "Erreur lors du déploiement du container medium." "Red"
@@ -359,8 +359,8 @@ function Main {
     Write-ColorOutput "Les containers Qwen3 sont maintenant déployés avec la configuration optimisée." "Green"
     Write-ColorOutput "Vous pouvez vérifier leur état avec la commande: docker ps | Select-String myia-vllm" "Cyan"
     Write-ColorOutput "Pour plus d'informations, consultez les guides:" "Cyan"
-    Write-ColorOutput "- vllm-configs/QWEN3-USER-GUIDE.md" "Cyan"
-    Write-ColorOutput "- vllm-configs/QWEN3-MAINTENANCE-GUIDE.md" "Cyan"
+    Write-ColorOutput "- docs/QWEN3-USER-GUIDE.md" "Cyan"
+    Write-ColorOutput "- docs/QWEN3-MAINTENANCE-GUIDE.md" "Cyan"
 }
 
 # Exécuter la fonction principale

@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $MAX_RETRIES = 3
 $WAIT_TIME = 180  # Temps d'attente en secondes entre les vérifications
 $WAIT_TIME_MEDIUM = 300  # Temps d'attente spécifique pour le modèle medium
-$DOCKER_COMPOSE_DIR = "D:/vllm/vllm-configs/docker-compose"
+$DOCKER_COMPOSE_DIR = "D:/vllm/myia-vllm/qwen3/deployment/docker"
 $DOCKER_COMPOSE_FILES = @{
     "micro" = "docker-compose-micro-qwen3.yml"
     "mini" = "docker-compose-mini-qwen3.yml"
@@ -22,7 +22,7 @@ $API_PORTS = @{
     "mini" = "5001"
     "medium" = "5002"
 }
-$LOG_FILE = "D:/vllm/vllm-configs/DEPLOYMENT-VALIDATION-REPORT.md"
+$LOG_FILE = "D:/vllm/myia-vllm/qwen3/deployment/logs/DEPLOYMENT-VALIDATION-REPORT.md"
 
 # Fonction pour écrire dans le fichier de log
 function Write-Log {
@@ -78,7 +78,7 @@ function Deploy-Container {
     
     # Déployer le container
     try {
-        $envFile = "D:/vllm/vllm-configs/.env"
+        $envFile = "D:/vllm/myia-vllm/qwen3/.env"
         docker-compose -f $composeFile --env-file $envFile up -d
         Write-Log "Container $ContainerType déployé avec succès" "SUCCESS"
         return $true

@@ -12,7 +12,7 @@ $YELLOW = [System.ConsoleColor]::Yellow
 $BLUE = [System.ConsoleColor]::Blue
 
 # Chemin du script et du répertoire de configuration
-$SCRIPT_DIR = "vllm-configs"
+$SCRIPT_DIR = "myia-vllm\qwen3\deployment\docker"
 $LOG_FILE = Join-Path $PWD "deploy-qwen3-services.log"
 
 # Fonction de journalisation
@@ -112,9 +112,9 @@ function Stop-Qwen3Services {
     Write-Log "INFO" "Arrêt des services vLLM Qwen3..."
     
     $compose_files = @(
-        "docker-compose/docker-compose-micro-qwen3.yml",
-        "docker-compose/docker-compose-mini-qwen3.yml",
-        "docker-compose/docker-compose-medium-qwen3.yml"
+        "docker-compose-micro-qwen3.yml",
+        "docker-compose-mini-qwen3.yml",
+        "docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p myia-vllm"
@@ -158,9 +158,9 @@ function Start-Qwen3Services {
     Write-Log "INFO" "Démarrage des services vLLM Qwen3 avec la nouvelle image refactorisée..."
     
     $compose_files = @(
-        "docker-compose/docker-compose-micro-qwen3.yml",
-        "docker-compose/docker-compose-mini-qwen3.yml",
-        "docker-compose/docker-compose-medium-qwen3.yml"
+        "docker-compose-micro-qwen3.yml",
+        "docker-compose-mini-qwen3.yml",
+        "docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p myia-vllm"
@@ -359,9 +359,9 @@ function Main {
     
     # Vérifier si les fichiers Docker Compose existent
     $composeFiles = @(
-        "docker-compose/docker-compose-micro-qwen3.yml",
-        "docker-compose/docker-compose-mini-qwen3.yml",
-        "docker-compose/docker-compose-medium-qwen3.yml"
+        "docker-compose-micro-qwen3.yml",
+        "docker-compose-mini-qwen3.yml",
+        "docker-compose-medium-qwen3.yml"
     )
     
     $allFilesExist = $true

@@ -50,9 +50,9 @@ function Stop-Qwen3Services {
     Write-Log "INFO" "Arrêt des services vLLM Qwen3..."
     
     $compose_files = @(
-        "vllm-configs\docker-compose\docker-compose-micro-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-mini-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-medium-qwen3.yml"
+        "myia-vllm\qwen3\deployment\docker\docker-compose-micro-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-mini-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p $DOCKER_COMPOSE_PROJECT"
@@ -83,9 +83,9 @@ function Start-Qwen3Services {
     Write-Log "INFO" "Démarrage des services vLLM Qwen3..."
     
     $compose_files = @(
-        "vllm-configs\docker-compose\docker-compose-micro-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-mini-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-medium-qwen3.yml"
+        "myia-vllm\qwen3\deployment\docker\docker-compose-micro-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-mini-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p $DOCKER_COMPOSE_PROJECT"

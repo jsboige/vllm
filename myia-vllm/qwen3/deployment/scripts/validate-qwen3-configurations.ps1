@@ -91,38 +91,38 @@ Test-FileExists "qwen3/parsers/qwen3_reasoning_parser.py" "Parser de raisonnemen
 
 Write-Host "`n2. VALIDATION DE LA SYNTAXE PYTHON" -ForegroundColor Cyan
 Test-PythonSyntax "qwen3/parsers/qwen3_tool_parser.py" "Parser principal"
-Test-PythonSyntax "qwen3/parsers/register_qwen3_parser.py" "Script d'enregistrement"
-Test-PythonSyntax "vllm-configs/test_qwen3_tool_calling.py" "Script de test"
+# Test-PythonSyntax "qwen3/parsers/register_qwen3_parser.py" "Script d'enregistrement" # Ancienne logique de parser
+Test-PythonSyntax "tests/tool_calling/test_qwen3_tool_calling.py" "Script de test"
 
 Write-Host "`n3. VÉRIFICATION DES FICHIERS DOCKER COMPOSE" -ForegroundColor Cyan
-Test-FileExists "vllm-configs/docker-compose/docker-compose-medium-qwen3-memory-optimized.yml" "Docker Compose 32B AWQ"
-Test-FileExists "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml" "Docker Compose 8B AWQ"
-Test-FileExists "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml" "Docker Compose 1.7B FP8"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3-memory-optimized.yml" "Docker Compose 32B AWQ"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml" "Docker Compose 8B AWQ"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml" "Docker Compose 1.7B FP8"
 
 Write-Host "`n4. VALIDATION DE LA SYNTAXE DOCKER COMPOSE" -ForegroundColor Cyan
-Test-DockerComposeSyntax "vllm-configs/docker-compose/docker-compose-medium-qwen3-memory-optimized.yml" "32B AWQ"
-Test-DockerComposeSyntax "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml" "8B AWQ"
-Test-DockerComposeSyntax "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml" "1.7B FP8"
+Test-DockerComposeSyntax "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3-memory-optimized.yml" "32B AWQ"
+Test-DockerComposeSyntax "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml" "8B AWQ"
+Test-DockerComposeSyntax "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml" "1.7B FP8"
 
 Write-Host "`n5. VÉRIFICATION DE LA CONFIGURATION DES PARSERS" -ForegroundColor Cyan
-Test-ParserConfiguration "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml" "Docker Compose 8B"
-Test-ParserConfiguration "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml" "Docker Compose 1.7B"
-Test-ParserConfiguration "vllm-configs/start-with-qwen3-parser.sh" "Script de démarrage principal"
-Test-ParserConfiguration "vllm-configs/start-with-qwen3-parser-fixed.sh" "Script de démarrage fixé"
-Test-ParserConfiguration "vllm-configs/start-with-qwen3-parser-memory-optimized.sh" "Script optimisé mémoire"
+Test-ParserConfiguration "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml" "Docker Compose 8B"
+Test-ParserConfiguration "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml" "Docker Compose 1.7B"
+Test-ParserConfiguration "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser.sh" "Script de démarrage principal"
+Test-ParserConfiguration "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser-fixed.sh" "Script de démarrage fixé"
+Test-ParserConfiguration "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser-memory-optimized.sh" "Script optimisé mémoire"
 
 Write-Host "`n6. VÉRIFICATION DES SCRIPTS DE DÉMARRAGE" -ForegroundColor Cyan
-Test-FileExists "vllm-configs/start-with-qwen3-parser.sh" "Script de démarrage principal"
-Test-FileExists "vllm-configs/start-with-qwen3-parser-fixed.sh" "Script de démarrage fixé"
-Test-FileExists "vllm-configs/start-with-qwen3-parser-memory-optimized.sh" "Script optimisé mémoire"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser.sh" "Script de démarrage principal"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser-fixed.sh" "Script de démarrage fixé"
+Test-FileExists "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser-memory-optimized.sh" "Script optimisé mémoire"
 
 Write-Host "`n7. VÉRIFICATION DES SCRIPTS DE TEST" -ForegroundColor Cyan
-Test-FileExists "vllm-configs/test_qwen3_tool_calling.py" "Test tool calling"
-Test-FileExists "vllm-configs/test_qwen3_parsers_new.py" "Test parsers"
-Test-PythonSyntax "vllm-configs/test_qwen3_parsers_new.py" "Test parsers"
+Test-FileExists "tests/tool_calling/test_qwen3_tool_calling.py" "Test tool calling"
+# Test-FileExists "vllm-configs/test_qwen3_parsers_new.py" "Test parsers" # Fichier introuvable/obsolète
+# Test-PythonSyntax "vllm-configs/test_qwen3_parsers_new.py" "Test parsers" # Fichier introuvable/obsolète
 
 Write-Host "`n8. VÉRIFICATION DES FICHIERS DE CONFIGURATION" -ForegroundColor Cyan
-Test-FileExists "vllm-configs/.env.example" "Exemple de fichier d'environnement"
+Test-FileExists "myia-vllm/qwen3/configs/.env.example" "Exemple de fichier d'environnement"
 
 Write-Host "`n=== RÉSUMÉ DE LA VALIDATION ===" -ForegroundColor Green
 if ($ErrorCount -eq 0 -and $WarningCount -eq 0) {

@@ -8,18 +8,18 @@ param (
 if ($down) {
     Write-Host "Arrêt des services vLLM..." -ForegroundColor Yellow
     docker compose -p myia-vllm `
-        -f "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml" `
-        -f "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml" `
-        -f "vllm-configs/docker-compose/docker-compose-medium-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3.yml" `
         down
     Write-Host "Services vLLM arrêtés." -ForegroundColor Green
 }
 else {
     Write-Host "Démarrage des services vLLM..." -ForegroundColor Yellow
     docker compose -p myia-vllm `
-        -f "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml" `
-        -f "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml" `
-        -f "vllm-configs/docker-compose/docker-compose-medium-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml" `
+        -f "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3.yml" `
         up -d
     Write-Host "Services vLLM démarrés." -ForegroundColor Green
     

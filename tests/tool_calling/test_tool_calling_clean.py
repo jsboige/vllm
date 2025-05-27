@@ -4,7 +4,7 @@ Test script for verifying tool calling functionality with Qwen3 models.
 This script sends a tool-enabled request to different vLLM API servers and checks the responses.
 
 Usage:
-    python -m test_tool_calling.test_tool_calling_clean [MODEL_TYPE]
+    python -m tests.tool_calling.test_tool_calling_clean [MODEL_TYPE]
 
 Arguments:
     MODEL_TYPE: Type of model to test (default: micro)
@@ -12,10 +12,10 @@ Arguments:
 
 Example:
     # Test against the micro model
-    python -m test_tool_calling.test_tool_calling_clean micro
+    python -m tests.tool_calling.test_tool_calling_clean micro
     
     # Test against the medium model
-    python -m test_tool_calling.test_tool_calling_clean medium
+    python -m tests.tool_calling.test_tool_calling_clean medium
 
 Note:
     This script requires active vLLM API servers with Qwen3 models loaded.

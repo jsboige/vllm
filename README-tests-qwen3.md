@@ -6,34 +6,34 @@ Ce document décrit les tests récupérés des branches qwen3-integration, qwen3
 
 Les tests sont organisés en trois catégories principales:
 
-1. **test_performance** - Tests de performance pour les modèles Qwen3
-2. **test_reasoning** - Tests de raisonnement pour les modèles Qwen3
-3. **test_tool_calling** - Tests d'appel d'outils pour les modèles Qwen3
+1. **tests/performance** - Tests de performance pour les modèles Qwen3
+2. **tests/reasoning** - Tests de raisonnement pour les modèles Qwen3
+3. **tests/tool_calling** - Tests d'appel d'outils pour les modèles Qwen3
 
 ## Tests de performance
 
-Le répertoire `test_performance` contient:
+Le répertoire `tests/performance` contient:
 
-- `test_performance_comparison.py` - Script pour mesurer et comparer les performances des API des modèles Qwen3 entre l'accès local et l'accès externe.
+- `tests/performance_comparison.py` - Script pour mesurer et comparer les performances des API des modèles Qwen3 entre l'accès local et l'accès externe.
 
 Ce script effectue des tests sur différentes API (models, completions, chat/completions, tool_calling) et compare les résultats entre l'accès local et l'accès externe.
 
 ## Tests de raisonnement
 
-Le répertoire `test_reasoning` contient:
+Le répertoire `tests/reasoning` contient:
 
-- `test_reasoning_parser.py` - Script pour vérifier la fonctionnalité du parser de raisonnement avec les modèles Qwen3.
-- `test_reasoning_optimized.py` - Version optimisée du script de test de raisonnement.
+- `tests/reasoning_parser.py` - Script pour vérifier la fonctionnalité du parser de raisonnement avec les modèles Qwen3.
+- `tests/reasoning_optimized.py` - Version optimisée du script de test de raisonnement.
 - `test_qwen3_reasoning_parser.py` - Script spécifique pour tester le parser de raisonnement de Qwen3.
 
 Ces scripts envoient des requêtes avec raisonnement activé à différents serveurs API vLLM et vérifient les réponses.
 
 ## Tests d'appel d'outils (Tool Calling)
 
-Le répertoire `test_tool_calling` contient:
+Le répertoire `tests/tool_calling` contient:
 
-- `test_tool_calling.py` - Script de base pour vérifier la fonctionnalité d'appel d'outils avec les modèles Qwen3.
-- `test_tool_calling_optimized.py` - Version optimisée du script de test d'appel d'outils.
+- `tests/tool_calling.py` - Script de base pour vérifier la fonctionnalité d'appel d'outils avec les modèles Qwen3.
+- `tests/tool_calling_optimized.py` - Version optimisée du script de test d'appel d'outils.
 - `test_qwen3_tool_parser.py` - Script pour tester le parser d'outils de Qwen3.
 - `test_qwen3_tool_calling.py` - Script spécifique pour tester l'appel d'outils de Qwen3.
 - `test_qwen3_tool_calling_custom.py` - Script pour tester l'appel d'outils personnalisés de Qwen3.
@@ -64,13 +64,13 @@ Pour exécuter un test, utilisez la commande suivante:
 
 ```bash
 # Test de raisonnement avec le modèle mini
-python -m test_reasoning.test_reasoning_parser mini
+python -m tests/reasoning.tests/reasoning_parser mini
 
 # Test d'appel d'outils avec le modèle medium
-python -m test_tool_calling.test_tool_calling medium
+python -m tests/tool_calling.tests/tool_calling medium
 
 # Test de performance avec tous les modèles
-python -m test_performance.test_performance_comparison --model all
+python -m tests/performance.tests/performance_comparison --model all
 ```
 
 ## Notes importantes
@@ -83,9 +83,9 @@ python -m test_performance.test_performance_comparison --model all
 
 En raison de problèmes d'encodage dans les fichiers originaux, des versions propres des scripts ont été créées:
 
-- `test_tool_calling_clean.py` - Version propre du script de test d'appel d'outils
-- `test_reasoning_parser_clean.py` - Version propre du script de test de raisonnement
-- `test_performance_clean.py` - Version propre du script de test de performance
+- `tests/tool_calling_clean.py` - Version propre du script de test d'appel d'outils
+- `tests/reasoning_parser_clean.py` - Version propre du script de test de raisonnement
+- `tests/performance_clean.py` - Version propre du script de test de performance
 
 Ces versions propres sont fonctionnelles et peuvent être utilisées pour exécuter les tests.
 
@@ -95,11 +95,11 @@ Pour exécuter un test avec une version propre, utilisez la commande suivante:
 
 ```bash
 # Test de raisonnement avec le modèle mini
-python -m test_reasoning.test_reasoning_parser_clean mini
+python -m tests/reasoning.tests/reasoning_parser_clean mini
 
 # Test d'appel d'outils avec le modèle medium
-python -m test_tool_calling.test_tool_calling_clean medium
+python -m tests/tool_calling.tests/tool_calling_clean medium
 
 # Test de performance avec le modèle mini et l'API models
-python -m test_performance.test_performance_clean --model mini --api models
+python -m tests/performance.tests/performance_clean --model mini --api models
 ```

@@ -51,18 +51,18 @@ function Test-DockerComposeInstalled {
 
 # Fonction pour vérifier si le token Hugging Face est configuré
 function Test-HuggingFaceToken {
-    $envFile = "vllm-configs/huggingface.env"
+    $envFile = "myia-vllm/qwen3/huggingface.env"
     
     if (-not (Test-Path $envFile)) {
         Write-ColorOutput Yellow "Avertissement: Le fichier $envFile n'existe pas."
         
         # Créer le fichier huggingface.env à partir de l'exemple
-        if (Test-Path "vllm-configs/huggingface.env.example") {
-            Copy-Item "vllm-configs/huggingface.env.example" $envFile
+        if (Test-Path "myia-vllm/qwen3/huggingface.env.example") {
+            Copy-Item "myia-vllm/qwen3/huggingface.env.example" $envFile
             Write-ColorOutput Yellow "Le fichier $envFile a été créé à partir de l'exemple."
         }
         else {
-            Write-ColorOutput Red "Erreur: Le fichier vllm-configs/huggingface.env.example n'existe pas."
+            Write-ColorOutput Red "Erreur: Le fichier myia-vllm/qwen3/huggingface.env.example n'existe pas."
             return $false
         }
     }
@@ -113,7 +113,7 @@ function Deploy-Container($name, $composePath) {
         return $true
     }
     catch {
-        Write-ColorOutput Red "Erreur lors du déploiement du container $name: $_"
+        Write-ColorOutput Red ("Erreur lors du déploiement du container " + $name + ": " + $_)
         Set-Location $currentDir
         return $false
     }
@@ -145,9 +145,9 @@ function Main {
     
     # Vérifier les fichiers docker-compose
     $composeFiles = @(
-        "vllm-configs/docker-compose/docker-compose-micro-qwen3.yml",
-        "vllm-configs/docker-compose/docker-compose-mini-qwen3.yml",
-        "vllm-configs/docker-compose/docker-compose-medium-qwen3.yml"
+        "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml",
+        "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml",
+        "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3.yml"
     )
     
     foreach ($file in $composeFiles) {
@@ -158,8 +158,8 @@ function Main {
     }
     
     # Vérifier le script de démarrage
-    if (-not (Test-FileExists "vllm-configs/start-with-qwen3-parser.sh")) {
-        Write-ColorOutput Red "Erreur: Le script de démarrage vllm-configs/start-with-qwen3-parser.sh n'existe pas."
+    if (-not (Test-FileExists "myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser.sh")) {
+        Write-ColorOutput Red "Erreur: Le script de démarrage myia-vllm/qwen3/deployment/docker/start-with-qwen3-parser.sh n'existe pas."
         return
     }
     
@@ -189,11 +189,11 @@ function Main {
         Write-ColorOutput Yellow "`nNote: Les configurations ont été mises à jour pour utiliser:"
         Write-ColorOutput Yellow "- Les modèles Qwen3 AWQ pour résoudre les problèmes d'accès aux versions Instruct-AWQ"
         Write-ColorOutput Yellow "- Le parser llama3_json au lieu de qwen3 pour résoudre les problèmes de compatibilité"
-        Write-ColorOutput Yellow "Voir vllm-configs/DEPLOYMENT-RESULTS.md pour plus de détails."
+        Write-ColorOutput Yellow "Voir myia-vllm/qwen3/deployment/logs/DEPLOYMENT-RESULTS.md pour plus de détails."
         Write-ColorOutput Cyan "`nPour tester les containers, utilisez les commandes suivantes:"
-        Write-ColorOutput White "curl -X POST http://localhost:8000/v1/chat/completions -H `"Content-Type: application/json`" -d @vllm-configs/test-tool-request.json"
-        Write-ColorOutput White "curl -X POST http://localhost:5001/v1/chat/completions -H `"Content-Type: application/json`" -d @vllm-configs/test-tool-request.json"
-        Write-ColorOutput White "curl -X POST http://localhost:5002/v1/chat/completions -H `"Content-Type: application/json`" -d @vllm-configs/test-tool-request.json"
+        Write-ColorOutput White "curl -X POST http://localhost:8000/v1/chat/completions -H `"Content-Type: application/json`" -d @myia-vllm/qwen3/test_tool_calling/test-tool-request.json"
+        Write-ColorOutput White "curl -X POST http://localhost:5001/v1/chat/completions -H `"Content-Type: application/json`" -d @myia-vllm/qwen3/test_tool_calling/test-tool-request.json"
+        Write-ColorOutput White "curl -X POST http://localhost:5002/v1/chat/completions -H `"Content-Type: application/json`" -d @myia-vllm/qwen3/test_tool_calling/test-tool-request.json"
     }
     else {
         Write-ColorOutput Red "`nCertains containers n'ont pas pu être déployés. Veuillez vérifier les erreurs ci-dessus."

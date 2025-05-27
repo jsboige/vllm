@@ -8,17 +8,17 @@ Ce script effectue des tests de performance sur les différentes API
 entre l'accès local et l'accès externe.
 
 Usage:
-    python -m test_performance.test_performance_clean [OPTIONS]
+    python -m tests.performance.test_performance_clean [OPTIONS]
 
 Options:
     --model MODEL_TYPE         Type de modèle à tester (mini, medium, all) (default: all)
     --api API_TYPE             Type d'API à tester (models, completions, chat, tool_calling, all) (default: all)
     --iterations N             Nombre d'itérations pour chaque test (default: 5)
-    --output-dir DIR           Répertoire de sortie pour les résultats (default: test_performance/results)
+    --output-dir DIR           Répertoire de sortie pour les résultats (default: tests/performance/results)
 
 Example:
     # Test de toutes les API pour le modèle mini avec 10 itérations
-    python -m test_performance.test_performance_clean --model mini --iterations 10
+    python -m tests.performance.test_performance_clean --model mini --iterations 10
 """
 
 import os
@@ -229,7 +229,7 @@ def main():
     parser.add_argument("--model", choices=["mini", "medium", "all"], default="all", help="Type de modèle à tester")
     parser.add_argument("--api", choices=["models", "completions", "chat", "tool_calling", "all"], default="all", help="Type d'API à tester")
     parser.add_argument("--iterations", type=int, default=5, help="Nombre d'itérations pour chaque test")
-    parser.add_argument("--output-dir", default="test_performance/results", help="Répertoire de sortie pour les résultats")
+    parser.add_argument("--output-dir", default="tests/performance/results", help="Répertoire de sortie pour les résultats")
     args = parser.parse_args()
     
     # Déterminer les modèles à tester

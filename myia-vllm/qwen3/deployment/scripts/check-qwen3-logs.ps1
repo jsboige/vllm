@@ -8,7 +8,7 @@ $CONTAINER_NAMES = @{
     "mini" = "myia-vllm-mini-qwen3"
     "medium" = "myia-vllm-medium-qwen3"
 }
-$LOG_FILE = "../../vllm-configs/QWEN3-LOGS-ANALYSIS.md"
+$LOG_FILE = "../../docs/QWEN3-LOGS-ANALYSIS.md"
 $ERROR_PATTERNS = @(
     "Error",
     "Exception",

@@ -50,9 +50,9 @@ ENDPOINTS = {
 
 # Modèles de configuration Docker Compose
 DOCKER_COMPOSE_TEMPLATES = {
-    "micro": "vllm-configs/docker-compose/docker-compose-micro-qwen3-optimized.yml",
-    "mini": "vllm-configs/docker-compose/docker-compose-mini-qwen3-optimized.yml",
-    "medium": "vllm-configs/docker-compose/docker-compose-medium-qwen3-optimized.yml"
+    "micro": "myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3-optimized.yml",
+    "mini": "myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3-optimized.yml",
+    "medium": "myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3-optimized.yml"
 }
 
 def load_benchmark_results(input_file: str) -> Dict[str, Any]:

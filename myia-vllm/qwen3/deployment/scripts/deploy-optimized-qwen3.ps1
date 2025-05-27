@@ -14,19 +14,19 @@ $env:GPU_MEMORY_UTILIZATION_MICRO = "0.99"
 
 # Arrêt des conteneurs existants
 Write-Host "Arrêt des conteneurs existants..." -ForegroundColor Yellow
-docker-compose -f vllm-configs/docker-compose/docker-compose-medium-qwen3.yml down
-docker-compose -f vllm-configs/docker-compose/docker-compose-mini-qwen3.yml down
-docker-compose -f vllm-configs/docker-compose/docker-compose-micro-qwen3.yml down
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3.yml down
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3.yml down
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3.yml down
 
 # Déploiement des nouveaux conteneurs avec les configurations optimisées
 Write-Host "Déploiement du modèle MEDIUM (32B)..." -ForegroundColor Cyan
-docker-compose -f vllm-configs/docker-compose/docker-compose-medium-qwen3-optimized.yml up -d
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-medium-qwen3-optimized.yml up -d
 
 Write-Host "Déploiement du modèle MINI (8B)..." -ForegroundColor Cyan
-docker-compose -f vllm-configs/docker-compose/docker-compose-mini-qwen3-optimized.yml up -d
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-mini-qwen3-optimized.yml up -d
 
 Write-Host "Déploiement du modèle MICRO (1.7B)..." -ForegroundColor Cyan
-docker-compose -f vllm-configs/docker-compose/docker-compose-micro-qwen3-optimized.yml up -d
+docker-compose -f myia-vllm/qwen3/deployment/docker/docker-compose-micro-qwen3-optimized.yml up -d
 
 # Vérification de l'état des conteneurs
 Write-Host "Vérification de l'état des conteneurs..." -ForegroundColor Yellow

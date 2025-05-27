@@ -85,9 +85,9 @@ function Create-BuildDirectory {
     New-Item -Path "$BUILD_DIR\reasoning" -ItemType Directory -Force | Out-Null
     
     # Vérifier les chemins des fichiers source
-    $tool_parser_path = "$SCRIPT_DIR\vllm-configs\docker-compose\build\tool_parsers\qwen3_tool_parser.py"
-    $init_path = "$SCRIPT_DIR\vllm-configs\docker-compose\build\tool_parsers\__init__.py"
-    $reasoning_parser_path = "$SCRIPT_DIR\vllm\reasoning\qwen3_reasoning_parser.py"
+    $tool_parser_path = Join-Path $SCRIPT_DIR "..\..\..\..\vllm\entrypoints\openai\tool_parsers\qwen3_tool_parser.py"
+    $init_path = Join-Path $SCRIPT_DIR "..\..\..\..\vllm\entrypoints\openai\tool_parsers\__init__.py"
+    $reasoning_parser_path = Join-Path $SCRIPT_DIR "..\..\..\..\deployment\docker\build\reasoning\qwen3_reasoning_parser.py"
     
     # Vérifier si les fichiers existent
     if (-not (Test-Path $tool_parser_path)) {
@@ -206,9 +206,9 @@ function Stop-Qwen3Services {
     Write-Log "INFO" "Arrêt des services vLLM Qwen3..."
     
     $compose_files = @(
-        "vllm-configs\docker-compose\docker-compose-micro-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-mini-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-medium-qwen3.yml"
+        "myia-vllm\qwen3\deployment\docker\docker-compose-micro-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-mini-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p myia-vllm"
@@ -239,9 +239,9 @@ function Start-Qwen3Services {
     Write-Log "INFO" "Démarrage des services vLLM Qwen3..."
     
     $compose_files = @(
-        "vllm-configs\docker-compose\docker-compose-micro-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-mini-qwen3.yml",
-        "vllm-configs\docker-compose\docker-compose-medium-qwen3.yml"
+        "myia-vllm\qwen3\deployment\docker\docker-compose-micro-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-mini-qwen3.yml",
+        "myia-vllm\qwen3\deployment\docker\docker-compose-medium-qwen3.yml"
     )
     
     $compose_cmd = "docker compose -p myia-vllm"
@@ -341,7 +341,7 @@ function Test-ToolCalling {
     
     # Exécuter le script de test
     try {
-        $cmd = "python vllm-configs\test_qwen3_tool_calling_fixed.py --service micro"
+        $cmd = "python tests\tool_calling\test_qwen3_tool_calling_fixed.py --service micro"
         Write-Log "INFO" "Exécution de la commande: $cmd"
         Invoke-Expression $cmd
         
@@ -364,7 +364,7 @@ function Test-ToolCalling {
 function Update-Documentation {
     Write-Log "INFO" "Mise à jour de la documentation..."
     
-    $doc_file = Join-Path $SCRIPT_DIR "vllm-configs\WINDOWS-README.md"
+    $doc_file = Join-Path $SCRIPT_DIR "..\..\..\..\docs\WINDOWS-README.md"
     
     # Ajouter une section sur le tool calling avec Qwen3
     $doc_content = @"
@@ -390,7 +390,7 @@ Ce document explique comment gérer les services vLLM sous Windows 11 avec Docke
 Pour démarrer les services vLLM, exécutez le script suivant dans PowerShell :
 
 ```powershell
-.\vllm-configs\start-vllm-services.ps1
+.\start-vllm-services.ps1
 ```
 
 Options disponibles :
@@ -402,7 +402,7 @@ Options disponibles :
 Pour vérifier que les services vLLM fonctionnent correctement, exécutez :
 
 ```powershell
-.\vllm-configs\test-vllm-services.ps1
+.\test-vllm-services.ps1
 ```
 
 Options disponibles :
@@ -415,7 +415,7 @@ Options disponibles :
 Pour préparer une mise à jour des services vLLM, exécutez :
 
 ```powershell
-.\vllm-configs\prepare-update.ps1
+.\prepare-update.ps1
 ```
 
 Options disponibles :
@@ -435,7 +435,7 @@ Ce script va :
 Une fois la préparation terminée, vous pouvez effectuer la mise à jour rapide en exécutant :
 
 ```powershell
-.\vllm-configs\quick-update-qwen3.ps1
+.\quick-update-qwen3.ps1
 ```
 
 Ce script va :
@@ -457,7 +457,7 @@ Ces fichiers sont déjà adaptés pour Windows 11 avec WSL.
 Les services vLLM Qwen3 prennent en charge le tool calling avec le parser `qwen3`. Pour tester le tool calling, utilisez le script suivant :
 
 ```powershell
-python vllm-configs\test_qwen3_tool_calling.py --service micro
+python tests\tool_calling\test_qwen3_tool_calling.py --service micro
 ```
 
 Options disponibles :
