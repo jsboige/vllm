@@ -150,6 +150,7 @@ csrc/moe/marlin_moe_wna16/kernel_*
 *.bak
 
 # Permettre les fichiers de config essentiels
+# !.env
 !huggingface.env
 !env/
 !docker-compose/build/
