@@ -1,3 +1,4 @@
+myia-vllm/qwen3/configs/.env
 # Ignorer spécifiquement ce fichier .env local
 myia-vllm/deployment/docker/qwen3-context-optimized/.env
 # Secrets et fichiers sensibles
