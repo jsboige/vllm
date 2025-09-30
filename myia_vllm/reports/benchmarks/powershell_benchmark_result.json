@@ -1,0 +1,23 @@
+﻿{
+    "BenchmarkInfo":  {
+                          "Script":  "D:\\vllm\\myia_vllm\\benchmarks\\run-performance-tests.ps1",
+                          "TimestampUTC":  "2025-07-14T22:38:22.9658303Z",
+                          "Parameters":  {
+                                             "Model":  [
+                                                           "micro"
+                                                       ],
+                                             "Iterations":  1,
+                                             "JsonOutputPath":  "reports/benchmarks/powershell_benchmark_result.json"
+                                         }
+                      },
+    "Models":  [
+                   {
+                       "Tests":  [
+
+                                 ],
+                       "Status":  "Skipped - Service Offline",
+                       "Model":  "micro",
+                       "ModelId":  "flin775/Qwen3-1.7B-AWQ"
+                   }
+               ]
+}

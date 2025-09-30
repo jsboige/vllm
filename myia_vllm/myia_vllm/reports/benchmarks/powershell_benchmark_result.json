@@ -1,0 +1,23 @@
+﻿{
+    "BenchmarkInfo":  {
+                          "Script":  "D:\\vllm\\myia_vllm\\benchmarks\\run-performance-tests.ps1",
+                          "TimestampUTC":  "2025-07-14T22:24:57.4851069Z",
+                          "Parameters":  {
+                                             "Model":  [
+                                                           "micro"
+                                                       ],
+                                             "Iterations":  1,
+                                             "JsonOutputPath":  "myia_vllm/reports/benchmarks/powershell_benchmark_result.json"
+                                         }
+                      },
+    "Models":  [
+                   {
+                       "Tests":  [
+
+                                 ],
+                       "Status":  "Skipped - Service Offline",
+                       "Model":  "micro",
+                       "ModelId":  "Qwen/Qwen3-1.7B-FP8"
+                   }
+               ]
+}

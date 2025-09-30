@@ -1,0 +1,60 @@
+services:
+  vllm-mini-qwen3:
+    image: vllm/vllm-openai:qwen3-fixed
+    container_name: myia-vllm-mini-qwen3
+    ipc: host
+    init: true
+    stop_grace_period: 25s
+    command: # python3 -m vllm.entrypoints.openai.api_server
+      --model Qwen/Qwen3-8B-AWQ
+      --tensor-parallel-size ${NUM_GPUS:-1}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.99}
+      --enable-chunked-prefill
+      --max-model-len 65536
+      --max-num-batched-tokens 65536
+      --enable-prefix-caching
+      --dtype ${DATATYPE:-float16}
+      --enable-auto-tool-choice
+      --tool-call-parser granite
+      --kv_cache_dtype fp8
+      --enable-reasoning
+      --reasoning-parser deepseek_r1
+      --rope-scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - TZ=${TZ:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-${VLLM_API_KEY_MINI}}
+      - VLLM_PORT=${VLLM_PORT:-${VLLM_PORT_MINI}}
+      - GPU_PERCENTAGE=${GPU_PERCENTAGE:-0.99}
+      - CUDA_VISIBLE_DEVICES=2
+      - VLLM_ATTENTION_BACKEND=FLASHINFER
+      # Optimisations pour le démarrage rapide
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONOPTIMIZE=1
+    ports:
+      - "${VLLM_PORT:-${VLLM_PORT_MINI}}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-H", "Authorization: Bearer ${VLLM_API_KEY_MINI}", "http://localhost:8000/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    volumes:
+      - \\wsl.localhost\Ubuntu\home\jesse\vllm\.cache\huggingface\hub:/root/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              device_ids: ['2']
+              driver: nvidia
+        limits:
+          cpus: '6.0'
+          memory: 24G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 90s

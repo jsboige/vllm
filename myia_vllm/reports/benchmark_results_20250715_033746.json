@@ -1,0 +1,50 @@
+{
+    "micro": {
+        "results": {
+            "comparison_results": {
+                "local": {
+                    "completions": [],
+                    "chat": [],
+                    "embeddings": [],
+                    "tool_calling": []
+                },
+                "external": {
+                    "completions": [],
+                    "chat": [],
+                    "embeddings": [],
+                    "tool_calling": []
+                },
+                "difference": {}
+            }
+        },
+        "analysis": {
+            "summary": {},
+            "api_comparison": {},
+            "recommendations": []
+        }
+    },
+    "mini": {
+        "results": {
+            "comparison_results": {
+                "local": {
+                    "completions": [],
+                    "chat": [],
+                    "embeddings": [],
+                    "tool_calling": []
+                },
+                "external": {
+                    "completions": [],
+                    "chat": [],
+                    "embeddings": [],
+                    "tool_calling": []
+                },
+                "difference": {}
+            }
+        },
+        "analysis": {
+            "summary": {},
+            "api_comparison": {},
+            "recommendations": []
+        }
+    }
+}

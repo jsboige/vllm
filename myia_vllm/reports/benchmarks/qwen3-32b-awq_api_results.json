@@ -1,0 +1,198 @@
+{
+  "model": "qwen3-32b-awq",
+  "timestamp": "2025-07-03T23:13:58.135516",
+  "config": {
+    "model_name": "qwen3-32b-awq",
+    "external_url": "http://localhost:8092",
+    "test_parameters": {
+      "num_iterations": 5,
+      "request_timeout": 120,
+      "generation": {
+        "max_tokens": 150,
+        "temperature": 0.7
+      }
+    }
+  },
+  "metrics": {
+    "total_api_calls": 15,
+    "avg_execution_time": 1.8470672766367595,
+    "min_execution_time": 0.0029997825622558594,
+    "max_execution_time": 3.0518500804901123
+  },
+  "errors": [
+    {
+      "phase": "tool_calling_api",
+      "iteration": 1,
+      "error": "Erreur HTTP 400: 400 Client Error: Bad Request for url: http://localhost:8092/v1/chat/completions",
+      "timestamp": "2025-07-03T23:14:25.856588"
+    },
+    {
+      "phase": "tool_calling_api",
+      "iteration": 2,
+      "error": "Erreur HTTP 400: 400 Client Error: Bad Request for url: http://localhost:8092/v1/chat/completions",
+      "timestamp": "2025-07-03T23:14:25.860592"
+    },
+    {
+      "phase": "tool_calling_api",
+      "iteration": 3,
+      "error": "Erreur HTTP 400: 400 Client Error: Bad Request for url: http://localhost:8092/v1/chat/completions",
+      "timestamp": "2025-07-03T23:14:25.873587"
+    },
+    {
+      "phase": "tool_calling_api",
+      "iteration": 4,
+      "error": "Erreur HTTP 400: 400 Client Error: Bad Request for url: http://localhost:8092/v1/chat/completions",
+      "timestamp": "2025-07-03T23:14:25.876592"
+    },
+    {
+      "phase": "tool_calling_api",
+      "iteration": 5,
+      "error": "Erreur HTTP 400: 400 Client Error: Bad Request for url: http://localhost:8092/v1/chat/completions",
+      "timestamp": "2025-07-03T23:14:25.879593"
+    }
+  ],
+  "api_results": {
+    "completions": [
+      {
+        "iteration": 1,
+        "execution_time": 3.0518500804901123,
+        "tokens_generated": 150,
+        "tokens_total": 163
+      },
+      {
+        "iteration": 2,
+        "execution_time": 2.7067313194274902,
+        "tokens_generated": 150,
+        "tokens_total": 163
+      },
+      {
+        "iteration": 3,
+        "execution_time": 2.715864419937134,
+        "tokens_generated": 150,
+        "tokens_total": 163
+      },
+      {
+        "iteration": 4,
+        "execution_time": 2.708148956298828,
+        "tokens_generated": 150,
+        "tokens_total": 163
+      },
+      {
+        "iteration": 5,
+        "execution_time": 2.75396990776062,
+        "tokens_generated": 150,
+        "tokens_total": 163
+      }
+    ],
+    "chat": [
+      {
+        "iteration": 1,
+        "execution_time": 2.7832906246185303,
+        "tokens_generated": 150,
+        "tokens_total": 187
+      },
+      {
+        "iteration": 2,
+        "execution_time": 2.77728271484375,
+        "tokens_generated": 150,
+        "tokens_total": 187
+      },
+      {
+        "iteration": 3,
+        "execution_time": 2.725900888442993,
+        "tokens_generated": 150,
+        "tokens_total": 187
+      },
+      {
+        "iteration": 4,
+        "execution_time": 2.7212207317352295,
+        "tokens_generated": 150,
+        "tokens_total": 187
+      },
+      {
+        "iteration": 5,
+        "execution_time": 2.7205915451049805,
+        "tokens_generated": 150,
+        "tokens_total": 187
+      }
+    ],
+    "embeddings": [
+      {
+        "iteration": 1,
+        "execution_time": 0.0035152435302734375,
+        "num_texts": 3,
+        "embedding_dimensions": 0
+      },
+      {
+        "iteration": 2,
+        "execution_time": 0.0036118030548095703,
+        "num_texts": 3,
+        "embedding_dimensions": 0
+      },
+      {
+        "iteration": 3,
+        "execution_time": 0.0035071372985839844,
+        "num_texts": 3,
+        "embedding_dimensions": 0
+      },
+      {
+        "iteration": 4,
+        "execution_time": 0.02752399444580078,
+        "num_texts": 3,
+        "embedding_dimensions": 0
+      },
+      {
+        "iteration": 5,
+        "execution_time": 0.0029997825622558594,
+        "num_texts": 3,
+        "embedding_dimensions": 0
+      }
+    ],
+    "tool_calling": []
+  },
+  "analysis": {
+    "summary": {
+      "total_api_calls": 15,
+      "avg_execution_time": 1.8470672766367595,
+      "min_execution_time": 0.0029997825622558594,
+      "max_execution_time": 3.0518500804901123
+    },
+    "api_performance": {
+      "completions": {
+        "avg_execution_time": 2.787312936782837,
+        "min_execution_time": 2.7067313194274902,
+        "max_execution_time": 3.0518500804901123,
+        "avg_execution_time_formatted": "2.79 s",
+        "min_execution_time_formatted": "2.71 s",
+        "max_execution_time_formatted": "3.05 s",
+        "num_iterations": 5,
+        "avg_tokens_generated": 150.0,
+        "avg_tokens_total": 163.0,
+        "tokens_per_second": 53.81527062158026
+      },
+      "chat": {
+        "avg_execution_time": 2.7456573009490968,
+        "min_execution_time": 2.7205915451049805,
+        "max_execution_time": 2.7832906246185303,
+        "avg_execution_time_formatted": "2.75 s",
+        "min_execution_time_formatted": "2.72 s",
+        "max_execution_time_formatted": "2.78 s",
+        "num_iterations": 5,
+        "avg_tokens_generated": 150.0,
+        "avg_tokens_total": 187.0,
+        "tokens_per_second": 54.63172696321176
+      },
+      "embeddings": {
+        "avg_execution_time": 0.008231592178344727,
+        "min_execution_time": 0.0029997825622558594,
+        "max_execution_time": 0.02752399444580078,
+        "avg_execution_time_formatted": "8.23 ms",
+        "min_execution_time_formatted": "3.00 ms",
+        "max_execution_time_formatted": "27.52 ms",
+        "num_iterations": 5
+      }
+    }
+  },
+  "execution_time": 27.74507474899292,
+  "execution_time_formatted": "27.75 s"
+}
