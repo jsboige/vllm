@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING
 
 import vllm.envs as envs
+from vllm.config.compilation import CUDAGraphMode
 from vllm.logger import init_logger
 from vllm.model_executor.models import ModelRegistry
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, cdiv
@@ -21,6 +22,14 @@ class VerifyAndUpdateConfig:
     @staticmethod
     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
         raise NotImplementedError
+
+
+class Gemma3TextModelConfig:
+
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        hf_config = vllm_config.model_config.hf_config
+        hf_config.is_causal = not hf_config.use_bidirectional_attention
 
 
 class GteNewModelConfig(VerifyAndUpdateConfig):
@@ -42,6 +51,15 @@ class GteNewModelConfig(VerifyAndUpdateConfig):
             "base": config.rope_theta,
             "rope_scaling": getattr(config, "rope_scaling", None)
         }
+
+
+class JambaForSequenceClassificationConfig(VerifyAndUpdateConfig):
+
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        pooler_config = vllm_config.model_config.pooler_config
+        if pooler_config.activation is None:
+            pooler_config.activation = False
 
 
 class JinaRobertaModelConfig(VerifyAndUpdateConfig):
@@ -155,6 +173,26 @@ class NomicBertModelConfig(VerifyAndUpdateConfig):
             vllm_config.recalculate_max_model_len(max_model_len)
 
 
+class Qwen2ForProcessRewardModelConfig(VerifyAndUpdateConfig):
+
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        pooler_config = vllm_config.model_config.pooler_config
+
+        if pooler_config.step_tag_id is None:
+            pooler_config.step_tag_id = 151651
+
+
+class Qwen2ForRewardModelConfig(VerifyAndUpdateConfig):
+
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        pooler_config = vllm_config.model_config.pooler_config
+
+        if pooler_config.softmax is None:
+            pooler_config.softmax = False
+
+
 class Qwen3ForSequenceClassificationConfig(VerifyAndUpdateConfig):
 
     @staticmethod
@@ -180,8 +218,10 @@ class JinaVLForSequenceClassificationConfig(VerifyAndUpdateConfig):
     @staticmethod
     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
         config = vllm_config.model_config.hf_config
-
         config.num_labels = 1
+        pooler_config = vllm_config.model_config.pooler_config
+        if pooler_config.logit_bias is None:
+            pooler_config.logit_bias = 2.65
 
 
 class SnowflakeGteNewModelConfig(VerifyAndUpdateConfig):
@@ -205,17 +245,70 @@ class SnowflakeGteNewModelConfig(VerifyAndUpdateConfig):
         }
 
 
-class GraniteMoeHybridModelConfig(VerifyAndUpdateConfig):
+class GptOssForCausalLMConfig(VerifyAndUpdateConfig):
 
     @staticmethod
     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
-        config = vllm_config.model_config
-        config.max_seq_len_to_capture = config.max_model_len
-        logger.info(
-            "Setting max_seq_len_to_capture to %d "
-            "to ensure that CUDA graph capture "
-            "covers sequences of length up to max_model_len.",
-            config.max_model_len)
+        structured_outputs_config = vllm_config.structured_outputs_config
+        if structured_outputs_config.reasoning_parser == "":
+            structured_outputs_config.reasoning_parser = "openai_gptoss"
+
+        # Increase the max capture size from 512 to 992 for performance.
+        # NOTE(woosuk): This will increase the number of CUDA graphs
+        # from 67 to 81.
+        scheduler_config = vllm_config.scheduler_config
+        if len(scheduler_config.cuda_graph_sizes) == 1:
+            max_capture_size = scheduler_config.cuda_graph_sizes[0]
+            # FIXME(woosuk): When using full cuda graph with FA3, the max
+            # supported size is 992.
+            if max_capture_size < 992:
+                cuda_graph_sizes = [1, 2, 4]
+                # Step size 8 for small batch sizes
+                cuda_graph_sizes += [i for i in range(8, 256, 8)]
+                # Step size 16 for larger batch sizes
+                cuda_graph_sizes += [i for i in range(256, 993, 16)]
+                scheduler_config.cuda_graph_sizes = cuda_graph_sizes
+                logger.info(
+                    "Overriding max cuda graph capture size to "
+                    "%d for performance.", 992)
+
+
+class MambaModelConfig(VerifyAndUpdateConfig):
+
+    @classmethod
+    def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        """
+        Enable FULL_AND_PIECEWISE cuda graph mode by default (required
+        to get good performance for mamba layers in V1).
+
+        Args:
+            vllm_config: vLLM Config
+        """
+
+        if not envs.VLLM_USE_V1:
+            return
+
+        model_config = vllm_config.model_config
+        cache_config = vllm_config.cache_config
+        compilation_config = vllm_config.compilation_config
+
+        # TODO(tdoublep): remove once prefix caching is enabled
+        cache_config.enable_prefix_caching = False
+        logger.info("Hybrid or mamba-based model detected: disabling prefix "
+                    "caching since it is not yet supported.")
+
+        # TODO(tdoublep): remove as full cuda graph support is added
+        FCG_NOT_SUPPORTED_MODELS = [
+            "Lfm2ForCausalLM",
+            "MiniMaxText01ForCausalLM",
+        ]
+
+        if (model_config.architecture not in FCG_NOT_SUPPORTED_MODELS
+                and compilation_config.cudagraph_mode is None):
+            logger.info(
+                "Hybrid or mamba-based model detected: setting cudagraph mode "
+                "to FULL_AND_PIECEWISE in order to optimize performance.")
+            compilation_config.cudagraph_mode = CUDAGraphMode.FULL_AND_PIECEWISE
 
 
 class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
@@ -236,6 +329,9 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
         if not envs.VLLM_USE_V1:
             return
 
+        # Enable FULL_AND_PIECEWISE by default
+        MambaModelConfig.verify_and_update_config(vllm_config)
+
         cache_config = vllm_config.cache_config
         model_config = vllm_config.model_config
         parallel_config = vllm_config.parallel_config
@@ -250,8 +346,7 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
             block_size=1,
             num_kv_heads=model_config.get_num_kv_heads(parallel_config),
             head_size=model_config.get_head_size(),
-            dtype=kv_cache_dtype,
-            use_mla=model_config.use_mla).page_size_bytes
+            dtype=kv_cache_dtype).page_size_bytes
 
         model_cls, _ = ModelRegistry.resolve_model_cls(
             model_config.architecture,
@@ -261,7 +356,7 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
         # get mamba page size
         mamba_page_size = MambaSpec(
             shapes=model_cls.get_mamba_state_shape_from_config(vllm_config),
-            dtype=kv_cache_dtype,
+            dtypes=model_cls.get_mamba_state_dtype_from_config(vllm_config),
             block_size=model_config.max_model_len,
         ).page_size_bytes
 
@@ -305,12 +400,46 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
                 "exactly equal.", mamba_padding_pct)
 
 
+class DeepseekV32ForCausalLM(VerifyAndUpdateConfig):
+
+    @classmethod
+    def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        """
+        Updated fp8 cache to custom "fp8_ds_mla" format for DeepSeekV32
+        """
+        hf_config = vllm_config.model_config.hf_config
+
+        # Mirror the check in vllm/model_executor/models/deepseek_v2.py
+        is_v32 = hasattr(hf_config, "index_topk")
+        assert is_v32
+
+        # For DeepSeekV3.2, we use a custom fp8 format as default (i.e.
+        #   "auto")
+        cache_config = vllm_config.cache_config
+        if cache_config.cache_dtype == "auto" or \
+            cache_config.cache_dtype.startswith("fp8"):
+            cache_config.cache_dtype = "fp8_ds_mla"
+            logger.info("Using custom fp8 kv-cache format for DeepSeekV3.2")
+        if cache_config.cache_dtype == "bfloat16":
+            cache_config.cache_dtype = "auto"
+            logger.info("Using bfloat16 kv-cache for DeepSeekV3.2")
+
+
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "GteModel": SnowflakeGteNewModelConfig,
     "GteNewModel": GteNewModelConfig,
+    "GteNewForSequenceClassification": GteNewModelConfig,
+    "Gemma3TextModel": Gemma3TextModelConfig,
     "NomicBertModel": NomicBertModelConfig,
+    "Qwen2ForProcessRewardModel": Qwen2ForProcessRewardModelConfig,
+    "Qwen2ForRewardModel": Qwen2ForRewardModelConfig,
     "Qwen3ForSequenceClassification": Qwen3ForSequenceClassificationConfig,
     "XLMRobertaModel": JinaRobertaModelConfig,
     "JinaVLForRanking": JinaVLForSequenceClassificationConfig,
-    "GraniteMoeHybridForCausalLM": GraniteMoeHybridModelConfig,
+    "JambaForSequenceClassification": JambaForSequenceClassificationConfig,
+    "GptOssForCausalLM": GptOssForCausalLMConfig,
+    "MambaForCausalLM": MambaModelConfig,
+    "Mamba2ForCausalLM": MambaModelConfig,
+    "FalconMambaForCausalLM": MambaModelConfig,
+    "DeepseekV32ForCausalLM": DeepseekV32ForCausalLM,
 }

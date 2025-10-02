@@ -70,6 +70,7 @@ class RayPPCommunicator(Communicator):
             assert ray.get_gpu_ids(), "RayPPCommunicator has no GPUs assigned"
 
             self._comm = get_pp_group().device_communicator
+            assert self._comm is not None
 
             # Since we wrap around the vLLM _PP communicator, we use
             # the rank from the vLLM communicator, and ignore the rank
@@ -177,7 +178,7 @@ class RayPPCommunicator(Communicator):
 
     def recv(
         self,
-        shape: tuple[int],
+        shape: tuple[int, ...],
         dtype: "torch.dtype",
         peer_rank: int,
         allocator: TorchTensorAllocator,
@@ -185,7 +186,7 @@ class RayPPCommunicator(Communicator):
         """
         Receive a torch.Tensor from a peer and synchronize the current stream.
 
-        After this call returns, the receive buffer is safe to read from from
+        After this call returns, the receive buffer is safe to read from
         any stream. An RayChannelError will be raised if an error occurred
         (e.g., remote actor died), and the buffer is not safe to read.
 

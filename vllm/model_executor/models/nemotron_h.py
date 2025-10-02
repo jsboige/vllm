@@ -23,39 +23,33 @@ from typing import Optional
 import torch
 from torch import nn
 
-from vllm import envs
 from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, VllmConfig
+from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.distributed.parallel_state import get_pp_group
-from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.activation import ReLUSquaredActivation
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.mamba.mamba2_metadata import (
-    Mamba2Metadata, prepare_mamba2_metadata)
 from vllm.model_executor.layers.mamba.mamba_mixer2 import MambaMixer2
-from vllm.model_executor.layers.mamba.mamba_utils import get_mamba_state_shape
+from vllm.model_executor.layers.mamba.mamba_utils import (
+    MambaStateDtypeCalculator, MambaStateShapeCalculator)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     DEFAULT_VOCAB_PADDING_SIZE, ParallelLMHead, VocabParallelEmbedding)
-from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.model_executor.model_loader.weight_utils import (
+    default_weight_loader, maybe_remap_kv_scale_name)
 from vllm.model_executor.models.interfaces import (HasInnerState, IsHybrid,
                                                    SupportsLoRA, SupportsPP,
                                                    SupportsQuant)
-from vllm.model_executor.models.mamba_cache import (MambaCacheManager,
-                                                    MambaCacheParams)
 from vllm.model_executor.models.utils import (
-    AutoWeightsLoader, make_empty_intermediate_tensors_factory, make_layers,
-    maybe_prefix)
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+    AutoWeightsLoader, WeightsMapper, make_empty_intermediate_tensors_factory,
+    make_layers, maybe_prefix)
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.configs import NemotronHConfig
-from vllm.utils import LayerBlockType
 
 
 class NemotronHMLP(nn.Module):
@@ -63,20 +57,32 @@ class NemotronHMLP(nn.Module):
     def __init__(
         self,
         config: NemotronHConfig,
+        layer_idx: int,
         quant_config: Optional[QuantizationConfig] = None,
         bias: bool = False,
         prefix: str = "",
     ) -> None:
         super().__init__()
+
+        hybrid_override_pattern = config.hybrid_override_pattern
+        mlp_index = hybrid_override_pattern[:layer_idx + 1].count("-") - 1
+        if isinstance(config.intermediate_size, list):
+            if len(config.intermediate_size) == 1:
+                intermediate_size = config.intermediate_size[0]
+            else:
+                intermediate_size = config.intermediate_size[mlp_index]
+        else:
+            intermediate_size = config.intermediate_size
+
         self.up_proj = ColumnParallelLinear(
             input_size=config.hidden_size,
-            output_size=config.intermediate_size,
+            output_size=intermediate_size,
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.up_proj",
         )
         self.down_proj = RowParallelLinear(
-            input_size=config.intermediate_size,
+            input_size=intermediate_size,
             output_size=config.hidden_size,
             bias=bias,
             quant_config=quant_config,
@@ -97,6 +103,7 @@ class NemotronHMLPDecoderLayer(nn.Module):
         self,
         config: NemotronHConfig,
         layer_idx: int,
+        model_config: Optional[ModelConfig] = None,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -109,6 +116,7 @@ class NemotronHMLPDecoderLayer(nn.Module):
             quant_config=quant_config,
             bias=config.mlp_bias,
             prefix=f"{prefix}.mixer",
+            layer_idx=layer_idx,
         )
 
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -135,6 +143,7 @@ class NemotronHMambaDecoderLayer(nn.Module):
         self,
         config: NemotronHConfig,
         layer_idx: int,
+        model_config: Optional[ModelConfig] = None,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -145,7 +154,7 @@ class NemotronHMambaDecoderLayer(nn.Module):
             hidden_size=config.hidden_size,
             ssm_state_size=config.ssm_state_size,
             conv_kernel_size=config.conv_kernel,
-            intermediate_size=config.expand * config.hidden_size,
+            intermediate_size=config.mamba_num_heads * config.mamba_head_dim,
             use_conv_bias=config.use_conv_bias,
             use_bias=config.use_bias,
             n_groups=config.n_groups,
@@ -153,6 +162,8 @@ class NemotronHMambaDecoderLayer(nn.Module):
             head_dim=config.mamba_head_dim,
             rms_norm_eps=config.rms_norm_eps,
             activation=config.mamba_hidden_act,
+            model_config=model_config,
+            cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.mixer",
         )
@@ -163,8 +174,6 @@ class NemotronHMambaDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
-        mamba_cache_params: MambaCacheParams,
-        mamba2_metadata: Mamba2Metadata,
         **kwargs,
     ):
         if residual is None:
@@ -174,7 +183,7 @@ class NemotronHMambaDecoderLayer(nn.Module):
             hidden_states, residual = self.norm(hidden_states, residual)
 
         output = torch.empty_like(hidden_states)
-        self.mixer(hidden_states, output, mamba_cache_params, mamba2_metadata)
+        self.mixer(hidden_states, output)
         return output, residual
 
 
@@ -184,6 +193,7 @@ class NemotronHAttention(nn.Module):
         self,
         config: NemotronHConfig,
         layer_idx: int,
+        model_config: Optional[ModelConfig] = None,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -204,7 +214,10 @@ class NemotronHAttention(nn.Module):
             # the KV heads across multiple tensor parallel GPUs.
             assert tp_size % self.total_num_kv_heads == 0
         self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
-        self.head_dim = config.hidden_size // self.total_num_heads
+        if hasattr(config, "head_dim") and config.head_dim is not None:
+            self.head_dim = config.head_dim
+        else:
+            self.head_dim = config.hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim**-0.5
@@ -253,6 +266,7 @@ class NemotronHAttentionDecoderLayer(nn.Module):
         self,
         config: NemotronHConfig,
         layer_idx: int,
+        model_config: Optional[ModelConfig] = None,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -262,6 +276,7 @@ class NemotronHAttentionDecoderLayer(nn.Module):
         self.mixer = NemotronHAttention(
             config,
             layer_idx,
+            model_config,
             cache_config,
             quant_config,
             prefix=f"{prefix}.mixer",
@@ -300,6 +315,7 @@ class NemotronHModel(nn.Module):
         super().__init__()
 
         config: NemotronHConfig = vllm_config.model_config.hf_config
+        model_config = vllm_config.model_config
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
@@ -323,6 +339,7 @@ class NemotronHModel(nn.Module):
             return layer_class(
                 config,
                 layer_idx,
+                model_config,
                 cache_config,
                 quant_config=quant_config,
                 prefix=prefix,
@@ -344,21 +361,9 @@ class NemotronHModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        mamba_cache_params: MambaCacheParams,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-
-        attn_metadata = get_forward_context().attn_metadata
-
-        if not envs.VLLM_USE_V1:
-            mamba2_metadata = prepare_mamba2_metadata(
-                chunk_size=self.config.chunk_size,
-                attn_metadata=attn_metadata,
-            )
-        else:
-            # v1 get mamba2_metadata from forward_context
-            mamba2_metadata = None
 
         if get_pp_group().is_first_rank:
             if inputs_embeds is not None:
@@ -372,23 +377,11 @@ class NemotronHModel(nn.Module):
             residual = intermediate_tensors["residual"]
 
         residual = None
-        num_non_mamba_layers = 0
-        for i in range(len(self.layers)):
-            layer = self.layers[i]
-            layer_mamba_cache_params = None
-            if isinstance(layer,
-                          NemotronHMambaDecoderLayer) and mamba_cache_params:
-                layer_mamba_cache_params = mamba_cache_params.at_layer_idx(
-                    i - num_non_mamba_layers)
-            else:
-                num_non_mamba_layers += 1
-
+        for i, layer in enumerate(self.layers):
             hidden_states, residual = layer(
                 positions=positions,
                 hidden_states=hidden_states,
                 residual=residual,
-                mamba_cache_params=layer_mamba_cache_params,
-                mamba2_metadata=mamba2_metadata,
             )
 
         if not get_pp_group().is_last_rank:
@@ -401,38 +394,36 @@ class NemotronHModel(nn.Module):
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
-        attb_params_mapping = {
-            "q_proj": "q",
-            "k_proj": "k",
-            "v_proj": "v",
-        }
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            ("qkv_proj", "q_proj", "q"),
+            ("qkv_proj", "k_proj", "k"),
+            ("qkv_proj", "v_proj", "v"),
+        ]
 
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
-            if "embeddings" in name:
-                name = name.replace("embeddings", "embed_tokens")
+            if "scale" in name:
+                # Remapping the name of FP8 kv-scale.
+                name = maybe_remap_kv_scale_name(name, params_dict)
+                if name is None:
+                    continue
 
-            if "A_log" in name:
-                name = name.replace("A_log", "A")
-                loaded_weight = loaded_weight.to(torch.float32)
+            # load stacked params
+            for param_name, weight_name, shard_id in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
 
-            if "D" in name:
-                loaded_weight = loaded_weight.to(torch.float32)
-
-            if "dt_bias" in name:
-                loaded_weight = loaded_weight.to(torch.float32)
-
-            # load attn params
-            if any(proj in name for proj in ["q_proj", "k_proj", "v_proj"]):
-                weight_name = next(proj
-                                   for proj in ["q_proj", "k_proj", "v_proj"]
-                                   if proj in name)
-                name = name.replace(weight_name, "qkv_proj")
                 param = params_dict[name]
                 weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight,
-                              attb_params_mapping[weight_name])
+                weight_loader(param, loaded_weight, shard_id)
+                break
+
             # load other params
             else:
                 param = params_dict[name]
@@ -446,6 +437,14 @@ class NemotronHModel(nn.Module):
 
 class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
                            IsHybrid, SupportsQuant):
+    hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={"backbone": "model"},
+        orig_to_new_substr={
+            "A_log": "A",
+            "embeddings": "embed_tokens"
+        },
+    )
+
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -462,16 +461,26 @@ class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
     embedding_padding_modules = ["lm_head"]
 
     @classmethod
+    def get_mamba_state_dtype_from_config(
+        cls,
+        vllm_config: "VllmConfig",
+    ) -> tuple[torch.dtype, torch.dtype]:
+
+        return MambaStateDtypeCalculator.mamba2_state_dtype(
+            vllm_config.model_config.dtype,
+            vllm_config.cache_config.mamba_cache_dtype,
+            vllm_config.cache_config.mamba_ssm_cache_dtype,
+        )
+
+    @classmethod
     def get_mamba_state_shape_from_config(
         cls,
         vllm_config: "VllmConfig",
-        use_v1: bool = True,
     ) -> tuple[tuple[int, int], tuple[int, int, int]]:
         """Calculate shapes for Mamba's convolutional and state caches.
 
         Args:
             vllm_config: vLLM config
-            use_v1: Get shapes for V1 (or V0)
 
         Returns:
             Tuple containing:
@@ -480,9 +489,9 @@ class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
         """
         parallel_config = vllm_config.parallel_config
         hf_config = vllm_config.model_config.hf_config
-        intermediate_size = hf_config.expand * hf_config.hidden_size
+        intermediate_size = hf_config.mamba_num_heads * hf_config.mamba_head_dim
 
-        return get_mamba_state_shape(
+        return MambaStateShapeCalculator.mamba2_state_shape(
             intermediate_size=intermediate_size,
             tp_world_size=parallel_config.tensor_parallel_size,
             n_groups=hf_config.n_groups,
@@ -490,7 +499,6 @@ class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
             head_dim=hf_config.mamba_head_dim,
             state_size=hf_config.ssm_state_size,
             conv_kernel=hf_config.conv_kernel,
-            use_v1=use_v1,
         )
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -521,9 +529,8 @@ class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
             # We need bigger padding if using lora for kernel
             # compatibility
             if not lora_config else lora_config.lora_vocab_padding_size,
+            prefix=maybe_prefix(prefix, "lm_head"),
         )
-        # Used to track and store by the Mamba cache between steps.
-        self.mamba_cache: Optional[MambaCacheManager] = None
 
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size)
@@ -540,52 +547,19 @@ class NemotronHForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 **kwargs):
 
-        mamba_cache_params = None
-        if not envs.VLLM_USE_V1:
-            if self.mamba_cache is None:
-
-                num_mamba_layers = \
-                    self.model_config.get_num_layers_by_block_type(
-                        self.vllm_config.parallel_config,
-                        LayerBlockType.mamba
-                    )
-                mamba_state_shape = \
-                    self.get_mamba_state_shape_from_config(
-                        self.vllm_config, use_v1=False)
-                self.mamba_cache = MambaCacheManager(self.vllm_config,
-                                                     self.lm_head.weight.dtype,
-                                                     num_mamba_layers,
-                                                     *mamba_state_shape)
-
-            mamba_cache_params = self.mamba_cache.current_run_tensors(**kwargs)
-
-        hidden_states = self.model(input_ids, positions, mamba_cache_params,
-                                   intermediate_tensors, inputs_embeds)
+        hidden_states = self.model(input_ids, positions, intermediate_tensors,
+                                   inputs_embeds)
 
         return hidden_states
-
-    def copy_inputs_before_cuda_graphs(self, input_buffers, **kwargs):
-        return self.mamba_cache.copy_inputs_before_cuda_graphs(
-            input_buffers, **kwargs)
-
-    def get_seqlen_agnostic_capture_inputs(self, batch_size: int):
-        return self.mamba_cache.get_seqlen_agnostic_capture_inputs(batch_size)
 
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
-        logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
+        logits = self.logits_processor(self.lm_head, hidden_states)
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
-        # update name in weights before passing to loader
-        updated_weights = []
-        for name, loaded_weight in weights:
-            name = name.replace("backbone", "model")
-            updated_weights.append((name, loaded_weight))
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(updated_weights)
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)

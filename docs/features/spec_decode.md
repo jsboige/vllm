@@ -48,10 +48,9 @@ The following code configures vLLM in an offline mode to use speculative decodin
 To perform the same with an online mode launch the server:
 
 ```bash
-python -m vllm.entrypoints.openai.api_server \
+vllm serve facebook/opt-6.7b \
     --host 0.0.0.0 \
     --port 8000 \
-    --model facebook/opt-6.7b \
     --seed 42 \
     -tp 1 \
     --gpu_memory_utilization 0.8 \
@@ -203,6 +202,7 @@ an [EAGLE (Extrapolation Algorithm for Greater Language-model Efficiency)](https
             "model": "yuhuili/EAGLE-LLaMA3-Instruct-8B",
             "draft_tensor_parallel_size": 1,
             "num_speculative_tokens": 2,
+            "method": "eagle",
         },
     )
 
@@ -230,6 +230,9 @@ A few important things to consider when using the EAGLE based draft models:
 3. When using EAGLE-based speculators with vLLM, the observed speedup is lower than what is
    reported in the reference implementation [here](https://github.com/SafeAILab/EAGLE). This issue is under
    investigation and tracked here: <gh-issue:9565>.
+
+4. When using EAGLE-3 based draft model, option "method" must be set to "eagle3".
+   That is, to specify `"method": "eagle3"` in `speculative_config`.
 
 A variety of EAGLE draft models are available on the Hugging Face hub:
 

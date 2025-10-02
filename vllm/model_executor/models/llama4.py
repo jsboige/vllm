@@ -25,9 +25,11 @@ from torch import nn
 from transformers import Llama4TextConfig
 
 from vllm.attention import Attention
+from vllm.attention.layers.chunked_local_attention import ChunkedLocalAttention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.distributed import (get_tensor_model_parallel_world_size,
+                              tensor_model_parallel_all_gather)
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (QKVParallelLinear,
@@ -35,8 +37,10 @@ from vllm.model_executor.layers.linear import (QKVParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.model_executor.layers.shared_fused_moe import SharedFusedMoE
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
+from vllm.model_executor.models.utils import sequence_parallel_chunk
 
 from .llama import LlamaForCausalLM, LlamaMLP, LlamaModel
 from .utils import (AutoWeightsLoader, extract_layer_index, fast_topk,
@@ -57,13 +61,16 @@ class Llama4MoE(nn.Module):
         router_scores = torch.sigmoid(router_scores.float())
         return (router_scores, router_indices.to(torch.int32))
 
-    def __init__(self,
-                 config: Llama4TextConfig,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+    def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
+
+        config = vllm_config.model_config.hf_config
+        parallel_config = vllm_config.parallel_config
+        quant_config = vllm_config.quant_config
+
         self.tp_size = get_tensor_model_parallel_world_size()
         self.top_k = config.num_experts_per_tok
+        self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
 
         intermediate_size_moe = config.intermediate_size
         self.router = ReplicatedLinear(config.hidden_size,
@@ -72,7 +79,19 @@ class Llama4MoE(nn.Module):
                                        quant_config=None,
                                        prefix=f"{prefix}.router")
 
-        self.experts = FusedMoE(
+        self.shared_expert = LlamaMLP(
+            hidden_size=config.hidden_size,
+            intermediate_size=intermediate_size_moe,
+            hidden_act="silu",
+            quant_config=quant_config,
+            bias=False,
+            prefix=f"{prefix}.shared_expert",
+            reduce_results=False,
+            disable_tp=self.is_sequence_parallel,
+        )
+
+        self.experts = SharedFusedMoE(
+            shared_experts=self.shared_expert,
             num_experts=config.num_local_experts,
             top_k=config.num_experts_per_tok,
             hidden_size=config.hidden_size,
@@ -82,28 +101,27 @@ class Llama4MoE(nn.Module):
             reduce_results=False,
             renormalize=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.experts")
-
-        self.shared_expert = LlamaMLP(
-            hidden_size=config.hidden_size,
-            intermediate_size=intermediate_size_moe,
-            hidden_act="silu",
-            quant_config=quant_config,
-            bias=False,
-            prefix=f"{prefix}.shared_expert",
-            reduce_results=self.experts.must_reduce_shared_expert_outputs(),
+            prefix=f"{prefix}.experts",
+            is_sequence_parallel=self.is_sequence_parallel,
         )
 
     def forward(self, hidden_states):
+        num_tokens = hidden_states.shape[0]
+        if self.is_sequence_parallel:
+            hidden_states = sequence_parallel_chunk(hidden_states)
+
         router_logits, _ = self.router(hidden_states)
-        shared_out = self.shared_expert(hidden_states)
-        routed_out = self.experts(
+
+        shared_out, routed_out = self.experts(
             hidden_states=hidden_states,
             router_logits=router_logits,
         )
         experts_out = routed_out + shared_out
 
-        if self.tp_size > 1:
+        if self.is_sequence_parallel:
+            experts_out = tensor_model_parallel_all_gather(experts_out, 0)
+            experts_out = experts_out[:num_tokens]
+        elif self.tp_size > 1:
             experts_out = self.experts.maybe_all_reduce_tensor_model_parallel(
                 experts_out)
 
@@ -194,17 +212,20 @@ class Llama4Attention(nn.Module):
             is_neox_style=is_neox_style,
         ) if not self.nope else None
 
-        self.attn = Attention(
+        use_chunked_local_attn = not self.nope and config.attention_chunk_size
+        attn_cls = (ChunkedLocalAttention
+                    if use_chunked_local_attn else Attention)
+        self.attn = attn_cls(
             self.num_heads,
             self.head_dim,
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             cache_config=cache_config,
             quant_config=quant_config,
-            per_layer_sliding_window=None,
-            use_irope=not self.nope,
             prefix=f"{prefix}.attn",
-        )
+            **({
+                "attention_chunk_size": config.attention_chunk_size
+            } if use_chunked_local_attn else {}))
 
     def _get_attn_scale(self, positions: torch.Tensor) -> torch.Tensor:
         floor = torch.floor((positions + 1.0) / self.floor_scale)
@@ -222,10 +243,14 @@ class Llama4Attention(nn.Module):
 
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(positions, q, k)
+
         if self.qk_norm is not None:
-            q = q.reshape(-1, self.num_heads, self.head_dim)
+            # Normalization is applied on the head_dim dimension. The rest of
+            # the dimensions are collapsed into a single dimension to support
+            # custom rms_norm cuda kernel.
+            q = q.reshape(-1, self.head_dim)
             q = self.qk_norm(q.float()).reshape(-1, self.q_size).to(q.dtype)
-            k = k.reshape(-1, self.num_kv_heads, self.head_dim)
+            k = k.reshape(-1, self.head_dim)
             k = self.qk_norm(k.float()).reshape(-1, self.kv_size).to(k.dtype)
 
         # We are applying temperature tuning (https://arxiv.org/abs/2501.19399)
@@ -246,14 +271,15 @@ class Llama4Attention(nn.Module):
 
 class Llama4DecoderLayer(nn.Module):
 
-    def __init__(
-        self,
-        config: Llama4TextConfig,
-        cache_config: Optional[CacheConfig] = None,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ) -> None:
+    def __init__(self,
+                 vllm_config: VllmConfig,
+                 prefix: str = "",
+                 config: Optional[Llama4TextConfig] = None) -> None:
         super().__init__()
+
+        config = config or vllm_config.model_config.hf_config
+        cache_config = vllm_config.cache_config
+        quant_config = vllm_config.quant_config
 
         self.layer_idx = extract_layer_index(prefix)
         self.global_layer = config.no_rope_layers[self.layer_idx] == 0
@@ -280,8 +306,7 @@ class Llama4DecoderLayer(nn.Module):
             self.layer_idx + 1) % config.interleave_moe_layer_step == 0
         if is_moe_layer:
             self.feed_forward = Llama4MoE(
-                config=config,
-                quant_config=quant_config,
+                vllm_config=vllm_config,
                 prefix=f"{prefix}.feed_forward",
             )
         else:

@@ -22,11 +22,12 @@
 """Inference-only Exaone model compatible with HuggingFace weights."""
 
 from collections.abc import Iterable
+from itertools import islice
 from typing import Any, Optional, Union
 
 import torch
 from torch import nn
-from transformers import PretrainedConfig
+from transformers import Exaone4Config
 
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
@@ -44,7 +45,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     DEFAULT_VOCAB_PADDING_SIZE, ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
-from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
 from .interfaces import SupportsLoRA, SupportsPP
@@ -96,7 +96,7 @@ class Exaone4Attention(nn.Module):
 
     def __init__(
         self,
-        config: PretrainedConfig,
+        config: Exaone4Config,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -159,25 +159,12 @@ class Exaone4Attention(nn.Module):
         if quant_config is not None and quant_config.get_name() == "gguf":
             is_neox_style = False
 
-        self.apply_all_layers = False  # apply rotary embeddings to every layer.
         layer_idx = extract_layer_index(prefix)
-        interleaved_sliding_window = getattr(config,
-                                             "interleaved_sliding_window",
-                                             4096)
-        sliding_window_pattern = getattr(config, "sliding_window_pattern",
-                                         "LLLG")
+        is_sliding = config.layer_types[layer_idx] == "sliding_attention"
+        self.sliding_window = config.sliding_window if is_sliding else None
 
-        if sliding_window_pattern:
-            layer_has_sliding_window = (
-                layer_idx + 1) % sliding_window_pattern.__len__() != 0
-        else:
-            layer_has_sliding_window = False
-            self.apply_all_layers = True
-
-        if layer_has_sliding_window:
-            self.sliding_window = interleaved_sliding_window
-        else:
-            self.sliding_window = None
+        # apply rotary embeddings to every layer in full attention models
+        self.apply_rope_all_layers = "sliding_attention" not in config.layer_types
 
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -213,7 +200,7 @@ class Exaone4Attention(nn.Module):
         k = self.k_norm(k)
         k = k.flatten(-2, -1)
 
-        if self.sliding_window or self.apply_all_layers:
+        if self.sliding_window or self.apply_rope_all_layers:
             q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
@@ -224,7 +211,7 @@ class Exaone4DecoderLayer(nn.Module):
 
     def __init__(
         self,
-        config: PretrainedConfig,
+        config: Exaone4Config,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -367,7 +354,7 @@ class Exaone4Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        for layer in self.layers[self.start_layer:self.end_layer]:
+        for layer in islice(self.layers, self.start_layer, self.end_layer):
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
@@ -497,6 +484,7 @@ class Exaone4ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                 # compatibility
                 if not lora_config else lora_config.lora_vocab_padding_size,
                 quant_config=quant_config,
+                prefix=maybe_prefix(prefix, "lm_head"),
             )
             if config.tie_word_embeddings:
                 self.lm_head.weight = self.model.embed_tokens.weight
@@ -528,10 +516,8 @@ class Exaone4ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
-        logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
+        logits = self.logits_processor(self.lm_head, hidden_states)
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str,

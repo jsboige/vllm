@@ -14,13 +14,11 @@ import torch
 from prometheus_client import start_http_server
 from tqdm import tqdm
 
-import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs, optional_type
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.logger import RequestLogger
 # yapf: disable
-from vllm.entrypoints.openai.api_server import build_async_engine_client
 from vllm.entrypoints.openai.protocol import (BatchRequestInput,
                                               BatchRequestOutput,
                                               BatchResponseData,
@@ -34,7 +32,6 @@ from vllm.entrypoints.openai.serving_models import (BaseModelPath,
                                                     OpenAIServingModels)
 from vllm.entrypoints.openai.serving_score import ServingScores
 from vllm.logger import init_logger
-from vllm.usage.usage_lib import UsageContext
 from vllm.utils import FlexibleArgumentParser, random_uuid
 from vllm.version import __version__ as VLLM_VERSION
 
@@ -163,7 +160,7 @@ async def write_local_file(output_path: str,
     batch_outputs: The list of batch outputs to write.
     """
     # We should make this async, but as long as run_batch runs as a
-    # standalone program, blocking the event loop won't effect performance.
+    # standalone program, blocking the event loop won't affect performance.
     with open(output_path, "w", encoding="utf-8") as f:
         for o in batch_outputs:
             print(o.model_dump_json(), file=f)
@@ -302,7 +299,7 @@ async def run_request(serving_engine_func: Callable,
             id=f"vllm-{random_uuid()}",
             custom_id=request.custom_id,
             response=BatchResponseData(
-                status_code=response.code,
+                status_code=response.error.code,
                 request_id=f"vllm-batch-{random_uuid()}"),
             error=response,
         )
@@ -336,12 +333,7 @@ async def run_batch(
 
     model_config = vllm_config.model_config
 
-    if envs.VLLM_USE_V1:
-        supported_tasks = await engine_client \
-            .get_supported_tasks()  # type: ignore
-    else:
-        supported_tasks = model_config.supported_tasks
-
+    supported_tasks = await engine_client.get_supported_tasks()
     logger.info("Supported_tasks: %s", supported_tasks)
 
     # Create the openai serving objects.
@@ -469,6 +461,9 @@ async def run_batch(
 
 
 async def main(args: Namespace):
+    from vllm.entrypoints.openai.api_server import build_async_engine_client
+    from vllm.usage.usage_lib import UsageContext
+
     async with build_async_engine_client(
             args,
             usage_context=UsageContext.OPENAI_BATCH_RUNNER,

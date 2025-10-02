@@ -20,6 +20,8 @@ from vllm.config import config
 from vllm.engine.arg_utils import AsyncEngineArgs, optional_type
 from vllm.entrypoints.chat_utils import (ChatTemplateContentFormatOption,
                                          validate_chat_template)
+from vllm.entrypoints.constants import (H11_MAX_HEADER_COUNT_DEFAULT,
+                                        H11_MAX_INCOMPLETE_EVENT_SIZE_DEFAULT)
 from vllm.entrypoints.openai.serving_models import LoRAModulePath
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.logger import init_logger
@@ -44,10 +46,10 @@ class LoRAParserAction(argparse.Action):
 
         lora_list: list[LoRAModulePath] = []
         for item in values:
-            if item in [None, '']:  # Skip if item is None or empty string
+            if item in [None, ""]:  # Skip if item is None or empty string
                 continue
-            if '=' in item and ',' not in item:  # Old format: name=path
-                name, path = item.split('=')
+            if "=" in item and "," not in item:  # Old format: name=path
+                name, path = item.split("=")
                 lora_list.append(LoRAModulePath(name, path))
             else:  # Assume JSON format
                 try:
@@ -72,6 +74,8 @@ class FrontendArgs:
     """Host name."""
     port: int = 8000
     """Port number."""
+    uds: Optional[str] = None
+    """Unix domain socket path. If set, host and port arguments are ignored."""
     uvicorn_log_level: Literal["debug", "info", "warning", "error", "critical",
                                "trace"] = "info"
     """Log level for uvicorn."""
@@ -99,9 +103,13 @@ class FrontendArgs:
     chat_template_content_format: ChatTemplateContentFormatOption = "auto"
     """The format to render message content within a chat template.
 
-* "string" will render the content as a string. Example: `"Hello World"`
-* "openai" will render the content as a list of dictionaries, similar to OpenAI
-schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
+    * "string" will render the content as a string. Example: `"Hello World"`
+    * "openai" will render the content as a list of dictionaries, similar to
+      OpenAI schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
+    trust_request_chat_template: bool = False
+    """Whether to trust the chat template provided in the request. If False,
+    the server will always use the chat template specified by `--chat-template`
+    or the ones from tokenizer."""
     response_role: str = "assistant"
     """The role name to return if `request.add_generation_prompt=true`."""
     ssl_keyfile: Optional[str] = None
@@ -130,14 +138,13 @@ schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
     """If specified, will run the OpenAI frontend server in the same process as
     the model serving engine."""
     enable_request_id_headers: bool = False
-    """If specified, API server will add X-Request-Id header to responses.
-    Caution: this hurts performance at high QPS."""
+    """If specified, API server will add X-Request-Id header to responses."""
     enable_auto_tool_choice: bool = False
-    """If specified, exclude tool definitions in prompts when
-    tool_choice='none'."""
-    exclude_tools_when_tool_choice_none: bool = False
     """Enable auto tool choice for supported models. Use `--tool-call-parser`
     to specify which parser to use."""
+    exclude_tools_when_tool_choice_none: bool = False
+    """If specified, exclude tool definitions in prompts when
+    tool_choice='none'."""
     tool_call_parser: Optional[str] = None
     """Select the tool call parser depending on the model that you're using.
     This is used to parse the model-generated tool call into OpenAI API format.
@@ -147,6 +154,10 @@ schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
     """Special the tool parser plugin write to parse the model-generated tool
     into OpenAI API format, the name register in this plugin can be used in
     `--tool-call-parser`."""
+    tool_server: Optional[str] = None
+    """Comma-separated list of host:port pairs (IPv4, IPv6, or hostname).
+    Examples: 127.0.0.1:8000, [::1]:8000, localhost:1234. Or `demo` for demo
+    purpose."""
     log_config_file: Optional[str] = envs.VLLM_LOGGING_CONFIG_PATH
     """Path to logging config JSON file for both vllm and uvicorn"""
     max_log_len: Optional[int] = None
@@ -163,6 +174,17 @@ schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
     enable_tokenizer_info_endpoint: bool = False
     """Enable the /get_tokenizer_info endpoint. May expose chat
     templates and other tokenizer configuration."""
+    enable_log_outputs: bool = False
+    """If True, log model outputs (generations).
+    Requires --enable-log-requests."""
+    h11_max_incomplete_event_size: int = H11_MAX_INCOMPLETE_EVENT_SIZE_DEFAULT
+    """Maximum size (bytes) of an incomplete HTTP event (header or body) for
+    h11 parser. Helps mitigate header abuse. Default: 4194304 (4 MB)."""
+    h11_max_header_count: int = H11_MAX_HEADER_COUNT_DEFAULT
+    """Maximum number of HTTP headers allowed in a request for h11 parser.
+    Helps mitigate header abuse. Default: 256."""
+    log_error_stack: bool = envs.VLLM_SERVER_DEV_MODE
+    """If set to True, log the stack trace of error responses"""
 
     @staticmethod
     def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
@@ -185,7 +207,7 @@ schema. Example: `[{"type": "text", "text": "Hello world!"}]`"""
         frontend_kwargs["lora_modules"]["type"] = optional_type(str)
         frontend_kwargs["lora_modules"]["action"] = LoRAParserAction
 
-        # Special case: Middleware needs append action
+        # Special case: Middleware needs to append action
         frontend_kwargs["middleware"]["action"] = "append"
         frontend_kwargs["middleware"]["type"] = str
         if "nargs" in frontend_kwargs["middleware"]:
@@ -255,6 +277,9 @@ def validate_parsed_serve_args(args: argparse.Namespace):
     if args.enable_auto_tool_choice and not args.tool_call_parser:
         raise TypeError("Error: --enable-auto-tool-choice requires "
                         "--tool-call-parser")
+    if args.enable_log_outputs and not args.enable_log_requests:
+        raise TypeError("Error: --enable-log-outputs requires "
+                        "--enable-log-requests")
 
 
 def create_parser_for_docs() -> FlexibleArgumentParser:

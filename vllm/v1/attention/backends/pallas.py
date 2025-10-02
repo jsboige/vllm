@@ -5,16 +5,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
-import torch_xla.core.xla_builder as xb
-import torch_xla.experimental.custom_kernel  # noqa: F401
-# Required to register custom ops.
-from torch.library import impl
-from torch_xla._internal.jax_workarounds import requires_jax
-from torch_xla.experimental.custom_kernel import XLA_LIB
 
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer, AttentionType)
-from vllm.attention.backends.utils import CommonAttentionState
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.utils import cdiv, next_power_of_2
@@ -37,12 +30,63 @@ TPU_STR_DTYPE_TO_TORCH_DTYPE = {
     "uint8": torch.uint8,
 }
 
+try:
+    import tpu_commons  # noqa: F401
+except ImportError:
+    # Lazy import torch_xla
+    import torch_xla.core.xla_builder as xb
+    import torch_xla.experimental.custom_kernel  # noqa: F401
+    from torch.library import impl
+    from torch_xla._internal.jax_workarounds import requires_jax
+    from torch_xla.experimental.custom_kernel import XLA_LIB
+
+    @requires_jax
+    def kv_cache_update_op_impl(kv: torch.Tensor, slot_mapping: torch.Tensor,
+                                kv_cache: torch.Tensor,
+                                num_kv_update_slices: torch.Tensor,
+                                page_size: int, num_slices_per_block: int):
+        from vllm.attention.ops.pallas_kv_cache_update import kv_cache_update
+        new_kv_cache = xb.call_jax(
+            kv_cache_update,
+            (kv, slot_mapping, kv_cache, num_kv_update_slices), {
+                "page_size": page_size,
+                "num_slices_per_block": num_slices_per_block
+            })
+        return new_kv_cache
+
+
+    XLA_LIB.define(
+        "kv_cache_update_op(Tensor kv, Tensor slot_mapping," \
+        "Tensor kv_cache, Tensor num_kv_update_slices, int page_size," \
+        "int num_slices_per_block)" \
+        "-> Tensor", )
+
+    @impl(XLA_LIB, "kv_cache_update_op", "XLA")
+    def kv_cache_update_op_xla(kv: torch.Tensor, slot_mapping: torch.Tensor,
+                               kv_cache: torch.Tensor,
+                               num_kv_update_slices: torch.Tensor,
+                               page_size: int,
+                               num_slices_per_block: int) -> torch.Tensor:
+        new_kv_cache = kv_cache_update_op_impl(kv, slot_mapping, kv_cache,
+                                               num_kv_update_slices, page_size,
+                                               num_slices_per_block)
+        return new_kv_cache
+
+    @impl(XLA_LIB, "kv_cache_update_op", "CompositeExplicitAutograd")
+    def kv_cache_update_op_non_xla(kv: torch.Tensor,
+                                   slot_mapping: torch.Tensor,
+                                   kv_cache: torch.Tensor,
+                                   num_kv_update_slices: torch.Tensor,
+                                   page_size: int,
+                                   num_slices_per_block: int) -> torch.Tensor:
+        return kv_cache
+
 
 class PallasAttentionBackend(AttentionBackend):
 
     @staticmethod
     def get_name() -> str:
-        return "PALLAS_VLLM_V1"
+        return "PALLAS"
 
     @staticmethod
     def get_impl_cls() -> type["PallasAttentionBackendImpl"]:
@@ -53,15 +97,12 @@ class PallasAttentionBackend(AttentionBackend):
         return PallasMetadata
 
     @staticmethod
-    def get_state_cls() -> type["CommonAttentionState"]:
-        return CommonAttentionState
-
-    @staticmethod
     def get_kv_cache_shape(
         num_blocks: int,
         block_size: int,
         num_kv_heads: int,
         head_size: int,
+        cache_dtype_str: str = "auto",
     ) -> tuple[int, ...]:
         padded_head_size = cdiv(
             head_size, TPU_HEAD_SIZE_ALIGNMENT) * TPU_HEAD_SIZE_ALIGNMENT
@@ -182,6 +223,7 @@ class PallasAttentionBackendImpl(AttentionImpl):
         attn_metadata: PallasMetadata,
         output: Optional[torch.Tensor] = None,
         output_scale: Optional[torch.Tensor] = None,
+        output_block_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass with Pallas attention.
 
@@ -189,12 +231,13 @@ class PallasAttentionBackendImpl(AttentionImpl):
             query: shape = [num_tokens, num_heads * head_size]
             key: shape = [num_tokens, num_kv_heads * head_size]
             value: shape = [num_tokens, num_kv_heads * head_size]
-            kv_cache = [num_blocks, block_size, num_kv_heads * 2, head_size]
+            kv_cache: shape =
+                [num_blocks, block_size, num_kv_heads * 2, head_size]
             attn_metadata: Metadata for attention.
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
-        if output_scale is not None:
+        if output_scale is not None or output_block_scale is not None:
             raise NotImplementedError(
                 "fused output quantization is not yet supported"
                 " for PallasAttentionBackendImpl")
@@ -283,7 +326,7 @@ def write_to_kv_cache(
     Args:
         key: shape = [num_tokens, num_kv_heads, head_size]
         value: shape = [num_tokens, num_kv_heads, head_size]
-        kv_cache = [num_blocks, block_size, num_kv_heads * 2, head_size]
+        kv_cache: shape = [num_blocks, block_size, num_kv_heads * 2, head_size]
         num_slices_per_kv_cache_update_block: int
     """
     _, page_size, num_combined_kv_heads, head_size = kv_cache.shape
@@ -311,46 +354,6 @@ def write_to_kv_cache(
         num_slices_per_kv_cache_update_block)
     # NOTE: the in-place copy will be optimized away by XLA compiler.
     kv_cache.copy_(new_kv_cache)
-
-
-@requires_jax
-def kv_cache_update_op_impl(kv: torch.Tensor, slot_mapping: torch.Tensor,
-                            kv_cache: torch.Tensor,
-                            num_kv_update_slices: torch.Tensor, page_size: int,
-                            num_slices_per_block: int):
-    from vllm.attention.ops.pallas_kv_cache_update import kv_cache_update
-    new_kv_cache = xb.call_jax(
-        kv_cache_update, (kv, slot_mapping, kv_cache, num_kv_update_slices), {
-            "page_size": page_size,
-            "num_slices_per_block": num_slices_per_block
-        })
-    return new_kv_cache
-
-
-XLA_LIB.define(
-    "kv_cache_update_op(Tensor kv, Tensor slot_mapping, Tensor kv_cache," \
-    "Tensor num_kv_update_slices, int page_size, int num_slices_per_block)" \
-    "-> Tensor", )
-
-
-@impl(XLA_LIB, "kv_cache_update_op", "XLA")
-def kv_cache_update_op_xla(kv: torch.Tensor, slot_mapping: torch.Tensor,
-                           kv_cache: torch.Tensor,
-                           num_kv_update_slices: torch.Tensor, page_size: int,
-                           num_slices_per_block: int) -> torch.Tensor:
-    new_kv_cache = kv_cache_update_op_impl(kv, slot_mapping, kv_cache,
-                                           num_kv_update_slices, page_size,
-                                           num_slices_per_block)
-    return new_kv_cache
-
-
-@impl(XLA_LIB, "kv_cache_update_op", "CompositeExplicitAutograd")
-def kv_cache_update_op_non_xla(kv: torch.Tensor, slot_mapping: torch.Tensor,
-                               kv_cache: torch.Tensor,
-                               num_kv_update_slices: torch.Tensor,
-                               page_size: int,
-                               num_slices_per_block: int) -> torch.Tensor:
-    return kv_cache
 
 
 # We can move this function to a common utils file if it's also useful for other
