@@ -1,0 +1,50 @@
+bc58d8490 Roo feat(archeology): Add jsboige commit history index for forensic analysis
+75cde1009 jsboige Chore: Comment out '!.env' in .gitignore to ensure specific .env files are ignored
+4bb63062a jsboige Stop tracking myia-vllm/qwen3/configs/.env
+f26ca3510 jsboige Chore: Add myia-vllm/qwen3/configs/.env to gitignore
+7835cc3ae jsboige Update .gitignore to exclude local .env file and remove it from index
+d4718baf0 Harry Mellor Add full API docs and improve the UX of navigating them (#17485)
+0bcd599d5 jsboige Refactor: Finalize file reorganization and update remaining paths
+9872f0c20 jsboige Refactor: Reorganize directory structure according to architect proposal
+a8cc557b3 jsboige restore: R├®cup├®ration fichiers essentiels supprim├®s
+6b1773163 jsboige fix: Improve .gitignore to exclude G directory variants
+96af1386d jsboige feat: Add Qwen3 tool parsing components
+c3f1bf630 jsboige feat: Add vLLM configuration files
+527b49da9 jsboige feat: Add .gitignore for vllm-configs
+e5c935313 kushanam fix minor miscalled method (#14327)
+b969eb189 Tao He Fixes a typo about 'max_decode_seq_len' which causes crashes with cuda graph. (#9285)
+a53540b4a Cody Yu [Performance] Enable chunked prefill and prefix caching together (#8120)
+0f779a9e2 Zhuohan Li [FIX] Fix formatting error in main branch (#1822)
+c09efff97 Zhonghua Deng [Bugfix][V1][P/D]Fix the uneven polling issue in the toy proxy for P2pNcclConnector (#21819)
+309c1bb82 ericehanley [Bug] Update auto_tune.sh to separate benchmarking and profiling. (#21629)
+9af654cc3 Woosuk Kwon [Responses API] Ignore `store=True` and process the request by default (#22185)
+a5fff3bd4 Raghav Ravishankar Fix Arcee model weight loading: Add custom load_weights (#21725)
+1539ced93 Cyrus Leung [Doc] Update pooling model docs (#22186)
+54de71d0d 22quinn [Sampler] Support returning all logprobs or logits (#21792)
+fed5849d3 Isotr0py [Bugfix] Fix failing GGUF models test (#22174)
+c1b4eb048 Weixiao Huang [feat] move WEIGHT_SCALE_SUPPORTED into raise block to accelerate RLHF weight loading (#21164)
+a7b8788d2 Jee Jee Li [Misc] Modify the organization of GLM series  (#22171)
+8ecb3e9e9 Tyler Michael Smith [CI Bugfix] Fix wNa16 kernel not found for test_shared_storage_connector_hashes (#22163)
+e5949e5ae Chenxi Yang Remove index_put from MM embeddings merging (#22105)
+49bcd893e ZiTian.Zhao [refactor] improve ConstantList exception specificity (#22156)
+aa7012eb6 Giancarlo Delfin Add tree attention backend for v1 (part 1) (#20401)
+c2e75b3c1 Ning Xie remove duplicate code within cleanup_dist_env_and_memory (#22147)
+0d7db16a9 Abirdcfly [PD] add test for chat completions endpoint (#21925)
+845420ac2 22quinn [RLHF] Fix torch.dtype not serializable in example (#22158)
+e27d25a0d ZiTian.Zhao [fix] fix correct assertion syntax error in attention utils. (#22154)
+6f5478298 Seiji Eicher Use `aiohttp` connection pool for benchmarking (#21981)
+6a39ba85f Isotr0py [Bugfix] Fix failing multimodal standard test (#22153)
+d3c18c9cb Yuxuan Zhang fuse fp32 for GLM-4.5 e_score_correction_bias (#22143)
+83f7bbb31 TankNee Add chat doc in quick start (#21213)
+b5dfb94fa Li, Jiang [CI/Build][Bugfix] Fix Qwen2.5 tests in CPU CI via fallback silu_and_mul to torch native implementation (#22145)
+6d98843b3 Woosuk Kwon [Responses API] Disable response store by default (#22137)
+aefeea0fd David Ben-David [V1] [P/D] Refactor KV Connector Path (#21980)
+24d1dffbe H [executor] feat: add supports_pp attr to executors (#21786)
+7de45db9a Ning Xie [Misc] update doc comment for send (#22026)
+789562c28 Roberto L. Castro Support CUTLASS NVFP4 (w4a4) for Blackwell Geforce GPUs (SM120) (#21309)
+3f36c325f Ye (Charlotte) Qi [Benchmark] Support ready check timeout in `vllm bench serve` (#21696)
+3dddbf1f2 Isotr0py [Misc] Add tensor schema test coverage for multimodal models (#21754)
+337eb23bc jiahanc [Fix] Fix llama4 modelopt weight loading error (#22107)
+2ff46b882 Rui Qiao [Misc] Bump ray to 2.48.0 (#22123)
+554df8a6a Xiao Revert "[compile][startup] Disable C++ compilation of symbolic shapes" (#22122)
+73e1b9b1d Yan Ma [xpu]support moe models on XPU platform (#21643)

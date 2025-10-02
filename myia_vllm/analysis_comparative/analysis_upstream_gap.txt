@@ -1,0 +1,18 @@
+* b9fb36010 (HEAD -> main, origin/feature/post-apt-consolidation-clean, feature/post-apt-consolidation-clean, backup-feature-analysis-20251002-183614) feat: Post-APT consolidation - Complete security recovery and architecture cleanup
+* bc58d8490 (tag: old-main-20251002, backup-main-before-restoration-merge-20250928-141044, backup-main-analysis-20251002-183614) feat(archeology): Add jsboige commit history index for forensic analysis
+* 75cde1009 (origin/main, origin/HEAD) Chore: Comment out '!.env' in .gitignore to ensure specific .env files are ignored
+* 4bb63062a Stop tracking myia-vllm/qwen3/configs/.env
+* f26ca3510 Chore: Add myia-vllm/qwen3/configs/.env to gitignore
+* 7835cc3ae Update .gitignore to exclude local .env file and remove it from index
+* d4718baf0 Add full API docs and improve the UX of navigating them (#17485)
+* 0bcd599d5 Refactor: Finalize file reorganization and update remaining paths
+* 9872f0c20 Refactor: Reorganize directory structure according to architect proposal
+* a8cc557b3 restore: Récupération fichiers essentiels supprimés
+* 6b1773163 fix: Improve .gitignore to exclude G directory variants
+* 96af1386d feat: Add Qwen3 tool parsing components
+* c3f1bf630 feat: Add vLLM configuration files
+* 527b49da9 feat: Add .gitignore for vllm-configs
+* e5c935313 fix minor miscalled method (#14327)
+* b969eb189 Fixes a typo about 'max_decode_seq_len' which causes crashes with cuda graph. (#9285)
+* a53540b4a [Performance] Enable chunked prefill and prefix caching together (#8120)
+* 0f779a9e2 [FIX] Fix formatting error in main branch (#1822)

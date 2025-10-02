@@ -154,3 +154,5 @@ csrc/moe/marlin_moe_wna16/kernel_*
 !huggingface.env
 !env/
 !docker-compose/build/
+
+build/

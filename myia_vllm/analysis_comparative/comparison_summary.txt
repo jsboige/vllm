@@ -1,0 +1,65 @@
+=== RAPPORT DE COMPARAISON DES BRANCHES ===
+Date: 2025-10-02 18:33:52
+
+STATISTIQUES:
+- Fichiers sur main: 4135
+- Fichiers sur feature: 4279
+- Fichiers communs: 4135
+- Fichiers exclusifs à main: 0
+- Fichiers exclusifs à feature: 144
+
+FICHIERS EXCLUSIFS À MAIN (premiers 50):
+
+
+FICHIERS EXCLUSIFS À FEATURE (premiers 50):
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-large.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-medium-qwen3-fixed.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-medium-qwen3-memory-optimized.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-medium-qwen3-optimized.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-medium-qwen3-original-parser.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-medium.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-micro-qwen3-improved.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-micro-qwen3-new.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-micro-qwen3-optimized.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-micro-qwen3-original-parser.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-micro.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-mini-qwen3-optimized.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-mini-qwen3-original-parser.yml
+  - myia_vllm/archived/docker-compose-deprecated/docker-compose-mini.yml
+  - myia_vllm/benchmarks/qualitative_benchmarks.py
+  - myia_vllm/configs/.env.example
+  - myia_vllm/configs/docker/docker-compose-large.yml
+  - myia_vllm/configs/docker/docker-compose-medium-qwen3-fixed.yml
+  - myia_vllm/configs/docker/docker-compose-medium-qwen3-memory-optimized.yml
+  - myia_vllm/configs/docker/docker-compose-medium-qwen3-original-parser.yml
+  - myia_vllm/configs/docker/docker-compose-medium-qwen3.yml
+  - myia_vllm/configs/docker/docker-compose-medium.old.yml
+  - myia_vllm/configs/docker/docker-compose-medium.yml
+  - myia_vllm/configs/docker/docker-compose-micro-qwen3-improved.yml
+  - myia_vllm/configs/docker/docker-compose-micro-qwen3-new.yml
+  - myia_vllm/configs/docker/docker-compose-micro-qwen3-original-parser.yml
+  - myia_vllm/configs/docker/docker-compose-micro-qwen3.yml
+  - myia_vllm/configs/docker/docker-compose-micro.yml
+  - myia_vllm/configs/docker/docker-compose-mini-qwen3-original-parser.yml
+  - myia_vllm/configs/docker/docker-compose-mini-qwen3.yml
+  - myia_vllm/configs/docker/docker-compose-mini.yml
+  - myia_vllm/configs/docker/profiles/medium.yml
+  - myia_vllm/configs/huggingface.env.example
+  - myia_vllm/configs/mini-qwen3.env.example
+  - myia_vllm/docker-compose-qwen3-medium.yml
+  - myia_vllm/docker-compose-qwen3-micro.yml
+  - myia_vllm/docker-compose-qwen3-mini.yml
+  - myia_vllm/docs/archeology/CONSOLIDATION_DOCKER_REPORT.md
+  - myia_vllm/docs/archeology/CONSOLIDATION_SCRIPTS_FINAL.md
+  - myia_vllm/docs/archeology/DIAGNOSTIC_CONFORMITE.md
+  - myia_vllm/docs/archeology/HISTORICAL_ANALYSIS.md
+  - myia_vllm/docs/archeology/RECOVERY_SECURITY_PLAN.md
+  - myia_vllm/docs/archeology/RESTORATION_PLAN_V2.md
+  - myia_vllm/docs/archeology/SECURITY_ACTIONS_LOG.md
+  - myia_vllm/docs/archeology/SECURITY_METHODOLOGY.md
+  - myia_vllm/docs/qwen3/00_MASTER_CONFIGURATION_GUIDE.md
+  - myia_vllm/docs/qwen3/GDRIVE-BACKUP-README.md
+  - myia_vllm/docs/qwen3/GIT-README.md
+  - myia_vllm/docs/qwen3/PR-SUBMISSION-GUIDE.md
+  - myia_vllm/docs/qwen3/PULL-REQUEST-README.md
+
