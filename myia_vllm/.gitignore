@@ -1,0 +1,35 @@
+# Logs
+logs/
+*.log
+
+# Test results
+test_results/
+
+# Backups temporaires
+*.backup
+*.backup_*
+*.bak
+
+# Environment files (keep .env.example)
+.env
+
+# Docker compose overrides
+docker-compose.override.yml
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
