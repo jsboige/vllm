@@ -1,0 +1,211 @@
+{
+  "configs": [
+    {
+      "name": "baseline_reference",
+      "priority": 1,
+      "gpu_memory": 0.95,
+      "prefix_caching": false,
+      "chunked_prefill": false,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "Baseline actuelle pour référence (déjà testée)",
+      "expected_ttft_miss_ms": 1828,
+      "expected_ttft_hit_ms": 1607,
+      "expected_acceleration": 1.14
+    },
+    {
+      "name": "prefix_only_095",
+      "priority": 2,
+      "gpu_memory": 0.95,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "⭐ Prefix caching seul avec GPU memory 0.95 - Configuration gagnante attendue",
+      "expected_ttft_miss_ms": 1900,
+      "expected_ttft_hit_ms": 900,
+      "expected_acceleration": 2.1,
+      "hypothesis": "Optimisation idéale pour multi-tours - devrait améliorer cache HIT sans impacter MISS"
+    },
+    {
+      "name": "prefix_only_092",
+      "priority": 3,
+      "gpu_memory": 0.92,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "Prefix caching seul avec GPU memory réduite",
+      "expected_ttft_miss_ms": 1850,
+      "expected_ttft_hit_ms": 900,
+      "expected_acceleration": 2.05,
+      "hypothesis": "Réduire mémoire GPU peut améliorer stabilité du cache"
+    },
+    {
+      "name": "prefix_only_090",
+      "priority": 4,
+      "gpu_memory": 0.90,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "Prefix caching seul avec GPU memory 0.90",
+      "expected_ttft_miss_ms": 1850,
+      "expected_ttft_hit_ms": 950,
+      "expected_acceleration": 1.95,
+      "hypothesis": "Mémoire minimale recommandée avec prefix caching"
+    },
+    {
+      "name": "chunked_only_default",
+      "priority": 5,
+      "gpu_memory": 0.95,
+      "prefix_caching": false,
+      "chunked_prefill": true,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "Chunked prefill seul avec paramètres par défaut",
+      "expected_ttft_miss_ms": 2750,
+      "expected_ttft_hit_ms": 2450,
+      "expected_acceleration": 1.12,
+      "hypothesis": "Test chunked prefill isolé - devrait augmenter TTFT mais améliorer throughput",
+      "warning": "Impact négatif attendu sur TTFT (+30-60%)"
+    },
+    {
+      "name": "chunked_only_high_tokens",
+      "priority": 6,
+      "gpu_memory": 0.95,
+      "prefix_caching": false,
+      "chunked_prefill": true,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null,
+      "description": "Chunked prefill avec max_num_batched_tokens par défaut vLLM (131K pour contexte agentique)",
+      "expected_ttft_miss_ms": 2400,
+      "expected_ttft_hit_ms": 2200,
+      "expected_acceleration": 1.09,
+      "hypothesis": "Utiliser valeur par défaut vLLM optimale pour contexte 131K"
+    },
+    {
+      "name": "combined_optimized_high_tokens",
+      "priority": 7,
+      "gpu_memory": 0.92,
+      "prefix_caching": true,
+      "chunked_prefill": true,
+      "max_num_seqs": 64,
+      "max_num_batched_tokens": null,
+      "description": "Prefix + Chunked avec max_num_batched_tokens par défaut vLLM (131K pour contexte agentique)",
+      "expected_ttft_miss_ms": 3000,
+      "expected_ttft_hit_ms": 2000,
+      "expected_acceleration": 1.5,
+      "hypothesis": "Combinaison optimisée avec valeur par défaut vLLM pour contexte 131K"
+    },
+    {
+      "name": "combined_conservative",
+      "priority": 8,
+      "gpu_memory": 0.90,
+      "prefix_caching": true,
+      "chunked_prefill": true,
+      "max_num_seqs": 32,
+      "max_num_batched_tokens": null,
+      "description": "Prefix + Chunked avec max_num_batched_tokens par défaut vLLM (131K pour contexte agentique)",
+      "expected_ttft_miss_ms": 3200,
+      "expected_ttft_hit_ms": 2200,
+      "expected_acceleration": 1.45,
+      "hypothesis": "Configuration conservatrice avec valeur par défaut vLLM pour contexte 131K"
+    },
+    {
+      "name": "prefix_high_seqs",
+      "priority": 9,
+      "gpu_memory": 0.92,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": 128,
+      "max_num_batched_tokens": null,
+      "description": "Prefix caching avec max_num_seqs élevé",
+      "expected_ttft_miss_ms": 1900,
+      "expected_ttft_hit_ms": 900,
+      "expected_acceleration": 2.1,
+      "hypothesis": "Augmenter parallélisme sans chunked prefill pour améliorer throughput"
+    },
+    {
+      "name": "chunked_low_memory",
+      "priority": 10,
+      "gpu_memory": 0.90,
+      "prefix_caching": false,
+      "chunked_prefill": true,
+      "max_num_seqs": 64,
+      "max_num_batched_tokens": null,
+      "description": "Chunked prefill avec mémoire GPU réduite et max_num_batched_tokens par défaut vLLM (131K)",
+      "expected_ttft_miss_ms": 2600,
+      "expected_ttft_hit_ms": 2400,
+      "expected_acceleration": 1.08,
+      "hypothesis": "Tester mémoire réduite avec valeur par défaut vLLM pour contexte 131K"
+    },
+    {
+      "name": "combined_balanced",
+      "priority": 11,
+      "gpu_memory": 0.95,
+      "prefix_caching": true,
+      "chunked_prefill": true,
+      "max_num_seqs": 64,
+      "max_num_batched_tokens": null,
+      "description": "Prefix + Chunked avec max_num_batched_tokens par défaut vLLM (131K pour contexte agentique)",
+      "expected_ttft_miss_ms": 3100,
+      "expected_ttft_hit_ms": 2100,
+      "expected_acceleration": 1.48,
+      "hypothesis": "Configuration équilibrée avec valeur par défaut vLLM pour contexte 131K"
+    },
+    {
+      "name": "prefix_only_high_memory_high_seqs",
+      "priority": 12,
+      "gpu_memory": 0.95,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": 128,
+      "max_num_batched_tokens": null,
+      "description": "⭐ Prefix caching agressif avec mémoire et parallélisme élevés - Alternative gagnante si throughput critique",
+      "expected_ttft_miss_ms": 1900,
+      "expected_ttft_hit_ms": 850,
+      "expected_acceleration": 2.24,
+      "hypothesis": "Maximiser les bénéfices du prefix caching seul pour agents multi-tours"
+    }
+  ],
+  "baseline_metrics": {
+    "ttft_miss_ms": 1828,
+    "ttft_hit_ms": 1607,
+    "cache_acceleration": 1.14,
+    "gain_percentage": 12.1
+  },
+  "success_criteria": {
+    "ttft_miss_max_increase_pct": 20,
+    "ttft_hit_min_decrease_pct": 30,
+    "cache_acceleration_min": 1.5,
+    "gain_percentage_min": 30
+  },
+  "test_phases": {
+    "phase_1": {
+      "name": "Baseline + Prefix Caching Isolé",
+      "priority_range": [1, 4],
+      "configs": ["baseline_reference", "prefix_only_095", "prefix_only_092", "prefix_only_090"],
+      "early_exit_condition": "Si config 2 ou 3 atteint les objectifs, possibilité d'arrêter le grid search"
+    },
+    "phase_2": {
+      "name": "Chunked Prefill Isolé",
+      "priority_range": [5, 6],
+      "configs": ["chunked_only_default", "chunked_only_high_tokens"],
+      "decision_point": "Si TTFT > +50% vs baseline, confirmer que chunked prefill est contre-productif"
+    },
+    "phase_3": {
+      "name": "Combinaisons et Variations",
+      "priority_range": [7, 12],
+      "configs": [
+        "combined_optimized_high_tokens",
+        "combined_conservative",
+        "prefix_high_seqs",
+        "chunked_low_memory",
+        "combined_balanced",
+        "prefix_only_high_memory_high_seqs"
+      ],
+      "objective": "Exploration fine si aucune config précédente n'est satisfaisante"
+    }
+  }
+}
