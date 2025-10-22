@@ -1,6 +1,6 @@
 # Index Documentation Projet myia_vllm
 
-**Dernière mise à jour** : 21/10/2025
+**Dernière mise à jour** : 22/10/2025 - Mission 11 Phase 7
 
 ## 📋 Documentation SDDD (Semantic Documentation Driven Design)
 
@@ -14,18 +14,22 @@
 | SDDD-004 | Grid Search Crash Diagnosis | Diagnostic technique | ✅ Final | `logs/grid_search_crash_diagnosis_20251021.md` |
 | SDDD-005 | Git Cleanup Report | Maintenance | ✅ Final | `docs/git_cleanup_20251019.md` |
 
-### Documentation Permanente
+### Documentation Permanente / Guides Principaux
 
-| Catégorie | Document | Statut | Chemin |
-|-----------|----------|--------|--------|
-| Architecture | Docker Architecture | ✅ À jour | `docs/docker/ARCHITECTURE.md` |
-| Architecture | Medium Service Parameters | ✅ À jour | `docs/docker/MEDIUM_SERVICE_PARAMETERS.md` |
-| Deployment | Deployment Safety | ✅ À jour | `docs/deployment/DEPLOYMENT_SAFETY.md` |
-| Deployment | Medium Service Guide | ✅ À jour | `docs/deployment/MEDIUM_SERVICE.md` |
-| Deployment | Deployment Medium | ✅ À jour | `docs/deployment/DEPLOYMENT_MEDIUM_20251016.md` |
-| Optimization | KV Cache Optimization | ✅ À jour | `docs/optimization/KV_CACHE_OPTIMIZATION_20251016.md` |
-| Setup | ENV Configuration | ✅ À jour | `docs/setup/ENV_CONFIGURATION.md` |
-| Testing | Medium Service Test Plan | ✅ À jour | `docs/testing/MEDIUM_SERVICE_TEST_PLAN.md` |
+| Catégorie | Document | Lignes | Statut | Chemin |
+|-----------|----------|--------|--------|--------|
+| **Guides Production** | **DEPLOYMENT_GUIDE** | **382** | ✅ **À jour** | `docs/DEPLOYMENT_GUIDE.md` |
+| **Guides Production** | **OPTIMIZATION_GUIDE** | **386** | ✅ **À jour** | `docs/OPTIMIZATION_GUIDE.md` |
+| **Guides Production** | **TROUBLESHOOTING** | **495** | ✅ **À jour** | `docs/TROUBLESHOOTING.md` |
+| **Guides Production** | **MAINTENANCE_PROCEDURES** | **447** | ✅ **À jour** | `docs/MAINTENANCE_PROCEDURES.md` |
+| Architecture | Docker Architecture | - | ✅ À jour | `docs/docker/ARCHITECTURE.md` |
+| Architecture | Medium Service Parameters | - | ✅ À jour | `docs/docker/MEDIUM_SERVICE_PARAMETERS.md` |
+| Deployment | Deployment Safety | - | ✅ À jour | `docs/deployment/DEPLOYMENT_SAFETY.md` |
+| Deployment | Medium Service Guide | - | ✅ À jour | `docs/deployment/MEDIUM_SERVICE.md` |
+| Deployment | Deployment Medium | - | ✅ À jour | `docs/deployment/DEPLOYMENT_MEDIUM_20251016.md` |
+| Optimization | KV Cache Optimization | - | ✅ À jour | `docs/optimization/KV_CACHE_OPTIMIZATION_20251016.md` |
+| Setup | ENV Configuration | - | ✅ À jour | `docs/setup/ENV_CONFIGURATION.md` |
+| Testing | Medium Service Test Plan | - | ✅ À jour | `docs/testing/MEDIUM_SERVICE_TEST_PLAN.md` |
 
 ### Documentation Transient (Logs de Missions)
 
@@ -33,6 +37,17 @@
 |----|---------|----------|----------|--------|
 | LOG-001 | Docker Cleanup | docker_cleanup_20251018.md | ⚠️ Oui | `logs/` |
 | LOG-002 | Grid Search Bug Container | grid_search_bugfix_container_name_20251020.md | ⚠️ Oui | `logs/` |
+
+### Archives Missions (Transient)
+
+**Répertoire** : `archives/missions/2025-10-21_missions_11-15/`
+
+| Document | Type | Statut | Taille |
+|----------|------|--------|--------|
+| README.md | Index archivage | 📦 Archivé | 60 lignes |
+| SYNTHESIS_GRID_SEARCH_MISSIONS_20251021.md | Synthèse missions 11-15 | 📦 Archivé | 206 lignes |
+| PRODUCTION_VALIDATION_REPORT.md | Rapport validation | 📦 Archivé | 236 lignes |
+| git_cleanup_20251019.md | Maintenance Git | 📦 Archivé | 479 lignes |
 
 ### Documentation Archéologique
 
@@ -59,16 +74,25 @@
 
 ### Scripts Permanents (Production)
 
-| Script | Fonction | Statut | Chemin |
-|--------|----------|--------|--------|
-| grid_search_optimization.ps1 | Grid search automatisé | ✅ Production | `scripts/` |
-| monitor_grid_search_safety.ps1 | Monitoring temps réel | ✅ Production | `scripts/` |
-| test_cleanup.ps1 | Test cleanup containers | ✅ Production | `scripts/` |
-| deploy_medium_monitored.ps1 | Déploiement surveillé | ✅ Production | `scripts/` |
-| monitor_medium.ps1 | Monitoring service medium | ✅ Production | `scripts/` |
-| run_all_tests.ps1 | Suite tests complète | ✅ Production | `scripts/` |
-| test_kv_cache_acceleration.ps1 | Tests KV cache | ✅ Production | `scripts/` |
-| archive_docker_configs.ps1 | Archivage configs | ✅ Production | `scripts/` |
+| Script | Fonction | Lignes | Statut | Chemin |
+|--------|----------|--------|--------|--------|
+| grid_search_optimization.ps1 | Grid search automatisé | 1600+ | ✅ Production | `scripts/` |
+| monitor_grid_search_safety.ps1 | Monitoring temps réel | 170 | ✅ Production | `scripts/` |
+| test_cleanup.ps1 | Test cleanup containers | - | ✅ Production | `scripts/` |
+| deploy_medium_monitored.ps1 | Déploiement surveillé | - | ✅ Production | `scripts/` |
+| monitor_medium.ps1 | Monitoring service medium | - | ✅ Production | `scripts/` |
+| run_all_tests.ps1 | Suite tests complète | - | ✅ Production | `scripts/` |
+| test_kv_cache_acceleration.ps1 | Tests KV cache | - | ✅ Production | `scripts/` |
+| archive_docker_configs.ps1 | Archivage configs | - | ✅ Production | `scripts/` |
+
+### Scripts Maintenance (Mission 11 Phase 7)
+
+| Script | Fonction | Lignes | Statut | Chemin |
+|--------|----------|--------|--------|--------|
+| **health_check.ps1** | **Vérification santé services** | **226** | ✅ **Production** | `scripts/maintenance/` |
+| **cleanup_docker.ps1** | **Nettoyage automatisé Docker** | **408** | ✅ **Production** | `scripts/maintenance/` |
+| **backup_config.ps1** | **Sauvegarde configurations** | **246** | ✅ **Production** | `scripts/maintenance/` |
+| monitor-logs.ps1 | Monitoring logs temps réel | 367 | ✅ Production | `scripts/maintenance/` |
 
 ### Scripts Transient (Outils ponctuels)
 
@@ -151,13 +175,25 @@ Contient les scripts et configurations obsolètes, notamment:
 
 Pour rechercher efficacement dans la documentation :
 
-1. **Grid Search** : Rechercher "grid search optimization vllm"
-2. **Docker** : Rechercher "docker architecture medium service"
-3. **KV Cache** : Rechercher "kv cache optimization performance"
-4. **Deployment** : Rechercher "deployment safety medium service"
+1. **Déploiement** : Rechercher "comment déployer service medium production vllm docker compose"
+2. **Optimisation** : Rechercher "configuration optimale chunked prefill kv cache accélération"
+3. **Maintenance** : Rechercher "scripts maintenance cleanup docker health check automatisé"
+4. **Troubleshooting** : Rechercher "résolution erreurs problèmes vllm diagnostics"
+5. **Grid Search** : Rechercher "grid search optimization vllm"
+6. **Docker** : Rechercher "docker architecture medium service"
 
 ---
 
-**Date de création** : 21/10/2025  
-**Auteur** : Roo Code (Mission 14g)  
-**Prochaine révision** : Après Mission 14g complète
+## 📅 Dernières Mises à Jour
+
+| Date | Mission/Phase | Modifications | Auteur |
+|------|---------------|---------------|--------|
+| 22/10/2025 | Mission 11 Phase 7 | Ajout 4 guides permanents + 3 scripts maintenance + archivage missions 11-15 | Roo Code |
+| 21/10/2025 | Mission 14g | Création index + références grid search | Roo Code |
+
+---
+
+**Date de création** : 21/10/2025
+**Auteur** : Roo Code (Mission 14g)
+**Dernière mise à jour** : 22/10/2025 (Mission 11 Phase 7 - Sous-tâche 4/4)
+**Prochaine révision** : Mission 11 Phase 8
