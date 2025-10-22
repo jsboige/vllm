@@ -33,3 +33,4 @@ dist/
 .idea/
 *.swp
 *.swo
+grid_search_progress.json
