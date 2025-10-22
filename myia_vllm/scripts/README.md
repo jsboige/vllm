@@ -59,6 +59,134 @@
 **Fonction** : Archivage configurations Docker obsolètes  
 **Usage** : `.\archive_docker_configs.ps1`  
 **État** : Production
+---
+
+## 🛠️ Scripts Maintenance
+
+### health_check.ps1
+**Fonction** : Monitoring quotidien automatisé du service vLLM medium  
+**Localisation** : `scripts/maintenance/health_check.ps1`  
+**Usage** : `.\scripts\maintenance\health_check.ps1`  
+**Fréquence recommandée** : Quotidienne (chaque jour ouvré)
+
+**Vérifications automatiques** :
+- Statut container Docker (healthy/unhealthy)
+- Utilisation GPU NVIDIA (seuil configurable, défaut 90%)
+- Uptime du service
+- Génération rapport horodaté dans `logs/health_checks/`
+
+**Paramètres** :
+- `-GpuThreshold` : Seuil d'alerte GPU en % (défaut: 90)
+- `-Silent` : Mode silencieux sans sortie console
+- `-OutputDir` : Répertoire rapports (défaut: logs/health_checks)
+
+**Exemple** :
+```powershell
+# Health check standard
+.\scripts\maintenance\health_check.ps1
+
+# Health check avec seuil GPU 85% en mode silencieux
+.\scripts\maintenance\health_check.ps1 -GpuThreshold 85 -Silent
+```
+
+**Exit codes** :
+- `0` : Toutes vérifications réussies
+- `1` : Une ou plusieurs vérifications échouées
+
+**Documentation** : [MAINTENANCE_PROCEDURES.md](../docs/MAINTENANCE_PROCEDURES.md) Section 1.1
+
+---
+
+### cleanup_docker.ps1
+**Fonction** : Nettoyage hebdomadaire des ressources Docker orphelines  
+**Localisation** : `scripts/maintenance/cleanup_docker.ps1`  
+**Usage** : `.\scripts\maintenance\cleanup_docker.ps1`  
+**Fréquence recommandée** : Hebdomadaire (chaque vendredi)
+
+**Actions de nettoyage** :
+- Containers arrêtés (docker container prune)
+- Images inutilisées > 7 jours (docker image prune)
+- Volumes orphelins - ⚠️ **PROTÈGE** volumes nommés (myia_vllm_models)
+- Build cache Docker
+- Calcul et rapport de l'espace récupéré
+
+**Paramètres** :
+- `-Force` : Mode automatique sans confirmation utilisateur
+- `-DryRun` : Simulation sans suppression réelle
+- `-ImageAgeHours` : Âge minimum images à supprimer (défaut: 168h = 7j)
+- `-SkipContainers` : Ignorer nettoyage containers
+- `-SkipImages` : Ignorer nettoyage images
+- `-SkipVolumes` : Ignorer nettoyage volumes
+
+**Exemple** :
+```powershell
+# Nettoyage interactif (recommandé)
+.\scripts\maintenance\cleanup_docker.ps1
+
+# Nettoyage automatique sans confirmation
+.\scripts\maintenance\cleanup_docker.ps1 -Force
+
+# Simulation pour voir ce qui serait supprimé
+.\scripts\maintenance\cleanup_docker.ps1 -DryRun
+
+# Nettoyage sans volumes, images > 14 jours
+.\scripts\maintenance\cleanup_docker.ps1 -SkipVolumes -ImageAgeHours 336
+```
+
+**Sécurité** : 
+- Demande confirmation avant chaque type de suppression (sauf mode -Force)
+- Protection automatique des volumes nommés critiques
+- Logs détaillés dans `logs/maintenance/cleanup_docker_*.txt`
+
+**Documentation** : [MAINTENANCE_PROCEDURES.md](../docs/MAINTENANCE_PROCEDURES.md) Section 2
+
+---
+
+### backup_config.ps1
+**Fonction** : Backup automatisé configuration vLLM medium avant modifications  
+**Localisation** : `scripts/maintenance/backup_config.ps1`  
+**Usage** : `.\scripts\maintenance\backup_config.ps1`  
+**Fréquence recommandée** : Avant chaque modification de medium.yml
+
+**Fichiers sauvegardés** :
+- `medium.yml` (principal, toujours inclus)
+- `.env` (optionnel avec -IncludeEnv)
+- `docker-compose.yml` (optionnel avec -IncludeCompose)
+
+**Paramètres** :
+- `-IncludeEnv` : Inclure le fichier .env dans le backup
+- `-IncludeCompose` : Inclure docker-compose.yml dans le backup
+- `-Comment` : Ajouter un commentaire descriptif au nom du backup
+- `-BackupDir` : Répertoire destination (défaut: configs/docker/profiles/backups)
+
+**Exemple** :
+```powershell
+# Backup simple de medium.yml
+.\scripts\maintenance\backup_config.ps1
+
+# Backup complet avec .env et docker-compose
+.\scripts\maintenance\backup_config.ps1 -IncludeEnv -IncludeCompose
+
+# Backup avec commentaire descriptif
+.\scripts\maintenance\backup_config.ps1 -Comment "before_gpu_tuning"
+```
+
+**Format horodatage** : `medium_yyyyMMdd_HHmmss.yml` (ex: medium_20251022_143055.yml)
+
+**Workflow recommandé** :
+```powershell
+# 1. Créer backup
+.\scripts\maintenance\backup_config.ps1 -Comment "before_optimization"
+
+# 2. Modifier medium.yml
+# ...édition manuelle...
+
+# 3. Tester nouvelle config
+.\scripts\deploy_medium_monitored.ps1
+```
+
+**Documentation** : [MAINTENANCE_PROCEDURES.md](../docs/MAINTENANCE_PROCEDURES.md) Section 3.1
+
 
 ---
 
