@@ -137,6 +137,41 @@ function Write-ColorOutput {
     Add-Content -Path $MainLogFile -Value $FullMessage -ErrorAction SilentlyContinue
 }
 
+function Get-VllmContainerName {
+    <#
+    .SYNOPSIS
+    Détecte automatiquement le nom du container vLLM medium
+    
+    .DESCRIPTION
+    Recherche le container créé par Docker Compose avec le projet "myia_vllm"
+    et le service "medium". Retourne le nom réel du container.
+    
+    .OUTPUTS
+    String - Nom du container (ex: "myia_vllm-medium-qwen3")
+    #>
+    
+    # Méthode 1 : Détection via labels Docker Compose (plus fiable)
+    $containerName = docker ps --filter "label=com.docker.compose.project=myia_vllm" `
+                                --filter "label=com.docker.compose.service=medium" `
+                                --format "{{.Names}}" 2>$null | Select-Object -First 1
+    
+    if ($containerName) {
+        return $containerName
+    }
+    
+    # Méthode 2 : Fallback - Recherche par pattern dans le nom
+    $containerName = docker ps --filter "name=medium" --format "{{.Names}}" 2>$null |
+                     Where-Object { $_ -match "medium" } | Select-Object -First 1
+    
+    if ($containerName) {
+        return $containerName
+    }
+    
+    # Méthode 3 : Fallback final - Nom hardcodé (basé sur la convention Docker Compose actuelle)
+    Write-ColorOutput "⚠️  Impossible de détecter automatiquement le container - Utilisation du nom par défaut" -Level Warning
+    return "myia_vllm-medium-qwen3"
+}
+
 function Initialize-Environment {
     <#
     .SYNOPSIS
@@ -341,7 +376,7 @@ function Update-MediumConfig {
         $NewCommandLines += '      --tool-call-parser qwen3_xml'
         $NewCommandLines += '      --reasoning-parser qwen3'
         $NewCommandLines += '      --distributed-executor-backend=mp'
-        $NewCommandLines += '      --rope_scaling ''{\"rope_type\":\"yarn\",\"factor\":4.0,\"original_max_position_embeddings\":32768}'''
+        $NewCommandLines += '      --rope_scaling ''{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'''
         $NewCommandLines += '      --swap-space 16'
         
         # enable-prefix-caching (si activé)
@@ -447,7 +482,7 @@ function Deploy-VLLMService {
     try {
         # Arrêter le service existant
         Write-ColorOutput "  → Arrêt du service vllm-medium..." -Level Info
-        $DownOutput = docker compose -p myia_vllm -f $MediumYmlPath down --remove-orphans 2>&1
+        $DownOutput = docker compose -p myia_vllm --env-file "$ProjectRoot\.env" -f $MediumYmlPath down --remove-orphans 2>&1
         
         if ($LASTEXITCODE -ne 0) {
             throw "Échec de docker compose down : $DownOutput"
@@ -455,7 +490,7 @@ function Deploy-VLLMService {
         
         # Démarrer le nouveau service
         Write-ColorOutput "  → Démarrage du service avec nouvelle configuration..." -Level Info
-        $UpOutput = docker compose -p myia_vllm -f $MediumYmlPath up -d 2>&1
+        $UpOutput = docker compose -p myia_vllm --env-file "$ProjectRoot\.env" -f $MediumYmlPath up -d 2>&1
         
         if ($LASTEXITCODE -ne 0) {
             $Result.status = "failed"
@@ -477,6 +512,63 @@ function Deploy-VLLMService {
         return $Result
     }
 }
+function Invoke-CleanupContainers {
+    <#
+    .SYNOPSIS
+        Nettoie TOUS les containers vllm en garantissant qu'aucun orphelin ne subsiste.
+    .DESCRIPTION
+        Cette fonction assure un nettoyage complet et robuste des containers Docker,
+        même en cas d'échec de docker compose down. Utilisée dans le bloc finally
+        pour garantir un état propre après chaque configuration testée.
+    #>
+    param(
+        [Parameter(Mandatory=$false)]
+        [string]$Context = "cleanup"
+    )
+    
+    Write-ColorOutput "[$Context] Nettoyage complet des containers..." -Level Info
+    
+    if ($DryRun) {
+        Write-ColorOutput "[$Context] [DRY-RUN] Nettoyage simulé" -Level Info
+        return $true
+    }
+    
+    try {
+        # Étape 1: docker compose down standard
+        Write-ColorOutput "[$Context]   → docker compose down..." -Level Info
+        $DownOutput = docker compose -p myia_vllm --env-file "$ProjectRoot\.env" -f $MediumYmlPath down --remove-orphans --volumes 2>&1
+        
+        # Étape 2: Vérifier qu'aucun container myia_vllm ne subsiste
+        Write-ColorOutput "[$Context]   → Vérification containers orphelins..." -Level Info
+        $RemainingContainers = docker ps -a --filter "name=myia_vllm" --format "{{.Names}}" 2>&1
+        
+        if ($RemainingContainers -and $RemainingContainers -match "myia_vllm") {
+            Write-ColorOutput "[$Context]   ⚠️  Containers orphelins détectés - Suppression forcée..." -Level Warning
+            
+            $ContainerList = $RemainingContainers -split "`n" | Where-Object { $_ -match "myia_vllm" }
+            foreach ($container in $ContainerList) {
+                Write-ColorOutput "[$Context]     → Suppression forcée: $container" -Level Warning
+                docker rm -f $container 2>&1 | Out-Null
+            }
+        }
+        
+        # Étape 3: Vérification finale
+        $FinalCheck = docker ps -a --filter "name=myia_vllm" --format "{{.Names}}" 2>&1
+        
+        if ($FinalCheck -and $FinalCheck -match "myia_vllm") {
+            Write-ColorOutput "[$Context]   ✗ ÉCHEC: Des containers subsistent encore!" -Level Error
+            return $false
+        }
+        
+        Write-ColorOutput "[$Context]   ✓ Nettoyage terminé - Aucun container orphelin" -Level Success
+        return $true
+    }
+    catch {
+        Write-ColorOutput "[$Context]   ✗ Erreur durant le nettoyage: $_" -Level Error
+        return $false
+    }
+}
+
 
 function Wait-ContainerHealthy {
     <#
@@ -510,7 +602,7 @@ function Wait-ContainerHealthy {
         return $Result
     }
     
-    $ContainerName = "vllm-medium"
+    $ContainerName = Get-VllmContainerName
     $StartTime = Get-Date
     $TimeoutTime = $StartTime.AddSeconds($TimeoutSeconds)
     
@@ -757,9 +849,9 @@ function Parse-KVCacheOutput {
     
     # Patterns pour extraire les métriques
     $Patterns = @{
-        ttft_miss = 'TTFT\s+CACHE\s+MISS.*?(\d+\.?\d*)\s*ms'
-        ttft_hit = 'TTFT\s+CACHE\s+HIT.*?(\d+\.?\d*)\s*ms'
-        acceleration = 'Accélération.*?x\s*(\d+\.?\d*)'
+        ttft_miss = 'Premier message \(MISS\)\s*:\s*(\d+\.?\d*)\s*ms'
+        ttft_hit = 'Messages suivants \(HIT\)\s*:\s*(\d+\.?\d*)\s*ms'
+        acceleration = 'Accélération\s*:\s*x\s*(\d+\.?\d*)'
         gain = 'Gain.*?(\d+\.?\d*)\s*%'
     }
     
@@ -1313,6 +1405,25 @@ function Invoke-GridSearchWorkflow {
         }
         
         throw
+    }
+    finally {
+        # CLEANUP GARANTI - Exécuté TOUJOURS, même en cas d'erreur ou d'interruption
+        Write-ColorOutput "" -Level Info
+        Write-ColorOutput "═══════════════════════════════════════════════════════════════" -Level Info
+        Write-ColorOutput "CLEANUP FINAL GARANTI" -Level Info
+        Write-ColorOutput "═══════════════════════════════════════════════════════════════" -Level Info
+        
+        # Nettoyer tous les containers vllm, même orphelins
+        $CleanupSuccess = Invoke-CleanupContainers -Context "FINALLY"
+        
+        if (-not $CleanupSuccess) {
+            Write-ColorOutput "⚠️  ATTENTION: Le cleanup final a rencontré des problèmes" -Level Warning
+            Write-ColorOutput "    Vérifiez manuellement l'état des containers avec:" -Level Warning
+            Write-ColorOutput "    docker ps -a --filter 'name=myia_vllm'" -Level Warning
+        }
+        
+        Write-ColorOutput "═══════════════════════════════════════════════════════════════" -Level Info
+        Write-ColorOutput "" -Level Info
     }
 }
 
