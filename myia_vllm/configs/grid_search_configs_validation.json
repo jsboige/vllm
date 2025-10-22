@@ -1,0 +1,40 @@
+{
+  "configs": [
+    {
+      "name": "baseline_reference",
+      "description": "Configuration baseline exacte - Référence",
+      "gpu_memory": 0.95,
+      "prefix_caching": true,
+      "chunked_prefill": true,
+      "max_num_seqs": null,
+      "max_num_batched_tokens": null
+    },
+    {
+      "name": "prefix_only_safe",
+      "description": "Prefix caching only - GPU 0.85 (sécurité)",
+      "gpu_memory": 0.85,
+      "prefix_caching": true,
+      "chunked_prefill": false,
+      "max_num_seqs": 32,
+      "max_num_batched_tokens": null
+    },
+    {
+      "name": "chunked_only_safe",
+      "description": "Chunked prefill only - GPU 0.85 (sécurité)",
+      "gpu_memory": 0.85,
+      "prefix_caching": false,
+      "chunked_prefill": true,
+      "max_num_seqs": 32,
+      "max_num_batched_tokens": null
+    },
+    {
+      "name": "combined_conservative",
+      "description": "Les deux activés - GPU 0.80 (très conservatif)",
+      "gpu_memory": 0.80,
+      "prefix_caching": true,
+      "chunked_prefill": true,
+      "max_num_seqs": 24,
+      "max_num_batched_tokens": null
+    }
+  ]
+}
