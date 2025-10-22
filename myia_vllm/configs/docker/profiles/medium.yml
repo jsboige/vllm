@@ -7,12 +7,12 @@ services:
       --port ${VLLM_PORT_MEDIUM:-5002}
       --model Qwen/Qwen3-32B-AWQ
       --api-key ${VLLM_API_KEY_MEDIUM}
+      
       --tensor-parallel-size 2
-      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION_MEDIUM:-0.95}
+      --gpu-memory-utilization 0.85
       --max-model-len 131072
       --quantization awq_marlin
       --kv-cache-dtype fp8
-      --enable-prefix-caching
       --enable-chunked-prefill
       --dtype ${DTYPE_MEDIUM:-half}
       --enable-auto-tool-choice
