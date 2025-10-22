@@ -1,261 +1,196 @@
-# Scripts myia_vllm - Architecture Finale Consolidée
+# Scripts myia_vllm - Guide et Cartographie
 
-**Version :** 25 septembre 2025 - Plan de Restauration V2 ACCOMPLI
-**Statut :** 🎯 **CONSOLIDATION SCRIPTURALE FINALE RÉUSSIE**
-**Migration :** 57+ scripts → **6 scripts essentiels** + archivage sécurisé
+## 📂 Scripts de Production (Permanents)
 
----
+### Grid Search et Optimisation
 
-## 🏆 ARCHITECTURE FINALE PLAN V2 ATTEINTE
+#### grid_search_optimization.ps1
+**Fonction** : Grid search automatisé pour identification configuration optimale vLLM  
+**Usage** : `.\grid_search_optimization.ps1 -ConfigFile "configs/grid_search_configs.json"`  
+**Dépendances** : Docker Compose, PowerShell 7+, `.env` configuré  
+**Documentation** : [GRID_SEARCH_DESIGN_20251017.md](../docs/optimization/GRID_SEARCH_DESIGN_20251017.md)
 
-Cette architecture scripturale a été **entièrement consolidée** selon les directives SDDD du Plan de Restauration V2. L'objectif des **8 scripts essentiels maximum** a été **DÉPASSÉ** avec seulement **6 scripts actifs**.
+**Paramètres** :
+- `-ConfigFile` : Chemin vers fichier JSON de configurations
+- `-Resume` : Reprendre depuis dernière config testée (optionnel)
+- `-DryRun` : Mode simulation sans modifications réelles
+- `-Verbose` : Affichage logs détaillés
 
-### 🎉 Transformations Accomplies
-- ✅ **Entropie éliminée** : 40+ scripts archivés (powershell/, redondants, temporaires)
-- ✅ **Architecture moderne** : Organisation fonctionnelle deploy/validate/maintenance/python
-- ✅ **Alignement stratégique** : 100% compatible image officielle `vllm/vllm-openai:v0.9.2`
-- ✅ **Archivage sécurisé** : Zéro suppression définitive, récupération possible
-- ✅ **Documentation consolidée** : Source unique de vérité
+**Corrections récentes** :
+- 2025-10-21 : Ajout `--env-file` pour chargement variables (Mission 14g)
+- 2025-10-21 : Ajout bloc `finally` pour cleanup garanti (Mission 14d)
+- 2025-10-20 : Ajout fonction `Get-VllmContainerName()` (Mission 14b)
 
----
+#### monitor_grid_search_safety.ps1
+**Fonction** : Monitoring temps réel grid search avec détection crashs  
+**Usage** : `.\monitor_grid_search_safety.ps1 -IntervalSeconds 60`  
+**État** : Production (Mission 14a)
 
-## 📊 ARCHITECTURE FINALE VALIDÉE
+#### test_cleanup.ps1
+**Fonction** : Test validation cleanup containers Docker  
+**Usage** : `.\test_cleanup.ps1`  
+**État** : Production (Mission 14d)
 
-```
-myia_vllm/scripts/
-├── deploy/                    # 🚀 Scripts de déploiement
-│   └── deploy-qwen3.ps1          # Script principal unifié (10.78 KB)
-├── validate/                  # ✅ Scripts de validation
-│   └── validate-services.ps1     # Validation consolidée (11.99 KB)
-├── maintenance/              # 🔧 Scripts de maintenance
-│   └── monitor-logs.ps1          # Monitoring moderne (10.86 KB)
-├── python/                   # 🐍 Scripts Python conservés
-│   ├── client.py                 # Client API unifié (3.12 KB)
-│   ├── utils.py                  # Utilitaires partagés (0.61 KB)
-│   ├── tests/                    # Suite de tests (7 fichiers)
-│   └── [4 utilitaires]           # async_client.py, parsers.py, etc.
-├── archived/                 # 📦 ARCHIVES SÉCURISÉES (40+ scripts)
-│   ├── powershell-deprecated/    # 15 scripts ex-powershell/
-│   ├── redundant-root-scripts/   # 5 scripts redondants racine
-│   ├── temporary-tools/          # 5 outils d'archivage temporaires
-│   ├── build-related/            # 6 scripts construction obsolètes
-│   ├── legacy-versions/          # 9 versions multiples redondantes
-│   └── specialized-tools/        # 5 outils spécialisés
-└── README.md                 # Cette documentation (10.55 KB)
-```
+### Déploiement et Monitoring
 
----
+#### deploy_medium_monitored.ps1
+**Fonction** : Déploiement service medium avec monitoring health  
+**État** : Production  
+**Documentation** : [DEPLOYMENT_MEDIUM_20251016.md](../docs/deployment/DEPLOYMENT_MEDIUM_20251016.md)
 
----
+#### monitor_medium.ps1
+**Fonction** : Monitoring continu service medium  
+**État** : Production
 
-## 🎯 SCRIPTS ESSENTIELS ACTIFS (6 FINAUX)
+### Tests Performance
 
-### 🚀 Scripts de Déploiement
+#### test_kv_cache_acceleration.ps1
+**Fonction** : Tests accélération KV cache (TTFT MISS/HIT)  
+**État** : Production  
+**Documentation** : [KV_CACHE_OPTIMIZATION_20251016.md](../docs/optimization/KV_CACHE_OPTIMIZATION_20251016.md)
 
-### [`deploy-qwen3.ps1`](deploy/deploy-qwen3.ps1) - Script Principal
-**Remplace :** 6+ scripts de déploiement redondants  
-**Fonctionnalités :**
-- Déploiement unifié des profils Qwen3 (micro, mini, medium, all)
-- Support de l'image Docker officielle vLLM v0.9.2
-- Validation automatique des prérequis (Docker, .env)
-- Vérification de santé post-déploiement
-- Mode simulation (DryRun) et logs détaillés
+#### run_all_tests.ps1
+**Fonction** : Suite complète tests service medium  
+**État** : Production
 
-```powershell
-# Exemples d'utilisation
-.\deploy\deploy-qwen3.ps1                    # Déploie tous les profils
-.\deploy\deploy-qwen3.ps1 -Profile medium    # Déploie uniquement le modèle Medium
-.\deploy\deploy-qwen3.ps1 -DryRun -Verbose   # Simulation avec détails
-```
+### Maintenance
 
-**Profils supportés :**
-- **micro** : Qwen3 Micro (1.7B) - GPU unique, optimisé FP8
-- **mini** : Qwen3 Mini (8B) - GPU unique, quantification AWQ
-- **medium** : Qwen3 Medium (32B) - Dual GPU, tensor-parallel-size=2
+#### archive_docker_configs.ps1
+**Fonction** : Archivage configurations Docker obsolètes  
+**Usage** : `.\archive_docker_configs.ps1`  
+**État** : Production
 
 ---
 
-## ✅ Scripts de Validation
+## 🗂️ Scripts Transient (Archivés ou À Archiver)
 
-### [`validate-services.ps1`](validate/validate-services.ps1) - Validation Consolidée
-**Remplace :** 6 versions de scripts de validation redondants  
-**Fonctionnalités :**
-- Tests de connectivité et santé des services
-- Validation des modèles chargés
-- Tests de génération de texte avec métriques de performance
-- Support des modes rapide (QuickCheck) et complet
-- Rapports détaillés avec codes couleur
+### Scripts de Maintenance Ponctuelle
 
-```powershell
-# Exemples d'utilisation
-.\validate\validate-services.ps1                    # Validation complète de tous les services
-.\validate\validate-services.ps1 -Profile medium    # Validation du service medium uniquement
-.\validate\validate-services.ps1 -QuickCheck        # Validation rapide (santé + modèles)
-```
+| Script | Fonction | Date | Action |
+|--------|----------|------|--------|
+| archive_obsolete_scripts_20250802.ps1 | Archivage configs Docker obsolètes | 2025-08-02 | ⚠️ À archiver |
+| reset_doc_state.ps1 | Reset état documentation | 2025-08 | ⚠️ À archiver |
+| migrate_documentation.ps1 | Migration docs | 2025-08 | ⚠️ À archiver |
+| refactor_python_code.ps1 | Refactoring code Python | 2025-08 | ⚠️ À archiver |
+| execute_refactoring_safely.ps1 | Exécution refactoring sécurisée | 2025-08 | ⚠️ À archiver |
+
+**Recommandation** : Déplacer vers `archives/scripts_maintenance_20250802/`
 
 ---
 
-## 🔧 Scripts de Maintenance
+## 📖 Documentation README Associée
 
-### [`monitor-logs.ps1`](maintenance/monitor-logs.ps1) - Monitoring des Logs
-**Remplace :** check-qwen3-logs.ps1 (modernisé)  
-**Fonctionnalités :**
-- Monitoring en temps réel ou historique des logs Docker
-- Filtrage intelligent (erreurs, warnings, info)
-- Support du mode suivi (Follow) comme `tail -f`
-- Détection automatique des patterns critiques
-- Export des logs vers fichier
-
-```powershell
-# Exemples d'utilisation
-.\maintenance\monitor-logs.ps1                        # Logs de tous les services
-.\maintenance\monitor-logs.ps1 -Profile medium -Follow # Suivi du service medium
-.\maintenance\monitor-logs.ps1 -ErrorsOnly            # Erreurs uniquement
-```
+- **Grid Search** : [README_grid_search.md](README_grid_search.md)
+- **General** : [Index Documentation](../docs/DOCUMENTATION_INDEX.md)
 
 ---
 
-## 🐍 Scripts Python
+## 🔧 Configuration et Dépendances
 
-Le répertoire `python/` conserve les scripts Python existants avec une organisation améliorée :
+**Prérequis** :
+- PowerShell 7+
+- Docker Desktop (avec Compose V2)
+- Fichier `.env` configuré (voir [ENV_CONFIGURATION.md](../docs/setup/ENV_CONFIGURATION.md))
+- GPUs NVIDIA avec CUDA (pour scripts vLLM)
 
-### Structure Python
-```
-python/
-├── client.py              # Client API unifié pour les tests
-├── utils.py               # Fonctions utilitaires communes
-├── tests/                 # Suite de tests consolidée
-│   ├── test_qwen3_complete.py       # Tests consolidés (remplace 4 versions)
-│   ├── test_qwen3_deployment.py     # Tests de déploiement
-│   ├── test_context_size.py         # Tests de contexte long
-│   ├── test_reasoning.py            # Tests de raisonnement
-│   └── test_vllm_services.py        # Tests génériques vLLM
-└── update_commit_list.py  # Utilitaire de gestion des commits
-```
+**Fichiers de configuration** :
+- `.env` : Variables d'environnement (API keys, CUDA devices)
+- `configs/grid_search_configs.json` : Configurations grid search (12 stratégiques)
+- `configs/grid_search_configs_validation.json` : Configurations test (4 validation)
 
 ---
 
-## 📦 Scripts Archivés
+## 📊 Métriques et Résultats
 
-Les scripts obsolètes ou redondants ont été organisés dans `archived/` selon leur catégorie :
-
-### `build-related/` - Scripts de Construction Obsolètes
-Scripts liés à la construction d'images Docker personnalisées (rendus obsolètes par l'image officielle) :
-- `extract-qwen3-parser.ps1`
-- `fix-hardcoded-paths.ps1`
-- `fix-improved-cli-args.ps1`
-- `prepare-secure-push.ps1`
-- `remove-hardcoded-api-keys.ps1`
-
-### `legacy-versions/` - Versions Multiples Redondantes
-Anciennes versions multiples des scripts principaux :
-- `validate-optimized-qwen3*.ps1` (6 versions → 1 version consolidée)
-- `run-validation*.ps1` (3 versions → intégré dans validate-services.ps1)
-- `test_qwen3_tool_calling*.py` (4 versions → 1 version de référence)
-
-### `specialized-tools/` - Outils Spécialisés
-Scripts de fonctionnalités spécialisées conservés pour référence :
-- `backup-env-to-gdrive.ps1`
-- `consolidate-qwen3-branches.ps1`
-- `sync-upstream.ps1`
-- `prepare-update.ps1`
+Les résultats des tests sont sauvegardés dans :
+- `test_results/` : Rapports comparatifs, résultats JSON individuels
+- `logs/` : Logs d'exécution, logs de crash
 
 ---
 
-## 🔧 Configuration et Prérequis
+## 🔄 Workflow Typique Grid Search
 
-### Variables d'Environnement
-Les scripts utilisent le fichier `.env` centralisé selon le document maître :
+1. **Préparation** :
+   ```powershell
+   # Vérifier l'état Docker
+   docker ps -a
+   
+   # Vérifier le .env
+   cat .env | Select-String "HUGGING_FACE_HUB_TOKEN"
+   ```
 
-```bash
-# Tokens et clés API
-HUGGING_FACE_HUB_TOKEN=your_token_here
-VLLM_API_KEY_MICRO=your_api_key_micro
-VLLM_API_KEY_MINI=your_api_key_mini
-VLLM_API_KEY_MEDIUM=your_api_key_medium
+2. **Exécution** :
+   ```powershell
+   # Grid search complet (12 configs, 3-4h)
+   .\scripts\grid_search_optimization.ps1
+   
+   # OU Grid search validation (4 configs, 30-60min)
+   .\scripts\grid_search_optimization.ps1 -ConfigFile "configs/grid_search_configs_validation.json"
+   ```
 
-# Configuration GPU (selon recommandations)
-CUDA_VISIBLE_DEVICES_MICRO=2
-CUDA_VISIBLE_DEVICES_MINI=2
-CUDA_VISIBLE_DEVICES_MEDIUM=0,1
-```
+3. **Monitoring** (terminal séparé) :
+   ```powershell
+   .\scripts\monitor_grid_search_safety.ps1
+   ```
 
-### Prérequis Système
-- **Docker et Docker Compose** installés et fonctionnels
-- **PowerShell 5.1+** ou **PowerShell Core 7+**
-- **Accès GPU** avec drivers NVIDIA appropriés
-- **Image Docker officielle** : `vllm/vllm-openai:v0.9.2`
-
----
-
-## 📊 Comparatif Avant/Après
-
-| Aspect | Avant Rationalisation | Après Rationalisation |
-|--------|----------------------|----------------------|
-| **Nombre de scripts** | 57 scripts dispersés | 8 scripts essentiels |
-| **Versions redondantes** | 6 versions de validation | 1 version consolidée |
-| **Scripts de déploiement** | 8 scripts différents | 1 script unifié |
-| **Organisation** | Structure plate | Structure hiérarchique |
-| **Documentation** | Éparpillée | Centralisée et intégrée |
-| **Alignement stratégique** | Mixte (custom + officiel) | 100% image officielle |
-| **Maintenance** | Complexe (redondances) | Simplifiée |
+4. **Analyse résultats** :
+   ```powershell
+   # Consulter le rapport comparatif généré
+   cat test_results/grid_search_comparative_report_*.md
+   ```
 
 ---
 
-## 🔍 Migration et Compatibilité
+## 🐛 Dépannage
 
-### Équivalences des Anciens Scripts
+### Erreur: "No such container"
+**Cause** : Nom container incorrect ou container non démarré  
+**Solution** : Le script utilise maintenant `Get-VllmContainerName()` pour détection dynamique
 
-| Ancien Script | Nouveau Script | Commentaire |
-|---------------|----------------|-------------|
-| `start-qwen3-services.ps1` | `deploy/deploy-qwen3.ps1` | Fonctionnalités étendues |
-| `deploy-all*.ps1` | `deploy/deploy-qwen3.ps1 -Profile all` | Consolidé |
-| `validate-optimized-qwen3*.ps1` | `validate/validate-services.ps1` | 6 versions → 1 |
-| `test-qwen3-services.ps1` | `validate/validate-services.ps1` | Amélioré |
-| `check-qwen3-logs.ps1` | `maintenance/monitor-logs.ps1` | Modernisé |
-| `run-validation*.ps1` | `validate/validate-services.ps1` | Consolidé |
+### Erreur: "argument --api-key: expected at least one argument"
+**Cause** : Variables .env non chargées  
+**Solution** : Corrigé dans Mission 14g avec ajout `--env-file` (lignes 485, 493, 539)
 
-### Scripts Temporairement Conservés
-Certains scripts restent temporairement dans le répertoire principal pendant la transition :
-- `start-qwen3-services.ps1` (sera supprimé après validation)
-- `test-qwen3-services.ps1` (sera supprimé après validation)
+### Container orphelin après grid search
+**Cause** : Absence de cleanup final  
+**Solution** : Corrigé dans Mission 14d avec bloc `finally` (ligne 1425)
 
----
-
-## 📈 Prochaines Étapes
-
-### Scripts À Développer
-1. **`deploy/setup-environment.ps1`** - Configuration automatisée du fichier .env
-2. **`validate/test-endpoints.ps1`** - Tests API spécialisés (tool calling, reasoning)
-3. **`maintenance/update-services.ps1`** - Mise à jour simplifiée des images Docker
-4. **`maintenance/backup-configs.ps1`** - Sauvegarde automatisée des configurations
-
-### Optimisations Futures
-- **Tests automatisés** : Intégration dans pipeline CI/CD
-- **Monitoring avancé** : Métriques de performance en temps réel
-- **Interface unifiée** : Script maître pour orchestrer tous les autres
-- **Documentation interactive** : Guide d'utilisation intégré
+### Grid search s'interrompt
+**Cause** : Crash config ou timeout  
+**Solution** : Utiliser `-Resume` pour reprendre depuis dernier état
 
 ---
 
-## 📞 Support et Contribution
+## 📝 Conventions
 
-### Validation des Scripts
-Tous les nouveaux scripts ont été conçus selon les **bonnes pratiques** :
-- ✅ **Paramètres standardisés** avec validation
-- ✅ **Aide intégrée** (`-Help`)
-- ✅ **Logging structuré** avec niveaux
-- ✅ **Gestion d'erreurs** robuste
-- ✅ **Codes de retour** appropriés
-- ✅ **Documentation intégrée**
+### Backups
+- Format : `{script}.backup_{raison}`
+- Exemple : `grid_search_optimization.ps1.backup_before_envfile_fix`
+- Archivage : `archives/logs_missions_YYYYMMDD/`
 
-### Rapporter des Problèmes
-Pour les problèmes liés aux scripts :
-1. Consulter les **logs générés** dans chaque répertoire
-2. Exécuter avec **`-Verbose`** pour plus de détails
-3. Vérifier la **configuration .env**
-4. Consulter le **document maître** : [`docs/qwen3/00_MASTER_CONFIGURATION_GUIDE.md`](../docs/qwen3/00_MASTER_CONFIGURATION_GUIDE.md)
+### Logs
+- Format : `grid_search_{timestamp}.log`
+- Crash logs : `grid_search_{config_name}_crash.txt`
+- Localisation : `logs/`
 
 ---
 
-**🎉 Architecture modernisée et opérationnelle - Septembre 2025**
+## 🚀 Évolutions Futures
+
+### Fonctionnalités Planifiées
+- Support multi-GPU pour grid search parallèle
+- Interface web monitoring temps réel
+- Génération automatique rapports PDF
+- Intégration CI/CD pour validation configs
+
+### Améliorations Scripts
+- Ajout paramètre `-MaxParallel` pour grid search concurrent
+- Support profils custom (micro, mini, large)
+- Export résultats vers base de données
+- Notifications Slack/Discord fin grid search
+
+---
+
+**Dernière mise à jour** : 21/10/2025 (Mission 14g)  
+**Mainteneur** : Roo Code Mode  
+**Version** : 1.0.0
