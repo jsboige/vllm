@@ -34,3 +34,6 @@ dist/
 *.swp
 *.swo
 grid_search_progress.json
+
+# Scripts temporaires
+temp_*.ps1
