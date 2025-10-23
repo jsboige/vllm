@@ -111,7 +111,7 @@ $headers = @{
 }
 try {
     $testBody = @{
-        model = "qwen3"
+        model = "Qwen/Qwen3-32B-AWQ"
         messages = @(
             @{
                 role = "user"
@@ -220,7 +220,7 @@ function Start-ApiRequest {
     $maxTokens = if ($IsLong) { 900 } else { 100 }
     
     $requestBody = @{
-        model = "qwen3"
+        model = "Qwen/Qwen3-32B-AWQ"
         messages = @(
             @{
                 role = "user"
