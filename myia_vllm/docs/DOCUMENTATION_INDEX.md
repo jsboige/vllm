@@ -1,6 +1,6 @@
 # Index Documentation Projet myia_vllm
 
-**Dernière mise à jour** : 22/10/2025 - Mission 11 Phase 7
+**Dernière mise à jour** : 23/10/2025 - Mission 11 Phase 9 (FINALE)
 
 ## 📋 Documentation SDDD (Semantic Documentation Driven Design)
 
@@ -22,6 +22,7 @@
 | **Guides Production** | **OPTIMIZATION_GUIDE** | **386** | ✅ **À jour** | `docs/OPTIMIZATION_GUIDE.md` |
 | **Guides Production** | **TROUBLESHOOTING** | **495** | ✅ **À jour** | `docs/TROUBLESHOOTING.md` |
 | **Guides Production** | **MAINTENANCE_PROCEDURES** | **447** | ✅ **À jour** | `docs/MAINTENANCE_PROCEDURES.md` |
+| **Synthèses Missions** | **MISSION_11_FINAL_SUMMARY** | **683** | ✅ **À jour** | `docs/MISSION_11_FINAL_SUMMARY.md` |
 | Architecture | Docker Architecture | - | ✅ À jour | `docs/docker/ARCHITECTURE.md` |
 | Architecture | Medium Service Parameters | - | ✅ À jour | `docs/docker/MEDIUM_SERVICE_PARAMETERS.md` |
 | Deployment | Deployment Safety | - | ✅ À jour | `docs/deployment/DEPLOYMENT_SAFETY.md` |
@@ -30,6 +31,17 @@
 | Optimization | KV Cache Optimization | - | ✅ À jour | `docs/optimization/KV_CACHE_OPTIMIZATION_20251016.md` |
 | Setup | ENV Configuration | - | ✅ À jour | `docs/setup/ENV_CONFIGURATION.md` |
 | Testing | Medium Service Test Plan | - | ✅ À jour | `docs/testing/MEDIUM_SERVICE_TEST_PLAN.md` |
+
+### Rapports Benchmarks (Mission 11 Phase 8)
+
+| ID | Document | Type | Statut | Chemin |
+|----|----------|------|--------|--------|
+| BENCH-001 | Benchmark Phase 2.2-2.3 | KV Cache Extended | ✅ Final | `docs/BENCHMARK_PHASE2_2_3_REPORT.md` |
+| BENCH-002 | Benchmark Phase 2.4-2.5 | Tool Calling + Stabilité | ✅ Final | `docs/BENCHMARK_PHASE2_4_5_REPORT.md` |
+| BENCH-003 | Benchmark Phase 2.6 + Phase 3 | GPU Profiling + Comparaison | ✅ Final | `docs/BENCHMARK_PHASE2_6_AND_PHASE3_REPORT.md` |
+| BENCH-004 | Grid Search Comparative | Analyse 4 configs | ✅ Final | `docs/GRID_SEARCH_COMPARATIVE_ANALYSIS.md` |
+| BENCH-005 | Production Validation | Validation initiale | ✅ Final | `docs/PRODUCTION_VALIDATION_REPORT.md` |
+| BENCH-006 | Production Benchmark Final | Rapport consolidé | ✅ Final | `docs/PRODUCTION_BENCHMARK_REPORT_FINAL.md` |
 
 ### Documentation Transient (Logs de Missions)
 
