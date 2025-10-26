@@ -5,7 +5,7 @@ services:
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_MEDIUM_VL:-5003}
-      --model Qwen/Qwen3-VL-32B-Instruct-FP8
+      --model cpatonn/Qwen3-VL-32B-Thinking-AWQ-4bit
       --api-key ${VLLM_API_KEY_MEDIUM_VL}
       
       --tensor-parallel-size 2
@@ -20,10 +20,10 @@ services:
       --rope_scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
       --swap-space 16
       
-      --limit-mm-per-prompt image:3,video:0
+      --limit-mm-per-prompt '{"image":3,"video":0}'
       --mm-processor-kwargs '{"max_pixels":599040}'
       --skip-mm-profiling
-      --mm-encoder-tp-mode replicate
+      --mm-encoder-tp-mode weights
     runtime: nvidia
     ipc: host
     shm_size: '16gb'

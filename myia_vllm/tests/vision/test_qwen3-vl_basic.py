@@ -47,8 +47,8 @@ def test_qwen3_vl_basic():
     
     # Configuration du client OpenAI pointant vers vLLM local
     client = openai.OpenAI(
-        base_url="http://localhost:5002/v1",  # Port du service medium-vl
-        api_key="vllm",  # Clé par défaut vLLM
+        base_url="http://localhost:5003/v1",  # Port du service medium-vl
+        api_key="Y7PSM158SR952HCAARSLQ344RRPJTDI3",  # Clé API du service medium-vl
     )
     
     # Chemin de l'image de test
@@ -70,7 +70,7 @@ def test_qwen3_vl_basic():
     print("\n🚀 Envoi de la requête vision à vLLM...")
     try:
         response = client.chat.completions.create(
-            model="Qwen/Qwen3-VL-32B-Instruct-FP8",
+            model="cpatonn/Qwen3-VL-32B-Thinking-AWQ-4bit",
             messages=[
                 {
                     "role": "user",
