@@ -1,0 +1,40 @@
+services:
+  vllm-medium-vl-qwen3:
+    image: vllm/vllm-openai:latest
+    container_name: myia_vllm-medium-vl-qwen3
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MEDIUM_VL:-5003}
+      --model Qwen/Qwen3-VL-32B-Instruct-FP8
+      --api-key ${VLLM_API_KEY_MEDIUM_VL}
+      
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.85
+      --max-model-len 131072
+      --kv-cache-dtype fp8
+      --enable-chunked-prefill
+      --dtype ${DTYPE_MEDIUM_VL:-half}
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --distributed-executor-backend=mp
+      --rope_scaling '{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+      --swap-space 16
+      
+      --limit-mm-per-prompt image:3,video:0
+      --mm-processor-kwargs '{"max_pixels":599040}'
+      --skip-mm-profiling
+      --mm-encoder-tp-mode replicate
+    runtime: nvidia
+    ipc: host
+    shm_size: '16gb'
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_MEDIUM_VL:-0,1}
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    ports:
+      - "${VLLM_PORT_MEDIUM_VL:-5003}:${VLLM_PORT_MEDIUM_VL:-5003}"
+    healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MEDIUM_VL:-5003}/health"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+        start_period: 300s

@@ -100,6 +100,48 @@ docker compose \
   -f myia_vllm/configs/docker/profiles/medium.yml \
   up -d --build --force-recreate
 ```
+### 2. `configs/docker/profiles/medium-vl.yml`
+
+**Statut** : ✅ ACTIF  
+**Rôle** : Configuration du service medium-vl (Qwen3-VL-32B-Instruct-FP8)  
+**Dernière révision** : 2025-10-26
+
+#### Caractéristiques Principales
+
+```yaml
+Service: myia-vllm-medium-vl-qwen3
+Modèle: Qwen/Qwen3-VL-32B-Instruct-FP8
+GPUs: 2 (CUDA_VISIBLE_DEVICES=0,1)
+Context Max: 131072 tokens (128k) ✅ OPTIMAL
+Memory Util: 0.85
+Tensor Parallel: 2
+KV Cache: fp8
+Port: 5003
+```
+
+#### Paramètres Critiques
+
+| Paramètre | Valeur | Justification |
+|-----------|--------|---------------|
+| `--max-model-len` | 131072 | Taille maximale supportée par Qwen3-VL (128k tokens) |
+| `--tensor-parallel-size` | 2 | Requis pour FP8 sur 2 GPUs |
+| `--gpu-memory-utilization` | 0.85 | Optimal pour multimodal (balance VRAM/stabilité) |
+| `--kv_cache_dtype` | fp8 | 8-bit float pour optimisation mémoire cache |
+| `--limit-mm-per-prompt` | image:3,video:0 | Limitation à 3 images/requête, vidéos désactivées |
+| `--mm-processor-kwargs` | max_pixels:599040 | Résolution max 768x768 (économie VRAM) |
+| `--skip-mm-profiling` | true | Bypass profiling vision encoder (~500MB VRAM) |
+| `--mm-encoder-tp-mode` | replicate | Mode conservatif TP pour vision encoder |
+
+#### Commande de Déploiement
+
+```bash
+docker compose \
+  -f myia_vllm/configs/docker/docker-compose.yml \
+  -f myia_vllm/configs/docker/profiles/medium-vl.yml \
+  up -d --build --force-recreate
+```
+
+### 3. `configs/docker/docker-compose.yml` (À Vérifier)
 
 ### 2. `configs/docker/docker-compose.yml` (À Vérifier)
 
