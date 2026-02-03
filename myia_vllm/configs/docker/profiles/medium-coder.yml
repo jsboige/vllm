@@ -1,0 +1,69 @@
+# Docker Compose profile for Qwen3-Coder-Next (80B MoE)
+# Migration from Qwen3-32B-AWQ for agentic use with Claude Code
+#
+# Hardware: 3x RTX 4090 (72GB VRAM total)
+# Model: W4A16 quantization (~46GB) via LLM Compressor
+#
+# Context Strategy (adjust dynamically):
+#   - Target: 131072 (128K) with FP8 KV cache
+#   - Fallback: 98304 (96K) without FP8 if bug #26646 persists
+#   - Minimum: 65536 (64K) if OOM at 96K
+#
+# Bug tracking: https://github.com/vllm-project/vllm/issues/26646
+
+services:
+  vllm-medium-coder:
+    image: vllm/vllm-openai:latest  # Requires >= v0.15.0 for Qwen3-Coder-Next support
+    container_name: myia_vllm-medium-coder
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_CODER:-5002}
+      --model ${VLLM_MODEL_CODER:-./models/Qwen3-Coder-Next-W4A16}
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 3
+      --enable-expert-parallel
+      --gpu-memory-utilization 0.88
+      --max-model-len 131072
+      --kv-cache-dtype fp8
+      --enable-chunked-prefill
+      --dtype half
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --distributed-executor-backend mp
+      --swap-space 16
+    runtime: nvidia
+    ipc: host
+    shm_size: '16gb'
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_CODER:-0,1,2}
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT_CODER:-5002}:${VLLM_PORT_CODER:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_CODER:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s  # 10 minutes for 80B MoE model loading
+    restart: unless-stopped
+
+# Alternative configurations (commented):
+#
+# === WITHOUT FP8 KV CACHE (if bug #26646 not fixed) ===
+# Replace --kv-cache-dtype fp8 with:
+#   --max-model-len 98304
+# And remove the --kv-cache-dtype line
+#
+# === MINIMUM CONTEXT (64K) ===
+# If OOM persists:
+#   --max-model-len 65536
+#   --gpu-memory-utilization 0.85
+#
+# === EXPERT OFFLOADING (experimental) ===
+# For CPU offloading of some experts:
+#   --cpu-offload-gb 8
