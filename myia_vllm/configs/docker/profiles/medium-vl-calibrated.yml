@@ -1,0 +1,46 @@
+# Profile Docker Medium-VL avec Calibration FP8
+# Basé sur medium-vl.yml avec ajout de --calculate-kv-scales
+# Mission 21A: Investigation Warnings FP8 et Optimisations Baseline
+
+services:
+  medium-vl:
+    image: vllm/vllm-openai:latest
+    container_name: medium-vl
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_USAGE_STATS_SERVER_PORT=8001
+    volumes:
+      - ${HUGGINGFACE_HUB_CACHE:-./huggingface_cache}:/root/.cache/huggingface
+      - ${VLLM_USAGE_STATS_DIR:-./usage_stats}:/app/usage_stats
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      python -m vllm.entrypoints.openai.api_server
+        --model cpatonn/Qwen3-VL-32B-Thinking-AWQ-4bit
+        --trust-remote-code
+        --tensor-parallel-size 2
+        --gpu-memory-utilization 0.85
+        --max-model-len 8192
+        --kv-cache-dtype fp8
+        --calculate-kv-scales
+        --host 0.0.0.0
+        --port 8000
+        --served-model-name cpatonn/Qwen3-VL-32B-Thinking-AWQ-4bit
+        --usage-stats-backend basic
+        --disable-log-stats
+        --disable-log-requests
+    networks:
+      - vllm-network
+
+networks:
+  vllm-network:
+    driver: bridge
