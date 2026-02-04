@@ -69,7 +69,6 @@ def quantize_model(
     model_id: str,
     output_dir: str,
     num_calibration_samples: int = 512,
-    calibration_dataset: str = "HuggingFaceH4/ultrachat_200k",
 ):
     """
     Quantify Qwen3-Coder-Next to W4A16 using GPTQ.
@@ -78,15 +77,35 @@ def quantize_model(
         model_id: HuggingFace model ID or local path
         output_dir: Directory to save quantified model
         num_calibration_samples: Number of samples for calibration (more = better quality, slower)
-        calibration_dataset: Dataset for calibration samples
     """
     from llmcompressor.modifiers.quantization import GPTQModifier
     from llmcompressor import oneshot
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
 
     logger.info(f"Starting W4A16 quantification for: {model_id}")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Calibration samples: {num_calibration_samples}")
-    logger.info(f"Calibration dataset: {calibration_dataset}")
+
+    # Set trust_remote_code via environment variable for transformers
+    os.environ["HF_HUB_TRUST_REMOTE_CODE"] = "1"
+
+    # Load tokenizer for dataset preparation
+    logger.info("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+    # Load and prepare calibration dataset
+    logger.info("Loading calibration dataset (open_platypus)...")
+    ds = load_dataset("garage-bAInd/Open-Platypus", split="train")
+    ds = ds.shuffle(seed=42).select(range(min(num_calibration_samples, len(ds))))
+
+    def preprocess(example):
+        # Format as instruction-response pairs
+        text = f"### Instruction:\n{example['instruction']}\n\n### Response:\n{example['output']}"
+        return {"text": text}
+
+    ds = ds.map(preprocess, remove_columns=ds.column_names)
+    logger.info(f"Calibration dataset ready: {len(ds)} samples")
 
     # GPTQ recipe for W4A16 quantification
     # - scheme="W4A16": 4-bit weights, 16-bit activations
@@ -115,10 +134,8 @@ def quantize_model(
         model=model_id,
         recipe=recipe,
         output_dir=output_dir,
-        dataset=calibration_dataset,
-        num_calibration_samples=num_calibration_samples,
+        dataset=ds,
         max_seq_length=4096,  # Calibration sequence length
-        trust_remote_code=True,  # Required for Qwen models
     )
 
     logger.info(f"Quantification complete! Model saved to: {output_dir}")
@@ -175,12 +192,6 @@ Examples:
         help="Number of calibration samples (default: 512, range: 256-1024)"
     )
 
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        default="HuggingFaceH4/ultrachat_200k",
-        help="Calibration dataset (default: HuggingFaceH4/ultrachat_200k)"
-    )
 
     parser.add_argument(
         "--check-only",
@@ -204,7 +215,6 @@ Examples:
         model_id=args.model_id,
         output_dir=args.output_dir,
         num_calibration_samples=args.num_samples,
-        calibration_dataset=args.dataset,
     )
 
 
