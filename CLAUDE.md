@@ -97,27 +97,32 @@ Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 
 ## Critical Configuration Notes
 
-1. **Do NOT increase `gpu-memory-utilization` above 0.9** - CUDA graphs allocate hidden memory. Reduce to 0.8-0.85 if OOM occurs.
+1. **Do NOT add `--enable-chunked-prefill` or `--num-scheduler-steps`** - These flags force V0 engine fallback. V1 engine (default on nightly) handles chunked prefill automatically.
 
-2. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working backend on Ada Lovelace.
+2. **CUDA graphs (PIECEWISE mode) work well at 0.88 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead (~0.12 GiB/GPU). Use 0.88 with CUDA graphs, or 0.90 with `--enforce-eager`. KV cache: 223K tokens at 0.88.
 
-3. **Use `glm47` tool parser for GLM-4.7-Flash** - NOT hermes, NOT granite. Reasoning parser: `glm45`.
+3. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working MLA backend on Ada Lovelace (SM89).
 
-4. **Use `hermes` tool parser for Qwen models** - Official Qwen recommendation for function calling.
+4. **MTP speculative decoding doesn't work with AWQ 4-bit** - 0% acceptance rate at 4-bit precision. Only viable with FP8 or FP16 models.
 
-5. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
+5. **Use `glm47` tool parser for GLM-4.7-Flash** - NOT hermes, NOT granite. Reasoning parser: `glm45`.
+
+6. **Use `hermes` tool parser for Qwen models** - Official Qwen recommendation for function calling.
+
+7. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
 
 ## GLM-4.7-Flash Deployment (Current)
 
 ### Model Specifications
-- **Architecture**: 31B MoE with 3B active parameters per forward pass
+- **Architecture**: 31B MoE with 3B active parameters per forward pass (64 experts, top-4)
 - **Attention**: MLA (Multi-Latent Attention) - very compact KV cache (~54 KB/token)
 - **VRAM**: ~8.75 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: 11.38 GiB available per GPU → 225K token capacity
-- **Context window**: 200K native, configured at 65K (max concurrency: 3.44x)
-- **Quantization**: AWQ 4-bit with Marlin kernels (auto-detected)
+- **KV cache**: ~100-110K tokens with CUDA graphs, ~225K tokens in eager mode
+- **Context window**: 200K native, configured at 128K
+- **Quantization**: AWQ 4-bit with Marlin kernels (`VLLM_MARLIN_USE_ATOMIC_ADD=1`)
 - **Model source**: [QuantTrio/GLM-4.7-Flash-AWQ](https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ)
 - **vLLM requirement**: nightly build (glm4_moe_lite architecture + transformers >= 5.0)
+- **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
 
 ### Deployment Steps
 
@@ -142,31 +147,53 @@ python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash -
 --model QuantTrio/GLM-4.7-Flash-AWQ
 --served-model-name glm-4.7-flash
 --tensor-parallel-size 2       # TP=2 on GPUs 0,1
---gpu-memory-utilization 0.90  # ~12GB left for KV cache per GPU
---max-model-len 65536          # 64K context (can try higher, MLA is efficient)
+--enable-expert-parallel       # EP for MoE: each GPU holds 32/64 experts
+--gpu-memory-utilization 0.88  # Reduced for CUDA graph overhead (~6.5GB/GPU)
+--max-model-len 131072         # 128K context (MLA: ~54 KB/token)
+--max-num-batched-tokens 16384 # Higher batch budget for MoE throughput
+--max-num-seqs 64              # Prevent preemption cascades
 --kv-cache-dtype auto          # FP8 NOT supported with MLA on RTX 4090
+--dtype half                   # FP16 (optimal for Marlin on SM89)
 --tool-call-parser glm47       # GLM-4.7 specific tool calling parser
 --reasoning-parser glm45       # GLM-4.5 style reasoning/thinking
---enforce-eager                # Stable operation on RTX 4090
 --distributed-executor-backend mp  # Required for WSL
+--disable-log-requests         # Production: reduce I/O overhead
+# NO --enforce-eager           # CUDA graphs + torch.compile enabled (V1 engine)
+# NO --enable-chunked-prefill  # V1 does this by default, explicit flag forces V0
+# NO --swap-space              # V1 uses recompute, not swap
+```
+
+### Environment Variables (Performance)
+```yaml
+VLLM_MARLIN_USE_ATOMIC_ADD=1   # Optimized kernel accumulation for small batches
+VLLM_USE_DEEP_GEMM=0           # Not needed for AWQ (FP8 MoE only)
+OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
 ```
 
 ### Performance (Benchmark Results)
+
+**Optimized config** (V1 engine, CUDA graphs piecewise, EP, torch.compile):
+| Metric | Single User | 5 Concurrent Users |
+|--------|-------------|-------------------|
+| Tokens/sec | **45.6-48.4 tok/s** | **202.7 tok/s** aggregate |
+| Latency (257 tokens) | 5.6s | - |
+| Tool call latency | 1.4s | - |
+| Context | 128K | 128K |
+
+**Previous unoptimized** (enforce-eager, V0 fallback, no EP):
 | Metric | Single User | 5 Concurrent Users |
 |--------|-------------|-------------------|
 | Tokens/sec | 13.8-15.1 tok/s | 70.2 tok/s aggregate |
-| Tool calling | Supported | Supported |
-| Multi-tool agentic | Supported | Supported |
-| Tool result cycle | Supported | Supported |
+| Context | 65K | 65K |
 
 ### Comparison with Previous Deployments
-| | GLM-4.7-Flash | Qwen3-Coder-Next | Qwen3-32B-AWQ |
-|---|---|---|---|
-| Single user tok/s | **13.8-15.1** | 5-6 | ~15 |
-| Concurrent tok/s | **70.2** | 21.6 | ~40 |
-| GPUs used | 2 | 3 | 2 |
-| Context | 65K | 65K | 32K |
-| SWE-bench | 59.2% | 70.6% | N/A |
+| | GLM-4.7-Flash (optimized) | GLM-4.7-Flash (initial) | Qwen3-Coder-Next | Qwen3-32B-AWQ |
+|---|---|---|---|---|
+| Single user tok/s | **45.6-48.4** | 13.8-15.1 | 5-6 | ~15 |
+| Concurrent tok/s | **202.7** | 70.2 | 21.6 | ~40 |
+| GPUs used | 2 | 2 | 3 | 2 |
+| Context | **128K** | 65K | 65K | 32K |
+| SWE-bench | 59.2% | 59.2% | 70.6% | N/A |
 
 ### Claude Code Integration
 

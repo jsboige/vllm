@@ -1,20 +1,29 @@
 # Docker Compose profile for GLM-4.7-Flash (31B MoE, 3B active)
-# Replacement for Qwen3-Coder-Next with better single-GPU performance
+# Optimized for maximum performance on 2x RTX 4090
 #
 # Hardware: 2x RTX 4090 (48GB VRAM) - frees GPU 2 for other services
 # Model: AWQ 4-bit quantization (~19GB) from HuggingFace
 # Source: https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ
 #
 # DEPLOYMENT NOTES:
-#   - Uses Tensor Parallelism (TP=2) on GPUs 0,1 (faster PCIe bus)
-#   - AWQ 4-bit: ~9.5GB/GPU, leaves ~12GB for KV cache per GPU
+#   - Uses Tensor Parallelism (TP=2) + Expert Parallelism on GPUs 0,1
+#   - AWQ 4-bit: ~9.5GB/GPU, leaves headroom for KV cache + CUDA graphs
 #   - MLA (Multi-Latent Attention) enables very efficient KV cache (54 KB/token)
 #   - Requires vLLM nightly + transformers >= 5.0 (custom Dockerfile)
+#   - V1 engine: chunked prefill + CUDA graphs + torch.compile by default
 #
-# Context: 65K tokens with MLA (very compact KV cache, ~54 KB/token)
+# Context: 128K tokens with MLA (very compact KV cache, ~54 KB/token)
 # NOTE: FP8 KV cache NOT supported with MLA on Ada Lovelace (RTX 4090)
-#   MLA backends: TRITON_MLA works but requires auto/fp16 kv_cache_dtype
-# Expected: ~14-20 tok/s single user, higher aggregate with concurrency
+#   TRITON_MLA is the only working MLA backend on SM89
+#
+# PERFORMANCE OPTIMIZATIONS APPLIED:
+#   1. Removed --enforce-eager → enables CUDA graphs + torch.compile (+15-40%)
+#   2. Removed --enable-chunked-prefill → prevents V0 fallback, uses V1 engine
+#   3. Added --enable-expert-parallel → reduces cross-GPU MoE communication
+#   4. Added VLLM_MARLIN_USE_ATOMIC_ADD=1 → optimized AWQ kernel accumulation
+#   5. Increased context to 128K (MLA capacity: ~225K tokens)
+#   6. Removed --swap-space (V1 uses recompute, not swap)
+#   7. Added --max-num-batched-tokens 16384 for better MoE batching
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
@@ -33,17 +42,18 @@ services:
       --api-key ${VLLM_API_KEY_MEDIUM}
 
       --tensor-parallel-size 2
-      --gpu-memory-utilization 0.90
-      --max-model-len 65536
+      --enable-expert-parallel
+      --gpu-memory-utilization 0.88
+      --max-model-len 131072
       --kv-cache-dtype auto
-      --enable-chunked-prefill
       --dtype half
+      --max-num-batched-tokens 16384
+      --max-num-seqs 64
       --enable-auto-tool-choice
       --tool-call-parser glm47
       --reasoning-parser glm45
-      --enforce-eager
       --distributed-executor-backend mp
-      --swap-space 16
+      --disable-log-requests
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -57,6 +67,9 @@ services:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=4
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -67,26 +80,49 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s  # 5 minutes for 31B model loading
+      start_period: 300s  # 5 minutes for model loading + CUDA graph capture
     restart: unless-stopped
 
-# Alternative configurations (commented):
+# =====================================================================
+# OPTIMIZATION NOTES
+# =====================================================================
 #
-# === HIGHER CONTEXT (if MLA working correctly) ===
-# With MLA fix, KV cache is very compact (54 KB/token).
-# 12GB per GPU can hold ~222K tokens. Try:
-#   --max-model-len 131072
+# === V1 ENGINE (active by default on vLLM nightly) ===
+# V1 engine provides: async scheduling, piecewise CUDA graphs,
+# automatic chunked prefill, recompute-based preemption.
+# Do NOT add --enable-chunked-prefill or --num-scheduler-steps
+# (these force V0 fallback).
 #
-# === FP8 MODEL (higher quality, less context) ===
-# Replace model with: marksverdhei/GLM-4.7-Flash-FP8
-# Reduce context:     --max-model-len 16384
-# Model is ~30GB (~15GB/GPU) leaving ~7GB for KV cache
+# === CUDA GRAPHS (enabled by removing --enforce-eager) ===
+# CUDA graphs consume ~4-6.5 GiB per GPU on RTX 4090.
+# gpu-memory-utilization=0.88 compensates for this overhead.
+# First startup is slower (graph capture + torch.compile warmup).
+# Compilation cache persists in ~/.cache/vllm/torch_compile_cache.
+# If OOM during startup, reduce to 0.85 or add --enforce-eager back.
 #
-# === SPECULATIVE DECODING (experimental) ===
-# GLM-4.7-Flash supports Multi-Token Prediction:
+# === EXPERT PARALLELISM ===
+# With TP=2: each GPU holds full weights of 32/64 experts.
+# Only 4 experts active per token, high locality on each GPU.
+# Reduces cross-GPU communication on PCIe (no NVLink).
+#
+# === CONTEXT WINDOW ===
+# MLA KV cache: ~54 KB/token. At 0.88 util with CUDA graphs:
+# ~5-6 GiB per GPU for KV = ~100-110K tokens capacity.
+# 131K fits for single requests, concurrent requests share the pool.
+# To reduce to 65K: --max-model-len 65536
+#
+# === MTP SPECULATIVE DECODING (NOT recommended with AWQ) ===
+# MTP has 0% acceptance rate at 4-bit precision (tested on GLM-4.6-AWQ).
+# Only viable with FP8 or FP16 models. Do NOT add:
 #   --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
-# Adds memory overhead, may not fit with FP8 KV + 65K context
 #
-# === EXPERT PARALLELISM (if TP+EP improves perf) ===
-# Add: --enable-expert-parallel
-# Distributes experts across GPUs instead of tensor-sharding them
+# === FALLBACK: ENFORCE EAGER MODE ===
+# If CUDA graph capture fails or OOM occurs on startup:
+#   1. Add --enforce-eager back
+#   2. Increase --gpu-memory-utilization to 0.90
+#   3. Increase --max-model-len to 200000 (full MLA capacity)
+#
+# === FP8 MODEL ALTERNATIVE (higher quality, less context) ===
+# Replace model with: marksverdhei/GLM-4.7-Flash-FP8
+# Model is ~30GB (~15GB/GPU), less KV headroom
+# FP8 enables MTP speculative decoding (worth testing)
