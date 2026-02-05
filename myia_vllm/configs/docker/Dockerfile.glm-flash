@@ -1,0 +1,21 @@
+# Dockerfile for GLM-4.7-Flash on vLLM
+#
+# GLM-4.7-Flash (31B MoE, 3B active) requires:
+#   - vLLM nightly for glm4_moe_lite architecture support
+#   - transformers >= 5.0 for model config parsing
+#   - MLA (Multi-Latent Attention) architecture entry for efficient KV cache
+#
+# Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+
+FROM vllm/vllm-openai:nightly
+
+# GLM-4.7-Flash requires transformers >= 5.0 for glm4_moe_lite architecture
+RUN pip install --no-cache-dir "transformers>=5.0.0rc3"
+
+# MLA (Multi-Latent Attention) fix for efficient KV cache (54 KB/token vs 0.91 MB/token)
+# Fix merged in vLLM PR #32614, but may not be in all nightly builds yet.
+# This sed adds "glm4_moe_lite" to the architecture list for MLA conversion.
+# If the fix is already present, this is a harmless no-op.
+RUN sed -i 's/^\([[:space:]]*\)"pangu_ultra_moe_mtp",/\1"pangu_ultra_moe_mtp",\n\1"glm4_moe_lite",/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/model_arch_config_convertor.py 2>/dev/null || true

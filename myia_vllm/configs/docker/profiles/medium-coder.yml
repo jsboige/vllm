@@ -2,14 +2,19 @@
 # Migration from Qwen3-32B-AWQ for agentic use with Claude Code
 #
 # Hardware: 3x RTX 4090 (72GB VRAM total)
-# Model: W4A16 quantization (~46GB) via LLM Compressor
+# Model: W4A16 4-bit quantization (~46GB) from HuggingFace
+# Quant format: compressed-tensors (auto-detected by vLLM)
+# Source: https://huggingface.co/cyankiwi/Qwen3-Coder-Next-AWQ-4bit
+# Calibration: nvidia/Nemotron-SWE-v1 (Software Engineering dataset - optimal for code)
 #
-# Context Strategy (adjust dynamically):
-#   - Target: 131072 (128K) with FP8 KV cache
-#   - Fallback: 98304 (96K) without FP8 if bug #26646 persists
-#   - Minimum: 65536 (64K) if OOM at 96K
+# DEPLOYMENT NOTES:
+#   - Uses Pipeline Parallelism (PP=3) not Tensor Parallelism (TP=3)
+#   - TP=3 fails: model intermediate_size (8192) not divisible by 3
+#   - TP=2 fails: 48GB insufficient for ~46GB model + KV cache
+#   - PP=3 distributes layers across GPUs (~22GB each), leaves ~2GB for KV
 #
-# Bug tracking: https://github.com/vllm-project/vllm/issues/26646
+# Context: 65K tokens with FP8 KV cache
+# Performance: ~5-6 tok/s single user, ~21 tok/s aggregate (5 concurrent)
 
 services:
   vllm-medium-coder:
@@ -18,27 +23,35 @@ services:
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_CODER:-5002}
-      --model ${VLLM_MODEL_CODER:-./models/Qwen3-Coder-Next-W4A16}
+      --model ${VLLM_MODEL_CODER:-cyankiwi/Qwen3-Coder-Next-AWQ-4bit}
       --api-key ${VLLM_API_KEY_MEDIUM}
 
-      --tensor-parallel-size 3
-      --enable-expert-parallel
+      --tensor-parallel-size 1
+      --pipeline-parallel-size 3
       --gpu-memory-utilization 0.88
-      --max-model-len 131072
+      --max-model-len 65536
       --kv-cache-dtype fp8
       --enable-chunked-prefill
       --dtype half
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
-      --distributed-executor-backend mp
       --swap-space 16
-    runtime: nvidia
+      --enforce-eager
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
     ipc: host
     shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_CODER:-0,1,2}
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface

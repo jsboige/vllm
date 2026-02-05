@@ -4,17 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for Qwen models, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
+This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment**: Qwen3-32B-AWQ on 2 GPUs with tensor parallelism.
+**Current deployment**: GLM-4.7-Flash (31B MoE, AWQ 4-bit) on 2 GPUs with TP=2. GPU 2 available for other services.
 
-**Target deployment**: Qwen3-Coder-Next (80B MoE, 3B active parameters) with Unsloth 4-bit quantization (~46GB VRAM) for agentic use with Claude Code.
+**Previous deployment**: Qwen3-Coder-Next (80B MoE, PP=3) - archived due to pipeline parallelism bottleneck (5-6 tok/s).
 
 ## Key Directories
 
 ```
 myia_vllm/                    # PRIMARY - all customizations live here
-├── configs/docker/profiles/  # Docker-compose deployment profiles
+├── configs/docker/           # Docker configs
+│   ├── profiles/             # Docker-compose deployment profiles
+│   └── Dockerfile.glm-flash  # Custom image for GLM-4.7-Flash
 ├── scripts/                  # PowerShell & Python deployment scripts
 │   ├── quantization/         # Model quantization (W4A16, FP8)
 │   └── testing/              # Config validation & benchmarks
@@ -29,27 +31,30 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Deploy medium (32B) service with monitoring
-.\myia_vllm\scripts\deploy\deploy_medium_monitored.ps1
+# Build GLM-4.7-Flash custom image (first time only)
+docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 
-# Start with docker-compose profile
+# Start GLM-4.7-Flash service
+docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+
+# Monitor startup progress
+docker logs -f myia_vllm-medium-glm
+
+# Start legacy medium (32B) service
 docker compose -f myia_vllm/configs/docker/profiles/medium.yml up -d
-
-# Monitor container health
-.\myia_vllm\scripts\monitoring\monitor_medium.ps1
 ```
 
 ### Testing
 
 ```powershell
+# Benchmark GLM-4.7-Flash
+python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash
+
 # Run all tests
 .\myia_vllm\run_all_tests.ps1
 
 # Quick API test
 python myia_vllm/scripts/python/test_tool_calling.py
-
-# Benchmark suite
-python myia_vllm/qwen3_benchmark/core/benchmark_runner.py
 ```
 
 ### Grid Search Optimization
@@ -63,109 +68,120 @@ python myia_vllm/qwen3_benchmark/core/benchmark_runner.py
 
 ### Docker Deployment Pattern
 
-Uses official vLLM image (`vllm/vllm-openai:latest`) with parameters passed via docker-compose command. No custom Dockerfile needed.
+GLM-4.7-Flash uses a custom Dockerfile (`Dockerfile.glm-flash`) extending `vllm/vllm-openai:nightly` with:
+- `transformers >= 5.0` for `glm4_moe_lite` architecture support
+- MLA (Multi-Latent Attention) architecture patch for efficient KV cache
 
-Key vLLM flags for Qwen models:
-- `--quantization awq_marlin` - AWQ with Marlin kernels for Ampere+
-- `--kv-cache-dtype fp8` - FP8 KV cache for memory efficiency
-- `--tensor-parallel-size 2` - Multi-GPU tensor parallelism
-- `--tool-call-parser hermes` - Recommended for Qwen function calling
-- `--reasoning-parser qwen3` - Native Qwen3 reasoning parser
-- `--rope_scaling '{"rope_type":"yarn","factor":4.0,...}'` - Extended context (only if needed >32K)
+Other services use the official `vllm/vllm-openai:latest` image directly.
 
 ### GPU Assignment
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
+| **medium-glm** | **0,1** | **5002** | **GLM-4.7-Flash-AWQ** | **medium-glm.yml** |
 | micro | 2 | 5000 | Qwen3-1.7B | micro.yml |
 | mini | 2 | 5001 | Qwen3-8B | mini.yml |
 | medium | 0,1 | 5002 | Qwen3-32B-AWQ | medium.yml |
 | medium-vl | 0,1 | 5003 | Qwen3-VL-32B | medium-vl.yml |
-| **medium-coder** | **0,1,2** | **5002** | **Qwen3-Coder-Next-W4A16** | **medium-coder.yml** |
+| medium-coder | 0,1,2 | 5002 | Qwen3-Coder-Next | medium-coder.yml (archived) |
 
-GPUs 0,1 are on faster PCIe bus. GPU 2 is on slower bus (uses all 3 for Coder-Next).
+GPUs 0,1 are on faster PCIe bus. GPU 2 is on slower bus (available for small models when GLM uses only 0,1).
 
 ### Environment Variables
 
 Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - `HUGGING_FACE_HUB_TOKEN` - Required for model downloads
 - `VLLM_API_KEY_*` - API keys per service
-- `CUDA_VISIBLE_DEVICES_*` - GPU assignment per service
-- `GPU_MEMORY_UTILIZATION_*` - Memory usage (default 0.85, reduce if OOM)
+- `VLLM_MODEL_GLM` - GLM-4.7-Flash model (default: `QuantTrio/GLM-4.7-Flash-AWQ`)
+- `VLLM_PORT_GLM` - GLM service port (default: 5002)
 
 ## Critical Configuration Notes
 
 1. **Do NOT increase `gpu-memory-utilization` above 0.9** - CUDA graphs allocate hidden memory. Reduce to 0.8-0.85 if OOM occurs.
 
-2. **RoPE scaling degrades short-context performance** - Only enable for contexts >32K tokens. Use factor 2.0 for 65K, not 4.0.
+2. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working backend on Ada Lovelace.
 
-3. **Use `hermes` tool parser, not `granite`** - Official Qwen recommendation for function calling.
+3. **Use `glm47` tool parser for GLM-4.7-Flash** - NOT hermes, NOT granite. Reasoning parser: `glm45`.
 
-4. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
+4. **Use `hermes` tool parser for Qwen models** - Official Qwen recommendation for function calling.
 
-## Qwen3-Coder-Next Migration Strategy
+5. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
+
+## GLM-4.7-Flash Deployment (Current)
 
 ### Model Specifications
-- **Architecture**: 80B MoE with 3B active parameters per forward pass
-- **VRAM requirement**: ~46GB at W4A16 quantization
-- **Context window**: 262K native, target 128K (min 64K) for 72GB VRAM
-- **Quantization**: W4A16 via LLM Compressor (no pre-quantified model on HuggingFace)
-- **vLLM requirement**: >= v0.15.0 (official Qwen3-Coder-Next support)
+- **Architecture**: 31B MoE with 3B active parameters per forward pass
+- **Attention**: MLA (Multi-Latent Attention) - very compact KV cache (~54 KB/token)
+- **VRAM**: ~8.75 GiB per GPU with AWQ 4-bit + TP=2
+- **KV cache**: 11.38 GiB available per GPU → 225K token capacity
+- **Context window**: 200K native, configured at 65K (max concurrency: 3.44x)
+- **Quantization**: AWQ 4-bit with Marlin kernels (auto-detected)
+- **Model source**: [QuantTrio/GLM-4.7-Flash-AWQ](https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ)
+- **vLLM requirement**: nightly build (glm4_moe_lite architecture + transformers >= 5.0)
 
 ### Deployment Steps
 
-**Step 1: Quantify the model (one-time, 2-4 hours)**
+**Step 1: Build custom image (first time)**
 ```powershell
-pip install llmcompressor>=0.9.0
-python myia_vllm/scripts/quantization/quantize_qwen3_coder_next.py
+docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 ```
 
-**Step 2: Deploy with Docker**
+**Step 2: Deploy**
 ```powershell
-# Validate configuration
-.\myia_vllm\scripts\testing\test_coder_next_config.ps1 -SkipStart
-
-# Start service
-docker compose -f myia_vllm/configs/docker/profiles/medium-coder.yml up -d
-
-# Run benchmarks
-python myia_vllm/scripts/testing/benchmark_coder_next.py
+docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-glm
 ```
 
-### Context Window Strategy (adjust dynamically)
+**Step 3: Benchmark**
+```powershell
+python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash --api-key $VLLM_API_KEY_MEDIUM
+```
 
-| Context | Memory | Action |
-|---------|--------|--------|
-| 128K | ~66-76GB | Target with `--kv-cache-dtype fp8` |
-| 96K | ~69GB | Fallback if FP8 KV bug (#26646) persists |
-| 64K | ~61GB | Minimum acceptable for agentic use |
+### Key vLLM Flags for GLM-4.7-Flash
+```yaml
+--model QuantTrio/GLM-4.7-Flash-AWQ
+--served-model-name glm-4.7-flash
+--tensor-parallel-size 2       # TP=2 on GPUs 0,1
+--gpu-memory-utilization 0.90  # ~12GB left for KV cache per GPU
+--max-model-len 65536          # 64K context (can try higher, MLA is efficient)
+--kv-cache-dtype auto          # FP8 NOT supported with MLA on RTX 4090
+--tool-call-parser glm47       # GLM-4.7 specific tool calling parser
+--reasoning-parser glm45       # GLM-4.5 style reasoning/thinking
+--enforce-eager                # Stable operation on RTX 4090
+--distributed-executor-backend mp  # Required for WSL
+```
 
-Start at 128K + FP8 KV, reduce progressively if OOM until stable.
+### Performance (Benchmark Results)
+| Metric | Single User | 5 Concurrent Users |
+|--------|-------------|-------------------|
+| Tokens/sec | 13.8-15.1 tok/s | 70.2 tok/s aggregate |
+| Tool calling | Supported | Supported |
+| Multi-tool agentic | Supported | Supported |
+| Tool result cycle | Supported | Supported |
+
+### Comparison with Previous Deployments
+| | GLM-4.7-Flash | Qwen3-Coder-Next | Qwen3-32B-AWQ |
+|---|---|---|---|
+| Single user tok/s | **13.8-15.1** | 5-6 | ~15 |
+| Concurrent tok/s | **70.2** | 21.6 | ~40 |
+| GPUs used | 2 | 3 | 2 |
+| Context | 65K | 65K | 32K |
+| SWE-bench | 59.2% | 70.6% | N/A |
 
 ### Claude Code Integration
 
 Students connect via `ANTHROPIC_BASE_URL`:
 ```bash
 export ANTHROPIC_BASE_URL="https://api.medium.text-generation-webui.myia.io"
-claude --model qwen3-coder-next
+claude --model glm-4.7-flash
 ```
 
-### Key vLLM Flags for Coder-Next
-```yaml
---tensor-parallel-size 3       # Distribute across all 3 GPUs
---enable-expert-parallel       # EP for MoE expert distribution
---gpu-memory-utilization 0.88  # Leave headroom for KV cache
---tool-call-parser qwen3_coder # Native parser for Coder-Next
---kv-cache-dtype fp8           # Memory-efficient KV cache (if supported)
-```
+## Qwen3-Coder-Next (Archived)
 
-### Fallback: llama.cpp server
-
-If vLLM has issues with Qwen3-Coder-Next, create a **separate repository** for llama.cpp deployment (this repo stays vLLM-focused):
-```bash
-llama-server --model unsloth/Qwen3-Coder-Next-GGUF/Q4_K_XL.gguf \
-  --tensor-split 0.4,0.4,0.2 --ctx-size 262144 --jinja
-```
+Archived to `medium-coder.yml`. Pipeline Parallelism (PP=3) caused severe pipeline bubbles (~66% GPU idle), limiting throughput to 5-6 tok/s. Key issues:
+- TP=3 fails: `intermediate_size=8192` not divisible by 3
+- TP=2 OOM: 46GB model doesn't fit in 48GB (2x24GB)
+- PP=3: only viable option but pipeline bubbles destroy autoregressive performance
 
 ## Project History & Context
 
@@ -173,13 +189,15 @@ This repository has been maintained primarily by Roo (another AI agent) through 
 - Missions 1-15: Initial setup, Qwen3 integration, optimization
 - Missions 16-17: Vision model support (Qwen3-VL-32B)
 - Missions 18-21: FP8 investigations, structure consolidation
-- Mission 22+: Migration to Qwen3-Coder-Next for agentic use
+- Mission 22+: Migration to Qwen3-Coder-Next (archived)
+- Mission 23+: Migration to GLM-4.7-Flash for better performance
 
 Legacy `myia-vllm/` directory has been archived to `myia_vllm/archives/legacy_myia-vllm_*/`.
 
 ## Related Resources
 
 - [vLLM Documentation](https://docs.vllm.ai)
+- [GLM-4.7-Flash on HuggingFace](https://huggingface.co/zai-org/GLM-4.7-Flash)
+- [GLM-4.X vLLM Recipes](https://docs.vllm.ai/projects/recipes/en/latest/GLM/GLM.html)
 - [Unsloth vLLM Guide](https://unsloth.ai/docs/basics/inference-and-deployment/vllm-guide)
 - [Unsloth Claude Code Integration](https://unsloth.ai/docs/basics/claude-codex)
-- [Qwen3-Coder-Next on HuggingFace](https://huggingface.co/models?other=base_model:quantized:Qwen/Qwen3-Coder-Next)

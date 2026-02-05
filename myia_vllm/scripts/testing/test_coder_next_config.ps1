@@ -143,11 +143,17 @@ if ($SkipStart) {
 # Step 6: Start container and monitor
 Write-Host "[6/6] Starting container with monitoring..." -ForegroundColor Yellow
 
-# Create log directory
+# Create log directory (ensure it exists before any logging)
 $logDir = Split-Path -Parent $LogPath
-if ($logDir -and -not (Test-Path $logDir)) {
-    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+if (-not $logDir) {
+    $logDir = "logs"
 }
+$fullLogDir = Join-Path $ProjectRoot $logDir
+if (-not (Test-Path $fullLogDir)) {
+    Write-Host "  Creating log directory: $fullLogDir" -ForegroundColor Gray
+    New-Item -ItemType Directory -Path $fullLogDir -Force | Out-Null
+}
+$LogPath = Join-Path $fullLogDir (Split-Path -Leaf $LogPath)
 
 # Create container (don't start yet)
 Write-Host "  Creating container..." -ForegroundColor Gray

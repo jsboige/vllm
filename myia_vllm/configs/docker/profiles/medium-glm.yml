@@ -1,0 +1,92 @@
+# Docker Compose profile for GLM-4.7-Flash (31B MoE, 3B active)
+# Replacement for Qwen3-Coder-Next with better single-GPU performance
+#
+# Hardware: 2x RTX 4090 (48GB VRAM) - frees GPU 2 for other services
+# Model: AWQ 4-bit quantization (~19GB) from HuggingFace
+# Source: https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ
+#
+# DEPLOYMENT NOTES:
+#   - Uses Tensor Parallelism (TP=2) on GPUs 0,1 (faster PCIe bus)
+#   - AWQ 4-bit: ~9.5GB/GPU, leaves ~12GB for KV cache per GPU
+#   - MLA (Multi-Latent Attention) enables very efficient KV cache (54 KB/token)
+#   - Requires vLLM nightly + transformers >= 5.0 (custom Dockerfile)
+#
+# Context: 65K tokens with MLA (very compact KV cache, ~54 KB/token)
+# NOTE: FP8 KV cache NOT supported with MLA on Ada Lovelace (RTX 4090)
+#   MLA backends: TRITON_MLA works but requires auto/fp16 kv_cache_dtype
+# Expected: ~14-20 tok/s single user, higher aggregate with concurrency
+#
+# Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-medium-glm:
+    build:
+      context: ..
+      dockerfile: Dockerfile.glm-flash
+    container_name: myia_vllm-medium-glm
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_GLM:-QuantTrio/GLM-4.7-Flash-AWQ}
+      --served-model-name glm-4.7-flash
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.90
+      --max-model-len 65536
+      --kv-cache-dtype auto
+      --enable-chunked-prefill
+      --dtype half
+      --enable-auto-tool-choice
+      --tool-call-parser glm47
+      --reasoning-parser glm45
+      --enforce-eager
+      --distributed-executor-backend mp
+      --swap-space 16
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # 5 minutes for 31B model loading
+    restart: unless-stopped
+
+# Alternative configurations (commented):
+#
+# === HIGHER CONTEXT (if MLA working correctly) ===
+# With MLA fix, KV cache is very compact (54 KB/token).
+# 12GB per GPU can hold ~222K tokens. Try:
+#   --max-model-len 131072
+#
+# === FP8 MODEL (higher quality, less context) ===
+# Replace model with: marksverdhei/GLM-4.7-Flash-FP8
+# Reduce context:     --max-model-len 16384
+# Model is ~30GB (~15GB/GPU) leaving ~7GB for KV cache
+#
+# === SPECULATIVE DECODING (experimental) ===
+# GLM-4.7-Flash supports Multi-Token Prediction:
+#   --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+# Adds memory overhead, may not fit with FP8 KV + 65K context
+#
+# === EXPERT PARALLELISM (if TP+EP improves perf) ===
+# Add: --enable-expert-parallel
+# Distributes experts across GPUs instead of tensor-sharding them

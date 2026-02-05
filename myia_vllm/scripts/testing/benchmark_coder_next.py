@@ -41,6 +41,71 @@ class BenchmarkResult:
     details: dict = field(default_factory=dict)
 
 
+# Agentic tools definition for comprehensive testing
+AGENTIC_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file at the specified path",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the file"}
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file, creating it if necessary",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the file"},
+                    "content": {"type": "string", "description": "Content to write"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Execute a shell command and return the output",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to execute"},
+                    "working_dir": {"type": "string", "description": "Working directory (optional)"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": "Search for a pattern in code files",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex pattern to search"},
+                    "path": {"type": "string", "description": "Directory to search in"},
+                    "file_type": {"type": "string", "description": "File extension filter (e.g., '.py')"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+]
+
+
 class CoderNextBenchmark:
     """Benchmark suite for Qwen3-Coder-Next deployment."""
 
@@ -144,41 +209,6 @@ class CoderNextBenchmark:
 
     async def test_tool_calling(self) -> BenchmarkResult:
         """Test function/tool calling capability."""
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read the contents of a file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "The file path to read",
-                            }
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Write content to a file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "content": {"type": "string"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-        ]
-
         start = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -190,7 +220,7 @@ class CoderNextBenchmark:
                         "messages": [
                             {"role": "user", "content": "Read the file at /tmp/test.txt and tell me what's inside."}
                         ],
-                        "tools": tools,
+                        "tools": AGENTIC_TOOLS,
                         "tool_choice": "auto",
                         "max_tokens": 200,
                         "temperature": 0.7,
@@ -233,6 +263,301 @@ class CoderNextBenchmark:
         except Exception as e:
             return BenchmarkResult(
                 test_name="tool_calling",
+                success=False,
+                error=str(e),
+            )
+
+    async def test_reasoning(self) -> BenchmarkResult:
+        """Test reasoning/chain-of-thought capability."""
+        reasoning_prompt = """Solve this step by step:
+
+A software project has 3 modules. Module A depends on Module B.
+Module B depends on Module C. Module C has no dependencies.
+If we need to rebuild everything, in what order should we build the modules?
+Explain your reasoning."""
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.api_url}/v1/chat/completions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": self.model_name,
+                        "messages": [{"role": "user", "content": reasoning_prompt}],
+                        "max_tokens": 500,
+                        "temperature": 0.7,
+                    },
+                )
+                latency = (time.perf_counter() - start) * 1000
+
+                if response.status_code != 200:
+                    return BenchmarkResult(
+                        test_name="reasoning",
+                        success=False,
+                        latency_ms=latency,
+                        error=f"Status {response.status_code}: {response.text}",
+                    )
+
+                data = response.json()
+                content = data["choices"][0]["message"].get("content", "")
+                usage = data.get("usage", {})
+                tokens = usage.get("completion_tokens", 0)
+                tps = tokens / (latency / 1000) if latency > 0 else 0
+
+                # Verify reasoning quality - should mention C, B, A order
+                has_correct_order = ("C" in content and "B" in content and "A" in content)
+                mentions_dependencies = ("depend" in content.lower() or "order" in content.lower())
+
+                return BenchmarkResult(
+                    test_name="reasoning",
+                    success=has_correct_order and mentions_dependencies,
+                    latency_ms=latency,
+                    tokens_generated=tokens,
+                    tokens_per_second=tps,
+                    details={
+                        "response_preview": content[:300] + "..." if len(content) > 300 else content,
+                        "has_correct_order": has_correct_order,
+                        "mentions_dependencies": mentions_dependencies,
+                    },
+                )
+        except Exception as e:
+            return BenchmarkResult(
+                test_name="reasoning",
+                success=False,
+                error=str(e),
+            )
+
+    async def test_tool_result_cycle(self) -> BenchmarkResult:
+        """Test complete tool call cycle: request → tool call → result → continuation."""
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                # Step 1: Initial request that should trigger tool call
+                response1 = await client.post(
+                    f"{self.api_url}/v1/chat/completions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": self.model_name,
+                        "messages": [
+                            {"role": "user", "content": "Check the Python version by running 'python --version'"}
+                        ],
+                        "tools": AGENTIC_TOOLS,
+                        "tool_choice": "auto",
+                        "max_tokens": 200,
+                    },
+                )
+
+                if response1.status_code != 200:
+                    return BenchmarkResult(
+                        test_name="tool_result_cycle",
+                        success=False,
+                        error=f"Step 1 failed: {response1.status_code}",
+                    )
+
+                data1 = response1.json()
+                message1 = data1["choices"][0]["message"]
+                tool_calls = message1.get("tool_calls", [])
+
+                if not tool_calls:
+                    return BenchmarkResult(
+                        test_name="tool_result_cycle",
+                        success=False,
+                        error="No tool call generated in step 1",
+                    )
+
+                # Step 2: Send tool result and get continuation
+                tool_call = tool_calls[0]
+                messages = [
+                    {"role": "user", "content": "Check the Python version by running 'python --version'"},
+                    message1,  # Assistant's response with tool_calls
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": "Python 3.11.5",
+                    },
+                ]
+
+                response2 = await client.post(
+                    f"{self.api_url}/v1/chat/completions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": self.model_name,
+                        "messages": messages,
+                        "tools": AGENTIC_TOOLS,
+                        "max_tokens": 200,
+                    },
+                )
+
+                latency = (time.perf_counter() - start) * 1000
+
+                if response2.status_code != 200:
+                    return BenchmarkResult(
+                        test_name="tool_result_cycle",
+                        success=False,
+                        latency_ms=latency,
+                        error=f"Step 2 failed: {response2.status_code}",
+                    )
+
+                data2 = response2.json()
+                content2 = data2["choices"][0]["message"].get("content", "")
+
+                # Verify the model understood and used the tool result
+                mentions_version = "3.11" in content2 or "python" in content2.lower()
+
+                return BenchmarkResult(
+                    test_name="tool_result_cycle",
+                    success=mentions_version,
+                    latency_ms=latency,
+                    details={
+                        "tool_called": tool_call["function"]["name"],
+                        "response_preview": content2[:200] if content2 else "(empty)",
+                        "cycle_complete": True,
+                    },
+                )
+        except Exception as e:
+            return BenchmarkResult(
+                test_name="tool_result_cycle",
+                success=False,
+                error=str(e),
+            )
+
+    async def test_multi_tool_scenario(self) -> BenchmarkResult:
+        """Test agentic scenario requiring multiple tool calls."""
+        agentic_prompt = """I need you to help me with a coding task:
+1. First, read the file at /project/main.py to understand the current code
+2. Then search for all TODO comments in the project
+3. Finally, run the tests with 'pytest'
+
+Start by reading the main.py file."""
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.api_url}/v1/chat/completions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": self.model_name,
+                        "messages": [{"role": "user", "content": agentic_prompt}],
+                        "tools": AGENTIC_TOOLS,
+                        "tool_choice": "auto",
+                        "max_tokens": 300,
+                    },
+                )
+                latency = (time.perf_counter() - start) * 1000
+
+                if response.status_code != 200:
+                    return BenchmarkResult(
+                        test_name="multi_tool_scenario",
+                        success=False,
+                        latency_ms=latency,
+                        error=f"Status {response.status_code}: {response.text}",
+                    )
+
+                data = response.json()
+                message = data["choices"][0]["message"]
+                tool_calls = message.get("tool_calls", [])
+
+                # Should call read_file for main.py
+                if tool_calls:
+                    tool_names = [tc["function"]["name"] for tc in tool_calls]
+                    first_call = tool_calls[0]
+
+                    # Check if it correctly identified read_file as the first action
+                    correct_first_tool = first_call["function"]["name"] == "read_file"
+
+                    return BenchmarkResult(
+                        test_name="multi_tool_scenario",
+                        success=correct_first_tool,
+                        latency_ms=latency,
+                        details={
+                            "tools_called": tool_names,
+                            "num_calls": len(tool_calls),
+                            "first_tool_args": first_call["function"]["arguments"],
+                            "correct_first_tool": correct_first_tool,
+                        },
+                    )
+                else:
+                    return BenchmarkResult(
+                        test_name="multi_tool_scenario",
+                        success=False,
+                        latency_ms=latency,
+                        error="No tool calls generated",
+                        details={"response": message.get("content", "")[:200]},
+                    )
+        except Exception as e:
+            return BenchmarkResult(
+                test_name="multi_tool_scenario",
+                success=False,
+                error=str(e),
+            )
+
+    async def test_code_generation(self) -> BenchmarkResult:
+        """Test code generation quality with a typical coding task."""
+        coding_prompt = """Write a Python function called 'merge_sorted_lists' that:
+- Takes two sorted lists as input
+- Returns a single sorted list containing all elements
+- Has O(n+m) time complexity
+- Include type hints and a docstring
+
+Only output the code, no explanations."""
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.api_url}/v1/chat/completions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": self.model_name,
+                        "messages": [{"role": "user", "content": coding_prompt}],
+                        "max_tokens": 600,
+                        "temperature": 0.3,  # Lower temp for more precise code
+                    },
+                )
+                latency = (time.perf_counter() - start) * 1000
+
+                if response.status_code != 200:
+                    return BenchmarkResult(
+                        test_name="code_generation",
+                        success=False,
+                        latency_ms=latency,
+                        error=f"Status {response.status_code}: {response.text}",
+                    )
+
+                data = response.json()
+                content = data["choices"][0]["message"].get("content", "")
+                usage = data.get("usage", {})
+                tokens = usage.get("completion_tokens", 0)
+                tps = tokens / (latency / 1000) if latency > 0 else 0
+
+                # Quality checks
+                has_function_def = "def merge_sorted_lists" in content
+                has_type_hints = "->" in content and ("list" in content.lower() or "List" in content)
+                has_docstring = '"""' in content or "'''" in content
+                looks_like_code = "return" in content and ("while" in content or "for" in content)
+
+                quality_score = sum([has_function_def, has_type_hints, has_docstring, looks_like_code])
+
+                return BenchmarkResult(
+                    test_name="code_generation",
+                    success=quality_score >= 3,  # At least 3/4 criteria
+                    latency_ms=latency,
+                    tokens_generated=tokens,
+                    tokens_per_second=tps,
+                    details={
+                        "has_function_def": has_function_def,
+                        "has_type_hints": has_type_hints,
+                        "has_docstring": has_docstring,
+                        "looks_like_code": looks_like_code,
+                        "quality_score": f"{quality_score}/4",
+                        "code_preview": content[:400] + "..." if len(content) > 400 else content,
+                    },
+                )
+        except Exception as e:
+            return BenchmarkResult(
+                test_name="code_generation",
                 success=False,
                 error=str(e),
             )
@@ -343,45 +668,89 @@ class CoderNextBenchmark:
         include_concurrent: bool = True,
         concurrent_users: int = 5,
         requests_per_user: int = 3,
+        quick_mode: bool = False,
     ):
-        """Run all benchmark tests."""
+        """Run all benchmark tests.
+
+        Args:
+            include_concurrent: Run concurrent user load test
+            concurrent_users: Number of simulated concurrent users
+            requests_per_user: Requests per user in load test
+            quick_mode: Run only essential tests (health, inference, tool_calling)
+        """
+        total_tests = 4 if quick_mode else 8
         print("=" * 60)
         print("Qwen3-Coder-Next Benchmark Suite")
         print("=" * 60)
         print(f"API URL: {self.api_url}")
         print(f"Model: {self.model_name}")
+        print(f"Mode: {'Quick' if quick_mode else 'Full'} ({total_tests} tests)")
         print()
 
+        test_num = 1
+
         # Test 1: Health check
-        print("[1/4] Health check...", end=" ", flush=True)
+        print(f"[{test_num}/{total_tests}] Health check...", end=" ", flush=True)
         result = await self.test_health()
         self.results.append(result)
         self._print_result(result)
+        test_num += 1
 
         if not result.success:
             print("\nERROR: API not healthy. Stopping benchmark.")
             return
 
         # Test 2: Basic inference
-        print("[2/4] Basic inference...", end=" ", flush=True)
+        print(f"[{test_num}/{total_tests}] Basic inference...", end=" ", flush=True)
         result = await self.test_basic_inference()
         self.results.append(result)
         self._print_result(result)
+        test_num += 1
 
         # Test 3: Tool calling
-        print("[3/4] Tool calling...", end=" ", flush=True)
+        print(f"[{test_num}/{total_tests}] Tool calling...", end=" ", flush=True)
         result = await self.test_tool_calling()
         self.results.append(result)
         self._print_result(result)
+        test_num += 1
 
-        # Test 4: Concurrent users
+        if not quick_mode:
+            # Test 4: Reasoning
+            print(f"[{test_num}/{total_tests}] Reasoning (chain-of-thought)...", end=" ", flush=True)
+            result = await self.test_reasoning()
+            self.results.append(result)
+            self._print_result(result)
+            test_num += 1
+
+            # Test 5: Tool result cycle
+            print(f"[{test_num}/{total_tests}] Tool result cycle...", end=" ", flush=True)
+            result = await self.test_tool_result_cycle()
+            self.results.append(result)
+            self._print_result(result)
+            test_num += 1
+
+            # Test 6: Multi-tool scenario
+            print(f"[{test_num}/{total_tests}] Multi-tool agentic scenario...", end=" ", flush=True)
+            result = await self.test_multi_tool_scenario()
+            self.results.append(result)
+            self._print_result(result)
+            test_num += 1
+
+            # Test 7: Code generation
+            print(f"[{test_num}/{total_tests}] Code generation quality...", end=" ", flush=True)
+            result = await self.test_code_generation()
+            self.results.append(result)
+            self._print_result(result)
+            test_num += 1
+
+        # Test N: Concurrent users (last test)
         if include_concurrent:
-            print(f"[4/4] Concurrent users ({concurrent_users} users, {requests_per_user} req/user)...", end=" ", flush=True)
+            print(f"[{test_num}/{total_tests}] Concurrent users ({concurrent_users} users, {requests_per_user} req/user)...", end=" ", flush=True)
             result = await self.test_concurrent_users(concurrent_users, requests_per_user)
             self.results.append(result)
             self._print_result(result)
         else:
-            print("[4/4] Concurrent users... SKIPPED")
+            print(f"[{test_num}/{total_tests}] Concurrent users... SKIPPED")
 
         self._print_summary()
 
@@ -510,6 +879,12 @@ async def main():
     )
 
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Quick mode: run only essential tests (health, inference, tool_calling, concurrent)",
+    )
+
+    parser.add_argument(
         "--export",
         type=str,
         default=None,
@@ -536,6 +911,7 @@ async def main():
         include_concurrent=not args.skip_concurrent,
         concurrent_users=args.concurrent_users,
         requests_per_user=args.requests_per_user,
+        quick_mode=args.quick,
     )
 
     if args.export:
