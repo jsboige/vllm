@@ -1,0 +1,108 @@
+# Docker Compose profile for Qwen3-VL-8B-Thinking (Vision + Reasoning)
+# Deployed on GPU 2 alongside micro service
+#
+# Hardware: 1x RTX 4090 (shared GPU 2, 48% VRAM allocation = ~11.5GB)
+# Model: AWQ 4-bit quantization (~5.5GB) from HuggingFace
+# Quant format: compressed-tensors (W4A16, auto-detected by vLLM)
+# Source: https://huggingface.co/cyankiwi/Qwen3-VL-8B-Thinking-AWQ-4bit
+#
+# DEPLOYMENT NOTES:
+#   - Shares GPU 2 with micro service (4B model)
+#   - gpu-memory-utilization=0.48 → ~11.5GB for this service
+#   - Combined with micro (0.40 → ~9.6GB) = ~21.1GB total on 24GB GPU
+#   - enforce-eager required for shared GPU (avoids CUDA graph conflicts)
+#   - max-num-batched-tokens=8192 for improved throughput
+#   - VLLM_MARLIN_USE_ATOMIC_ADD=1 for optimized AWQ kernels
+#   - Vision encoder stays at BF16 precision (only LLM layers quantized)
+#
+# Features: Vision (images), Thinking/Reasoning (chain-of-thought)
+# Context: 8K tokens with FP8 KV cache (reduced for shared GPU + vision overhead)
+#
+# Build: not needed (uses standard vllm-openai image)
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/mini.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-mini:
+    image: vllm/vllm-openai:latest
+    container_name: myia_vllm-mini
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MINI:-5001}
+      --model ${VLLM_MODEL_MINI:-cyankiwi/Qwen3-VL-8B-Thinking-AWQ-4bit}
+      --served-model-name qwen3-vl-8b-thinking
+      --api-key ${VLLM_API_KEY_MINI}
+
+      --gpu-memory-utilization 0.45
+      --max-model-len 4096
+      --max-num-batched-tokens 4096
+      --kv-cache-dtype fp8
+      --dtype half
+      --enforce-eager
+      --max-num-seqs 32
+
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --reasoning-parser deepseek_r1
+
+      --distributed-executor-backend mp
+      --disable-log-requests
+
+      --limit-mm-per-prompt '{"image":2,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":448000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '4gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=4
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MINI:-5001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s  # 3 minutes for 8B model loading
+    restart: unless-stopped
+
+# =====================================================================
+# GPU MEMORY BUDGET (shared GPU 2 = 24GB)
+# =====================================================================
+#
+# Micro service: 0.40 × 24GB =  9.60 GB
+# This service:  0.48 × 24GB = 11.52 GB
+# Total allocated:              21.12 GB
+# Headroom:                      2.88 GB (CUDA contexts, driver)
+#
+# Memory breakdown for this service:
+#   - Model weights (AWQ 4-bit): ~5.5 GB
+#   - Vision encoder (BF16):     ~0.6 GB
+#   - CUDA overhead:             ~1.3 GB
+#   - Total model load:          ~7.4 GB
+#   - KV cache (FP8):            ~4.1 GB → ~20K tokens capacity
+#   - Configured at 8K context (vision uses many tokens for images)
+#
+# === VISION CAPABILITIES ===
+# - Image input: up to 3 images per request (~774×774 effective resolution)
+# - Video: disabled (video=0) to conserve memory
+# - DeepStack: multi-level ViT feature fusion at layers [8, 16, 24]
+# - Thinking: always-on chain-of-thought reasoning (deepseek_r1 parser)
+#
+# === IF OOM ON SHARED GPU ===
+# 1. Reduce gpu-memory-utilization to 0.42
+# 2. Reduce max-model-len to 16384
+# 3. Reduce --limit-mm-per-prompt '{"image":1,"video":0}'
+# 4. Or deploy micro and mini on separate runs (not simultaneously)

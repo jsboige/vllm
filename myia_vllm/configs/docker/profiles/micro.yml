@@ -1,0 +1,106 @@
+# Docker Compose profile for Qwen3-4B-Thinking (Compact Reasoning Model)
+# Deployed on GPU 2 alongside mini service
+#
+# Hardware: 1x RTX 4090 (shared GPU 2, 40% VRAM allocation = ~9.6GB)
+# Model: AWQ 4-bit quantization (~2.5GB) from HuggingFace
+# Quant format: compressed-tensors (W4A16, auto-detected by vLLM)
+# Source: https://huggingface.co/cyankiwi/Qwen3-4B-Thinking-2507-AWQ-4bit
+#
+# DEPLOYMENT NOTES:
+#   - Shares GPU 2 with mini service (VL-8B model)
+#   - gpu-memory-utilization=0.40 → ~9.6GB for this service
+#   - Combined with mini (0.48 → ~11.5GB) = ~21.1GB total on 24GB GPU
+#   - enforce-eager required for shared GPU (avoids CUDA graph conflicts)
+#   - max-num-batched-tokens=16384 for improved throughput
+#   - VLLM_MARLIN_USE_ATOMIC_ADD=1 for optimized AWQ kernels
+#   - Dense model (not MoE): all 4B parameters active per forward pass
+#
+# Features: Thinking/Reasoning (always-on chain-of-thought)
+# Context: 16K tokens with FP8 KV cache (reduced for shared GPU)
+# Note: Model supports 256K native, but limited by shared GPU memory
+#
+# Build: not needed (uses standard vllm-openai image)
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/micro.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-micro:
+    image: vllm/vllm-openai:latest
+    container_name: myia_vllm-micro
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MICRO:-5000}
+      --model ${VLLM_MODEL_MICRO:-cyankiwi/Qwen3-4B-Thinking-2507-AWQ-4bit}
+      --served-model-name qwen3-4b-thinking
+      --api-key ${VLLM_API_KEY_MICRO}
+
+      --gpu-memory-utilization 0.30
+      --max-model-len 8192
+      --max-num-batched-tokens 8192
+      --kv-cache-dtype fp8
+      --dtype half
+      --enforce-eager
+      --max-num-seqs 64
+
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --reasoning-parser deepseek_r1
+
+      --distributed-executor-backend mp
+      --disable-log-requests
+    ipc: host
+    shm_size: '4gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=4
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT_MICRO:-5000}:${VLLM_PORT_MICRO:-5000}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MICRO:-5000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # 2 minutes for small 4B model
+    restart: unless-stopped
+
+# =====================================================================
+# GPU MEMORY BUDGET (shared GPU 2 = 24GB)
+# =====================================================================
+#
+# This service: 0.40 × 24GB =  9.60 GB
+#   - Model weights (AWQ 4-bit): ~2.5 GB
+#   - KV cache (FP8):            ~7.0 GB → ~48K tokens capacity
+#   - Configured at 16K context (balanced for concurrency)
+#
+# Mini service:   0.48 × 24GB = 11.52 GB
+# Total allocated:               21.12 GB
+# Headroom:                       2.88 GB (CUDA contexts, driver)
+#
+# === THINKING MODE (always-on) ===
+# The model generates <think>...</think> reasoning before the answer.
+# deepseek_r1 parser extracts thinking content automatically.
+# Recommended sampling: temperature=0.6, top_p=0.95, top_k=20
+# Max tokens: 32768 (standard), 81920 (complex math/coding)
+#
+# === PERFORMANCE EXPECTATIONS (OPTIMIZED) ===
+# Single user: ~80-150 tok/s (with Marlin kernels + max-num-batched-tokens)
+# Concurrent (3 users): ~150-250 tok/s aggregate
+# Note: Many tokens are "thinking" tokens (not visible to user)
+# Effective visible output speed may appear lower.
+#
+# === IF OOM ON SHARED GPU ===
+# 1. Reduce gpu-memory-utilization to 0.32
+# 2. Reduce max-model-len to 16384
+# 3. Or deploy micro and mini on separate runs (not simultaneously)

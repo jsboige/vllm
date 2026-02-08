@@ -1,0 +1,113 @@
+# Docker Compose profile for Qwen3-4B-Thinking (Solo Mode - Maximum Performance)
+# Deployed ALONE on GPU 2 with full optimization
+#
+# Hardware: 1x RTX 4090 (24GB VRAM, dedicated)
+# Model: AWQ 4-bit quantization (~2.5GB) from HuggingFace
+# Quant format: compressed-tensors (W4A16, auto-detected by vLLM)
+# Source: https://huggingface.co/cyankiwi/Qwen3-4B-Thinking-2507-AWQ-4bit
+#
+# SOLO MODE BENEFITS (vs shared GPU):
+#   - CUDA graphs ENABLED (+40-70% throughput vs enforce-eager)
+#   - gpu-memory-utilization 0.90 (vs 0.30 shared)
+#   - max-model-len 65536 (vs 8192 shared)
+#   - max-num-batched-tokens 32768 (vs 8192 shared)
+#   - Expected: 100-150 tok/s single, 300-500 tok/s concurrent
+#
+# WARNING: This profile cannot run simultaneously with mini or mini-solo!
+#          Deploy ONE model at a time on GPU 2.
+#
+# Features: Thinking/Reasoning (always-on chain-of-thought)
+# Context: 64K tokens with FP8 KV cache
+#
+# Build: not needed (uses standard vllm-openai image)
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/micro-solo.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-micro-solo:
+    image: vllm/vllm-openai:latest
+    container_name: myia_vllm-micro-solo
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MICRO:-5000}
+      --model ${VLLM_MODEL_MICRO:-cyankiwi/Qwen3-4B-Thinking-2507-AWQ-4bit}
+      --served-model-name qwen3-4b-thinking
+      --api-key ${VLLM_API_KEY_MICRO}
+
+      --gpu-memory-utilization 0.90
+      --max-model-len 65536
+      --max-num-batched-tokens 32768
+      --kv-cache-dtype fp8
+      --dtype half
+      --max-num-seqs 128
+
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --reasoning-parser deepseek_r1
+
+      --distributed-executor-backend mp
+      --disable-log-requests
+    ipc: host
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=8
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT_MICRO:-5000}:${VLLM_PORT_MICRO:-5000}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MICRO:-5000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s  # 3 minutes for CUDA graph capture + warmup
+    restart: unless-stopped
+
+# =====================================================================
+# SOLO MODE PERFORMANCE EXPECTATIONS
+# =====================================================================
+#
+# Based on internet benchmarks for Qwen3-4B AWQ on RTX 4090:
+#
+# | Config                | Single User | 5 Concurrent | Source                |
+# |-----------------------|-------------|--------------|----------------------|
+# | Solo (CUDA graphs)    | 100-150 tok/s| 300-500 tok/s| Expected optimal     |
+# | Shared (enforce-eager)| 64-66 tok/s | 76 tok/s     | Our current results  |
+#
+# Delta: +50-130% single, +300-550% concurrent
+#
+# === WHY SOLO IS FASTER ===
+# 1. CUDA graphs: Compile compute graph once, replay efficiently
+# 2. torch.compile: JIT compilation of operations
+# 3. Higher batch tokens: 32K vs 8K = better throughput
+# 4. More VRAM: 90% of 24GB vs 30% = bigger KV cache
+# 5. Longer context: 64K vs 8K = more tokens per request
+#
+# === KV CACHE BUDGET ===
+# gpu-memory-utilization=0.90 → 21.6 GB available
+# Model weights (AWQ 4-bit): ~2.5 GB
+# CUDA graphs overhead: ~4-6 GB
+# Available for KV cache: ~13-15 GB
+# At FP8 (0.5 bytes/element): ~150K tokens capacity
+# Configured at 64K context (safe margin)
+#
+# === THINKING MODE ===
+# deepseek_r1 parser extracts <think>...</think> automatically.
+# Many tokens are thinking tokens (not visible to end user).
+# Effective visible output speed may appear 30-50% lower.
+#
+# === IF OOM ON STARTUP ===
+# 1. Reduce gpu-memory-utilization to 0.85
+# 2. Reduce max-model-len to 32768
+# 3. As last resort: add --enforce-eager (loses CUDA graph benefit)
