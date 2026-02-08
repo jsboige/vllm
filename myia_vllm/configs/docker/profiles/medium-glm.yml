@@ -23,7 +23,7 @@
 #   4. Added VLLM_MARLIN_USE_ATOMIC_ADD=1 → optimized AWQ kernel accumulation
 #   5. Increased context to 128K (MLA capacity: ~225K tokens)
 #   6. Removed --swap-space (V1 uses recompute, not swap)
-#   7. Added --max-num-batched-tokens 16384 for better MoE batching
+#   7. Added --max-num-batched-tokens 32768 for better MoE batching
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
@@ -47,8 +47,9 @@ services:
       --max-model-len 131072
       --kv-cache-dtype auto
       --dtype half
-      --max-num-batched-tokens 16384
-      --max-num-seqs 64
+      --max-num-batched-tokens 32768
+      --max-num-seqs 128
+      --enable-prefix-caching
       --enable-auto-tool-choice
       --tool-call-parser glm47
       --reasoning-parser glm45
@@ -69,7 +70,7 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
-      - OMP_NUM_THREADS=4
+      - OMP_NUM_THREADS=8
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
