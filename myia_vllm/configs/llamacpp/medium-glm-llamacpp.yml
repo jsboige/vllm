@@ -1,0 +1,69 @@
+# Docker Compose profile for GLM-4.7-Flash via llama.cpp
+# Benchmark alternative to vLLM (medium-glm.yml)
+#
+# Hardware: 2x RTX 4090 (48GB VRAM) - same as vLLM config
+# Model: GGUF Q4_K_M quantization (~18.3GB) from Unsloth
+# Source: https://huggingface.co/unsloth/GLM-4.7-Flash-GGUF
+#
+# NOTES:
+#   - Uses layer split across 2 GPUs (not true tensor parallelism)
+#   - MLA (Multi-Latent Attention) has known issues in llama.cpp:
+#     * Flash attention + KV cache quant broken (#19036, #19307)
+#     * Performance degrades with context length (#19081)
+#   - Context set to 32K (conservative, can try higher if stable)
+#   - KV cache quantization disabled (broken with MLA/GLM)
+#   - --jinja required for GLM chat template
+#   - --hf-repo downloads the GGUF on first start (~18.3GB)
+#     Cached in named volume llamacpp-model-cache for persistence
+#
+# Run:
+#   docker compose -f myia_vllm/configs/llamacpp/medium-glm-llamacpp.yml --env-file myia_vllm/.env up -d
+#
+# Compare with vLLM:
+#   python myia_vllm/scripts/testing/benchmark_llamacpp_vs_vllm.py --compare
+
+services:
+  llamacpp-medium-glm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: myia_llamacpp-medium-glm
+    command: >
+      --hf-repo unsloth/GLM-4.7-Flash-GGUF:Q4_K_M
+      --alias glm-4.7-flash
+      --host 0.0.0.0
+      --port 5002
+      --api-key ${VLLM_API_KEY_MEDIUM}
+      --n-gpu-layers 999
+      --split-mode layer
+      --tensor-split 1,1
+      --ctx-size 32768
+      --parallel 4
+      --batch-size 2048
+      --ubatch-size 512
+      --flash-attn auto
+      --cont-batching
+      --metrics
+      --jinja
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    volumes:
+      - llamacpp-model-cache:/root/.cache
+    ports:
+      - "5002:5002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s  # 10 min for first-time download + model loading
+    restart: unless-stopped
+
+volumes:
+  llamacpp-model-cache:  # Persists downloaded GGUF between container restarts

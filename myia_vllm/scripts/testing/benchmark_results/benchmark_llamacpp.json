@@ -1,0 +1,116 @@
+{
+  "backend": "llamacpp",
+  "timestamp": "2026-02-09T10:01:08.121985",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_s": 0.0,
+      "ttft_s": 0.0,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {}
+    },
+    {
+      "test_name": "short_prompt",
+      "success": true,
+      "latency_s": 4.697973400005139,
+      "ttft_s": 0.7809858999971766,
+      "tokens_generated": 460,
+      "tokens_per_second": 117.43718865558414,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "medium_prompt_5k",
+      "success": true,
+      "latency_s": 0.8938061000080779,
+      "ttft_s": 0.8111653000232764,
+      "tokens_generated": 10,
+      "tokens_per_second": 121.00560500187676,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cold",
+      "success": true,
+      "latency_s": 6.151439499983098,
+      "ttft_s": 6.0540592999896035,
+      "tokens_generated": 10,
+      "tokens_per_second": 102.69027996110103,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cached",
+      "success": true,
+      "latency_s": 0.3298724000051152,
+      "ttft_s": 0.23212050000438467,
+      "tokens_generated": 10,
+      "tokens_per_second": 102.29980184451931,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_s": 1.3434575999854133,
+      "ttft_s": 0.0,
+      "tokens_generated": 62,
+      "tokens_per_second": 46.1495770321841,
+      "prompt_tokens": 248,
+      "error": "",
+      "details": {
+        "content_preview": "I'll read the /etc/hostname file for you.",
+        "has_tool_call": true
+      }
+    },
+    {
+      "test_name": "concurrent_5_users",
+      "success": true,
+      "latency_s": 12.26757280001766,
+      "ttft_s": 0.0,
+      "tokens_generated": 1486,
+      "tokens_per_second": 121.13235635315412,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "successful": 5,
+        "avg_tps_per_user": 132.7493399685484,
+        "avg_ttft": 5.128647140000249,
+        "individual_tps": [
+          132.23162278768228,
+          133.91018916747407,
+          129.86464132636328,
+          133.27242917059067,
+          134.4678173906317
+        ],
+        "individual_ttft": [
+          3.2026826000073925,
+          5.307373999996344,
+          0.5716750000137836,
+          7.230578299990157,
+          9.330925799993565
+        ]
+      }
+    }
+  ]
+}
