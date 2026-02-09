@@ -47,7 +47,11 @@ docker compose -f myia_vllm/configs/docker/profiles/medium.yml up -d
 ### Testing
 
 ```powershell
-# Benchmark GLM-4.7-Flash
+# Benchmark GLM-4.7-Flash (A/B benchmark tool, supports any backend name)
+python myia_vllm/scripts/testing/benchmark_llamacpp_vs_vllm.py --backend vllm
+python myia_vllm/scripts/testing/benchmark_llamacpp_vs_vllm.py --compare
+
+# Legacy benchmark
 python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash
 
 # Run all tests
@@ -174,17 +178,22 @@ python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash -
 VLLM_MARLIN_USE_ATOMIC_ADD=1   # Optimized kernel accumulation for small batches
 VLLM_USE_DEEP_GEMM=0           # Not needed for AWQ (FP8 MoE only)
 OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
+VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1            # +30% concurrent throughput
+VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1  # More kernel search variants
+VLLM_FLOAT32_MATMUL_PRECISION=medium           # TF32 for residual FP32 ops
 ```
 
 ### Performance (Benchmark Results)
 
-**Optimized config** (V1 engine, CUDA graphs piecewise, EP, torch.compile, persistent cache):
+**Optimized config** (V1 engine, CUDA graphs, EP, torch.compile, Inductor autotune, persistent cache):
 | Metric | Single User | Notes |
 |--------|-------------|-------|
-| Decode speed | **40-42 tok/s** | Short prompts |
-| 30K prompt (cold) | 15.2s total, 6.6 tok/s | First encounter, CUDA graph capture |
-| 30K prompt (cached) | 3.8s total, 26.2 tok/s | **Prefix cache hit** |
-| Tool call | 1.2s | Short response |
+| Decode speed | **55 tok/s** | Short prompts (with Inductor autotune) |
+| Concurrent 5 users | **216 tok/s** | Aggregate throughput |
+| 5K prompt TTFT | 0.25s | Warm, cached |
+| 30K prompt (cold) | 0.49s TTFT | After warmup (CUDA graphs pre-captured) |
+| 30K prompt (cached) | 0.54s TTFT | **Prefix cache hit** |
+| Tool call | 1.0s | Short response |
 | Context | 128K | 222K tokens KV capacity |
 
 **TTFT optimization** (critical for Roo/agent workloads with large system prompts):
@@ -200,10 +209,10 @@ OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
 | Context | 65K |
 
 ### Comparison with Previous Deployments
-| | GLM-4.7-Flash (optimized) | GLM-4.7-Flash (initial) | Qwen3-Coder-Next | Qwen3-32B-AWQ |
+| | GLM-4.7-Flash (autotune) | GLM-4.7-Flash (initial) | Qwen3-Coder-Next | Qwen3-32B-AWQ |
 |---|---|---|---|---|
-| Single user tok/s | **45.6-48.4** | 13.8-15.1 | 5-6 | ~15 |
-| Concurrent tok/s | **202.7** | 70.2 | 21.6 | ~40 |
+| Single user tok/s | **55** | 13.8-15.1 | 5-6 | ~15 |
+| Concurrent tok/s | **216** | 70.2 | 21.6 | ~40 |
 | GPUs used | 2 | 2 | 3 | 2 |
 | Context | **128K** | 65K | 65K | 32K |
 | SWE-bench | 59.2% | 59.2% | 70.6% | N/A |
@@ -233,6 +242,14 @@ This repository has been maintained primarily by Roo (another AI agent) through 
 - Mission 23+: Migration to GLM-4.7-Flash for better performance
 
 Legacy `myia-vllm/` directory has been archived to `myia_vllm/archives/legacy_myia-vllm_*/`.
+
+## Current State (2026-02-09)
+
+- **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with full Inductor autotune config
+- **GPU 2 free** for a complementary small model (micro/mini profiles drafted)
+- **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s). Config in `myia_vllm/configs/llamacpp/`
+- **Optimization sweep complete** - Inductor autotune is the best gain found (+30% concurrent). block-size 32 and shared-experts-stream were tested and rejected
+- **Next**: monitoring under Roo agent load, then deploying a complementary model on GPU 2
 
 ## Related Resources
 
