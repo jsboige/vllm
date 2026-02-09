@@ -25,6 +25,8 @@
 #   6. No --swap-space (V1 uses recompute, not swap)
 #   7. --max-num-batched-tokens 32768 for better MoE batching
 #   8. Post-startup warmup recommended (see warmup_glm.py)
+#   9. INDUCTOR_MAX_AUTOTUNE + COORDINATE_DESCENT → +30% concurrent throughput
+#  10. FLOAT32_MATMUL_PRECISION=medium → TF32 for residual FP32 ops
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
@@ -73,6 +75,9 @@ services:
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
       - OMP_NUM_THREADS=4
+      - VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1
+      - VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1
+      - VLLM_FLOAT32_MATMUL_PRECISION=medium
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -102,7 +107,7 @@ volumes:
 #
 # === CUDA GRAPHS + TORCH.COMPILE (critical: 3-4x speedup) ===
 # Without CUDA graphs (enforce-eager): 12-13 tok/s decode, 2.6K tok/s prefill
-# With CUDA graphs: 45-50 tok/s decode, 10K tok/s prefill
+# With CUDA graphs + autotune: 55 tok/s decode, 216 tok/s concurrent (5 users)
 # CUDA graphs consume ~4-6.5 GiB per GPU on RTX 4090.
 # First startup is slower (graph capture + torch.compile warmup).
 # First 2-3 requests after startup have elevated TTFT (10-14s) due to
@@ -125,6 +130,15 @@ volumes:
 # MTP has 0% acceptance rate at 4-bit precision (tested on GLM-4.6-AWQ).
 # Only viable with FP8 or FP16 models. Do NOT add:
 #   --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+#
+# === INDUCTOR AUTOTUNE (tested: +30% concurrent throughput) ===
+# VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1 + COORDINATE_DESCENT_TUNING=1
+# torch.compile tries more kernel variants, finding faster paths.
+# First compile is slower (minutes), but persisted in vllm-compile-cache.
+# VLLM_FLOAT32_MATMUL_PRECISION=medium enables TF32 for residual FP32 ops.
+# TESTED AND REJECTED:
+#   --block-size 32: -7% concurrent (worse memory locality for MoE)
+#   VLLM_DISABLE_SHARED_EXPERTS_STREAM=0: -8% concurrent, +90% tool latency
 #
 # === FP8 MODEL ALTERNATIVE (higher quality, less context) ===
 # Replace model with: marksverdhei/GLM-4.7-Flash-FP8

@@ -518,7 +518,7 @@ def compare_results():
 
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark vLLM vs llama.cpp for GLM-4.7-Flash")
-    parser.add_argument("--backend", choices=["vllm", "llamacpp"], help="Backend to benchmark")
+    parser.add_argument("--backend", type=str, help="Backend to benchmark (e.g. vllm, llamacpp, vllm_autotune)")
     parser.add_argument("--compare", action="store_true", help="Compare saved results")
     parser.add_argument("--port", type=int, default=5002, help="API port (default: 5002)")
     parser.add_argument("--host", type=str, default="localhost", help="API host")
