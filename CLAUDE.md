@@ -99,7 +99,7 @@ Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 
 1. **Do NOT add `--enable-chunked-prefill` or `--num-scheduler-steps`** - These flags force V0 engine fallback. V1 engine (default on nightly) handles chunked prefill automatically.
 
-2. **CUDA graphs (PIECEWISE mode) work well at 0.88 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead (~0.12 GiB/GPU). Use 0.88 with CUDA graphs, or 0.90 with `--enforce-eager`. KV cache: 223K tokens at 0.88.
+2. **CUDA graphs (PIECEWISE mode) work well at 0.92 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead. Max viable is 0.92 (0.95 OOM: only 22.26/23.99 GiB free at startup). KV cache: ~222K tokens at 0.92. **Do NOT use `--enforce-eager`** (tested: 3-4x slower on all metrics - 12 tok/s vs 45 tok/s decode).
 
 3. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working MLA backend on Ada Lovelace (SM89).
 
@@ -117,7 +117,7 @@ Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - **Architecture**: 31B MoE with 3B active parameters per forward pass (64 experts, top-4)
 - **Attention**: MLA (Multi-Latent Attention) - very compact KV cache (~54 KB/token)
 - **VRAM**: ~8.75 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: ~100-110K tokens with CUDA graphs, ~225K tokens in eager mode
+- **KV cache**: ~222K tokens at 0.92 GPU util with CUDA graphs
 - **Context window**: 200K native, configured at 128K
 - **Quantization**: AWQ 4-bit with Marlin kernels (`VLLM_MARLIN_USE_ATOMIC_ADD=1`)
 - **Model source**: [QuantTrio/GLM-4.7-Flash-AWQ](https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ)
@@ -137,7 +137,13 @@ docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file my
 docker logs -f myia_vllm-medium-glm
 ```
 
-**Step 3: Benchmark**
+**Step 3: Warmup (after container is healthy, ~90s)**
+```powershell
+python myia_vllm/scripts/testing/warmup_glm.py --wait
+```
+This pre-captures CUDA graphs for common prompt sizes (50 tok to 50K tok) and eliminates first-request TTFT spikes.
+
+**Step 4: Benchmark**
 ```powershell
 python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash --api-key $VLLM_API_KEY_MEDIUM
 ```
@@ -148,9 +154,9 @@ python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash -
 --served-model-name glm-4.7-flash
 --tensor-parallel-size 2       # TP=2 on GPUs 0,1
 --enable-expert-parallel       # EP for MoE: each GPU holds 32/64 experts
---gpu-memory-utilization 0.88  # Reduced for CUDA graph overhead (~6.5GB/GPU)
+--gpu-memory-utilization 0.92  # Max viable (0.95 OOM). KV cache: 222K tokens
 --max-model-len 131072         # 128K context (MLA: ~54 KB/token)
---max-num-batched-tokens 16384 # Higher batch budget for MoE throughput
+--max-num-batched-tokens 32768 # Higher batch budget for MoE throughput
 --max-num-seqs 64              # Prevent preemption cascades
 --kv-cache-dtype auto          # FP8 NOT supported with MLA on RTX 4090
 --dtype half                   # FP16 (optimal for Marlin on SM89)
@@ -172,19 +178,26 @@ OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
 
 ### Performance (Benchmark Results)
 
-**Optimized config** (V1 engine, CUDA graphs piecewise, EP, torch.compile):
-| Metric | Single User | 5 Concurrent Users |
-|--------|-------------|-------------------|
-| Tokens/sec | **45.6-48.4 tok/s** | **202.7 tok/s** aggregate |
-| Latency (257 tokens) | 5.6s | - |
-| Tool call latency | 1.4s | - |
-| Context | 128K | 128K |
+**Optimized config** (V1 engine, CUDA graphs piecewise, EP, torch.compile, persistent cache):
+| Metric | Single User | Notes |
+|--------|-------------|-------|
+| Decode speed | **40-42 tok/s** | Short prompts |
+| 30K prompt (cold) | 15.2s total, 6.6 tok/s | First encounter, CUDA graph capture |
+| 30K prompt (cached) | 3.8s total, 26.2 tok/s | **Prefix cache hit** |
+| Tool call | 1.2s | Short response |
+| Context | 128K | 222K tokens KV capacity |
+
+**TTFT optimization** (critical for Roo/agent workloads with large system prompts):
+- Persistent torch.compile cache (`vllm-compile-cache` Docker volume) eliminates recompilation on restart
+- First request after restart: **1.7s** (vs ~10-14s without persistent cache)
+- Warmup script pre-captures CUDA graphs for 50 tok to 50K tok prompt sizes
+- Prefix caching reduces TTFT 10x for repeated system prompts (14s -> 1.4s)
 
 **Previous unoptimized** (enforce-eager, V0 fallback, no EP):
-| Metric | Single User | 5 Concurrent Users |
-|--------|-------------|-------------------|
-| Tokens/sec | 13.8-15.1 tok/s | 70.2 tok/s aggregate |
-| Context | 65K | 65K |
+| Metric | Single User |
+|--------|-------------|
+| Tokens/sec | 12-13 tok/s |
+| Context | 65K |
 
 ### Comparison with Previous Deployments
 | | GLM-4.7-Flash (optimized) | GLM-4.7-Flash (initial) | Qwen3-Coder-Next | Qwen3-32B-AWQ |

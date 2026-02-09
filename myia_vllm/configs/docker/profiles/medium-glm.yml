@@ -17,16 +17,18 @@
 #   TRITON_MLA is the only working MLA backend on SM89
 #
 # PERFORMANCE OPTIMIZATIONS APPLIED:
-#   1. Removed --enforce-eager → enables CUDA graphs + torch.compile (+15-40%)
-#   2. Removed --enable-chunked-prefill → prevents V0 fallback, uses V1 engine
-#   3. Added --enable-expert-parallel → reduces cross-GPU MoE communication
-#   4. Added VLLM_MARLIN_USE_ATOMIC_ADD=1 → optimized AWQ kernel accumulation
-#   5. Increased context to 128K (MLA capacity: ~225K tokens)
-#   6. Removed --swap-space (V1 uses recompute, not swap)
-#   7. Added --max-num-batched-tokens 32768 for better MoE batching
+#   1. CUDA graphs + torch.compile enabled (3-4x speedup over enforce-eager)
+#   2. No --enable-chunked-prefill flag (prevents V0 fallback, V1 does it auto)
+#   3. --enable-expert-parallel → reduces cross-GPU MoE communication
+#   4. VLLM_MARLIN_USE_ATOMIC_ADD=1 → optimized AWQ kernel accumulation
+#   5. 128K context (MLA capacity: ~240K tokens at 0.92 GPU util)
+#   6. No --swap-space (V1 uses recompute, not swap)
+#   7. --max-num-batched-tokens 32768 for better MoE batching
+#   8. Post-startup warmup recommended (see warmup_glm.py)
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+# Warm:  python myia_vllm/scripts/testing/warmup_glm.py  (after startup)
 
 services:
   vllm-medium-glm:
@@ -43,12 +45,12 @@ services:
 
       --tensor-parallel-size 2
       --enable-expert-parallel
-      --gpu-memory-utilization 0.88
+      --gpu-memory-utilization 0.92
       --max-model-len 131072
       --kv-cache-dtype auto
       --dtype half
       --max-num-batched-tokens 32768
-      --max-num-seqs 128
+      --max-num-seqs 64
       --enable-prefix-caching
       --enable-auto-tool-choice
       --tool-call-parser glm47
@@ -70,10 +72,11 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
-      - OMP_NUM_THREADS=8
+      - OMP_NUM_THREADS=4
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache:/root/.cache/vllm
     ports:
       - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
     healthcheck:
@@ -83,6 +86,9 @@ services:
       retries: 5
       start_period: 300s  # 5 minutes for model loading + CUDA graph capture
     restart: unless-stopped
+
+volumes:
+  vllm-compile-cache:  # Persists torch.compile cache between container restarts
 
 # =====================================================================
 # OPTIMIZATION NOTES
@@ -94,12 +100,15 @@ services:
 # Do NOT add --enable-chunked-prefill or --num-scheduler-steps
 # (these force V0 fallback).
 #
-# === CUDA GRAPHS (enabled by removing --enforce-eager) ===
+# === CUDA GRAPHS + TORCH.COMPILE (critical: 3-4x speedup) ===
+# Without CUDA graphs (enforce-eager): 12-13 tok/s decode, 2.6K tok/s prefill
+# With CUDA graphs: 45-50 tok/s decode, 10K tok/s prefill
 # CUDA graphs consume ~4-6.5 GiB per GPU on RTX 4090.
-# gpu-memory-utilization=0.88 compensates for this overhead.
 # First startup is slower (graph capture + torch.compile warmup).
-# Compilation cache persists in ~/.cache/vllm/torch_compile_cache.
-# If OOM during startup, reduce to 0.85 or add --enforce-eager back.
+# First 2-3 requests after startup have elevated TTFT (10-14s) due to
+# graph capture for new input shapes. Run warmup_glm.py after startup
+# to pre-trigger these captures before real users connect.
+# Do NOT use --enforce-eager (tested: 3-4x slower on all metrics).
 #
 # === EXPERT PARALLELISM ===
 # With TP=2: each GPU holds full weights of 32/64 experts.
@@ -107,21 +116,15 @@ services:
 # Reduces cross-GPU communication on PCIe (no NVLink).
 #
 # === CONTEXT WINDOW ===
-# MLA KV cache: ~54 KB/token. At 0.88 util with CUDA graphs:
-# ~5-6 GiB per GPU for KV = ~100-110K tokens capacity.
+# MLA KV cache: ~54 KB/token. At 0.92 util with CUDA graphs:
+# ~6-7 GiB per GPU for KV = ~120-130K tokens capacity.
+# Max viable: 0.92 (0.95 OOM: only 22.26/23.99 GiB free at startup)
 # 131K fits for single requests, concurrent requests share the pool.
-# To reduce to 65K: --max-model-len 65536
 #
 # === MTP SPECULATIVE DECODING (NOT recommended with AWQ) ===
 # MTP has 0% acceptance rate at 4-bit precision (tested on GLM-4.6-AWQ).
 # Only viable with FP8 or FP16 models. Do NOT add:
 #   --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
-#
-# === FALLBACK: ENFORCE EAGER MODE ===
-# If CUDA graph capture fails or OOM occurs on startup:
-#   1. Add --enforce-eager back
-#   2. Increase --gpu-memory-utilization to 0.90
-#   3. Increase --max-model-len to 200000 (full MLA capacity)
 #
 # === FP8 MODEL ALTERNATIVE (higher quality, less context) ===
 # Replace model with: marksverdhei/GLM-4.7-Flash-FP8

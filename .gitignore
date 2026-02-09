@@ -221,3 +221,15 @@ ep_kernels_workspace/
 # Backups automatiques
 myia_vllm_BACKUP_*/
 *_BACKUP_*/
+
+# Playwright MCP screenshots
+.playwright-mcp/
+
+# Temporary screenshots
+open-webui-*.png
+
+# Windows null device artifact
+nul
+
+# Monitoring CSV logs
+myia_vllm/scripts/testing/*.csv
