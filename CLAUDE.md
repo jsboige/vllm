@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Self-Maintenance Instructions
+
+**You MUST keep this file and your memory (`MEMORY.md`) up to date as you work.** Do not wait for the user to ask:
+- After completing a significant task (optimization, config change, benchmark), update the relevant sections of CLAUDE.md and MEMORY.md immediately
+- Update performance numbers when you measure new benchmarks
+- Record what you tested and rejected (with reasons) so you don't repeat failed experiments
+- Update the "Current State" section at the bottom when the deployment changes
+- Before ending a session, verify both files reflect the current state of the project
+
 ## Project Overview
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
