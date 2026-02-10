@@ -252,13 +252,63 @@ This repository has been maintained primarily by Roo (another AI agent) through 
 
 Legacy `myia-vllm/` directory has been archived to `myia_vllm/archives/legacy_myia-vllm_*/`.
 
-## Current State (2026-02-09)
+## Logging Middleware
+
+ASGI middleware (`myia_vllm/middleware/logging_middleware.py`) that intercepts `/v1/chat/completions` and logs full request/response content + timing as JSONL at `/logs/chat_completions.jsonl`.
+
+- **Captures**: model, messages_count, last_user_message, tools_count, temperature, max_tokens, response_text, reasoning_text, tool_calls, finish_reason, prompt_tokens, completion_tokens, ttft_s, e2e_s
+- **Handles both streaming (SSE) and non-streaming** responses
+- **Config**: `VLLM_LOG_DIR` (default `/logs`), `VLLM_LOG_REQUESTS_CONTENT` (default `1`)
+- **Loaded via**: `--middleware logging_middleware.RequestResponseLogger` + `PYTHONPATH=/middleware`
+- Volume-mounted read-only: `myia_vllm/middleware:/middleware:ro`
+
+## SK Agent MCP Server
+
+Semantic Kernel-based MCP proxy (`myia_vllm/mcp/sk_agent.py`) exposing any OpenAI-compatible model as MCP tools for Claude Code / Roo Code. Uses pluggable MCP servers for tool calling.
+
+### Tools exposed
+- `ask(prompt, system_prompt?)` -- text query with auto tool use
+- `analyze_image(image_source, prompt?)` -- vision, converts local paths to base64
+- `list_tools()` -- introspection
+
+### Architecture
+```
+Claude/Roo --stdio--> FastMCP server --> Semantic Kernel
+                                          ├── OpenAI Chat Completion --> vLLM
+                                          ├── MCPStdioPlugin: SearXNG
+                                          └── MCPStdioPlugin: ... (from config)
+```
+
+### Config (`sk_agent_config.json`)
+- `model.base_url` -- endpoint (vLLM, Open-WebUI, etc.)
+- `model.api_key_env` -- env var name for API key
+- `model.vision` -- enable image support
+- `mcps[]` -- list of MCP servers to plug in (command, args, env)
+- Adding a new tool = adding an MCP entry to config, zero code changes
+
+### Registration
+```bash
+claude mcp add sk-agent --transport stdio \
+  -e SK_AGENT_CONFIG="d:/vllm/myia_vllm/mcp/sk_agent_config.json" \
+  -e VLLM_API_KEY_MEDIUM="..." \
+  -- python d:/vllm/myia_vllm/mcp/sk_agent.py
+```
+
+### Dependencies
+```
+semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
+mcp>=1.7
+```
+
+## Current State (2026-02-10)
 
 - **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with full Inductor autotune config
-- **GPU 2 free** for a complementary small model (micro/mini profiles drafted)
-- **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s). Config in `myia_vllm/configs/llamacpp/`
-- **Optimization sweep complete** - Inductor autotune is the best gain found (+30% concurrent). block-size 32 and shared-experts-stream were tested and rejected
-- **Next**: monitoring under Roo agent load, then deploying a complementary model on GPU 2
+- **Logging middleware active** -- captures all chat completion requests as JSONL
+- **SK Agent MCP server deployed** -- registered in Claude Code, tested with SearXNG web search (GLM successfully calls tools autonomously)
+- **GPU 2**: Mini model (Qwen3-VL-8B) running on port 5001
+- **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s)
+- **Optimization sweep complete** - Inductor autotune is the best gain found (+30% concurrent)
+- **Next**: test SK agent with Playwright MCP, investigate Open-WebUI tool pipeline issues (V2)
 
 ## Related Resources
 
