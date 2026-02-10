@@ -27,6 +27,7 @@
 #   8. Post-startup warmup recommended (see warmup_glm.py)
 #   9. INDUCTOR_MAX_AUTOTUNE + COORDINATE_DESCENT → +30% concurrent throughput
 #  10. FLOAT32_MATMUL_PRECISION=medium → TF32 for residual FP32 ops
+#  11. Request/response logging middleware (JSONL at /logs/chat_completions.jsonl)
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
@@ -59,6 +60,7 @@ services:
       --reasoning-parser glm45
       --distributed-executor-backend mp
       --disable-log-requests
+      --middleware logging_middleware.RequestResponseLogger
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -78,10 +80,14 @@ services:
       - VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1
       - VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1
       - VLLM_FLOAT32_MATMUL_PRECISION=medium
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
       - vllm-compile-cache:/root/.cache/vllm
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
     ports:
       - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
     healthcheck:
