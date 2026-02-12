@@ -9,15 +9,15 @@
 # SOLO MODE BENEFITS (vs shared GPU):
 #   - CUDA graphs ENABLED (+40-70% throughput vs enforce-eager)
 #   - gpu-memory-utilization 0.88 (vs 0.45 shared)
-#   - max-model-len 16384 (vs 4096 shared)
-#   - max-num-batched-tokens 16384 (vs 4096 shared)
+#   - max-model-len 131072 (vs 4096 shared) - native 256K, 128K fits in 24GB
+#   - max-num-batched-tokens 32768 (vs 4096 shared)
 #   - Expected: 80-120 tok/s single, 200-350 tok/s concurrent
 #
 # NOTE: This is the dedicated GPU 2 service (micro is deprecated).
 #       GPU 2 is now exclusively allocated to Qwen3-VL-8B-Thinking.
 #
 # Features: Vision (images), Thinking/Reasoning (chain-of-thought)
-# Context: 16K tokens with FP8 KV cache
+# Context: 128K tokens with FP8 KV cache (native 256K, limited by VRAM)
 #
 # Build: not needed (uses standard vllm-openai image)
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/mini-solo.yml --env-file myia_vllm/.env up -d
@@ -34,8 +34,8 @@ services:
       --api-key ${VLLM_API_KEY_MINI}
 
       --gpu-memory-utilization 0.88
-      --max-model-len 16384
-      --max-num-batched-tokens 16384
+      --max-model-len 131072
+      --max-num-batched-tokens 32768
       --kv-cache-dtype fp8
       --dtype half
       --max-num-seqs 64
@@ -103,8 +103,9 @@ services:
 # Vision encoder (BF16): ~0.6 GB
 # CUDA graphs overhead: ~4-6 GB
 # Available for KV cache: ~9-11 GB
-# At FP8: ~100K tokens capacity (but vision takes many tokens)
-# Configured at 16K context (safe for vision workloads)
+# At FP8 (28 KB/token): ~330K tokens theoretical capacity
+# Configured at 128K context (enough for Playwright snapshots + vision)
+# 128K = 3.5 GB KV, fits comfortably in 9 GB budget
 #
 # === THINKING MODE ===
 # deepseek_r1 parser extracts <think>...</think> automatically.
