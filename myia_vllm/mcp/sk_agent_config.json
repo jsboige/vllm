@@ -2,7 +2,7 @@
   "model": {
     "base_url": "http://localhost:5001/v1",
     "api_key_env": "VLLM_API_KEY_MINI",
-    "model_id": "qwen3-vl-8b-thinking",
+    "model_id": "zwz-8b",
     "vision": true
   },
   "mcps": [

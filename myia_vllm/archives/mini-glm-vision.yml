@@ -1,0 +1,116 @@
+# Archived: 2026-02-16 - GLM-4.6V-Flash INCOMPATIBLE with vLLM (v0.16.0rc2 nightly)
+# Error: vLLM does not recognize Glm4vForConditionalGeneration multimodal processor
+# TypeError: Invalid type of HuggingFace processor. Expected ProcessorMixin, found PreTrainedTokenizerFast
+# Superseded by: mini-zwz.yml (ZwZ-8B, default vision model)
+# Re-evaluate when vLLM adds Glm4vForConditionalGeneration support
+#
+# Docker Compose profile for GLM-4.6V-Flash (Vision + Video)
+# Deployed on GPU 2 with full optimization
+#
+# Hardware: 1x RTX 4090 (24GB VRAM, dedicated)
+# Model: AWQ 4-bit quantization (~5.5GB) from HuggingFace
+# Source: https://huggingface.co/cyankiwi/GLM-4.6V-Flash-AWQ-4bit
+#
+# Features: Vision (images), VIDEO support, Multimodal understanding
+# Context: 128K tokens with FP8 KV cache
+#
+# Key differences from Qwen3-VL:
+#   - Native VIDEO support (Qwen3-VL also supports video but GLM has better temporal understanding)
+#   - GLM4V architecture (different from Qwen3VL)
+#   - Trilingual: Chinese, English, Arabic
+#
+# Build: not needed (uses standard vllm-openai image)
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/mini-glm-vision.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-mini-glm-vision:
+    image: vllm/vllm-openai:nightly
+    container_name: myia_vllm-mini-glm-vision
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MINI:-5001}
+      --model cyankiwi/GLM-4.6V-Flash-AWQ-4bit
+      --served-model-name glm-4.6v-flash
+      --api-key ${VLLM_API_KEY_MINI}
+
+      --gpu-memory-utilization 0.88
+      --max-model-len 131072
+      --max-num-batched-tokens 32768
+      --kv-cache-dtype fp8
+      --dtype half
+      --max-num-seqs 64
+
+      --enable-auto-tool-choice
+      --tool-call-parser glm47
+
+      --distributed-executor-backend mp
+      --disable-log-requests
+
+      --limit-mm-per-prompt '{"image":4,"video":1}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=8
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - /mnt/d/vllm/models:/models:ro
+      - hf-cache-glm-vision:/root/.cache/huggingface
+    working_dir: /app
+    ports:
+      - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MINI:-5001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 240s
+    restart: unless-stopped
+
+# =====================================================================
+# GLM-4.6V-FLASH SPECIFICS
+# =====================================================================
+#
+# GLM-4.6V-Flash is a vision-language model from Zhipu AI with:
+#   - Native video understanding (temporal reasoning)
+#   - Multi-image understanding
+#   - Strong performance on visual benchmarks
+#   - Support for Chinese, English, and Arabic
+#
+# === VIDEO SUPPORT ===
+# limit-mm-per-prompt: 1 video + up to 4 images
+# Video processing uses temporal sampling to understand motion
+# Max video length depends on max_model_len (128K tokens)
+#
+# === KV CACHE BUDGET ===
+# gpu-memory-utilization=0.88 → 21.1 GB available
+# Model weights (AWQ 4-bit): ~5.5 GB
+# Vision encoder (BF16): ~0.6 GB
+# CUDA graphs overhead: ~4-6 GB
+# Available for KV cache: ~9-11 GB
+# At FP8: ~330K tokens theoretical capacity
+# Configured at 128K context
+#
+# === TOOL CALLING ===
+# Uses glm47 parser (same as GLM-4.7-Flash)
+#
+# === IF OOM ON STARTUP ===
+# 1. Reduce gpu-memory-utilization to 0.85
+# 2. Reduce max-model-len to 65536
+# 3. Reduce --limit-mm-per-prompt '{"image":2,"video":0}'
+# 4. As last resort: add --enforce-eager (loses CUDA graph benefit)
+#
+
+volumes:
+  hf-cache-glm-vision:

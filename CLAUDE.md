@@ -92,8 +92,9 @@ Other services use the official `vllm/vllm-openai:latest` image directly.
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
 | **medium-glm** | **0,1** | **5002** | **GLM-4.7-Flash-AWQ** | **medium-glm.yml** |
+| **mini-zwz** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz.yml** |
+| mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
 | micro | 2 | 5000 | Qwen3-1.7B | micro.yml |
-| mini | 2 | 5001 | Qwen3-8B | mini.yml |
 | medium | 0,1 | 5002 | Qwen3-32B-AWQ | medium.yml |
 | medium-vl | 0,1 | 5003 | Qwen3-VL-32B | medium-vl.yml |
 | medium-coder | 0,1,2 | 5002 | Qwen3-Coder-Next | medium-coder.yml (archived) |
@@ -107,6 +108,68 @@ Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - `VLLM_API_KEY_*` - API keys per service
 - `VLLM_MODEL_GLM` - GLM-4.7-Flash model (default: `QuantTrio/GLM-4.7-Flash-AWQ`)
 - `VLLM_PORT_GLM` - GLM service port (default: 5002)
+- `VLLM_MODEL_ZWZ` - ZwZ-8B model path (default: `./models/ZwZ-8B-AWQ-4bit`)
+
+## ZwZ-8B Deployment (Default Vision Model)
+
+### Model Overview
+
+**ZwZ-8B** ([inclusionAI/ZwZ-8B](https://huggingface.co/inclusionAI/ZwZ-8B)) is the **default vision model** on GPU 2 (port 5001) since 2026-02-16. A Qwen3-VL-8B-Instruct finetune specialized for fine-grained visual perception. Key features:
+- **Single-pass inference**: No iterative zooming like "Thinking-with-Images" methods
+- **Region-to-Image Distillation**: Trained with Qwen3-VL-235B and GLM-4.5V as teachers
+- **Training data**: 74K VQA samples from inclusionAI/ZwZ-RL-VQA
+- **License**: Apache 2.0
+
+### Differences from Qwen3-VL-8B-Thinking
+
+| Feature | Qwen3-VL-8B-Thinking | ZwZ-8B |
+|---------|---------------------|--------|
+| Reasoning mode | ✅ deepseek_r1 parser | ❌ None |
+| Fine-grained vision | Standard | Optimized |
+| Tool calling | ✅ hermes | ✅ hermes |
+| Single-pass inference | Yes | Yes |
+
+### Quantization (Required)
+
+ZwZ-8B is only available in BF16 (~17GB). Must create AWQ 4-bit for deployment:
+
+```bash
+# Create llmcompressor environment
+conda create -n llmcompressor python=3.11 -y
+conda activate llmcompressor
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+pip install "llmcompressor>=0.9.0" "transformers>=4.48.0" accelerate datasets
+
+# Run quantization (30-60 min)
+python myia_vllm/scripts/quantization/quantize_zwz_8b.py \
+  --model-id inclusionAI/ZwZ-8B \
+  --output-dir ./models/ZwZ-8B-AWQ-4bit \
+  --num-samples 512
+```
+
+**Critical**: Vision encoder (ViT) is excluded from quantization - kept in BF16 to preserve visual accuracy.
+
+### Deployment
+
+```powershell
+# Switch from mini-solo (Qwen3-VL-Thinking) to ZwZ
+docker compose -f myia_vllm/configs/docker/profiles/mini-solo.yml down
+docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
+
+# Monitor startup
+docker logs -f myia_vllm-mini-zwz
+```
+
+### Key vLLM Flags for ZwZ-8B
+```yaml
+--model ./models/ZwZ-8B-AWQ-4bit
+--served-model-name zwz-8b
+--gpu-memory-utilization 0.88
+--max-model-len 131072
+--kv-cache-dtype fp8
+--tool-call-parser hermes
+# NO --reasoning-parser (ZwZ has no thinking mode)
+```
 
 ## Critical Configuration Notes
 
@@ -300,15 +363,17 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-10)
+## Current State (2026-02-16)
 
 - **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with full Inductor autotune config
 - **Logging middleware active** -- captures all chat completion requests as JSONL
-- **SK Agent MCP server deployed** -- registered in Claude Code, tested with SearXNG web search (GLM successfully calls tools autonomously)
-- **GPU 2**: Mini model (Qwen3-VL-8B) running on port 5001
+- **SK Agent MCP server deployed** -- registered in Claude Code, uses ZwZ-8B as backend
+- **GPU 2**: ZwZ-8B (default vision model) running on port 5001
+- **vLLM updated** to v0.16.0rc2.dev202 (nightly)
+- **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported, `TypeError: Expected ProcessorMixin, found PreTrainedTokenizerFast`). Profile archived to `archives/mini-glm-vision.yml`. Re-evaluate when vLLM adds support.
+- **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
 - **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s)
 - **Optimization sweep complete** - Inductor autotune is the best gain found (+30% concurrent)
-- **Next**: test SK agent with Playwright MCP, investigate Open-WebUI tool pipeline issues (V2)
 
 ## Related Resources
 
