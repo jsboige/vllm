@@ -1,0 +1,97 @@
+# Docker Compose profile for ZwZ-8B (Shared Mode - A/B Testing)
+# Deployed on GPU 2 alongside Qwen3-VL-8B-Thinking for parallel A/B testing
+#
+# Hardware: 1x RTX 4090 (shared GPU 2, 40% VRAM allocation = ~9.6GB)
+# Model: AWQ 4-bit quantization (~5.5GB) - CREATED VIA quantize_zwz_8b.py
+# Source: https://huggingface.co/inclusionAI/ZwZ-8B
+#
+# A/B TESTING CONFIG:
+#   - This service: port 5005, model zwz-8b
+#   - Qwen3-VL-Thinking service: port 5001, model qwen3-vl-8b-thinking
+#   - Combined: 2 × 0.40 = 0.80 GPU utilization
+#   - enforce-eager required (no CUDA graphs in shared mode)
+#
+# Features: Vision (images), Fine-grained visual perception (no thinking mode)
+# Context: 4K tokens with FP8 KV cache (reduced for dual-model shared GPU)
+#
+# Run: docker compose -f myia_vllm/configs/docker/profiles/mini-zwz-shared.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-mini-zwz-shared:
+    image: vllm/vllm-openai:latest
+    container_name: myia_vllm-mini-zwz-shared
+    command: >
+      --host 0.0.0.0
+      --port 5005
+      --model /models/ZwZ-8B-AWQ-4bit
+      --served-model-name zwz-8b
+      --api-key ${VLLM_API_KEY_MINI}
+
+      --gpu-memory-utilization 0.40
+      --max-model-len 4096
+      --max-num-batched-tokens 4096
+      --kv-cache-dtype fp8
+      --dtype half
+      --enforce-eager
+      --max-num-seqs 16
+
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+
+      --distributed-executor-backend mp
+      --disable-log-requests
+
+      --limit-mm-per-prompt '{"image":2,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":448000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '2gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=4
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - /mnt/d/vllm/models:/models:ro
+      - hf-cache-shared:/root/.cache/huggingface
+    ports:
+      - "5005:5005"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+# =====================================================================
+# DUAL MODEL GPU MEMORY BUDGET (shared GPU 2 = 24GB)
+# =====================================================================
+#
+# This service (ZwZ-8B):          0.40 × 24GB = 9.6 GB
+# Qwen3-VL-Thinking service:      0.40 × 24GB = 9.6 GB
+# Total allocated:                                   19.2 GB
+# Headroom:                                           4.8 GB
+#
+# Memory breakdown per service:
+#   - Model weights (AWQ 4-bit): ~5.5 GB
+#   - Vision encoder (BF16):     ~0.6 GB
+#   - CUDA overhead:             ~1.0 GB
+#   - KV cache (FP8):            ~2.5 GB → ~10K tokens
+#   - Configured at 4K context (tight but works)
+#
+# === ZwZ-8B vs Qwen3-VL-Thinking ===
+# ZwZ-8B has NO reasoning mode (no deepseek_r1 parser)
+# Optimized for fine-grained visual perception
+# Same tool calling via hermes parser
+
+volumes:
+  hf-cache-shared:

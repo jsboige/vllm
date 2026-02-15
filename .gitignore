@@ -233,3 +233,9 @@ nul
 
 # Monitoring CSV logs
 myia_vllm/scripts/testing/*.csv
+
+# Local model weights (large binaries)
+models/
+
+# Conda/venv environments
+llmcompressor_env/
