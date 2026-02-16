@@ -61,7 +61,7 @@ services:
       - OMP_NUM_THREADS=4
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
     volumes:
-      - /mnt/d/vllm/models:/models:ro
+      - d:/vllm/models:/models:ro
       - hf-cache-shared:/root/.cache/huggingface
     ports:
       - "5001:5001"
