@@ -11,11 +11,17 @@
 #   - Replaces Qwen3-VL-8B-Thinking (mini-solo.yml, still available as fallback)
 #   - GLM-4.6V-Flash tested and rejected (vLLM incompatible, see archives/)
 #
-# SOLO MODE BENEFITS:
-#   - CUDA graphs ENABLED (+40-70% throughput vs enforce-eager)
-#   - gpu-memory-utilization 0.88
-#   - max-model-len 131072 - native 256K, 128K fits in 24GB
-#   - max-num-batched-tokens 32768
+# PERFORMANCE OPTIMIZATIONS:
+#   1. CUDA graphs + torch.compile enabled (+40-70% throughput vs enforce-eager)
+#   2. Inductor autotune (MAX_AUTOTUNE + COORDINATE_DESCENT) (+20-30% expected)
+#   3. Prefix caching (10x TTFT reduction for repeated prompts)
+#   4. Persistent compile cache (vllm-compile-cache volume)
+#   5. FP8 KV cache (28 KB/token)
+#   6. Marlin AWQ optimizations (VLLM_MARLIN_USE_ATOMIC_ADD=1)
+#   7. Logging middleware (observability)
+#   8. gpu-memory-utilization 0.88
+#   9. max-model-len 131072 (native 256K, 128K fits in 24GB)
+#  10. max-num-batched-tokens 32768
 #
 # Features: Vision (images), Fine-grained visual perception, Tool calling (hermes)
 # Context: 128K tokens with FP8 KV cache (native 256K, limited by VRAM)
@@ -43,9 +49,11 @@ services:
 
       --enable-auto-tool-choice
       --tool-call-parser hermes
+      --enable-prefix-caching
 
       --distributed-executor-backend mp
       --disable-log-requests
+      --middleware logging_middleware.RequestResponseLogger
 
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
@@ -65,9 +73,17 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=8
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1
+      - VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1
+      - VLLM_FLOAT32_MATMUL_PRECISION=medium
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
     volumes:
       - d:/vllm/models:/models:ro
       - hf-cache:/root/.cache/huggingface
+      - vllm-compile-cache:/root/.cache/vllm
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
     working_dir: /app
     ports:
       - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
@@ -124,3 +140,4 @@ services:
 
 volumes:
   hf-cache:
+  vllm-compile-cache:  # Persists torch.compile cache between container restarts
