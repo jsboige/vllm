@@ -253,20 +253,23 @@ OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
 VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1            # +30% concurrent throughput
 VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1  # More kernel search variants
 VLLM_FLOAT32_MATMUL_PRECISION=medium           # TF32 for residual FP32 ops
+VLLM_USE_FLASHINFER_MOE_FP16=1                 # FlashAttention prefill for MoE (+13%)
 ```
 
 ### Performance (Benchmark Results)
 
-**Optimized config** (V1 engine, CUDA graphs, EP, torch.compile, Inductor autotune, persistent cache):
-| Metric | Single User | Notes |
-|--------|-------------|-------|
-| Decode speed | **55 tok/s** | Short prompts (with Inductor autotune) |
-| Concurrent 5 users | **216 tok/s** | Aggregate throughput |
-| 5K prompt TTFT | 0.25s | Warm, cached |
-| 30K prompt (cold) | 0.49s TTFT | After warmup (CUDA graphs pre-captured) |
-| 30K prompt (cached) | 0.54s TTFT | **Prefix cache hit** |
-| Tool call | 1.0s | Short response |
-| Context | 128K | 222K tokens KV capacity |
+**Optimized config** (V1 engine, CUDA graphs, EP, torch.compile, Inductor autotune, FlashInfer MoE, persistent cache):
+| Metric | Historical (2026-02-09) | Current (2026-02-17) | Notes |
+|--------|------------------------|---------------------|-------|
+| Decode speed | **55 tok/s** | **44.6 tok/s** | With Inductor + FlashInfer |
+| Concurrent 5 users | **216 tok/s** | **183.8 tok/s** | Aggregate throughput |
+| 5K prompt TTFT | 0.25s | N/A | Warm, cached |
+| 30K prompt (cold) | 0.49s | 15.2s | After warmup (CUDA graphs pre-captured) |
+| 30K prompt (cached) | 0.54s | 0.6s | **Prefix cache hit** |
+| Tool call | 1.0s | 1.9s | Short response |
+| Context | 128K | 128K | 222K tokens KV capacity |
+
+**Note on metric discrepancy**: Recent benchmarks (2026-02-17) show lower performance than historical (2026-02-09), possibly due to vLLM v0.16 regression or different benchmark conditions. FlashInfer MoE optimization (`VLLM_USE_FLASHINFER_MOE_FP16=1`) provides **+13% improvement** vs current baseline (39.5→44.6 tok/s decode, 163.3→183.8 tok/s concurrent).
 
 **TTFT optimization** (critical for Roo/agent workloads with large system prompts):
 - Persistent torch.compile cache (`vllm-compile-cache` Docker volume) eliminates recompilation on restart
@@ -369,7 +372,7 @@ mcp>=1.7
 - **Logging middleware active** -- captures all chat completion requests as JSONL
 - **SK Agent MCP server deployed** -- registered in Claude Code, uses ZwZ-8B as backend
 - **GPU 2**: ZwZ-8B (default vision model) running on port 5001
-- **vLLM updated** to v0.16.0rc2.dev202 (nightly)
+- **vLLM updated** to v0.16.0rc2.dev216 (nightly, 2026-02-15)
 - **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported, `TypeError: Expected ProcessorMixin, found PreTrainedTokenizerFast`). Profile archived to `archives/mini-glm-vision.yml`. Re-evaluate when vLLM adds support.
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
 - **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s)
