@@ -1,0 +1,116 @@
+{
+  "backend": "zwz_optimized",
+  "timestamp": "2026-02-17T19:55:14.143030",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_s": 0.0,
+      "ttft_s": 0.0,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {}
+    },
+    {
+      "test_name": "short_prompt",
+      "success": true,
+      "latency_s": 3.2195376999734435,
+      "ttft_s": 0.4344482999877073,
+      "tokens_generated": 376,
+      "tokens_per_second": 135.00464293962185,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "```python\ndef is_prime(n: int) -> bool:\n    \"\"\"\n    Check if a given number is a prime number.\n\n    ",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "medium_prompt_5k",
+      "success": true,
+      "latency_s": 0.8377531000005547,
+      "ttft_s": 0.8237153000081889,
+      "tokens_generated": 2,
+      "tokens_per_second": 142.47246727319583,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "OK.",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cold",
+      "success": true,
+      "latency_s": 4.056280099990545,
+      "ttft_s": 4.0445603000116535,
+      "tokens_generated": 2,
+      "tokens_per_second": 170.65137661071125,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "OK.",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cached",
+      "success": true,
+      "latency_s": 0.5339108999760356,
+      "ttft_s": 0.4607102999871131,
+      "tokens_generated": 9,
+      "tokens_per_second": 122.94981190539394,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "Hello! 👋  \nHow can I assist you",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_s": 0.5047758000146132,
+      "ttft_s": 0.0,
+      "tokens_generated": 22,
+      "tokens_per_second": 43.58370587370295,
+      "prompt_tokens": 237,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": true
+      }
+    },
+    {
+      "test_name": "concurrent_5_users",
+      "success": true,
+      "latency_s": 3.7916236000019126,
+      "ttft_s": 0.0,
+      "tokens_generated": 1486,
+      "tokens_per_second": 391.9165393946937,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "successful": 5,
+        "avg_tps_per_user": 139.29540502965855,
+        "avg_ttft": 0.9677365799958352,
+        "individual_tps": [
+          138.86447214827967,
+          138.91601266378578,
+          139.39267078041937,
+          139.65137895156343,
+          139.6524906042446
+        ],
+        "individual_ttft": [
+          1.6245287999918219,
+          1.2769978999858722,
+          0.9639534000016283,
+          0.6435858999902848,
+          0.3296169000095688
+        ]
+      }
+    }
+  ]
+}

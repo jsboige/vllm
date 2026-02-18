@@ -1,0 +1,116 @@
+{
+  "backend": "glm_flashinfer_final",
+  "timestamp": "2026-02-17T23:33:04.533256",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_s": 0.0,
+      "ttft_s": 0.0,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {}
+    },
+    {
+      "test_name": "short_prompt",
+      "success": true,
+      "latency_s": 22.66906669997843,
+      "ttft_s": 0.6077697000000626,
+      "tokens_generated": 499,
+      "tokens_per_second": 22.61879707256057,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "```python\nimport math\n\ndef is_prime(n: int) -> bool:\n    \"\"\"\n    Check if a number is prime.\n\n    Ar",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "medium_prompt_5k",
+      "success": true,
+      "latency_s": 0.8086690999916755,
+      "ttft_s": 0.2990750999888405,
+      "tokens_generated": 10,
+      "tokens_per_second": 19.62346495434477,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cold",
+      "success": true,
+      "latency_s": 1.1853453000076115,
+      "ttft_s": 0.5285551000270061,
+      "tokens_generated": 10,
+      "tokens_per_second": 15.22556213581642,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cached",
+      "success": true,
+      "latency_s": 1.3339722999953665,
+      "ttft_s": 0.5422632000118028,
+      "tokens_generated": 10,
+      "tokens_per_second": 12.630901931287143,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_s": 3.303566300019156,
+      "ttft_s": 0.0,
+      "tokens_generated": 71,
+      "tokens_per_second": 21.491925256529072,
+      "prompt_tokens": 248,
+      "error": "",
+      "details": {
+        "content_preview": "I'll read the contents of the /etc/hostname file for you.",
+        "has_tool_call": true
+      }
+    },
+    {
+      "test_name": "concurrent_5_users",
+      "success": true,
+      "latency_s": 17.571653899998637,
+      "ttft_s": 0.0,
+      "tokens_generated": 1500,
+      "tokens_per_second": 85.36475897696326,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "successful": 5,
+        "avg_tps_per_user": 18.213867175381026,
+        "avg_ttft": 0.7132254999945872,
+        "individual_tps": [
+          18.18765013448064,
+          18.220392740910857,
+          18.220837497976763,
+          18.219933399092074,
+          18.22052210444479
+        ],
+        "individual_ttft": [
+          0.9847351999778766,
+          0.9216629999864381,
+          0.7358815000043251,
+          0.5572338000056334,
+          0.3666139999986626
+        ]
+      }
+    }
+  ]
+}

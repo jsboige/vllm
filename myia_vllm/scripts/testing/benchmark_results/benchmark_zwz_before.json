@@ -1,0 +1,116 @@
+{
+  "backend": "zwz_before",
+  "timestamp": "2026-02-18T21:25:20.594600",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_s": 0.0,
+      "ttft_s": 0.0,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {}
+    },
+    {
+      "test_name": "short_prompt",
+      "success": true,
+      "latency_s": 3.3161598000001504,
+      "ttft_s": 0.41073600000027,
+      "tokens_generated": 407,
+      "tokens_per_second": 140.08283404301181,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "```python\ndef is_prime(n: int) -> bool:\n    \"\"\"\n    Check if a given number is a prime number.\n\n    ",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "medium_prompt_5k",
+      "success": true,
+      "latency_s": 0.7785632000000078,
+      "ttft_s": 0.7643514999999752,
+      "tokens_generated": 2,
+      "tokens_per_second": 140.72911755774575,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "OK.",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cold",
+      "success": true,
+      "latency_s": 3.994736799999828,
+      "ttft_s": 3.9818218000000343,
+      "tokens_generated": 2,
+      "tokens_per_second": 154.85869144653327,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "OK.",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "long_prompt_30k_cached",
+      "success": true,
+      "latency_s": 0.41682410000021264,
+      "ttft_s": 0.3434047000000646,
+      "tokens_generated": 9,
+      "tokens_per_second": 122.58340438605948,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "content_preview": "Hello! How can I assist you today?",
+        "has_tool_call": false
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_s": 0.3599904999996397,
+      "ttft_s": 0.0,
+      "tokens_generated": 22,
+      "tokens_per_second": 61.11272380805054,
+      "prompt_tokens": 237,
+      "error": "",
+      "details": {
+        "content_preview": "",
+        "has_tool_call": true
+      }
+    },
+    {
+      "test_name": "concurrent_5_users",
+      "success": true,
+      "latency_s": 3.1198733000001084,
+      "ttft_s": 0.0,
+      "tokens_generated": 1390,
+      "tokens_per_second": 445.53091306622986,
+      "prompt_tokens": 0,
+      "error": "",
+      "details": {
+        "successful": 5,
+        "avg_tps_per_user": 141.74498699140483,
+        "avg_ttft": 0.6058650200000557,
+        "individual_tps": [
+          141.7316049384701,
+          142.06930765933816,
+          141.46993514847048,
+          141.22419848145904,
+          142.22988872928636
+        ],
+        "individual_ttft": [
+          0.9345855000001393,
+          0.7804226000002927,
+          0.6017370999998093,
+          0.4264677000001029,
+          0.2861121999999341
+        ]
+      }
+    }
+  ]
+}
