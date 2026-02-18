@@ -25,10 +25,9 @@
 #   6. No --swap-space (V1 uses recompute, not swap)
 #   7. --max-num-batched-tokens 32768 for better MoE batching
 #   8. Post-startup warmup recommended (see warmup_glm.py)
-#   9. INDUCTOR_MAX_AUTOTUNE + COORDINATE_DESCENT → +30% concurrent throughput
-#  10. FLOAT32_MATMUL_PRECISION=medium → TF32 for residual FP32 ops
-#  11. VLLM_USE_FLASHINFER_MOE_FP16=1 → FlashAttention prefill for MoE (+13% throughput)
-#  12. Request/response logging middleware (JSONL at /logs/chat_completions.jsonl)
+#   9. VLLM_USE_FLASHINFER_MOE_FP16=1 → FlashAttention prefill for MoE (CRITICAL: +110%)
+#  10. DISABLED: Inductor autotune (regresses -18% decode on vLLM dev216)
+#  11. DISABLED: Logging middleware (causes -40-65% throughput loss in batching)
 #
 # Build: docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
 # Run:   docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
@@ -61,7 +60,6 @@ services:
       --reasoning-parser glm45
       --distributed-executor-backend mp
       --disable-log-requests
-      --middleware logging_middleware.RequestResponseLogger
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -78,12 +76,14 @@ services:
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
       - OMP_NUM_THREADS=4
-      - VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1
-      - VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1
-      - VLLM_FLOAT32_MATMUL_PRECISION=medium
+      # INDUCTOR AUTOTUNE DISABLED - causes regression on vLLM dev216 (-18% decode, -30% concurrent)
+      # - VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1
+      # - VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1
+      # - VLLM_FLOAT32_MATMUL_PRECISION=medium
       - VLLM_USE_FLASHINFER_MOE_FP16=1
-      - PYTHONPATH=/middleware
-      - VLLM_LOG_DIR=/logs
+      # MIDDLEWARE DISABLED - causes 40-65% performance loss in batching workloads
+      # - PYTHONPATH=/middleware
+      # - VLLM_LOG_DIR=/logs
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
