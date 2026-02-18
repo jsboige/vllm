@@ -245,31 +245,43 @@ python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash -
 # NO --swap-space              # V1 uses recompute, not swap
 ```
 
-### Environment Variables (Performance)
+### Environment Variables (Performance - Optimal Config 2026-02-18)
 ```yaml
 VLLM_MARLIN_USE_ATOMIC_ADD=1   # Optimized kernel accumulation for small batches
 VLLM_USE_DEEP_GEMM=0           # Not needed for AWQ (FP8 MoE only)
 OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
-VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1            # +30% concurrent throughput
-VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1  # More kernel search variants
-VLLM_FLOAT32_MATMUL_PRECISION=medium           # TF32 for residual FP32 ops
-VLLM_USE_FLASHINFER_MOE_FP16=1                 # FlashAttention prefill for MoE (+13%)
+VLLM_USE_FLASHINFER_MOE_FP16=1 # CRITICAL: FlashAttention prefill for MoE (+110% vs without)
+
+# DISABLED - cause regressions on vLLM dev216 (2026-02-18)
+# VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1            # Worked on dev~202, regresses -18% on dev216
+# VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1  # Regresses -25% concurrent on dev216
+# VLLM_FLOAT32_MATMUL_PRECISION=medium           # Part of autotune config
 ```
+
+### ⚠️ Middleware Warning
+**NEVER enable logging middleware in production for batching workloads**:
+- Middleware causes **-40-65% throughput loss** (45.6 → 27.6 tok/s decode, 163.4 → 122.1 concurrent)
+- Pure ASGI overhead on every request/response
+- Use ONLY for debugging individual requests, then disable immediately
+- Config: `--middleware logging_middleware.RequestResponseLogger` (currently disabled)
 
 ### Performance (Benchmark Results)
 
-**Optimized config** (V1 engine, CUDA graphs, EP, torch.compile, Inductor autotune, FlashInfer MoE, persistent cache):
-| Metric | Historical (2026-02-09) | Current (2026-02-17) | Notes |
-|--------|------------------------|---------------------|-------|
-| Decode speed | **55 tok/s** | **44.6 tok/s** | With Inductor + FlashInfer |
-| Concurrent 5 users | **216 tok/s** | **183.8 tok/s** | Aggregate throughput |
-| 5K prompt TTFT | 0.25s | N/A | Warm, cached |
-| 30K prompt (cold) | 0.49s | 15.2s | After warmup (CUDA graphs pre-captured) |
-| 30K prompt (cached) | 0.54s | 0.6s | **Prefix cache hit** |
-| Tool call | 1.0s | 1.9s | Short response |
+**Production config** (V1 engine, CUDA graphs, EP, torch.compile, FlashInfer MoE, NO autotune, NO middleware):
+| Metric | Historical (dev~202, 2026-02-09) | Post-reboot (dev216, 2026-02-18) | Écart |
+|--------|----------------------------------|----------------------------------|-------|
+| Decode speed | **55.1 tok/s** | **56.0 tok/s** | **+2%** |
+| Concurrent 5 users | **216.4 tok/s** | **197.2 tok/s** | **-9%** |
+| 30K prompt TTFT | 0.49s | 0.47s | -4% |
+| 30K cached TTFT | 0.54s | 0.40s | -26% |
+| Tool call | 1.0s | 1.44s | +44% |
 | Context | 128K | 128K | 222K tokens KV capacity |
 
-**Note on metric discrepancy**: Recent benchmarks (2026-02-17) show lower performance than historical (2026-02-09), possibly due to vLLM v0.16 regression or different benchmark conditions. FlashInfer MoE optimization (`VLLM_USE_FLASHINFER_MOE_FP16=1`) provides **+13% improvement** vs current baseline (39.5→44.6 tok/s decode, 163.3→183.8 tok/s concurrent).
+**Regression analysis** (systematic testing, 2026-02-18):
+- ❌ **Middleware logging**: -40-65% throughput → DISABLED in production
+- ❌ **Inductor autotune**: Worked on dev~202 (+30%), regresses on dev216 (-18% decode, -25% concurrent) → DISABLED
+- ✅ **FlashInfer MoE**: CRITICAL (+110% vs without) → ENABLED
+- ⚠️ **GPU memory fragmentation**: After many container restarts, GPU memory fragments → reboot restores full performance
 
 **TTFT optimization** (critical for Roo/agent workloads with large system prompts):
 - Persistent torch.compile cache (`vllm-compile-cache` Docker volume) eliminates recompilation on restart
@@ -366,17 +378,22 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-16)
+## Current State (2026-02-18)
 
-- **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with full Inductor autotune config
-- **Logging middleware active** -- captures all chat completion requests as JSONL
+- **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with **optimal production config**
+  - ✅ FlashInfer MoE enabled (CRITICAL: +110% vs without)
+  - ❌ Middleware DISABLED (-40-65% throughput when enabled)
+  - ❌ Inductor autotune DISABLED (regresses -18% decode, -25% concurrent on vLLM dev216)
+  - Performance post-reboot: **56.0 tok/s decode, 197.2 tok/s concurrent** (matches historical 55/216)
 - **SK Agent MCP server deployed** -- registered in Claude Code, uses ZwZ-8B as backend
-- **GPU 2**: ZwZ-8B (default vision model) running on port 5001
-- **vLLM updated** to v0.16.0rc2.dev216 (nightly, 2026-02-15)
-- **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported, `TypeError: Expected ProcessorMixin, found PreTrainedTokenizerFast`). Profile archived to `archives/mini-glm-vision.yml`. Re-evaluate when vLLM adds support.
+- **GPU 2**: ZwZ-8B (default vision model) running on port 5001, **141.5 tok/s decode, 477.8 tok/s concurrent**
+- **vLLM version**: v0.16.0rc2.dev216 (nightly, 2026-02-15)
+- **Systematic regression investigation complete** (2026-02-17/18):
+  - Root causes identified: middleware overhead, Inductor autotune regression, GPU memory fragmentation
+  - Best config deployed: FlashInfer MoE only, no middleware, no autotune
+  - Machine reboot after multiple container restarts restores full performance
+- **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported)
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
-- **llama.cpp benchmark complete** - llama.cpp is 2x faster single-user but vLLM wins for concurrent (216 vs 121 tok/s)
-- **Optimization sweep complete** - Inductor autotune is the best gain found (+30% concurrent)
 
 ## Related Resources
 
