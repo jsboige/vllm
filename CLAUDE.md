@@ -378,20 +378,22 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-18)
+## Current State (2026-02-23)
 
 - **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with **optimal production config**
   - ✅ FlashInfer MoE enabled (CRITICAL: +110% vs without)
   - ❌ Middleware DISABLED (-40-65% throughput when enabled)
   - ❌ Inductor autotune DISABLED (regresses -18% decode, -25% concurrent on vLLM dev216)
+  - ✅ **Keepalive sidecar** (`keepalive-glm`) sends inference every 5min to prevent idle crashes
   - Performance post-reboot: **56.0 tok/s decode, 197.2 tok/s concurrent** (matches historical 55/216)
+- **GPU 2**: ZwZ-8B (default vision model) on port 5001, **135 tok/s decode, 392 tok/s concurrent**
+  - ✅ **Keepalive sidecar** (`keepalive-zwz`) same pattern
 - **SK Agent MCP server deployed** -- registered in Claude Code, uses ZwZ-8B as backend
-- **GPU 2**: ZwZ-8B (default vision model) running on port 5001, **141.5 tok/s decode, 477.8 tok/s concurrent**
 - **vLLM version**: v0.16.0rc2.dev216 (nightly, 2026-02-15)
-- **Systematic regression investigation complete** (2026-02-17/18):
-  - Root causes identified: middleware overhead, Inductor autotune regression, GPU memory fragmentation
-  - Best config deployed: FlashInfer MoE only, no middleware, no autotune
-  - Machine reboot after multiple container restarts restores full performance
+- **Idle crash mitigation** (2026-02-23): Both models have Docker keepalive sidecars
+  - Root cause: CPython/pybind11 worker state corruption during idle (no vLLM env var fix exists)
+  - Pattern: `curlimages/curl` container sends minimal request every 300s
+  - Standalone script: `myia_vllm/scripts/keepalive_vllm.py`
 - **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported)
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
 

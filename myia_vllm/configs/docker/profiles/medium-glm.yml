@@ -100,6 +100,33 @@ services:
       start_period: 300s  # 5 minutes for model loading + CUDA graph capture
     restart: unless-stopped
 
+  # Keepalive sidecar: sends minimal inference request every 5 min to prevent
+  # idle crash (TimeoutError: RPC call to sample_tokens / SystemError: PyCFunction)
+  # Pattern: 16 crashes in 5 days, shortest idle before crash = 10 min
+  keepalive-glm:
+    image: curlimages/curl:latest
+    container_name: myia_vllm-keepalive-glm
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Keepalive started for GLM-4.7-Flash (interval: 300s)"
+        while true; do
+          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-glm:$${VLLM_PORT_GLM:-5002}/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"glm-4.7-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
+          echo "$$(date '+%Y-%m-%d %H:%M:%S') GLM keepalive: HTTP $$RESULT"
+          sleep 300
+        done
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-glm:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   vllm-compile-cache:  # Persists torch.compile cache between container restarts
 
