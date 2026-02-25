@@ -1,8 +1,8 @@
 {
   "model": {
-    "base_url": "http://localhost:5001/v1",
-    "api_key_env": "VLLM_API_KEY_MINI",
-    "model_id": "zwz-8b",
+    "base_url": "http://localhost:5002/v1",
+    "api_key_env": "VLLM_API_KEY_MEDIUM",
+    "model_id": "qwen3.5-35b-a3b",
     "vision": true
   },
   "mcps": [

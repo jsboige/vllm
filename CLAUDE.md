@@ -15,9 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment**: GLM-4.7-Flash (31B MoE, AWQ 4-bit) on 2 GPUs with TP=2. GPU 2 available for other services.
+**Current deployment**: Qwen3.5-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking) on GPUs 0,1 with TP=2+EP. ZwZ-8B on GPU 2 (placeholder, replaceable).
 
-**Previous deployment**: Qwen3-Coder-Next (80B MoE, PP=3) - archived due to pipeline parallelism bottleneck (5-6 tok/s).
+**Previous deployment**: GLM-4.7-Flash (31B MoE, AWQ 4-bit) - replaced by Qwen3.5 (+80% decode, +37% concurrent, +vision, +10pts SWE-bench).
 
 ## Key Directories
 
@@ -40,17 +40,16 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Build GLM-4.7-Flash custom image (first time only)
-docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
+# Start Qwen3.5-35B-A3B MoE (primary model, GPUs 0,1)
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen35-moe
 
-# Start GLM-4.7-Flash service
-docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+# Start ZwZ-8B (vision fallback, GPU 2)
+docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
 
-# Monitor startup progress
-docker logs -f myia_vllm-medium-glm
-
-# Start legacy medium (32B) service
-docker compose -f myia_vllm/configs/docker/profiles/medium.yml up -d
+# Legacy: GLM-4.7-Flash (requires custom image build first)
+# docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
+# docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
 ```
 
 ### Testing
@@ -60,8 +59,8 @@ docker compose -f myia_vllm/configs/docker/profiles/medium.yml up -d
 python myia_vllm/scripts/testing/benchmark_llamacpp_vs_vllm.py --backend vllm
 python myia_vllm/scripts/testing/benchmark_llamacpp_vs_vllm.py --compare
 
-# Legacy benchmark
-python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash
+# Benchmark Qwen3.5 MoE
+python myia_vllm/scripts/testing/benchmark_coder_next.py --model qwen3.5-35b-a3b
 
 # Run all tests
 .\myia_vllm\run_all_tests.ps1
@@ -81,33 +80,29 @@ python myia_vllm/scripts/python/test_tool_calling.py
 
 ### Docker Deployment Pattern
 
-GLM-4.7-Flash uses a custom Dockerfile (`Dockerfile.glm-flash`) extending `vllm/vllm-openai:nightly` with:
-- `transformers >= 5.0` for `glm4_moe_lite` architecture support
-- MLA (Multi-Latent Attention) architecture patch for efficient KV cache
+Qwen3.5-35B-A3B uses the official `vllm/vllm-openai:nightly` image directly (no custom Dockerfile needed).
 
-Other services use the official `vllm/vllm-openai:latest` image directly.
+GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `transformers >= 5.0` for `glm4_moe_lite` architecture support.
 
 ### GPU Assignment
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
-| **medium-glm** | **0,1** | **5002** | **GLM-4.7-Flash-AWQ** | **medium-glm.yml** |
-| **mini-zwz** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz.yml** |
+| **medium-qwen35-moe** | **0,1** | **5002** | **Qwen3.5-35B-A3B-AWQ** | **medium-qwen35-moe.yml** |
+| **mini-zwz** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz.yml** (placeholder) |
+| medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | medium-glm.yml (legacy) |
+| medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
 | mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
-| micro | 2 | 5000 | Qwen3-1.7B | micro.yml |
-| medium | 0,1 | 5002 | Qwen3-32B-AWQ | medium.yml |
-| medium-vl | 0,1 | 5003 | Qwen3-VL-32B | medium-vl.yml |
-| medium-coder | 0,1,2 | 5002 | Qwen3-Coder-Next | medium-coder.yml (archived) |
 
-GPUs 0,1 are on faster PCIe bus. GPU 2 is on slower bus (available for small models when GLM uses only 0,1).
+GPUs 0,1 are on faster PCIe bus. GPU 2 is on slower bus (placeholder for ZwZ, replaceable when a better use emerges).
 
 ### Environment Variables
 
 Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - `HUGGING_FACE_HUB_TOKEN` - Required for model downloads
 - `VLLM_API_KEY_*` - API keys per service
-- `VLLM_MODEL_GLM` - GLM-4.7-Flash model (default: `QuantTrio/GLM-4.7-Flash-AWQ`)
-- `VLLM_PORT_GLM` - GLM service port (default: 5002)
+- `VLLM_MODEL_QWEN35_MOE` - Qwen3.5 MoE model (default: `cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit`)
+- `VLLM_PORT_GLM` - Medium model port (default: 5002, shared by GLM/Qwen3.5)
 - `VLLM_MODEL_ZWZ` - ZwZ-8B model path (default: `./models/ZwZ-8B-AWQ-4bit`)
 
 ## ZwZ-8B Deployment (Default Vision Model)
@@ -181,136 +176,125 @@ docker logs -f myia_vllm-mini-zwz
 
 4. **MTP speculative decoding doesn't work with AWQ 4-bit** - 0% acceptance rate at 4-bit precision. Only viable with FP8 or FP16 models.
 
-5. **Use `glm47` tool parser for GLM-4.7-Flash** - NOT hermes, NOT granite. Reasoning parser: `glm45`.
+5. **Use `qwen3_coder` tool parser for Qwen3.5** and `qwen3` reasoning parser. Legacy: `glm47`/`glm45` for GLM-4.7-Flash.
 
-6. **Use `hermes` tool parser for Qwen models** - Official Qwen recommendation for function calling.
+6. **Use `--dtype auto` for Qwen3.5 models** - `--dtype half` causes dtype mismatch with BF16 vision encoder. `auto` resolves correctly.
 
 7. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
 
-## GLM-4.7-Flash Deployment (Current)
+## Qwen3.5-35B-A3B Deployment (Current)
 
 ### Model Specifications
-- **Architecture**: 31B MoE with 3B active parameters per forward pass (64 experts, top-4)
-- **Attention**: MLA (Multi-Latent Attention) - very compact KV cache (~54 KB/token)
-- **VRAM**: ~8.75 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: ~222K tokens at 0.92 GPU util with CUDA graphs
-- **Context window**: 200K native, configured at 128K
-- **Quantization**: AWQ 4-bit with Marlin kernels (`VLLM_MARLIN_USE_ATOMIC_ADD=1`)
-- **Model source**: [QuantTrio/GLM-4.7-Flash-AWQ](https://huggingface.co/QuantTrio/GLM-4.7-Flash-AWQ)
-- **vLLM requirement**: nightly build (glm4_moe_lite architecture + transformers >= 5.0)
+- **Architecture**: 35B MoE with 3B active parameters per token (256 experts, 9 active: 8 routed + 1 shared)
+- **Attention**: Hybrid GatedDeltaNet (linear, fixed state) + Gated Attention (standard KV cache)
+- **Vision**: Images, videos, documents (vision encoder preserved in BF16)
+- **Thinking**: `<think>...</think>` modulation via `chat_template_kwargs`
+- **VRAM**: ~12 GiB per GPU with AWQ 4-bit + TP=2
+- **KV cache**: ~438K tokens at 0.92 GPU util with FP8 KV cache (doubles capacity vs auto)
+- **Context window**: 262K native (YaRN extensible to 1M), configured at 262K (full native)
+- **Quantization**: AWQ 4-bit (compressed-tensors format) with Marlin MoE kernels
+- **Model source**: [cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
+- **vLLM class**: `Qwen3_5MoeForConditionalGeneration`
 - **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
+- **No custom Dockerfile needed** — uses official `vllm/vllm-openai:nightly`
 
-### Deployment Steps
+### Deployment
 
-**Step 1: Build custom image (first time)**
 ```powershell
-docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen35-moe
 ```
 
-**Step 2: Deploy**
-```powershell
-docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
-docker logs -f myia_vllm-medium-glm
-```
-
-**Step 3: Warmup (after container is healthy, ~90s)**
-```powershell
-python myia_vllm/scripts/testing/warmup_glm.py --wait
-```
-This pre-captures CUDA graphs for common prompt sizes (50 tok to 50K tok) and eliminates first-request TTFT spikes.
-
-**Step 4: Benchmark**
-```powershell
-python myia_vllm/scripts/testing/benchmark_coder_next.py --model glm-4.7-flash --api-key $VLLM_API_KEY_MEDIUM
-```
-
-### Key vLLM Flags for GLM-4.7-Flash
+### Key vLLM Flags
 ```yaml
---model QuantTrio/GLM-4.7-Flash-AWQ
---served-model-name glm-4.7-flash
---tensor-parallel-size 2       # TP=2 on GPUs 0,1
---enable-expert-parallel       # EP for MoE: each GPU holds 32/64 experts
---gpu-memory-utilization 0.92  # Max viable (0.95 OOM). KV cache: 222K tokens
---max-model-len 131072         # 128K context (MLA: ~54 KB/token)
---max-num-batched-tokens 32768 # Higher batch budget for MoE throughput
---max-num-seqs 64              # Prevent preemption cascades
---kv-cache-dtype auto          # FP8 NOT supported with MLA on RTX 4090
---dtype half                   # FP16 (optimal for Marlin on SM89)
---tool-call-parser glm47       # GLM-4.7 specific tool calling parser
---reasoning-parser glm45       # GLM-4.5 style reasoning/thinking
---distributed-executor-backend mp  # Required for WSL
---disable-log-requests         # Production: reduce I/O overhead
-# NO --enforce-eager           # CUDA graphs + torch.compile enabled (V1 engine)
-# NO --enable-chunked-prefill  # V1 does this by default, explicit flag forces V0
-# NO --swap-space              # V1 uses recompute, not swap
+--model cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit
+--served-model-name qwen3.5-35b-a3b
+--tensor-parallel-size 2
+--enable-expert-parallel          # EP=2: 128/256 experts per GPU
+--gpu-memory-utilization 0.92
+--max-model-len 262144            # Full native 262K context
+--kv-cache-dtype fp8              # FP8 KV: 438K tokens (2x vs auto)
+--dtype auto                      # MUST be auto (not half) for vision encoder BF16 compat
+--max-num-batched-tokens 32768
+--max-num-seqs 64
+--enable-prefix-caching
+--tool-call-parser qwen3_coder    # Qwen3.5 function calling
+--reasoning-parser qwen3          # <think>...</think> extraction
+--distributed-executor-backend mp
+--disable-log-requests
+--limit-mm-per-prompt '{"image":4,"video":0}'
+--mm-processor-kwargs '{"max_pixels":774000}'
+--skip-mm-profiling               # Required: avoids dtype mismatch during profiling
 ```
 
-### Environment Variables (Performance - Optimal Config 2026-02-18)
+### Environment Variables
 ```yaml
-VLLM_MARLIN_USE_ATOMIC_ADD=1   # Optimized kernel accumulation for small batches
-VLLM_USE_DEEP_GEMM=0           # Not needed for AWQ (FP8 MoE only)
-OMP_NUM_THREADS=4              # Better CPU parallelism for scheduling
-VLLM_USE_FLASHINFER_MOE_FP16=1 # CRITICAL: FlashAttention prefill for MoE (+110% vs without)
-
-# DISABLED - cause regressions on vLLM dev216 (2026-02-18)
-# VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE=1            # Worked on dev~202, regresses -18% on dev216
-# VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING=1  # Regresses -25% concurrent on dev216
-# VLLM_FLOAT32_MATMUL_PRECISION=medium           # Part of autotune config
+VLLM_MARLIN_USE_ATOMIC_ADD=1      # Optimized Marlin kernel accumulation
+VLLM_USE_DEEP_GEMM=0              # Not needed for AWQ
+OMP_NUM_THREADS=4                 # CPU parallelism for scheduling
+VLLM_USE_FLASHINFER_MOE_FP16=1   # CRITICAL for MoE performance
 ```
 
-### ⚠️ Middleware Warning
-**NEVER enable logging middleware in production for batching workloads**:
-- Middleware causes **-40-65% throughput loss** (45.6 → 27.6 tok/s decode, 163.4 → 122.1 concurrent)
-- Pure ASGI overhead on every request/response
-- Use ONLY for debugging individual requests, then disable immediately
-- Config: `--middleware logging_middleware.RequestResponseLogger` (currently disabled)
+### Thinking Modulation
+To disable thinking per-request (clean, direct responses):
+```json
+{
+  "model": "qwen3.5-35b-a3b",
+  "messages": [...],
+  "chat_template_kwargs": {"enable_thinking": false}
+}
+```
+**IMPORTANT**: `chat_template_kwargs` must be a **top-level** field in the request body, NOT inside `extra_body`.
 
-### Performance (Benchmark Results)
+**Known issue**: With thinking enabled, `reasoning_content` is always `null` — thinking text appears in `content` instead. This is a vLLM parser bug (`<think>` tag is injected as generation prompt prefix, not in model output, so `Qwen3ReasoningParser` doesn't detect it).
 
-**Production config** (V1 engine, CUDA graphs, EP, torch.compile, FlashInfer MoE, NO autotune, NO middleware):
-| Metric | Historical (dev~202, 2026-02-09) | Post-reboot (dev216, 2026-02-18) | Écart |
-|--------|----------------------------------|----------------------------------|-------|
-| Decode speed | **55.1 tok/s** | **56.0 tok/s** | **+2%** |
-| Concurrent 5 users | **216.4 tok/s** | **197.2 tok/s** | **-9%** |
-| 30K prompt TTFT | 0.49s | 0.47s | -4% |
-| 30K cached TTFT | 0.54s | 0.40s | -26% |
-| Tool call | 1.0s | 1.44s | +44% |
-| Context | 128K | 128K | 222K tokens KV capacity |
+### Performance (Benchmark 2026-02-25, FP8 KV, 0.92, 262K context)
 
-**Regression analysis** (systematic testing, 2026-02-18):
-- ❌ **Middleware logging**: -40-65% throughput → DISABLED in production
-- ❌ **Inductor autotune**: Worked on dev~202 (+30%), regresses on dev216 (-18% decode, -25% concurrent) → DISABLED
-- ✅ **FlashInfer MoE**: CRITICAL (+110% vs without) → ENABLED
-- ⚠️ **GPU memory fragmentation**: After many container restarts, GPU memory fragments → reboot restores full performance
+| Metric | Qwen3.5-35B-A3B | GLM-4.7-Flash (previous) | Improvement |
+|--------|:---:|:---:|:---:|
+| Decode speed | **86.2 tok/s** | 56.0 tok/s | **+54%** |
+| Concurrent 5 users | **269.6 tok/s** | 197.2 tok/s | **+37%** |
+| 30K cold TTFT | 0.95s | 0.47s | -102% (MLA wins) |
+| 30K cached TTFT | 0.89s | 0.40s | -123% |
+| Tool calling | **893ms** | 1440ms | **-38%** |
+| Vision | **Yes** | No | New capability |
+| KV cache tokens | **438K** | 222K | **+97%** |
+| Max context | **262K** | 128K | **+105%** |
+| SWE-bench | **69.2%** | 59.2% | **+10 pts** |
 
-**TTFT optimization** (critical for Roo/agent workloads with large system prompts):
-- Persistent torch.compile cache (`vllm-compile-cache` Docker volume) eliminates recompilation on restart
-- First request after restart: **1.7s** (vs ~10-14s without persistent cache)
-- Warmup script pre-captures CUDA graphs for 50 tok to 50K tok prompt sizes
-- Prefix caching reduces TTFT 10x for repeated system prompts (14s -> 1.4s)
+Note: With auto KV (non-FP8), decode was faster (96-109 tok/s) but KV capacity was only 206K. FP8 KV trades ~15% decode speed for 2x KV capacity — the right tradeoff for multi-agent workloads.
 
-**Previous unoptimized** (enforce-eager, V0 fallback, no EP):
-| Metric | Single User |
-|--------|-------------|
-| Tokens/sec | 12-13 tok/s |
-| Context | 65K |
+### Vision Performance (vs ZwZ-8B)
 
-### Comparison with Previous Deployments
-| | GLM-4.7-Flash (autotune) | GLM-4.7-Flash (initial) | Qwen3-Coder-Next | Qwen3-32B-AWQ |
+| Test | Qwen3.5 MoE (GPUs 0,1) | ZwZ-8B (GPU 2) | Quality |
+|------|:---:|:---:|:---:|
+| OCR | 43.8 tok/s | ~90 tok/s | Identical |
+| Diagram understanding | 98.9 tok/s | 118.5 tok/s | Identical |
+| Math from image | 91.0 tok/s | 90.9 tok/s | Identical |
+
+### Comparison with All Previous Deployments
+
+| | **Qwen3.5-35B-A3B** | GLM-4.7-Flash | Qwen3-Coder-Next | Qwen3-32B-AWQ |
 |---|---|---|---|---|
-| Single user tok/s | **55** | 13.8-15.1 | 5-6 | ~15 |
-| Concurrent tok/s | **216** | 70.2 | 21.6 | ~40 |
+| Single user tok/s | **86** | 55 | 5-6 | ~15 |
+| Concurrent tok/s | **270** | 216 | 21.6 | ~40 |
 | GPUs used | 2 | 2 | 3 | 2 |
-| Context | **128K** | 65K | 65K | 32K |
-| SWE-bench | 59.2% | 59.2% | 70.6% | N/A |
+| Context | **262K** | 128K | 65K | 32K |
+| KV cache | **438K** | 222K | ~65K | ~32K |
+| SWE-bench | **69.2%** | 59.2% | 70.6% | N/A |
+| Vision | **Yes** | No | No | No |
 
 ### Claude Code Integration
 
 Students connect via `ANTHROPIC_BASE_URL`:
 ```bash
 export ANTHROPIC_BASE_URL="https://api.medium.text-generation-webui.myia.io"
-claude --model glm-4.7-flash
+claude --model qwen3.5-35b-a3b
 ```
+
+## GLM-4.7-Flash (Archived)
+
+Replaced by Qwen3.5-35B-A3B on 2026-02-25. Profile: `medium-glm.yml`. Requires custom Dockerfile for `transformers >= 5.0`. Key specs: 31B MoE, 3B active, MLA attention (~54 KB/token KV), 56 tok/s decode, 197 tok/s concurrent, SWE-bench 59.2%. No vision support. Tool parser: `glm47`, reasoning: `glm45`.
 
 ## Qwen3-Coder-Next (Archived)
 
@@ -371,6 +355,7 @@ claude mcp add sk-agent --transport stdio \
   -e VLLM_API_KEY_MEDIUM="..." \
   -- python d:/vllm/myia_vllm/mcp/sk_agent.py
 ```
+Note: Config points to `qwen3.5-35b-a3b` on port 5002 (updated 2026-02-25).
 
 ### Dependencies
 ```
@@ -378,29 +363,30 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-23)
+## Current State (2026-02-25)
 
-- **vLLM GLM-4.7-Flash running** on port 5002 (GPUs 0,1) with **optimal production config**
-  - ✅ FlashInfer MoE enabled (CRITICAL: +110% vs without)
-  - ❌ Middleware DISABLED (-40-65% throughput when enabled)
-  - ❌ Inductor autotune DISABLED (regresses -18% decode, -25% concurrent on vLLM dev216)
-  - ✅ **Keepalive sidecar** (`keepalive-glm`) sends inference every 5min to prevent idle crashes
-  - Performance post-reboot: **56.0 tok/s decode, 197.2 tok/s concurrent** (matches historical 55/216)
-- **GPU 2**: ZwZ-8B (default vision model) on port 5001, **135 tok/s decode, 392 tok/s concurrent**
-  - ✅ **Keepalive sidecar** (`keepalive-zwz`) same pattern
-- **SK Agent MCP server deployed** -- registered in Claude Code, uses ZwZ-8B as backend
+- **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
+  - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
+  - ✅ Vision (images, documents) + Thinking modulation
+  - ✅ Keepalive sidecar (`keepalive-qwen35-moe`)
+  - ❌ Middleware DISABLED (same ASGI overhead issue as GLM)
+  - FP8 KV cache: **438K tokens** (2x capacity), 262K max context
+  - Performance: **86.2 tok/s decode, 269.6 tok/s concurrent, 893ms tool call**
+  - Replaces GLM-4.7-Flash (+54% decode, +37% concurrent, +vision, +10pts SWE-bench, +97% KV capacity)
+- **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
+  - Vision quality comparable to Qwen3.5 (tested: OCR, diagrams, math)
+  - 135 tok/s decode (faster per-token, but redundant now that Qwen3.5 has vision)
+  - ✅ Keepalive sidecar (`keepalive-zwz`)
+- **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25)
 - **vLLM version**: v0.16.0rc2.dev216 (nightly, 2026-02-15)
-- **Idle crash mitigation** (2026-02-23): Both models have Docker keepalive sidecars
-  - Root cause: CPython/pybind11 worker state corruption during idle (no vLLM env var fix exists)
-  - Pattern: `curlimages/curl` container sends minimal request every 300s
-  - Standalone script: `myia_vllm/scripts/keepalive_vllm.py`
-- **GLM-4.6V-Flash tested and rejected** -- vLLM incompatible (Glm4vForConditionalGeneration not supported)
+- **Idle crash mitigation**: Keepalive sidecars on both models (curlimages/curl, 300s interval)
+- **Qwen3.5-27B Dense tested and rejected** (2026-02-25): 33 tok/s decode, 20.9s cold TTFT, 85K KV cache — too slow
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
 
 ## Related Resources
 
 - [vLLM Documentation](https://docs.vllm.ai)
-- [GLM-4.7-Flash on HuggingFace](https://huggingface.co/zai-org/GLM-4.7-Flash)
-- [GLM-4.X vLLM Recipes](https://docs.vllm.ai/projects/recipes/en/latest/GLM/GLM.html)
+- [Qwen3.5-35B-A3B-AWQ on HuggingFace](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
+- [Qwen3.5 Official Blog](https://qwenlm.github.io/blog/qwen3.5/)
+- [GLM-4.7-Flash on HuggingFace](https://huggingface.co/zai-org/GLM-4.7-Flash) (legacy)
 - [Unsloth vLLM Guide](https://unsloth.ai/docs/basics/inference-and-deployment/vllm-guide)
-- [Unsloth Claude Code Integration](https://unsloth.ai/docs/basics/claude-codex)
