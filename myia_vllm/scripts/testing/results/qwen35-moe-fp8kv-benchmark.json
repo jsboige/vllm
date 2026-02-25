@@ -1,0 +1,59 @@
+{
+  "api_url": "http://localhost:5002",
+  "model": "qwen3.5-35b-a3b",
+  "timestamp": "2026-02-25 15:58:20",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_ms": 271.99190005194396,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {}
+    },
+    {
+      "test_name": "basic_inference",
+      "success": true,
+      "latency_ms": 17290.195300010964,
+      "tokens_generated": 433,
+      "tokens_per_second": 25.04309479949746,
+      "error": null,
+      "details": {
+        "prompt_tokens": 17,
+        "total_tokens": 450,
+        "response_preview": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Task: Write a \"Hello World\" program in Python.\n    *   Language: Python.\n    *   Output: Code snippet.\n\n2.  **Determine the Core Requirement:**\n..."
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_ms": 18329.95819998905,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {
+        "tool_name": "read_file",
+        "tool_args": "{\"path\": \"/tmp/test.txt\"}",
+        "num_tool_calls": 1
+      }
+    },
+    {
+      "test_name": "concurrent_users",
+      "success": true,
+      "latency_ms": 3373.5073800043515,
+      "tokens_generated": 3000,
+      "tokens_per_second": 267.9588140881707,
+      "error": null,
+      "details": {
+        "num_users": 5,
+        "requests_per_user": 3,
+        "total_requests": 15,
+        "successful": 15,
+        "failed": 0,
+        "total_time_ms": 11195.750399958342,
+        "throughput_rps": 1.3397940704408533
+      }
+    }
+  ]
+}

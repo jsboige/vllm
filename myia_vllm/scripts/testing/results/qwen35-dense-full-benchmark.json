@@ -1,0 +1,117 @@
+{
+  "api_url": "http://localhost:5002",
+  "model": "qwen3.5-27b",
+  "timestamp": "2026-02-25 15:18:21",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_ms": 486.2431000219658,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {}
+    },
+    {
+      "test_name": "basic_inference",
+      "success": true,
+      "latency_ms": 61787.999500054866,
+      "tokens_generated": 500,
+      "tokens_per_second": 8.092186250496036,
+      "error": null,
+      "details": {
+        "prompt_tokens": 17,
+        "total_tokens": 517,
+        "response_preview": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Task: Write a \"Hello World\" program.\n    *   Language: Python.\n    *   Goal: Provide a simple, correct, and standard code snippet.\n\n2.  **Determ..."
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_ms": 18467.75189996697,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {
+        "tool_name": "read_file",
+        "tool_args": "{\"path\": \"/tmp/test.txt\"}",
+        "num_tool_calls": 1
+      }
+    },
+    {
+      "test_name": "reasoning",
+      "success": true,
+      "latency_ms": 11523.46789999865,
+      "tokens_generated": 500,
+      "tokens_per_second": 43.38971604199623,
+      "error": null,
+      "details": {
+        "response_preview": "Here's a thinking process that leads to the suggested solution:\n\n1.  **Analyze the Request:**\n    *   **Problem:** Determine the build order for a software project with 3 modules (A, B, C).\n    *   **Dependencies:**\n        *   Module A depends on Module B.\n        *   Module B depends on Module C.\n...",
+        "has_correct_order": true,
+        "mentions_dependencies": true
+      }
+    },
+    {
+      "test_name": "tool_result_cycle",
+      "success": true,
+      "latency_ms": 3036.338599980809,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {
+        "tool_called": "run_command",
+        "response_preview": "The command executed successfully and returned the Python version. I should provide this information to the user.\n</think>\n\nThe Python version installed is **Python 3.11.5**.",
+        "cycle_complete": true
+      }
+    },
+    {
+      "test_name": "multi_tool_scenario",
+      "success": true,
+      "latency_ms": 2528.310999972746,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {
+        "tools_called": [
+          "read_file"
+        ],
+        "num_calls": 1,
+        "first_tool_args": "{\"path\": \"/project/main.py\"}",
+        "correct_first_tool": true
+      }
+    },
+    {
+      "test_name": "code_generation",
+      "success": false,
+      "latency_ms": 13749.027900048532,
+      "tokens_generated": 600,
+      "tokens_per_second": 43.63944886589997,
+      "error": null,
+      "details": {
+        "has_function_def": false,
+        "has_type_hints": false,
+        "has_docstring": false,
+        "looks_like_code": false,
+        "quality_score": "0/4",
+        "code_preview": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Function name: `merge_sorted_lists`\n    *   Input: Two sorted lists.\n    *   Output: A single sorted list containing all elements from both inputs.\n    *   Time Complexity: O(n + m), where n and m are the lengths of the input lists.\n    *   Requirements: Include type hints and a docstring.\n    *   Constraint: Only output the code, no explanat..."
+      }
+    },
+    {
+      "test_name": "concurrent_users",
+      "success": true,
+      "latency_ms": 7273.5270399910705,
+      "tokens_generated": 3000,
+      "tokens_per_second": 130.8843224551045,
+      "error": null,
+      "details": {
+        "num_users": 5,
+        "requests_per_user": 3,
+        "total_requests": 15,
+        "successful": 15,
+        "failed": 0,
+        "total_time_ms": 22921.00339999888,
+        "throughput_rps": 0.6544216122755224
+      }
+    }
+  ]
+}

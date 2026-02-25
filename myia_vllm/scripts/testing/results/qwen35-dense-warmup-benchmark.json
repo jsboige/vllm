@@ -1,0 +1,59 @@
+{
+  "api_url": "http://localhost:5002",
+  "model": "qwen3.5-27b",
+  "timestamp": "2026-02-25 15:19:03",
+  "results": [
+    {
+      "test_name": "health_check",
+      "success": true,
+      "latency_ms": 1072.660700068809,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {}
+    },
+    {
+      "test_name": "basic_inference",
+      "success": true,
+      "latency_ms": 4366.138199926354,
+      "tokens_generated": 145,
+      "tokens_per_second": 33.2101260565792,
+      "error": null,
+      "details": {
+        "prompt_tokens": 17,
+        "total_tokens": 162,
+        "response_preview": "The user is asking for a simple \"Hello World\" program in Python. This is a very basic request. I should provide the standard Python code for printing \"Hello World\" to the console.\n\nThe standard way is..."
+      }
+    },
+    {
+      "test_name": "tool_calling",
+      "success": true,
+      "latency_ms": 2082.191800000146,
+      "tokens_generated": 0,
+      "tokens_per_second": 0.0,
+      "error": null,
+      "details": {
+        "tool_name": "read_file",
+        "tool_args": "{\"path\": \"/tmp/test.txt\"}",
+        "num_tool_calls": 1
+      }
+    },
+    {
+      "test_name": "concurrent_users",
+      "success": true,
+      "latency_ms": 7402.937119997417,
+      "tokens_generated": 3000,
+      "tokens_per_second": 127.50860970019514,
+      "error": null,
+      "details": {
+        "num_users": 5,
+        "requests_per_user": 3,
+        "total_requests": 15,
+        "successful": 15,
+        "failed": 0,
+        "total_time_ms": 23527.822999982163,
+        "throughput_rps": 0.6375430485009757
+      }
+    }
+  ]
+}
