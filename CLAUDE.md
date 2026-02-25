@@ -196,7 +196,7 @@ docker logs -f myia_vllm-mini-zwz
 - **Model source**: [cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
 - **vLLM class**: `Qwen3_5MoeForConditionalGeneration`
 - **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
-- **No custom Dockerfile needed** — uses official `vllm/vllm-openai:nightly`
+- **No custom Dockerfile needed** — uses official `vllm/vllm-openai:nightly` (pinned to Feb 23 commit)
 
 ### Deployment
 
@@ -246,7 +246,7 @@ To disable thinking per-request (clean, direct responses):
 ```
 **IMPORTANT**: `chat_template_kwargs` must be a **top-level** field in the request body, NOT inside `extra_body`.
 
-**Known issue**: With thinking enabled, `reasoning_content` is always `null` — thinking text appears in `content` instead. This is a vLLM parser bug (`<think>` tag is injected as generation prompt prefix, not in model output, so `Qwen3ReasoningParser` doesn't detect it).
+**Reasoning field**: With thinking enabled, the parser separates reasoning into the `reasoning` field (NOT `reasoning_content`, which is always `null`). Both streaming and non-streaming work correctly on pinned nightly (dev388, Feb 23). The `<think>` tag is injected by the chat template in the prompt; only `</think>` appears in generated output. OWUI needs adaptation to read `delta.reasoning` from SSE chunks (currently only parses `<think>` tags in `content`).
 
 ### Performance (Benchmark 2026-02-25, FP8 KV, 0.92, 262K context)
 
@@ -378,7 +378,9 @@ mcp>=1.7
   - 135 tok/s decode (faster per-token, but redundant now that Qwen3.5 has vision)
   - ✅ Keepalive sidecar (`keepalive-zwz`)
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25)
-- **vLLM version**: v0.16.0rc2.dev216 (nightly, 2026-02-15)
+- **vLLM version**: v0.16.0rc2.dev388 (pinned nightly Feb 23, `nightly-7291d1b288558d48508e1a17c37b0aa170332264`)
+  - Includes PR #34779 (Qwen3.5 reasoning parser fix)
+  - Pinned to avoid OOM regression in dev456+ (Feb 25 nightly needs ~1 GiB more per GPU for MoE Marlin kernels)
 - **Idle crash mitigation**: Keepalive sidecars on both models (curlimages/curl, 300s interval)
 - **Qwen3.5-27B Dense tested and rejected** (2026-02-25): 33 tok/s decode, 20.9s cold TTFT, 85K KV cache — too slow
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml

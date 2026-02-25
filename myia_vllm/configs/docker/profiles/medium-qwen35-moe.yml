@@ -27,7 +27,7 @@
 
 services:
   vllm-medium-qwen35-moe:
-    image: vllm/vllm-openai:nightly
+    image: vllm/vllm-openai:nightly-7291d1b288558d48508e1a17c37b0aa170332264  # Feb 23 - includes PR #34779 fix, before OOM regression
     container_name: myia_vllm-medium-qwen35-moe
     command: >
       --host 0.0.0.0
