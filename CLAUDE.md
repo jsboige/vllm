@@ -170,7 +170,7 @@ docker logs -f myia_vllm-mini-zwz
 
 1. **Do NOT add `--enable-chunked-prefill` or `--num-scheduler-steps`** - These flags force V0 engine fallback. V1 engine (default on nightly) handles chunked prefill automatically.
 
-2. **CUDA graphs (PIECEWISE mode) work well at 0.92 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead. Max viable is 0.92 (0.95 OOM: only 22.26/23.99 GiB free at startup). KV cache: ~222K tokens at 0.92. **Do NOT use `--enforce-eager`** (tested: 3-4x slower on all metrics - 12 tok/s vs 45 tok/s decode).
+2. **CUDA graphs (PIECEWISE mode) work well at 0.88 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead. **gpu-memory-utilization reduced from 0.92 to 0.88** on 2026-02-26: Marlin MoE `fused_marlin_moe.py` needs ~852 MiB temporary allocations (`intermediate_cache13`) that OOM at 0.92. At 0.88: 373K tokens KV cache (still >262K max-model-len), stable under all loads. **Do NOT use `--enforce-eager`** (tested: 3-4x slower on all metrics - 12 tok/s vs 45 tok/s decode).
 
 3. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working MLA backend on Ada Lovelace (SM89).
 
@@ -190,7 +190,7 @@ docker logs -f myia_vllm-mini-zwz
 - **Vision**: Images, videos, documents (vision encoder preserved in BF16)
 - **Thinking**: `<think>...</think>` modulation via `chat_template_kwargs`
 - **VRAM**: ~12 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: ~438K tokens at 0.92 GPU util with FP8 KV cache (doubles capacity vs auto)
+- **KV cache**: ~373K tokens at 0.88 GPU util with FP8 KV cache (was 438K at 0.92, reduced for Marlin MoE stability)
 - **Context window**: 262K native (YaRN extensible to 1M), configured at 262K (full native)
 - **Quantization**: AWQ 4-bit (compressed-tensors format) with Marlin MoE kernels
 - **Model source**: [cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
@@ -211,9 +211,9 @@ docker logs -f myia_vllm-medium-qwen35-moe
 --served-model-name qwen3.5-35b-a3b
 --tensor-parallel-size 2
 --enable-expert-parallel          # EP=2: 128/256 experts per GPU
---gpu-memory-utilization 0.92
+--gpu-memory-utilization 0.88      # 0.92 OOM: Marlin MoE needs ~852 MiB temp allocs
 --max-model-len 262144            # Full native 262K context
---kv-cache-dtype fp8              # FP8 KV: 438K tokens (2x vs auto)
+--kv-cache-dtype fp8              # FP8 KV: 373K tokens (2x vs auto)
 --dtype auto                      # MUST be auto (not half) for vision encoder BF16 compat
 --max-num-batched-tokens 32768
 --max-num-seqs 64
@@ -248,7 +248,8 @@ To disable thinking per-request (clean, direct responses):
 
 **Reasoning field**: With thinking enabled, the parser separates reasoning into the `reasoning` field (NOT `reasoning_content`, which is always `null`). Both streaming and non-streaming work correctly on pinned nightly (dev388, Feb 23). The `<think>` tag is injected by the chat template in the prompt; only `</think>` appears in generated output. OWUI needs adaptation to read `delta.reasoning` from SSE chunks (currently only parses `<think>` tags in `content`).
 
-### Performance (Benchmark 2026-02-25, FP8 KV, 0.92, 262K context)
+### Performance (Benchmark 2026-02-25, FP8 KV, 262K context)
+**Note**: Benchmarked at 0.92 gpu-util. Production now runs at 0.88 (Marlin MoE stability fix 2026-02-26). Speed impact is negligible since the bottleneck is compute, not memory.
 
 | Metric | Qwen3.5-35B-A3B | GLM-4.7-Flash (previous) | Improvement |
 |--------|:---:|:---:|:---:|
@@ -258,17 +259,42 @@ To disable thinking per-request (clean, direct responses):
 | 30K cached TTFT | 0.89s | 0.40s | -123% |
 | Tool calling | **893ms** | 1440ms | **-38%** |
 | Vision | **Yes** | No | New capability |
-| KV cache tokens | **438K** | 222K | **+97%** |
+| KV cache tokens | **373K** (0.88) | 222K | **+68%** |
 | Max context | **262K** | 128K | **+105%** |
 | SWE-bench | **69.2%** | 59.2% | **+10 pts** |
 
 Note: With auto KV (non-FP8), decode was faster (96-109 tok/s) but KV capacity was only 206K. FP8 KV trades ~15% decode speed for 2x KV capacity — the right tradeoff for multi-agent workloads.
 
-### Vision Performance (vs ZwZ-8B)
+### Quality Benchmarks (2026-02-26, thinking disabled, custom benchmark script)
+
+| Benchmark | Qwen3.5-35B-A3B | Questions | Notes |
+|-----------|:---:|:---:|:---:|
+| **GSM8K** (math CoT 0-shot) | **88.0%** | 1319 | v2 answer extraction |
+| **IFEval** (instruction following) | **88.5%** strict | 541 | Simplified checker |
+| **MME** (vision Yes/No) | **1294.7** (91.0%) | 2374 | Perception 926.8, Cognition 367.9 |
+| **MMStar** (vision ABCD) | **53.2%** | 1500 | Hard multi-choice, 0 errors |
+
+### Vision Quality (vs ZwZ-8B, MME benchmark partial)
+
+| Category | Qwen3.5 MoE | ZwZ-8B | Delta |
+|----------|:---:|:---:|:---:|
+| OCR | **98%** | 82% | **+16 pts** |
+| artwork | **90%** | 83% | +7 pts |
+| position | **88%** | 80% | +8 pts |
+| celebrity | 93% | 91% | +2 pts |
+| commonsense | 88% | 84% | +4 pts |
+| code_reasoning | 95% | 95% | = |
+| color | 98% | 97% | = |
+| count | 90% | 90% | = |
+| numerical_calc | 90% | 90% | = |
+
+**Conclusion**: Qwen3.5 is significantly better than ZwZ-8B on perception tasks (OCR +16pts, artwork +7pts), while cognitive tasks are tied. ZwZ-8B is no longer needed as vision fallback — Qwen3.5 handles everything better.
+
+### Speed Performance (vs ZwZ-8B, manual tests)
 
 | Test | Qwen3.5 MoE (GPUs 0,1) | ZwZ-8B (GPU 2) | Quality |
 |------|:---:|:---:|:---:|
-| OCR | 43.8 tok/s | ~90 tok/s | Identical |
+| OCR | 43.8 tok/s | ~90 tok/s | Qwen3.5 better |
 | Diagram understanding | 98.9 tok/s | 118.5 tok/s | Identical |
 | Math from image | 91.0 tok/s | 90.9 tok/s | Identical |
 
@@ -370,8 +396,8 @@ mcp>=1.7
   - ✅ Vision (images, documents) + Thinking modulation
   - ✅ Keepalive sidecar (`keepalive-qwen35-moe`)
   - ❌ Middleware DISABLED (same ASGI overhead issue as GLM)
-  - FP8 KV cache: **438K tokens** (2x capacity), 262K max context
-  - Performance: **86.2 tok/s decode, 269.6 tok/s concurrent, 893ms tool call**
+  - FP8 KV cache: **373K tokens** (0.88 gpu-util, reduced from 0.92 for Marlin MoE stability)
+  - Performance: **86.2 tok/s decode, 269.6 tok/s concurrent, 893ms tool call** (benchmarked at 0.92)
   - Replaces GLM-4.7-Flash (+54% decode, +37% concurrent, +vision, +10pts SWE-bench, +97% KV capacity)
 - **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
   - Vision quality comparable to Qwen3.5 (tested: OCR, diagrams, math)
