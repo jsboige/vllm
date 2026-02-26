@@ -38,7 +38,7 @@ services:
 
       --tensor-parallel-size 2
       --enable-expert-parallel
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.88
       --max-model-len 262144
       --kv-cache-dtype fp8
       --dtype auto
@@ -131,8 +131,9 @@ volumes:
 # KV cache per token: TBD (hybrid GatedDeltaNet + GQA)
 #   - GatedDeltaNet layers: fixed state (O(d²)), NOT growing with context
 #   - Gated Attention layers: standard KV cache, growing with context
-# gpu-memory-utilization at 0.92 (matches GLM, validated stable)
-# If OOM: reduce to 0.88 or reduce max-model-len to 131072
+# gpu-memory-utilization at 0.88 (reduced from 0.92 — Marlin MoE fused_marlin_moe.py
+# needs ~852 MiB temporary allocations for intermediate_cache13 that OOM at 0.92)
+# Trade-off: KV cache ~370K tokens instead of 423K (still far above 262K max-model-len)
 #
 # === VISION ===
 # Vision encoder (ViT): preserved in BF16 by cyankiwi AWQ quantization

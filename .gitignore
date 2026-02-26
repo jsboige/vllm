@@ -239,3 +239,6 @@ models/
 
 # Conda/venv environments
 llmcompressor_env/
+
+# External evaluation frameworks (cloned for benchmarking)
+lmms-eval/
