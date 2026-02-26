@@ -1,0 +1,10 @@
+{
+  "benchmark": "mmstar",
+  "model": "zwz-8b",
+  "total_questions": 1500,
+  "completed": 1500,
+  "correct": 945,
+  "errors": 0,
+  "accuracy_pct": 63.0,
+  "elapsed_s": 279.4
+}

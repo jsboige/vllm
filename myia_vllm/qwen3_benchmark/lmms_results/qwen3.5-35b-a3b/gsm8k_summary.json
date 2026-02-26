@@ -1,0 +1,13 @@
+{
+  "benchmark": "gsm8k_cot_zeroshot",
+  "model": "qwen3.5-35b-a3b",
+  "total_questions": 1319,
+  "completed": 1319,
+  "correct_v1": 1101,
+  "correct_v2": 1132,
+  "errors": 33,
+  "valid": 1286,
+  "accuracy_v1_pct": 85.6,
+  "accuracy_v2_pct": 88.0,
+  "note": "v2 uses improved answer extraction (bolded numbers, Answer: pattern)"
+}

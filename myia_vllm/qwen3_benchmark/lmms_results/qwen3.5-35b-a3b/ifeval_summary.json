@@ -1,0 +1,10 @@
+{
+  "benchmark": "ifeval",
+  "model": "qwen3.5-35b-a3b",
+  "total_prompts": 541,
+  "completed": 541,
+  "strict_accuracy": 88.48,
+  "instruction_correct": 476,
+  "errors": 3,
+  "elapsed_s": 1561.4
+}
