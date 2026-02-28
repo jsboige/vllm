@@ -170,7 +170,7 @@ docker logs -f myia_vllm-mini-zwz
 
 1. **Do NOT add `--enable-chunked-prefill` or `--num-scheduler-steps`** - These flags force V0 engine fallback. V1 engine (default on nightly) handles chunked prefill automatically.
 
-2. **CUDA graphs (PIECEWISE mode) work well at 0.88 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead. **gpu-memory-utilization reduced from 0.92 to 0.88** on 2026-02-26: Marlin MoE `fused_marlin_moe.py` needs ~852 MiB temporary allocations (`intermediate_cache13`) that OOM at 0.92. At 0.88: 373K tokens KV cache (still >262K max-model-len), stable under all loads. **Do NOT use `--enforce-eager`** (tested: 3-4x slower on all metrics - 12 tok/s vs 45 tok/s decode).
+2. **CUDA graphs (PIECEWISE mode) work well at 0.85 gpu-memory-utilization** - Piecewise CUDA graphs have minimal overhead. **gpu-memory-utilization reduced 0.92→0.88→0.85**: Marlin MoE `fused_marlin_moe.py` needs 852-994 MiB variable temporary allocations (`intermediate_cache13`). At 0.85: 335K tokens KV cache (still >262K max-model-len), ~2.3 GiB headroom. Bug tracked in vLLM RFC [#27951](https://github.com/vllm-project/vllm/issues/27951) — no fix as of Feb 27 2026. **Do NOT use `--enforce-eager`** (tested: 3-4x slower on all metrics - 12 tok/s vs 45 tok/s decode).
 
 3. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working MLA backend on Ada Lovelace (SM89).
 
@@ -190,7 +190,7 @@ docker logs -f myia_vllm-mini-zwz
 - **Vision**: Images, videos, documents (vision encoder preserved in BF16)
 - **Thinking**: `<think>...</think>` modulation via `chat_template_kwargs`
 - **VRAM**: ~12 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: ~373K tokens at 0.88 GPU util with FP8 KV cache (was 438K at 0.92, reduced for Marlin MoE stability)
+- **KV cache**: ~335K tokens at 0.85 GPU util with FP8 KV cache (was 438K at 0.92, reduced for Marlin MoE stability)
 - **Context window**: 262K native (YaRN extensible to 1M), configured at 262K (full native)
 - **Quantization**: AWQ 4-bit (compressed-tensors format) with Marlin MoE kernels
 - **Model source**: [cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
@@ -211,7 +211,7 @@ docker logs -f myia_vllm-medium-qwen35-moe
 --served-model-name qwen3.5-35b-a3b
 --tensor-parallel-size 2
 --enable-expert-parallel          # EP=2: 128/256 experts per GPU
---gpu-memory-utilization 0.88      # 0.92 OOM: Marlin MoE needs ~852 MiB temp allocs
+--gpu-memory-utilization 0.85      # 0.92/0.88 OOM: Marlin MoE needs 852-994 MiB variable temp allocs
 --max-model-len 262144            # Full native 262K context
 --kv-cache-dtype fp8              # FP8 KV: 373K tokens (2x vs auto)
 --dtype auto                      # MUST be auto (not half) for vision encoder BF16 compat
@@ -249,7 +249,7 @@ To disable thinking per-request (clean, direct responses):
 **Reasoning field**: With thinking enabled, the parser separates reasoning into the `reasoning` field (NOT `reasoning_content`, which is always `null`). Both streaming and non-streaming work correctly on pinned nightly (dev388, Feb 23). The `<think>` tag is injected by the chat template in the prompt; only `</think>` appears in generated output. OWUI needs adaptation to read `delta.reasoning` from SSE chunks (currently only parses `<think>` tags in `content`).
 
 ### Performance (Benchmark 2026-02-25, FP8 KV, 262K context)
-**Note**: Benchmarked at 0.92 gpu-util. Production now runs at 0.88 (Marlin MoE stability fix 2026-02-26). Speed impact is negligible since the bottleneck is compute, not memory.
+**Note**: Benchmarked at 0.92 gpu-util. Production now runs at 0.85 (Marlin MoE stability fix). Speed impact is negligible since the bottleneck is compute, not memory.
 
 | Metric | Qwen3.5-35B-A3B | GLM-4.7-Flash (previous) | Improvement |
 |--------|:---:|:---:|:---:|
@@ -259,7 +259,7 @@ To disable thinking per-request (clean, direct responses):
 | 30K cached TTFT | 0.89s | 0.40s | -123% |
 | Tool calling | **893ms** | 1440ms | **-38%** |
 | Vision | **Yes** | No | New capability |
-| KV cache tokens | **373K** (0.88) | 222K | **+68%** |
+| KV cache tokens | **335K** (0.85) | 222K | **+51%** |
 | Max context | **262K** | 128K | **+105%** |
 | SWE-bench | **69.2%** | 59.2% | **+10 pts** |
 
@@ -306,7 +306,7 @@ Note: With auto KV (non-FP8), decode was faster (96-109 tok/s) but KV capacity w
 | Concurrent tok/s | **270** | 216 | 21.6 | ~40 |
 | GPUs used | 2 | 2 | 3 | 2 |
 | Context | **262K** | 128K | 65K | 32K |
-| KV cache | **438K** | 222K | ~65K | ~32K |
+| KV cache | **335K** | 222K | ~65K | ~32K |
 | SWE-bench | **69.2%** | 59.2% | 70.6% | N/A |
 | Vision | **Yes** | No | No | No |
 
@@ -389,14 +389,14 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-25)
+## Current State (2026-02-27)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
   - ✅ Keepalive sidecar (`keepalive-qwen35-moe`)
   - ❌ Middleware DISABLED (same ASGI overhead issue as GLM)
-  - FP8 KV cache: **373K tokens** (0.88 gpu-util, reduced from 0.92 for Marlin MoE stability)
+  - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **86.2 tok/s decode, 269.6 tok/s concurrent, 893ms tool call** (benchmarked at 0.92)
   - Replaces GLM-4.7-Flash (+54% decode, +37% concurrent, +vision, +10pts SWE-bench, +97% KV capacity)
 - **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
