@@ -105,7 +105,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Keepalive started for ZwZ-8B (interval: 300s)"
+        echo "Keepalive started for ZwZ-8B (interval: 120s)"
         while true; do
           RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
             -X POST "http://vllm-mini-zwz:$${VLLM_PORT_MINI:-5001}/v1/chat/completions" \
@@ -113,7 +113,7 @@ services:
             -H "Authorization: Bearer $${VLLM_API_KEY_MINI}" \
             -d '{"model":"zwz-8b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
           echo "$$(date '+%Y-%m-%d %H:%M:%S') ZwZ keepalive: HTTP $$RESULT"
-          sleep 300
+          sleep 120
         done
     environment:
       - VLLM_API_KEY_MINI=${VLLM_API_KEY_MINI}

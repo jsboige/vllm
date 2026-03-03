@@ -1,0 +1,76 @@
+# Standalone watchdog — monitors vLLM containers for crashes/restarts
+# Independent of model profiles (survives model redeploys)
+#
+# Run:   docker compose -f myia_vllm/configs/docker/profiles/watchdog.yml up -d
+# Logs:  docker logs -f myia_vllm-watchdog
+# Events: cat logs/container_watchdog.jsonl
+
+services:
+  watchdog:
+    image: docker:cli
+    container_name: myia_vllm-watchdog
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        LOG="/logs/container_watchdog.jsonl"
+        INTERVAL=60
+        STATE_DIR="/tmp/watchdog"
+        mkdir -p "$$STATE_DIR"
+        touch "$$LOG"
+
+        log_event() {
+          ts=$$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf '{"ts":"%s","event":"%s","container":"%s","display":"%s","restart_count":%s,"started_at":"%s","detail":"%s"}\n' \
+            "$$ts" "$$1" "$$2" "$$3" "$$4" "$$5" "$$6" >> "$$LOG"
+        }
+
+        check_container() {
+          name=$$1
+          display=$$2
+          state_file="$$STATE_DIR/$$name"
+
+          info=$$(docker inspect --format '{{.State.Running}}|{{.RestartCount}}|{{.State.StartedAt}}|{{.State.Status}}' "$$name" 2>/dev/null)
+          if [ $$? -ne 0 ]; then
+            if [ -f "$$state_file" ]; then
+              echo "[ALERT $$(date '+%Y-%m-%d %H:%M:%S')] $$display — DOWN (container not found)"
+              log_event "down" "$$name" "$$display" "0" "" "container not found"
+              rm -f "$$state_file"
+            fi
+            return
+          fi
+
+          running=$$(echo "$$info" | cut -d'|' -f1)
+          rc=$$(echo "$$info" | cut -d'|' -f2)
+          started=$$(echo "$$info" | cut -d'|' -f3)
+          status=$$(echo "$$info" | cut -d'|' -f4)
+
+          if [ ! -f "$$state_file" ]; then
+            echo "$$rc" > "$$state_file"
+            echo "[$$(date '+%Y-%m-%d %H:%M:%S')] $$display: $$status, restarts=$$rc, started=$$started"
+            log_event "started" "$$name" "$$display" "$$rc" "$$started" "initial"
+            return
+          fi
+
+          prev_rc=$$(cat "$$state_file")
+
+          if [ "$$rc" != "$$prev_rc" ]; then
+            crash_tail=$$(docker logs --tail 3 "$$name" 2>&1 | tail -1 | tr '"' "'")
+            echo "[ALERT $$(date '+%Y-%m-%d %H:%M:%S')] $$display RESTARTED! (restarts: $$prev_rc -> $$rc, started: $$started)"
+            echo "  Last log: $$crash_tail"
+            log_event "restart" "$$name" "$$display" "$$rc" "$$started" "$$crash_tail"
+            echo "$$rc" > "$$state_file"
+          fi
+        }
+
+        echo "[$$(date '+%Y-%m-%d %H:%M:%S')] Watchdog started — monitoring containers, interval=$${INTERVAL}s"
+        echo "[$$(date '+%Y-%m-%d %H:%M:%S')] Log file: $$LOG"
+
+        while true; do
+          check_container "myia_vllm-medium-qwen35-moe" "Qwen3.5-MoE"
+          check_container "myia_vllm-mini-zwz" "ZwZ-8B"
+          sleep "$$INTERVAL"
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./../../../logs:/logs
+    restart: unless-stopped

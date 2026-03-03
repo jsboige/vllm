@@ -94,7 +94,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Keepalive started for Qwen3.5-35B-A3B (interval: 300s)"
+        echo "Keepalive started for Qwen3.5-35B-A3B (interval: 120s)"
         while true; do
           RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
             -X POST "http://vllm-medium-qwen35-moe:$${VLLM_PORT_GLM:-5002}/v1/chat/completions" \
@@ -102,7 +102,7 @@ services:
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
             -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
           echo "$$(date '+%Y-%m-%d %H:%M:%S') Qwen3.5-MoE keepalive: HTTP $$RESULT"
-          sleep 300
+          sleep 120
         done
     environment:
       - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
