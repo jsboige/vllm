@@ -31,7 +31,7 @@
 
 services:
   vllm-mini-zwz:
-    image: vllm/vllm-openai:nightly
+    image: vllm/vllm-openai:nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f  # Mar 05 - includes PR #28053 idle crash fix
     container_name: myia_vllm-mini-zwz
     command: >
       --host 0.0.0.0
@@ -52,7 +52,6 @@ services:
       --enable-prefix-caching
 
       --distributed-executor-backend mp
-      --disable-log-requests
 
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'

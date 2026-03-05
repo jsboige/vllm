@@ -221,7 +221,6 @@ docker logs -f myia_vllm-medium-qwen35-moe
 --tool-call-parser qwen3_coder    # Qwen3.5 function calling
 --reasoning-parser qwen3          # <think>...</think> extraction
 --distributed-executor-backend mp
---disable-log-requests
 --limit-mm-per-prompt '{"image":4,"video":0}'
 --mm-processor-kwargs '{"max_pixels":774000}'
 --skip-mm-profiling               # Required: avoids dtype mismatch during profiling
@@ -389,26 +388,26 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-02-27)
+## Current State (2026-03-05)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
-  - ✅ Keepalive sidecar (`keepalive-qwen35-moe`)
   - ❌ Middleware DISABLED (same ASGI overhead issue as GLM)
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
-  - Performance: **86.2 tok/s decode, 269.6 tok/s concurrent, 893ms tool call** (benchmarked at 0.92)
-  - Replaces GLM-4.7-Flash (+54% decode, +37% concurrent, +vision, +10pts SWE-bench, +97% KV capacity)
+  - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
 - **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
   - Vision quality comparable to Qwen3.5 (tested: OCR, diagrams, math)
   - 135 tok/s decode (faster per-token, but redundant now that Qwen3.5 has vision)
-  - ✅ Keepalive sidecar (`keepalive-zwz`)
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25)
-- **vLLM version**: v0.16.0rc2.dev388 (pinned nightly Feb 23, `nightly-7291d1b288558d48508e1a17c37b0aa170332264`)
+- **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
+  - Includes PR #28053 (idle crash fix — ZMQ notifications replace spin-loop)
   - Includes PR #34779 (Qwen3.5 reasoning parser fix)
-  - Pinned to avoid OOM regression in dev456+ (Feb 25 nightly needs ~1 GiB more per GPU for MoE Marlin kernels)
-- **Idle crash mitigation**: Keepalive sidecars on both models (curlimages/curl, 300s interval)
+  - `--disable-log-requests` removed in this version (causes arg parse error)
+  - Rollback reference: dev388 (Feb 23, `nightly-7291d1b288558d48508e1a17c37b0aa170332264`)
+- **Idle crash fix**: PR #28053 deployed. Keepalive sidecars being phased out (monitoring stability)
 - **Qwen3.5-27B Dense tested and rejected** (2026-02-25): 33 tok/s decode, 20.9s cold TTFT, 85K KV cache — too slow
+- **Qwen3.5-35B-A3B-GPTQ-Int4 tested and rejected** (2026-03-03): 4.1 tok/s concurrent (missing RTX 4090 triton autotuning)
 - **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
 
 ## Related Resources

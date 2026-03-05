@@ -27,7 +27,7 @@
 
 services:
   vllm-medium-qwen35-moe:
-    image: vllm/vllm-openai:nightly-7291d1b288558d48508e1a17c37b0aa170332264  # Feb 23 - includes PR #34779 fix, before OOM regression
+    image: vllm/vllm-openai:nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f  # Mar 05 - includes PR #28053 idle crash fix
     container_name: myia_vllm-medium-qwen35-moe
     command: >
       --host 0.0.0.0
@@ -49,7 +49,6 @@ services:
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --distributed-executor-backend mp
-      --disable-log-requests
 
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
