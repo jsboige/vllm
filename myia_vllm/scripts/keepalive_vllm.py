@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
 """
-Keepalive for vLLM services — prevents idle crash (TimeoutError / SystemError).
+Keepalive + Watchdog for vLLM services.
 
-GLM-4.7-Flash crashes after idle periods due to:
-  - SystemError: attempting to create PyCFunction (CPython/pybind11 bug)
-  - TimeoutError: RPC call to sample_tokens timed out (10s timeout)
+Two failure modes are monitored:
+  1. IDLE CRASH: Engine dies after idle periods (CPython/pybind11 bug).
+     Fixed by PR #28053 on Mar 05 nightly, but keepalive remains as safety net.
+  2. PORT FORWARDING LOSS: Docker Desktop Windows silently loses port mapping.
+     Container stays "healthy" internally but localhost:PORT returns nothing.
+     This was undetected for 12+ hours on 2026-03-09, blocking 7 agents.
 
-The /health endpoint does NOT trigger inference, so it doesn't prevent the crash.
-This script sends a minimal completion request every N minutes to keep the
-engine warm and detect failures early.
-
-Pattern observed (02-18 to 02-23): 16 crashes in 5 days, shortest idle before
-crash was 10 minutes. Keepalive interval of 5 minutes should prevent most crashes.
+The script pings from the HOST side (localhost) to detect BOTH failure modes.
+On consecutive failures, it restarts the container via docker compose.
 
 Usage:
-    python keepalive_vllm.py                    # Default: both models, 5min interval
-    python keepalive_vllm.py --interval 300     # Custom interval (seconds)
-    python keepalive_vllm.py --models glm       # Only GLM
+    python keepalive_vllm.py                    # Default: both models, 2min interval
+    python keepalive_vllm.py --interval 120     # Custom interval (seconds)
+    python keepalive_vllm.py --models qwen      # Only Qwen3.5
     python keepalive_vllm.py --models zwz       # Only ZwZ
     python keepalive_vllm.py --once             # Single check, then exit (for cron)
+    python keepalive_vllm.py --auto-restart     # Enable automatic container restart
 
 Deployment as Windows Scheduled Task:
-    schtasks /create /tn "vLLM Keepalive" /tr "python d:\\vllm\\myia_vllm\\scripts\\keepalive_vllm.py --once" /sc minute /mo 5 /ru SYSTEM
+    schtasks /create /tn "vLLM Watchdog" /tr "python d:\\vllm\\myia_vllm\\scripts\\keepalive_vllm.py --auto-restart" /sc minute /mo 2 /ru SYSTEM
 """
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -38,21 +39,28 @@ except ImportError:
 
 # Model configurations
 MODELS = {
-    "glm": {
-        "name": "GLM-4.7-Flash",
+    "qwen": {
+        "name": "Qwen3.5-35B-A3B",
         "url": "http://localhost:5002/v1/chat/completions",
-        "model": "glm-4.7-flash",
+        "model": "qwen3.5-35b-a3b",
         "api_key_env": "VLLM_API_KEY_MEDIUM",
-        "api_key_fallback": "Y7PSM158SR952HCAARSLQ344RRPJTDI3",
+        "container": "myia_vllm-medium-qwen35-moe",
+        "compose_file": "d:/vllm/myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml",
+        "service": "vllm-medium-qwen35-moe",
     },
     "zwz": {
         "name": "ZwZ-8B",
         "url": "http://localhost:5001/v1/chat/completions",
         "model": "zwz-8b",
         "api_key_env": "VLLM_API_KEY_MINI",
-        "api_key_fallback": "Y7PSM158SR952HCAARSLQ344RRPJTDI3",
+        "container": "myia_vllm-mini-zwz",
+        "compose_file": "d:/vllm/myia_vllm/configs/docker/profiles/mini-zwz.yml",
+        "service": "vllm-mini-zwz",
     },
 }
+
+ENV_FILE = "d:/vllm/myia_vllm/.env"
+MAX_RESTART_FAILURES = 3  # restart after N consecutive ping failures
 
 # Minimal request: 1 token output, tiny prompt
 KEEPALIVE_PAYLOAD = {
@@ -63,11 +71,10 @@ KEEPALIVE_PAYLOAD = {
 
 
 def get_api_key(model_cfg: dict) -> str:
-    """Get API key from env or fallback."""
+    """Get API key from env or .env file."""
     key = os.environ.get(model_cfg["api_key_env"], "")
     if not key:
-        # Try loading from .env file
-        env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+        env_path = ENV_FILE
         if os.path.exists(env_path):
             with open(env_path) as f:
                 for line in f:
@@ -75,7 +82,48 @@ def get_api_key(model_cfg: dict) -> str:
                     if line.startswith(f"{model_cfg['api_key_env']}="):
                         key = line.split("=", 1)[1].strip()
                         break
-    return key or model_cfg["api_key_fallback"]
+    return key or "no-key"
+
+
+def restart_container(model_key: str) -> bool:
+    """Restart a container via docker compose. Returns True on success."""
+    cfg = MODELS[model_key]
+    compose_file = cfg.get("compose_file")
+    service = cfg.get("service")
+    container = cfg.get("container")
+
+    if not compose_file or not service:
+        log(f"  No compose_file/service configured for {model_key}, cannot restart")
+        return False
+
+    log(f"  RESTARTING {cfg['name']} ({container})...")
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", compose_file,
+             "--env-file", ENV_FILE, "restart", service],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            log(f"  Restart command succeeded. Waiting for healthy...")
+        else:
+            log(f"  Restart command failed: {result.stderr[:200]}")
+            return False
+    except Exception as e:
+        log(f"  Restart error: {e}")
+        return False
+
+    # Wait for container to become healthy + port accessible (up to 10 min)
+    for i in range(40):  # 40 * 15s = 10 min
+        time.sleep(15)
+        ok, _, detail = ping_model(model_key, timeout=10.0)
+        if ok:
+            log(f"  Recovery successful after {(i+1)*15}s")
+            return True
+        if (i + 1) % 4 == 0:
+            log(f"  Still waiting... {(i+1)*15}s elapsed ({detail})")
+
+    log(f"  Recovery FAILED after 600s. Manual intervention needed.")
+    return False
 
 
 def ping_model(model_key: str, timeout: float = 30.0) -> tuple[bool, float, str]:
@@ -126,9 +174,10 @@ def run_once(model_keys: list[str]) -> int:
     return failures
 
 
-def run_loop(model_keys: list[str], interval: int):
-    """Run keepalive in a loop."""
-    log(f"Starting keepalive loop: models={model_keys}, interval={interval}s")
+def run_loop(model_keys: list[str], interval: int, auto_restart: bool = False):
+    """Run keepalive in a loop with optional auto-restart."""
+    mode = "watchdog+restart" if auto_restart else "monitor-only"
+    log(f"Starting keepalive loop: models={model_keys}, interval={interval}s, mode={mode}")
     log(f"Press Ctrl+C to stop")
 
     consecutive_failures = {k: 0 for k in model_keys}
@@ -141,11 +190,18 @@ def run_loop(model_keys: list[str], interval: int):
             log(f"{cfg['name']:20s} | {status} | {latency:.2f}s | {detail}")
 
             if ok:
+                if consecutive_failures[key] > 0:
+                    log(f"  {cfg['name']} recovered (was failing for {consecutive_failures[key]} checks)")
                 consecutive_failures[key] = 0
             else:
                 consecutive_failures[key] += 1
-                if consecutive_failures[key] >= 3:
-                    log(f"  WARNING: {cfg['name']} has failed {consecutive_failures[key]} consecutive checks!")
+                if consecutive_failures[key] >= MAX_RESTART_FAILURES:
+                    log(f"  ALERT: {cfg['name']} has failed {consecutive_failures[key]} consecutive checks!")
+                    if auto_restart:
+                        recovered = restart_container(key)
+                        consecutive_failures[key] = 0
+                        if not recovered:
+                            log(f"  CRITICAL: {cfg['name']} could not be recovered. Will retry next cycle.")
 
         try:
             time.sleep(interval)
@@ -166,13 +222,18 @@ def main():
     parser.add_argument(
         "--interval",
         type=int,
-        default=300,
-        help="Seconds between keepalive pings (default: 300 = 5min)",
+        default=120,
+        help="Seconds between keepalive pings (default: 120 = 2min)",
     )
     parser.add_argument(
         "--once",
         action="store_true",
         help="Run once and exit (for cron/scheduled task)",
+    )
+    parser.add_argument(
+        "--auto-restart",
+        action="store_true",
+        help="Automatically restart container on consecutive failures",
     )
     args = parser.parse_args()
 
@@ -180,7 +241,7 @@ def main():
         failures = run_once(args.models)
         sys.exit(1 if failures > 0 else 0)
     else:
-        run_loop(args.models, args.interval)
+        run_loop(args.models, args.interval, args.auto_restart)
 
 
 if __name__ == "__main__":
