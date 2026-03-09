@@ -50,9 +50,13 @@ services:
       --reasoning-parser qwen3
       --distributed-executor-backend mp
 
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
       --skip-mm-profiling
+
+      --middleware logging_middleware.RequestResponseLogger
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -70,6 +74,9 @@ services:
       - VLLM_USE_DEEP_GEMM=0
       - OMP_NUM_THREADS=4
       - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
+      - VLLM_LOG_REQUESTS_CONTENT=1
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -86,23 +93,84 @@ services:
       start_period: 600s  # 10 minutes: model download + CUDA graph capture
     restart: unless-stopped
 
-  # Keepalive sidecar: prevents idle crash (CPython/pybind11 worker corruption)
-  keepalive-qwen35-moe:
-    image: curlimages/curl:latest
-    container_name: myia_vllm-keepalive-qwen35-moe
+  # Watchdog sidecar: keepalive + port-forwarding monitor + auto-restart
+  # Pings via host.docker.internal (Windows host) to detect Docker Desktop
+  # port forwarding loss. Restarts container via Docker socket on failure.
+  # Incident 2026-03-09: port forwarding silently broke, 7 agents blocked 12+ hours.
+  watchdog-qwen35-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen35-moe
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Keepalive started for Qwen3.5-35B-A3B (interval: 120s)"
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen35-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.5-35B-A3B"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen35-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
         while true; do
-          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
-            -X POST "http://vllm-medium-qwen35-moe:$${VLLM_PORT_GLM:-5002}/v1/chat/completions" \
+          # Primary: ping via HOST to detect port forwarding loss
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
-          echo "$$(date '+%Y-%m-%d %H:%M:%S') Qwen3.5-MoE keepalive: HTTP $$RESULT"
-          sleep 120
+            -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          # Fallback: ping via internal Docker network (detects engine crash)
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen35-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            # All good
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            # Port forwarding broken (internal OK but host fails)
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 300s for recovery..."
+              sleep 300
+              continue
+            fi
+          else
+            # Both failing — engine is down
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 300s for recovery..."
+              sleep 300
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
         done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
       - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
