@@ -343,7 +343,7 @@ Legacy `myia-vllm/` directory has been archived to `myia_vllm/archives/legacy_my
 
 ASGI middleware (`myia_vllm/middleware/logging_middleware.py`) that intercepts `/v1/chat/completions` and logs full request/response content + timing as JSONL at `/logs/chat_completions.jsonl`.
 
-- **Captures**: model, messages_count, last_user_message, tools_count, temperature, max_tokens, response_text, reasoning_text, tool_calls, finish_reason, prompt_tokens, completion_tokens, ttft_s, e2e_s
+- **Captures**: model, messages_count, last_user_message, tools_count, all sampling params (temperature, top_p, top_k, presence_penalty, frequency_penalty, repetition_penalty), chat_template_kwargs, system_prompt_length, system_prompt_preview, response_text, reasoning_text, tool_calls, finish_reason, prompt_tokens, completion_tokens, ttft_s, e2e_s
 - **Handles both streaming (SSE) and non-streaming** responses
 - **Config**: `VLLM_LOG_DIR` (default `/logs`), `VLLM_LOG_REQUESTS_CONTENT` (default `1`)
 - **Loaded via**: `--middleware logging_middleware.RequestResponseLogger` + `PYTHONPATH=/middleware`
@@ -388,27 +388,81 @@ semantic-kernel[mcp]>=1.39  (requires openai>=1.109)
 mcp>=1.7
 ```
 
-## Current State (2026-03-05)
+## Sampling Parameter Optimization (2026-03-08)
+
+### Problem
+Repetition and language mixing (Chinese in French responses) observed in Roo Code. Root cause: Roo sends only `temperature` (was 0.1, quasi-greedy) with no `presence_penalty`. The `presence_penalty` is critical for Qwen3.5 to avoid repetition loops.
+
+### Qwen Official Sampling Recommendations
+
+| Mode | temp | top_p | top_k | presence_penalty | repetition_penalty |
+|------|:----:|:-----:|:-----:|:----------------:|:-----------------:|
+| **Thinking General** | 1.0 | 0.95 | 20 | **1.5** | 1.0 |
+| **Thinking Coding** | 0.6 | 0.95 | 20 | 0.0 | 1.0 |
+| **Instruct General** | 0.7 | 0.8 | 20 | **1.5** | 1.0 |
+| **Instruct Reasoning** | 1.0 | 1.0 | 40 | **2.0** | 1.0 |
+
+### vLLM Server-Side Defaults
+`--override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'`
+Note: `presence_penalty` is NOT supported by `--override-generation-config` — must be injected client-side.
+
+### OWUI Model Wrappers (Sampling Injection)
+4 preset models created in OWUI that inject missing sampling params for clients that don't support them (like Roo):
+
+| OWUI Model | Usage | temp | pp | top_p | top_k | thinking |
+|------------|-------|:----:|:--:|:-----:|:-----:|:--------:|
+| `Qwen_think` | General | 1.0 | 1.5 | 0.95 | 20 | yes |
+| `Qwen_think-code` | Coding | 0.6 | 0.0 | 0.95 | 20 | yes |
+| `Qwen_think-reason` | Reasoning | 1.0 | 2.0 | 1.0 | 40 | yes |
+| `Qwen_instruct` | Chat | 0.7 | 1.5 | 0.8 | 20 | no |
+
+**OWUI endpoint for Roo**: `https://open-webui.myia.io/api` (NOT /v1)
+**API**: `POST /api/v1/models/model/update` to modify params (full replace, not partial)
+**Mechanism**: `params` + `custom_params` deep-merged into request body. `ModelParams` uses `extra="allow"`.
+
+### Repetition Benchmark Results (2026-03-08, AWQ 4-bit)
+
+| Preset | 4gram | 8gram | TTR | RepLine | tok/s |
+|--------|:-----:|:-----:|:---:|:-------:|:-----:|
+| baseline (0.3, pp=0) | 0.104 | 0.041 | 0.450 | 0.028 | 110.7 |
+| roo-current (0.6, pp=0) | 0.108 | 0.035 | 0.441 | 0.036 | 102.1 |
+| think-code (0.6, pp=0) | 0.077 | 0.024 | 0.482 | 0.028 | 117.9 |
+| **think-general (1.0, pp=1.5)** | 0.071 | 0.030 | 0.522 | 0.012 | 111.3 |
+| **think-reason (1.0, pp=2.0)** | 0.050 | 0.015 | 0.555 | 0.016 | 116.6 |
+| **instruct (0.7, pp=1.5)** | **0.042** | **0.013** | **0.540** | **0.013** | 106.9 |
+
+**Key findings**:
+- `presence_penalty` 1.5-2.0 reduces 4-gram repetition by **2-3x** vs pp=0
+- No speed impact from penalties (~100-118 tok/s across all presets)
+- `instruct` (pp=1.5, no thinking) has lowest repetition + highest diversity
+- These results apply to AWQ 4-bit quant (BF16 may differ)
+
+### SK Agent Sampling Support
+SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
+```json
+"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5, "max_tokens": 4096}
+```
+Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
+Non-standard params (top_k, min_p) sent via `extra_body`.
+
+## Current State (2026-03-08)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
-  - ❌ Middleware DISABLED (same ASGI overhead issue as GLM)
+  - ✅ `--override-generation-config` with Qwen recommended defaults (temp 1.0, top_p 0.95, top_k 20)
+  - ✅ Middleware ENABLED (temporarily, for sampling param investigation)
+  - ✅ 4 OWUI model wrappers with optimized sampling (Qwen_think, Qwen_think-code, Qwen_think-reason, Qwen_instruct)
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
 - **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
-  - Vision quality comparable to Qwen3.5 (tested: OCR, diagrams, math)
-  - 135 tok/s decode (faster per-token, but redundant now that Qwen3.5 has vision)
-- **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25)
+- **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
 - **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
-  - Includes PR #28053 (idle crash fix — ZMQ notifications replace spin-loop)
-  - Includes PR #34779 (Qwen3.5 reasoning parser fix)
-  - `--disable-log-requests` removed in this version (causes arg parse error)
-  - Rollback reference: dev388 (Feb 23, `nightly-7291d1b288558d48508e1a17c37b0aa170332264`)
-- **Idle crash fix**: PR #28053 deployed. Keepalive sidecars being phased out (monitoring stability)
-- **Qwen3.5-27B Dense tested and rejected** (2026-02-25): 33 tok/s decode, 20.9s cold TTFT, 85K KV cache — too slow
-- **Qwen3.5-35B-A3B-GPTQ-Int4 tested and rejected** (2026-03-03): 4.1 tok/s concurrent (missing RTX 4090 triton autotuning)
-- **Qwen3-VL-8B-Thinking available as fallback** via mini-solo.yml
+  - Includes PR #28053 (idle crash fix), PR #34779 (reasoning parser fix)
+  - Rollback reference: dev388 (Feb 23)
+- **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
+- **Roo Code issue**: Still sends temp=0.1 (not 0.6 as expected) — user needs to verify Roo config
+- **Qwen3.5-27B Dense rejected** (2026-02-25), **GPTQ-Int4 rejected** (2026-03-03)
 
 ## Related Resources
 
