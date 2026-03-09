@@ -156,6 +156,19 @@ def _parse_request(body, entry):
     entry["temperature"] = req.get("temperature")
     entry["max_tokens"] = (req.get("max_tokens")
                            or req.get("max_completion_tokens"))
+    entry["top_p"] = req.get("top_p")
+    entry["top_k"] = req.get("top_k")
+    entry["presence_penalty"] = req.get("presence_penalty")
+    entry["frequency_penalty"] = req.get("frequency_penalty")
+    entry["repetition_penalty"] = req.get("repetition_penalty")
+    entry["chat_template_kwargs"] = req.get("chat_template_kwargs")
+    # System prompt metrics
+    for msg in messages:
+        if msg.get("role") == "system":
+            sys_content = str(msg.get("content", ""))
+            entry["system_prompt_length"] = len(sys_content)
+            entry["system_prompt_preview"] = sys_content[:200]
+            break
 
 
 def _parse_non_streaming_response(chunks, entry):
