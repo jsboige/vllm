@@ -3,7 +3,15 @@
     "base_url": "http://localhost:5002/v1",
     "api_key_env": "VLLM_API_KEY_MEDIUM",
     "model_id": "qwen3.5-35b-a3b",
-    "vision": true
+    "vision": true,
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "presence_penalty": 1.5,
+      "frequency_penalty": 0.0,
+      "max_tokens": 4096
+    }
   },
   "mcps": [
     {

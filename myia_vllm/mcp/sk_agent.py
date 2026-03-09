@@ -48,7 +48,10 @@ from openai import AsyncOpenAI
 from PIL import Image
 
 from semantic_kernel.agents import ChatCompletionAgent, ChatHistoryAgentThread
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.connectors.ai.open_ai import (
+    OpenAIChatCompletion,
+    OpenAIChatPromptExecutionSettings,
+)
 from semantic_kernel.connectors.mcp import MCPStdioPlugin
 
 # ---------------------------------------------------------------------------
@@ -150,6 +153,7 @@ class SKAgent:
         self._agent: ChatCompletionAgent | None = None
         self._thread: ChatHistoryAgentThread | None = None
         self._plugins: list = []
+        self._execution_settings: OpenAIChatPromptExecutionSettings | None = None
 
     async def start(self):
         """Initialize the SK agent: connect to model and MCP plugins."""
@@ -189,6 +193,31 @@ class SKAgent:
             except Exception:
                 log.exception("Failed to load MCP plugin: %s", mcp_cfg.get("name"))
 
+        # Build execution settings from config sampling params
+        sampling = model_cfg.get("sampling", {})
+        if sampling:
+            self._execution_settings = OpenAIChatPromptExecutionSettings(
+                temperature=sampling.get("temperature", 1.0),
+                top_p=sampling.get("top_p", 0.95),
+                presence_penalty=sampling.get("presence_penalty", 1.5),
+                frequency_penalty=sampling.get("frequency_penalty", 0.0),
+                max_tokens=sampling.get("max_tokens", 4096),
+            )
+            # Pass non-standard params (top_k, min_p) via extra_body
+            extra = {}
+            if "top_k" in sampling:
+                extra["top_k"] = sampling["top_k"]
+            if "min_p" in sampling:
+                extra["min_p"] = sampling["min_p"]
+            if extra and hasattr(self._execution_settings, "extra_body"):
+                self._execution_settings.extra_body = extra
+            log.info("Sampling params: temp=%.1f top_p=%.2f pp=%.1f fp=%.1f max_tokens=%d",
+                     self._execution_settings.temperature,
+                     self._execution_settings.top_p,
+                     self._execution_settings.presence_penalty,
+                     self._execution_settings.frequency_penalty,
+                     self._execution_settings.max_tokens)
+
         # Create agent
         system_prompt = self.config.get("system_prompt", "")
         self._agent = ChatCompletionAgent(
@@ -208,7 +237,11 @@ class SKAgent:
         if system_prompt:
             self._agent.instructions = system_prompt
 
-        response = await self._agent.get_response(messages=prompt)
+        kwargs = {"messages": prompt}
+        if self._execution_settings:
+            kwargs["execution_settings"] = self._execution_settings
+
+        response = await self._agent.get_response(**kwargs)
         return str(response)
 
     async def ask_with_image(
@@ -239,6 +272,17 @@ class SKAgent:
         base_url = model_cfg.get("base_url", "http://localhost:5001/v1")
         model_id = model_cfg.get("model_id", "default")
 
+        # Build sampling kwargs from config
+        sampling = model_cfg.get("sampling", {})
+        sampling_kwargs = {}
+        if sampling:
+            for key in ("temperature", "top_p", "presence_penalty",
+                        "frequency_penalty", "max_tokens"):
+                if key in sampling:
+                    sampling_kwargs[key] = sampling[key]
+        if "max_tokens" not in sampling_kwargs:
+            sampling_kwargs["max_tokens"] = 1024
+
         async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
             resp = await client.chat.completions.create(
                 model=model_id,
@@ -250,7 +294,7 @@ class SKAgent:
                          "image_url": {"url": data_url}},
                     ],
                 }],
-                max_tokens=1024,
+                **sampling_kwargs,
             )
         return resp.choices[0].message.content or ""
 
