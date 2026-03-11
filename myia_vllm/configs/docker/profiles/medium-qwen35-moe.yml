@@ -55,8 +55,6 @@ services:
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
       --skip-mm-profiling
-
-      --middleware logging_middleware.RequestResponseLogger
     ipc: host
     shm_size: '16gb'
     deploy:

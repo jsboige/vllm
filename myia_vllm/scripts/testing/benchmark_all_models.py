@@ -16,6 +16,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -52,7 +53,7 @@ MODELS = [
         name="medium (GLM-4.7-Flash)",
         url="http://localhost:5002",
         port=5002,
-        api_key="Y7PSM158SR952HCAARSLQ344RRPJTDI3",
+        api_key=os.environ.get("VLLM_API_KEY_MEDIUM", ""),
         model_id="glm-4.7-flash",
         supports_vision=False,
         supports_reasoning=True,
@@ -61,7 +62,7 @@ MODELS = [
         name="mini (Qwen3-VL-8B-Thinking)",
         url="http://localhost:5001",
         port=5001,
-        api_key="9OYJNTEAAANJF6F17FMHR51Y0532O9QY",
+        api_key=os.environ.get("VLLM_API_KEY_MINI", ""),
         model_id="qwen3-vl-8b-thinking",
         supports_vision=True,
         supports_reasoning=True,
@@ -70,7 +71,7 @@ MODELS = [
         name="micro (Qwen3-4B-Thinking)",
         url="http://localhost:5000",
         port=5000,
-        api_key="4S985NRGNN0FZ1P6ZZWNHPJOSAJIMD7M",
+        api_key=os.environ.get("VLLM_API_KEY_MICRO", ""),
         model_id="qwen3-4b-thinking",
         supports_vision=False,
         supports_reasoning=True,

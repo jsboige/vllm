@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $BaseUrl = "http://localhost:5002"
 $Model = "Qwen/Qwen3-32B-AWQ"
-$ApiKey = "Y7PSM158SR952HCAARSLQ344RRPJTDI3"
+$ApiKey = $env:VLLM_API_KEY_MEDIUM
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST KV CACHE ACCELERATION" -ForegroundColor Cyan

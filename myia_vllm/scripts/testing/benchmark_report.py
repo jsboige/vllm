@@ -90,13 +90,7 @@ def get_api_key(service: str) -> str:
     key = os.environ.get(env_var)
     if key:
         return key
-    # Fallback to hardcoded keys (development only)
-    defaults = {
-        "MEDIUM": "Y7PSM158SR952HCAARSLQ344RRPJTDI3",
-        "MINI": "9OYJNTEAAANJF6F17FMHR51Y0532O9QY",
-        "MICRO": "4S985NRGNN0FZ1P6ZZWNHPJOSAJIMD7M",
-    }
-    return defaults.get(service.upper(), "")
+    return ""
 
 
 # Model configurations - update as deployment changes

@@ -232,13 +232,13 @@ Pour maximiser la compatibilité avec la configuration production actuelle, j'ai
 --tool-call-parser hermes  # Au lieu de qwen3_xml
 
 # Re-exécuter benchmark
-pwsh -c "$env:VLLM_MEDIUM_API_KEY = 'Y7PSM158SR952HCAARSLQ344RRPJTDI3'; .\myia_vllm\scripts\benchmark_tool_calling.ps1"
+pwsh -c "$env:VLLM_MEDIUM_API_KEY = '<VLLM_API_KEY_MEDIUM>'; .\myia_vllm\scripts\benchmark_tool_calling.ps1"
 ```
 
 **2. Activer GPU Monitoring (Priorité MOYENNE)** :
 ```powershell
 # Re-exécuter benchmark stabilité avec monitoring
-pwsh -c "$env:VLLM_MEDIUM_API_KEY = 'Y7PSM158SR952HCAARSLQ344RRPJTDI3'; .\myia_vllm\scripts\benchmark_long_stability.ps1 -MonitorGPU -TotalRequests 20 -IntervalSeconds 5"
+pwsh -c "$env:VLLM_MEDIUM_API_KEY = '<VLLM_API_KEY_MEDIUM>'; .\myia_vllm\scripts\benchmark_long_stability.ps1 -MonitorGPU -TotalRequests 20 -IntervalSeconds 5"
 ```
 
 **3. Documenter Workaround Tool Calling** :

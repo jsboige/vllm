@@ -1,6 +1,6 @@
 # Test API vLLM Medium
 $headers = @{
-    "Authorization" = "Bearer Y7PSM158SR952HCAARSLQ344RRPJTDI3"
+    "Authorization" = "Bearer $($env:VLLM_API_KEY_MEDIUM)"
     "Content-Type" = "application/json"
 }
 

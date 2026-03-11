@@ -9,6 +9,7 @@ Ce script teste les capacités de base du modèle multimodal:
 """
 
 import base64
+import os
 import sys
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def test_qwen3_vl_basic():
     # Configuration du client OpenAI pointant vers vLLM local
     client = openai.OpenAI(
         base_url="http://localhost:5003/v1",  # Port du service medium-vl
-        api_key="Y7PSM158SR952HCAARSLQ344RRPJTDI3",  # Clé API du service medium-vl
+        api_key=os.environ.get("VLLM_API_KEY_MEDIUM_VL", ""),
     )
     
     # Chemin de l'image de test

@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Continue"
 $BaseUrl = "http://localhost:5002"
 $Model = "Qwen/Qwen3-32B-AWQ"
-$ApiKey = "Y7PSM158SR952HCAARSLQ344RRPJTDI3"
+$ApiKey = $env:VLLM_API_KEY_MEDIUM
 
 # Créer le répertoire de sortie
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null

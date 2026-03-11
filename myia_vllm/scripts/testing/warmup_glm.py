@@ -16,12 +16,13 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 
 import httpx
 
-API_KEY = "Y7PSM158SR952HCAARSLQ344RRPJTDI3"
+API_KEY = os.environ.get("VLLM_API_KEY_MEDIUM", "")
 
 
 def wait_for_service(base_url: str, timeout: int = 600):

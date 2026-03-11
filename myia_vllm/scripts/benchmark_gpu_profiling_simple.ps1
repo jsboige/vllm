@@ -11,7 +11,7 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$apiKey = "Y7PSM158SR952HCAARSLQ344RRPJTDI3"
+$apiKey = $env:VLLM_API_KEY_MEDIUM
 $apiUrl = "http://localhost:5002/v1/chat/completions"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $outputJson = "myia_vllm/test_results/gpu_profiling_$timestamp.json"

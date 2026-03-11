@@ -28,7 +28,7 @@ La Mission 19 a été interrompue en raison d'une **erreur de spécification du 
 
 ```bash
 VLLM_PORT_MEDIUM_VL=5003
-VLLM_API_KEY_MEDIUM_VL=Y7PSM158SR952HCAARSLQ344RRPJTDI3
+VLLM_API_KEY_MEDIUM_VL=<VLLM_API_KEY_MEDIUM>
 CUDA_VISIBLE_DEVICES_MEDIUM_VL=0,1
 DTYPE_MEDIUM_VL=half
 ```
@@ -38,7 +38,7 @@ DTYPE_MEDIUM_VL=half
 ✅ **Fichier [`myia_vllm/tests/vision/test_qwen3-vl_basic.py`](myia_vllm/tests/vision/test_qwen3-vl_basic.py) mis à jour** :
 
 - Port corrigé : `5002` → `5003`
-- Clé API mise à jour : `vllm` → `Y7PSM158SR952HCAARSLQ344RRPJTDI3`
+- Clé API mise à jour : `vllm` → `<VLLM_API_KEY_MEDIUM>`
 
 ---
 

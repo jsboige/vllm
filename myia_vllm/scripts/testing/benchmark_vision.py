@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -50,7 +51,7 @@ class BenchResult:
 MODEL_CONFIG = {
     "name": "Qwen3-VL-8B-Thinking (mini-solo)",
     "url": "http://localhost:5001",
-    "api_key": "9OYJNTEAAANJF6F17FMHR51Y0532O9QY",
+    "api_key": os.environ.get("VLLM_API_KEY_MINI", ""),
     "model_id": "qwen3-vl-8b-thinking",
 }
 
