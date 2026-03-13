@@ -237,6 +237,13 @@ myia_vllm/scripts/testing/*.csv
 # Local model weights (large binaries)
 models/
 
+# Roo Code local config (modes, schedules)
+.roo/
+.roomodes
+
+# OWUI analysis reports (ephemeral)
+myia_vllm/reports/
+
 # Conda/venv environments
 llmcompressor_env/
 

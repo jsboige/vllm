@@ -339,14 +339,14 @@ This repository has been maintained primarily by Roo (another AI agent) through 
 
 Legacy `myia-vllm/` directory has been archived to `myia_vllm/archives/legacy_myia-vllm_*/`.
 
-## Logging Middleware
+## Logging Middleware (DISABLED in production)
 
-ASGI middleware (`myia_vllm/middleware/logging_middleware.py`) that intercepts `/v1/chat/completions` and logs full request/response content + timing as JSONL at `/logs/chat_completions.jsonl`.
+ASGI middleware (`myia_vllm/middleware/logging_middleware.py`) that intercepts `/v1/chat/completions` and logs full request/response content + timing as JSONL at `/logs/chat_completions.jsonl`. **Disabled since 2026-03-13** due to -40-65% throughput impact. Available for temporary debugging.
 
-- **Captures**: model, messages_count, last_user_message, tools_count, all sampling params (temperature, top_p, top_k, presence_penalty, frequency_penalty, repetition_penalty), chat_template_kwargs, system_prompt_length, system_prompt_preview, response_text, reasoning_text, tool_calls, finish_reason, prompt_tokens, completion_tokens, ttft_s, e2e_s
+- **Captures**: model, messages_count, last_user_message, tools_count, all sampling params, chat_template_kwargs, response_text, reasoning_text, tool_calls, finish_reason, prompt_tokens, completion_tokens, ttft_s, e2e_s
 - **Handles both streaming (SSE) and non-streaming** responses
 - **Config**: `VLLM_LOG_DIR` (default `/logs`), `VLLM_LOG_REQUESTS_CONTENT` (default `1`)
-- **Loaded via**: `--middleware logging_middleware.RequestResponseLogger` + `PYTHONPATH=/middleware`
+- **To enable**: add `--middleware logging_middleware.RequestResponseLogger` + `PYTHONPATH=/middleware` to Docker profile
 - Volume-mounted read-only: `myia_vllm/middleware:/middleware:ro`
 
 ## SK Agent MCP Server
@@ -445,14 +445,14 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-03-08)
+## Current State (2026-03-13)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
-  - ✅ `--override-generation-config` with Qwen recommended defaults (temp 1.0, top_p 0.95, top_k 20)
-  - ✅ Middleware ENABLED (temporarily, for sampling param investigation)
-  - ✅ 4 OWUI model wrappers with optimized sampling (Qwen_think, Qwen_think-code, Qwen_think-reason, Qwen_instruct)
+  - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20)
+  - ✅ Middleware DISABLED (removed 2026-03-13, was temporary for sampling investigation)
+  - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
 - **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
@@ -460,9 +460,10 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
 - **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
   - Includes PR #28053 (idle crash fix), PR #34779 (reasoning parser fix)
   - Rollback reference: dev388 (Feb 23)
+- **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
-- **Roo Code issue**: Still sends temp=0.1 (not 0.6 as expected) — user needs to verify Roo config
-- **Qwen3.5-27B Dense rejected** (2026-02-25), **GPTQ-Int4 rejected** (2026-03-03)
+- **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers still exist but unused by Roo.
+- **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13)
 
 ## Related Resources
 
