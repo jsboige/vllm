@@ -4,7 +4,7 @@ default_install_hook_types:
 default_stages:
   - pre-commit # Run locally
   - manual # Run in CI
-exclude: 'vllm/third_party/.*'
+exclude: '(vllm/third_party|myia_vllm|tests/tool_calling|tests/reasoning/test_reasoning_(optimized|parser_clean)|scripts)/.*'
 repos:
 - repo: https://github.com/google/yapf
   rev: v0.43.0
