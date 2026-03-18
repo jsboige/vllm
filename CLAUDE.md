@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment**: Qwen3.5-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking) on GPUs 0,1 with TP=2+EP. ZwZ-8B on GPU 2 (placeholder, replaceable).
+**Current deployment**: Qwen3.5-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking) on GPUs 0,1 with TP=2+EP. GPU 2 shared: ZwZ-8B (vision, 32K ctx) + Orpheus TTS (French, port 8890) + Kokoro TTS (port 8880).
 
 **Previous deployment**: GLM-4.7-Flash (31B MoE, AWQ 4-bit) - replaced by Qwen3.5 (+80% decode, +37% concurrent, +vision, +10pts SWE-bench).
 
@@ -44,8 +44,11 @@ myia_vllm/                    # PRIMARY - all customizations live here
 docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
 docker logs -f myia_vllm-medium-qwen35-moe
 
-# Start ZwZ-8B (vision fallback, GPU 2)
-docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
+# Start ZwZ-8B (vision, GPU 2 shared mode alongside Orpheus+Kokoro TTS)
+docker compose -f myia_vllm/configs/docker/profiles/mini-zwz-shared.yml --env-file myia_vllm/.env up -d
+
+# Start Orpheus TTS (French, GPU 2, port 8890)
+cd d:/Orpheus-FastAPI && docker compose -f docker-compose-gpu2.yml up -d
 
 # Legacy: GLM-4.7-Flash (requires custom image build first)
 # docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
@@ -89,12 +92,15 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
 | **medium-qwen35-moe** | **0,1** | **5002** | **Qwen3.5-35B-A3B-AWQ** | **medium-qwen35-moe.yml** |
-| **mini-zwz** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz.yml** (placeholder) |
+| **mini-zwz (shared)** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz-shared.yml** (gpu-util 0.70, 32K ctx) |
+| **orpheus-tts** | **2** | **8890** | **Orpheus-3b-French-FT-Q8_0** | **d:/Orpheus-FastAPI/docker-compose-gpu2.yml** |
+| kokoro-tts | 2 | 8880 | Kokoro TTS (67 voices) | myia-open-webui compose |
+| mini-zwz (solo) | 2 | 5001 | ZwZ-8B-AWQ-4bit | mini-zwz.yml (full GPU, 128K ctx) |
 | medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | medium-glm.yml (legacy) |
 | medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
 | mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
 
-GPUs 0,1 are on faster PCIe bus. GPU 2 is on slower bus (placeholder for ZwZ, replaceable when a better use emerges).
+GPUs 0,1 are on faster PCIe bus. GPU 2 is shared between ZwZ-8B (17 GB), Orpheus TTS (2.4 GB), and Kokoro TTS (0.5 GB) — total 20.2/24.5 GB with 3.9 GB headroom.
 
 ### Environment Variables
 
@@ -445,7 +451,7 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-03-13)
+## Current State (2026-03-18)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
@@ -455,7 +461,16 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
   - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
-- **GPU 2**: ZwZ-8B on port 5001 — **placeholder, replaceable**
+- **GPU 2 shared** (20.2/24.5 GB, 3.9 GB headroom):
+  - **ZwZ-8B** on port 5001 — shared mode (gpu-util 0.70, 32K ctx, CUDA graphs, profile `mini-zwz-shared.yml`)
+  - **Orpheus TTS** on port 8890 — French TTS (Orpheus-3b-French-FT-Q8_0, ~2.4 GB, `d:/Orpheus-FastAPI/`)
+  - **Kokoro TTS** on port 8880 — multi-language TTS (67 voices)
+- **Orpheus TTS** (deployed 2026-03-18):
+  - API: `POST https://orpheus-tts.myia.io/v1/audio/speech` (OpenAI-compatible)
+  - French voices: `amelie`, `pierre`, `marie` (+ English: tara, leah, jess, leo, dan, mia, zac, zoe)
+  - Architecture: FastAPI (SNAC audio decoder, GPU) + llama.cpp (token generation, GPU)
+  - Repo: `d:/Orpheus-FastAPI/`, compose: `docker-compose-gpu2.yml`
+  - Reverse proxy: `orpheus-tts.myia.io` (IIS on po-2023, HTTPS SNI, cert SAN `CN=myia.io`)
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
 - **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
   - Includes PR #28053 (idle crash fix), PR #34779 (reasoning parser fix)

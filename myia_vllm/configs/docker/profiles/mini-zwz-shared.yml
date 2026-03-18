@@ -1,51 +1,51 @@
-# Docker Compose profile for ZwZ-8B (Shared Mode - A/B Testing)
-# Deployed on GPU 2 alongside Qwen3-VL-8B-Thinking for parallel A/B testing
+# Docker Compose profile for ZwZ-8B (Shared Mode - alongside Orpheus TTS)
+# Deployed on GPU 2 alongside Orpheus 3B French TTS (~2.4 GB VRAM)
 #
-# Hardware: 1x RTX 4090 (shared GPU 2, 40% VRAM allocation = ~9.6GB)
+# Hardware: 1x RTX 4090 (shared GPU 2, 70% VRAM allocation = ~17.2GB)
 # Model: AWQ 4-bit quantization (~5.5GB) - CREATED VIA quantize_zwz_8b.py
 # Source: https://huggingface.co/inclusionAI/ZwZ-8B
 #
-# A/B TESTING CONFIG:
-#   - This service: port 5005, model zwz-8b
-#   - Qwen3-VL-Thinking service: port 5001, model qwen3-vl-8b-thinking
-#   - Combined: 2 × 0.40 = 0.80 GPU utilization
-#   - enforce-eager required (no CUDA graphs in shared mode)
+# SHARED GPU CONFIG (alongside Orpheus TTS + Kokoro TTS):
+#   - ZwZ-8B (this): port 5001, gpu-util 0.70 (~17 GB)
+#   - Orpheus TTS:   port 8890, ~2.4 GB (llama.cpp + SNAC decoder)
+#   - Kokoro TTS:    port 8880, ~0.5 GB
+#   - Total: ~20 GB / 24.5 GB → 4.5 GB headroom
+#   - CUDA graphs enabled (enough headroom without enforce-eager)
 #
-# Features: Vision (images), Fine-grained visual perception (no thinking mode)
-# Context: 4K tokens with FP8 KV cache (reduced for dual-model shared GPU)
+# Features: Vision (images), Fine-grained visual perception, Tool calling (hermes)
+# Context: 32K tokens with FP8 KV cache (reduced from 128K solo mode)
 #
 # Run: docker compose -f myia_vllm/configs/docker/profiles/mini-zwz-shared.yml --env-file myia_vllm/.env up -d
 
 services:
   vllm-mini-zwz-shared:
-    image: vllm/vllm-openai:latest
-    container_name: myia_vllm-mini-zwz-shared
+    image: vllm/vllm-openai:nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f  # Mar 05 pinned nightly
+    container_name: myia_vllm-mini-zwz
     command: >
       --host 0.0.0.0
-      --port 5005
+      --port ${VLLM_PORT_MINI:-5001}
       --model /models/ZwZ-8B-AWQ-4bit
       --served-model-name zwz-8b
       --api-key ${VLLM_API_KEY_MINI}
 
-      --gpu-memory-utilization 0.40
-      --max-model-len 4096
-      --max-num-batched-tokens 4096
+      --gpu-memory-utilization 0.70
+      --max-model-len 32768
+      --max-num-batched-tokens 8192
       --kv-cache-dtype fp8
       --dtype half
-      --enforce-eager
-      --max-num-seqs 16
+      --max-num-seqs 32
 
       --enable-auto-tool-choice
       --tool-call-parser hermes
+      --enable-prefix-caching
 
       --distributed-executor-backend mp
-      --disable-log-requests
 
       --limit-mm-per-prompt '{"image":2,"video":0}'
       --mm-processor-kwargs '{"max_pixels":448000}'
       --skip-mm-profiling
     ipc: host
-    shm_size: '2gb'
+    shm_size: '4gb'
     deploy:
       resources:
         reservations:
@@ -61,37 +61,36 @@ services:
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
     volumes:
       - d:/vllm/models:/models:ro
-      - hf-cache-shared:/root/.cache/huggingface
+      - hf-cache:/root/.cache/huggingface
+      - vllm-compile-cache:/root/.cache/vllm
     ports:
-      - "5005:5005"
+      - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MINI:-5001}/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 180s
+      start_period: 240s
     restart: unless-stopped
 
 # =====================================================================
-# DUAL MODEL GPU MEMORY BUDGET (shared GPU 2 = 24GB)
+# SHARED GPU MEMORY BUDGET (GPU 2 = 24.5 GB)
 # =====================================================================
 #
-# This service (ZwZ-8B):          0.40 × 24GB = 9.6 GB
-# Qwen3-VL-Thinking service:      0.40 × 24GB = 9.6 GB
-# Total allocated:                                   19.2 GB
-# Headroom:                                           4.8 GB
+# Orpheus TTS (llama.cpp + SNAC):    ~2.4 GB (pre-allocated, always running)
+# Kokoro TTS:                         ~0.5 GB
+# ZwZ-8B vLLM (this service):
+#   - Model weights (AWQ 4-bit):      ~5.5 GB
+#   - Vision encoder (BF16):          ~0.6 GB
+#   - CUDA graphs (piecewise):        ~3.0 GB (reduced context → smaller graphs)
+#   - KV cache (FP8, 32K context):    ~5.0 GB
+#   - Subtotal:                       ~14.1 GB
+# Total GPU usage:                    ~17.0 GB
+# Headroom:                            ~7.5 GB
 #
-# Memory breakdown per service:
-#   - Model weights (AWQ 4-bit): ~5.5 GB
-#   - Vision encoder (BF16):     ~0.6 GB
-#   - CUDA overhead:             ~1.0 GB
-#   - KV cache (FP8):            ~2.5 GB → ~10K tokens
-#   - Configured at 4K context (tight but works)
-#
-# === ZwZ-8B vs Qwen3-VL-Thinking ===
-# ZwZ-8B has NO reasoning mode (no deepseek_r1 parser)
-# Optimized for fine-grained visual perception
-# Same tool calling via hermes parser
+# IF OOM: reduce gpu-memory-utilization to 0.60 or add --enforce-eager
+# IF STILL OOM: reduce max-model-len to 16384
 
 volumes:
-  hf-cache-shared:
+  hf-cache:
+  vllm-compile-cache:
