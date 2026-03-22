@@ -127,8 +127,11 @@ PROMPTS = {
 # ---------------------------------------------------------------------------
 
 PRESETS = {
+    # --- Calibrated for AWQ Q4 (2026-03-21) ---
+    # Adjusted from official Qwen BF16 recommendations:
+    # temp 1.0→0.7 (Q4 stability), pp 2.0→1.5 (language mixing), rp 1.05-1.1 (anti-bleed)
     "qwen-think-general": {
-        "temperature": 1.0, "top_p": 0.95, "presence_penalty": 1.5,
+        "temperature": 0.7, "top_p": 0.95, "presence_penalty": 1.5,
         "extra_body": {"top_k": 20, "chat_template_kwargs": {"enable_thinking": True}},
     },
     "qwen-think-code": {
@@ -136,20 +139,27 @@ PRESETS = {
         "extra_body": {"top_k": 20, "chat_template_kwargs": {"enable_thinking": True}},
     },
     "qwen-think-reason": {
-        "temperature": 1.0, "top_p": 1.0, "presence_penalty": 2.0,
+        "temperature": 1.0, "top_p": 1.0, "presence_penalty": 1.5,
         "extra_body": {"top_k": 40, "chat_template_kwargs": {"enable_thinking": True}},
     },
-    "qwen-instruct-general": {
+    "qwen-instruct": {
         "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5,
-        "extra_body": {"top_k": 20, "chat_template_kwargs": {"enable_thinking": False}},
+        "extra_body": {"top_k": 20, "repetition_penalty": 1.1, "min_p": 0.01,
+                       "chat_template_kwargs": {"enable_thinking": False}},
     },
+    "qwen-fast": {
+        "temperature": 0.6, "top_p": 0.85, "presence_penalty": 0.5,
+        "extra_body": {"top_k": 20, "repetition_penalty": 1.1, "min_p": 0.01,
+                       "chat_template_kwargs": {"enable_thinking": False}},
+    },
+    # --- Baselines for comparison ---
     "baseline-low-temp": {
         "temperature": 0.1, "top_p": 1.0, "presence_penalty": 0.0,
         "extra_body": {},
     },
-    "baseline-roo-current": {
-        "temperature": 0.6, "top_p": 1.0, "presence_penalty": 0.0,
-        "extra_body": {},
+    "baseline-server-defaults": {
+        "temperature": 0.6, "top_p": 0.95, "presence_penalty": 0.0,
+        "extra_body": {"top_k": 20},
     },
 }
 

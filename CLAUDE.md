@@ -404,22 +404,36 @@ Repetition and language mixing (Chinese in French responses) observed in Roo Cod
 | **Instruct Reasoning** | 1.0 | 1.0 | 40 | **2.0** | 1.0 |
 
 ### vLLM Server-Side Defaults
-`--override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'`
-Note: `presence_penalty` is NOT supported by `--override-generation-config` — must be injected client-side.
+`--override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'`
+Supported params in `--override-generation-config` (`vllm/config/model.py:1395-1402`): `repetition_penalty`, `temperature`, `top_k`, `top_p`, `min_p`, `max_new_tokens`.
+Note: `presence_penalty` is NOT in this list — default is 0.0, must be injected client-side or via OWUI wrappers.
 
-### OWUI Model Wrappers (Sampling Injection)
-4 preset models created in OWUI that inject missing sampling params for clients that don't support them (like Roo):
+### OWUI Model Wrappers (Sampling Injection, calibrated 2026-03-21)
+8 models in OWUI inject sampling params optimized for AWQ Q4 quantization. Adjusted from official Qwen BF16 recommendations based on Reddit community feedback + local benchmarks.
 
-| OWUI Model | Usage | temp | pp | top_p | top_k | thinking |
-|------------|-------|:----:|:--:|:-----:|:-----:|:--------:|
-| `Qwen_think` | General | 1.0 | 1.5 | 0.95 | 20 | yes |
-| `Qwen_think-code` | Coding | 0.6 | 0.0 | 0.95 | 20 | yes |
-| `Qwen_think-reason` | Reasoning | 1.0 | 2.0 | 1.0 | 40 | yes |
-| `Qwen_instruct` | Chat | 0.7 | 1.5 | 0.8 | 20 | no |
+**Qwen_* preset wrappers:**
+
+| OWUI Model | Usage | temp | pp | rp | top_p | top_k | min_p | thinking |
+|------------|-------|:----:|:--:|:--:|:-----:|:-----:|:-----:|:--------:|
+| `Qwen_think` | General | 0.7 | 1.5 | — | 0.95 | 20 | — | yes |
+| `Qwen_think-code` | Coding | 0.6 | 0.0 | — | 0.95 | 20 | — | yes |
+| `Qwen_think-reason` | Reasoning | 1.0 | 1.5 | — | 1.0 | 40 | — | yes |
+| `Qwen_instruct` | Chat | 0.7 | 1.5 | 1.1 | 0.8 | 20 | 0.01 | no |
+
+**Original model wrappers (aligned 2026-03-21):**
+
+| OWUI Model | Usage | temp | pp | rp | top_p | top_k | min_p | thinking |
+|------------|-------|:----:|:--:|:--:|:-----:|:-----:|:-----:|:--------:|
+| `Local.qwen3.5-35b-a3b` | Chat général | 0.7 | 1.5 | — | 0.95 | 20 | — | yes |
+| `Local.qwen3.5-35b-a3b-fast` | Bots/FAQ | 0.6 | 0.5 | 1.1 | 0.85 | 20 | 0.01 | no |
+| `expert-analyste` | Analyse/coding | 0.6 | 0.0 | — | 0.95 | 20 | — | yes |
+| `redacteur-technique` | Rédaction | 0.8 | 0.5 | 1.05 | 0.95 | 20 | 0.05 | yes |
+
+**Q4 adjustments vs official BF16**: temp 1.0→0.7 (thinking general), pp 2.0→1.5 (reasoning, language mixing risk), rp 1.05-1.1 (anti "reasoning bleed-through"), min_p 0.01-0.05 (quantization artifact filter).
 
 **OWUI endpoint for Roo**: `https://open-webui.myia.io/api` (NOT /v1)
 **API**: `POST /api/v1/models/model/update` to modify params (full replace, not partial)
-**Mechanism**: `params` + `custom_params` deep-merged into request body. `ModelParams` uses `extra="allow"`.
+**Mechanism**: `params` (native: temp, top_p, min_p, pp, fp) + `custom_params` (top_k, rp, chat_template_kwargs) deep-merged into request body. `ModelParams` uses `extra="allow"`.
 
 ### Repetition Benchmark Results (2026-03-08, AWQ 4-bit)
 
@@ -446,25 +460,26 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-03-18)
+## Current State (2026-03-21)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
-  - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20)
+  - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
   - ✅ Middleware DISABLED (removed 2026-03-13, was temporary for sampling investigation)
   - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
 - **GPU 2**: ZwZ-8B on port 5001 — solo mode (gpu-util 0.88, 128K ctx, CUDA graphs, keepalive sidecar)
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
+- **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
 - **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
   - Includes PR #28053 (idle crash fix), PR #34779 (reasoning parser fix)
   - Rollback reference: dev388 (Feb 23)
 - **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
-- **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers still exist but unused by Roo.
+- **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers exist for direct OWUI users only.
 - **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13)
 
 ## Related Resources
