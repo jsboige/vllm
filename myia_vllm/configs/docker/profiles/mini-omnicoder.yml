@@ -1,0 +1,138 @@
+# Docker Compose profile for OmniCoder-2-9B (Qwen3.5-9B VLM agentic coding finetune)
+# Replaces ZwZ-8B on GPU 2 — adds thinking + agentic coding while keeping vision
+#
+# Hardware: 1x RTX 4090 (24GB VRAM, dedicated)
+# Model: AWQ 4-bit quantization (~5-6GB) - CREATED VIA quantize_omnicoder2_9b.py
+# Source: https://huggingface.co/Tesslate/OmniCoder-2-9B
+#
+# ARCHITECTURE:
+#   - vLLM class: Qwen3_5ForConditionalGeneration (VLM backbone)
+#   - Hybrid attention: Gated Delta Networks + standard attention
+#   - Vision: Images, documents (vision encoder preserved in BF16)
+#   - Thinking: <think>...</think> reasoning chains
+#   - Tool calling: hermes parser (inherited from Qwen3.5)
+#   - Context: 262K native, configured at 131072 (VRAM constraint)
+#
+# vs ZwZ-8B:
+#   + Thinking mode (ZwZ has none)
+#   + Agentic coding specialization (425K trajectories, Terminal-Bench +76%)
+#   + Same VRAM footprint (~5-6GB AWQ 4-bit)
+#   = Vision capabilities (both VLM backbone)
+#   ? Vision quality TBD (ZwZ has specialized fine-grained perception training)
+#
+# DEPLOYMENT:
+#   1. Quantize: python myia_vllm/scripts/quantization/quantize_omnicoder2_9b.py
+#   2. Run:      docker compose -f myia_vllm/configs/docker/profiles/mini-omnicoder.yml --env-file myia_vllm/.env up -d
+#   3. Monitor:  docker logs -f myia_vllm-mini-omnicoder
+#   4. Rollback: docker compose -f ... down && docker compose -f .../mini-zwz.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-mini-omnicoder:
+    image: vllm/vllm-openai:nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f  # Mar 05 - includes PR #28053 idle crash fix
+    container_name: myia_vllm-mini-omnicoder
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MINI:-5001}
+      --model /models/OmniCoder-2-9B-AWQ-4bit
+      --served-model-name omnicoder-2-9b
+      --api-key ${VLLM_API_KEY_MINI}
+
+      --gpu-memory-utilization 0.88
+      --max-model-len 131072
+      --max-num-batched-tokens 32768
+      --kv-cache-dtype fp8
+      --dtype auto
+      --max-num-seqs 64
+
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --reasoning-parser qwen3
+      --enable-prefix-caching
+
+      --distributed-executor-backend mp
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+    ipc: host
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=8
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - d:/vllm/models:/models:ro
+      - hf-cache:/root/.cache/huggingface
+      - vllm-compile-cache-omnicoder:/root/.cache/vllm
+    working_dir: /app
+    ports:
+      - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MINI:-5001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # 5 minutes for model load + CUDA graph capture
+    restart: unless-stopped
+
+  # Keepalive sidecar: prevents idle CUDA worker state corruption
+  keepalive-omnicoder:
+    image: curlimages/curl:latest
+    container_name: myia_vllm-keepalive-omnicoder
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Keepalive started for OmniCoder-2-9B (interval: 120s)"
+        while true; do
+          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-mini-omnicoder:$${VLLM_PORT_MINI:-5001}/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MINI}" \
+            -d '{"model":"omnicoder-2-9b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
+          echo "$$(date '+%Y-%m-%d %H:%M:%S') OmniCoder keepalive: HTTP $$RESULT"
+          sleep 120
+        done
+    environment:
+      - VLLM_API_KEY_MINI=${VLLM_API_KEY_MINI}
+      - VLLM_PORT_MINI=${VLLM_PORT_MINI:-5001}
+    depends_on:
+      vllm-mini-omnicoder:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  vllm-compile-cache-omnicoder:  # Separate compile cache (different model kernels)
+
+# =====================================================================
+# DIFFERENCES FROM mini-zwz.yml
+# =====================================================================
+#
+# 1. --dtype auto (not half) — Qwen3.5 VLM needs auto for BF16 vision encoder
+# 2. --reasoning-parser qwen3 — OmniCoder has <think>...</think> mode (ZwZ does not)
+# 3. --override-generation-config added — coding defaults (temp 0.6, aligned with Qwen recommended)
+# 4. Separate compile cache volume (different model = different kernels)
+# 5. start_period 300s (vs 240s for ZwZ) — slightly larger model
+#
+# === KV CACHE BUDGET ===
+# gpu-memory-utilization=0.88 → 21.1 GB available
+# Model weights (AWQ 4-bit): ~5-6 GB
+# Vision encoder (BF16): ~0.6 GB
+# CUDA graphs overhead: ~4-6 GB
+# Available for KV cache: ~9-10 GB
+# At FP8 (28 KB/token): ~330K tokens theoretical
+# Configured at 131072 (128K) — well within budget
+#
+# === ROLLBACK TO ZwZ ===
+# docker compose -f myia_vllm/configs/docker/profiles/mini-omnicoder.yml down
+# docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
