@@ -1,0 +1,10 @@
+# Dockerfile for OmniCoder-9B (Qwen3.5-9B dense VLM)
+# Extends Mar 28 vLLM nightly with transformers 5.x for qwen3_5 model_type support
+#
+# The qwen3_5 (dense) model_type requires transformers >= 5.0
+# while the default vLLM nightly ships transformers 4.57.x
+# (qwen3_5_moe works on 4.57.x but qwen3_5 dense does not)
+
+FROM vllm/vllm-openai:nightly
+
+RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingface_hub>=0.30"

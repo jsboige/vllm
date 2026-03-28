@@ -47,7 +47,7 @@ class BenchResult:
     details: dict = field(default_factory=dict)
 
 
-# Model configuration
+# Model configuration (defaults, overridable via CLI)
 MODEL_CONFIG = {
     "name": "Qwen3-VL-8B-Thinking (mini-solo)",
     "url": "http://localhost:5001",
@@ -718,7 +718,21 @@ async def main():
     parser.add_argument("--concurrent-only", action="store_true", help="Only run concurrent tests")
     parser.add_argument("--requests", type=int, default=5, help="Requests for concurrent test")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed results")
+    parser.add_argument("--model-id", type=str, default=None, help="Model ID (e.g. omnicoder-9b)")
+    parser.add_argument("--model-name", type=str, default=None, help="Display name for the model")
+    parser.add_argument("--url", type=str, default=None, help="API base URL (e.g. http://localhost:5001)")
+    parser.add_argument("--api-key", type=str, default=None, help="API key (overrides VLLM_API_KEY_MINI env)")
     args = parser.parse_args()
+
+    # Override MODEL_CONFIG from CLI args
+    if args.model_id:
+        MODEL_CONFIG["model_id"] = args.model_id
+    if args.model_name:
+        MODEL_CONFIG["name"] = args.model_name
+    if args.url:
+        MODEL_CONFIG["url"] = args.url
+    if args.api_key:
+        MODEL_CONFIG["api_key"] = args.api_key
 
     print("=" * 70)
     print("VISION MODEL BENCHMARK SUITE")
