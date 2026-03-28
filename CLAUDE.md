@@ -144,15 +144,17 @@ RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingfa
 --skip-mm-profiling
 ```
 
-### Performance (Benchmark 2026-03-28)
+### Performance (Benchmark 2026-03-28, fresh compile cache)
 
 | Metric | OmniCoder-9B | ZwZ-8B (previous) |
 |--------|:---:|:---:|
-| Vision tok/s | 78-89 | 90-118 |
-| Concurrent 5 text | 266 tok/s agg | N/A |
-| Tool call latency | 7.7s | N/A (hermes) |
-| Tool cycle (call+result) | 11.5s | N/A |
+| Decode tok/s | **96-107** | 90-118 |
+| Vision tok/s | **90-105** | 90-118 |
+| Concurrent 5 text | **293 tok/s agg** | N/A |
+| Tool call latency | **1.09s** | N/A (hermes) |
 | Thinking mode | Yes | No |
+
+**CRITICAL**: torch.compile cache corruption causes 10-15x slowdown (7-10 tok/s instead of 90-107). Fix: `docker volume rm profiles_vllm-compile-cache-omnicoder` and restart. Fresh compile takes ~150s.
 
 ### Quality Benchmarks (2026-03-28, vs ZwZ-8B)
 
@@ -544,8 +546,8 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
   - Custom Dockerfile: vLLM nightly Mar 28 + transformers 5.x (Qwen3.5 dense needs it)
   - gpu-util 0.85, 128K ctx, FP8 KV, CUDA graphs, keepalive sidecar
   - `--tool-call-parser qwen3_coder` (NOT hermes — XML format)
-  - Vision 78-89 tok/s, tool call 7.7s, MME 1258.5, MMStar 58.5%
-  - **Performance anomaly under investigation**: pure text decode drops to 7-10 tok/s (vs 78-89 tok/s vision)
+  - Decode 96-107 tok/s, tool call 1.09s, MME 1258.5, MMStar 58.5%
+  - **torch.compile cache can corrupt** → 10-15x slowdown. Fix: delete volume + restart (fresh compile ~150s)
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
 - **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
