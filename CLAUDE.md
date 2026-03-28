@@ -89,13 +89,14 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
 | **medium-qwen35-moe** | **0,1** | **5002** | **Qwen3.5-35B-A3B-AWQ** | **medium-qwen35-moe.yml** |
-| **mini-zwz** | **2** | **5001** | **ZwZ-8B-AWQ-4bit** | **mini-zwz.yml** (gpu-util 0.88, 128K ctx) |
+| **mini-omnicoder** | **2** | **5001** | **OmniCoder-9B-AWQ-4bit** | **mini-omnicoder.yml** (gpu-util 0.85, 128K ctx) |
 | kokoro-tts | 2 | 8880 | Kokoro TTS (67 voices) | myia-open-webui compose |
+| mini-zwz | 2 | 5001 | ZwZ-8B-AWQ-4bit | mini-zwz.yml (replaced by OmniCoder) |
 | medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | medium-glm.yml (legacy) |
 | medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
 | mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
 
-GPUs 0,1 are on faster PCIe bus. GPU 2 runs ZwZ-8B solo (gpu-util 0.88, 128K ctx) + Kokoro TTS (0.5 GB).
+GPUs 0,1 are on faster PCIe bus. GPU 2 runs OmniCoder-9B (gpu-util 0.85, 128K ctx) + Kokoro TTS (0.5 GB).
 
 ### Environment Variables
 
@@ -106,11 +107,80 @@ Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - `VLLM_PORT_GLM` - Medium model port (default: 5002, shared by GLM/Qwen3.5)
 - `VLLM_MODEL_ZWZ` - ZwZ-8B model path (default: `./models/ZwZ-8B-AWQ-4bit`)
 
-## ZwZ-8B Deployment (Default Vision Model)
+## OmniCoder-9B Deployment (Current GPU 2 Model)
 
 ### Model Overview
 
-**ZwZ-8B** ([inclusionAI/ZwZ-8B](https://huggingface.co/inclusionAI/ZwZ-8B)) is the **default vision model** on GPU 2 (port 5001) since 2026-02-16. A Qwen3-VL-8B-Instruct finetune specialized for fine-grained visual perception. Key features:
+**OmniCoder-9B** ([Tesslate/OmniCoder-9B](https://huggingface.co/Tesslate/OmniCoder-9B)) is the **current model** on GPU 2 (port 5001) since 2026-03-28. A Qwen3.5-9B finetune specialized for agentic coding. Key features:
+- **Architecture**: Qwen3.5-9B dense, hybrid Gated Delta Networks + standard attention
+- **Training**: 425K+ agentic coding trajectories (Claude Opus, GPT-5.3, Gemini 3.1 Pro)
+- **Thinking mode**: `<think>...</think>` reasoning chains
+- **Vision**: Images, documents (vision encoder preserved in BF16)
+- **Tool calling**: `qwen3_coder` parser (XML format: `<function=name><parameter=key>value</parameter>`)
+- **Context**: 262K native, configured at 131072 (VRAM constraint)
+- **License**: Apache 2.0
+- **Quantization**: AWQ 4-bit from [cyankiwi/OmniCoder-9B-AWQ-4bit](https://huggingface.co/cyankiwi/OmniCoder-9B-AWQ-4bit)
+
+### Custom Dockerfile Required
+
+Qwen3.5 dense models use `model_type: qwen3_5` and `TokenizersBackend`, which require `transformers >= 5.0`. vLLM nightly ships `transformers 4.57.6`. Custom `Dockerfile.omnicoder` adds the layer:
+```dockerfile
+FROM vllm/vllm-openai:nightly
+RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingface_hub>=0.30"
+```
+
+### Key vLLM Flags
+```yaml
+--model cyankiwi/OmniCoder-9B-AWQ-4bit
+--served-model-name omnicoder-9b
+--gpu-memory-utilization 0.85          # 0.88 OOM with Kokoro TTS on same GPU
+--max-model-len 131072
+--kv-cache-dtype fp8
+--dtype auto                           # MUST be auto for BF16 vision encoder
+--tool-call-parser qwen3_coder         # XML format, NOT hermes
+--reasoning-parser qwen3
+--trust-remote-code
+--enable-prefix-caching
+--skip-mm-profiling
+```
+
+### Performance (Benchmark 2026-03-28)
+
+| Metric | OmniCoder-9B | ZwZ-8B (previous) |
+|--------|:---:|:---:|
+| Vision tok/s | 78-89 | 90-118 |
+| Concurrent 5 text | 266 tok/s agg | N/A |
+| Tool call latency | 7.7s | N/A (hermes) |
+| Tool cycle (call+result) | 11.5s | N/A |
+| Thinking mode | Yes | No |
+
+### Quality Benchmarks (2026-03-28, vs ZwZ-8B)
+
+| Benchmark | OmniCoder-9B | ZwZ-8B | Delta |
+|-----------|:---:|:---:|:---:|
+| **MME Total** | **1258.5** | 1248.1 | **+10.4** |
+| MME Perception | 907.8 | 889.5 | +18.3 |
+| MME Cognition | 350.7 | 358.6 | -7.9 |
+| **MMStar** | 58.5% | **63.0%** | -4.5 pts |
+| OCR | **97.5%** | 82.5% | **+15 pts** |
+| code_reasoning | 87.5% | **95.0%** | -7.5 pts |
+
+### Deployment
+
+```powershell
+docker compose -f myia_vllm/configs/docker/profiles/mini-omnicoder.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-mini-omnicoder
+
+# Rollback to ZwZ-8B
+docker compose -f myia_vllm/configs/docker/profiles/mini-omnicoder.yml down
+docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
+```
+
+## ZwZ-8B (Replaced by OmniCoder-9B)
+
+### Model Overview
+
+**ZwZ-8B** ([inclusionAI/ZwZ-8B](https://huggingface.co/inclusionAI/ZwZ-8B)) was the vision model on GPU 2 (port 5001) from 2026-02-16 to 2026-03-28. Replaced by OmniCoder-9B. A Qwen3-VL-8B-Instruct finetune specialized for fine-grained visual perception. Key features:
 - **Single-pass inference**: No iterative zooming like "Thinking-with-Images" methods
 - **Region-to-Image Distillation**: Trained with Qwen3-VL-235B and GLM-4.5V as teachers
 - **Training data**: 74K VQA samples from inclusionAI/ZwZ-RL-VQA
@@ -460,7 +530,7 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-03-21)
+## Current State (2026-03-28)
 
 - **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
   - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
@@ -470,13 +540,18 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
   - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
   - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
   - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
-- **GPU 2**: ZwZ-8B on port 5001 — solo mode (gpu-util 0.88, 128K ctx, CUDA graphs, keepalive sidecar)
+- **GPU 2**: OmniCoder-9B on port 5001 — **deployed 2026-03-28** (replaces ZwZ-8B)
+  - Custom Dockerfile: vLLM nightly Mar 28 + transformers 5.x (Qwen3.5 dense needs it)
+  - gpu-util 0.85, 128K ctx, FP8 KV, CUDA graphs, keepalive sidecar
+  - `--tool-call-parser qwen3_coder` (NOT hermes — XML format)
+  - Vision 78-89 tok/s, tool call 7.7s, MME 1258.5, MMStar 58.5%
+  - **Performance anomaly under investigation**: pure text decode drops to 7-10 tok/s (vs 78-89 tok/s vision)
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
 - **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
-- **vLLM version**: nightly `d106bf39` (Mar 05, `nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f`)
-  - Includes PR #28053 (idle crash fix), PR #34779 (reasoning parser fix)
-  - Rollback reference: dev388 (Feb 23)
+- **vLLM versions**:
+  - GPUs 0,1 (Qwen3.5 MoE): nightly `d106bf39` (Mar 05)
+  - GPU 2 (OmniCoder): nightly Mar 28 (`0.18.1rc1.dev208+g148a5c122`) + transformers 5.4.0
 - **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
 - **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers exist for direct OWUI users only.
