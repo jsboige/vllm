@@ -32,7 +32,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile.omnicoder
-    image: vllm-omnicoder:latest  # vLLM nightly Mar 28 + transformers 5.x for qwen3_5 dense
+    image: vllm-omnicoder:latest  # vLLM nightly Apr 04 (v0.19.0) + transformers 5.x for qwen3_5 dense
     container_name: myia_vllm-mini-omnicoder
     command: >
       --host 0.0.0.0
@@ -70,6 +70,8 @@ services:
               capabilities: [gpu]
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=2
+      - CUDA_VISIBLE_DEVICES=2
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=8
       - VLLM_MARLIN_USE_ATOMIC_ADD=1

@@ -27,7 +27,7 @@
 
 services:
   vllm-medium-qwen35-moe:
-    image: vllm/vllm-openai:nightly-d106bf39f56cdc59d08a84094c0de41a0be9ad0f  # Mar 05 - includes PR #28053 idle crash fix
+    image: vllm/vllm-openai:nightly-93726b2a1c766a27f10ad7c3f709ffbacb94bcf9  # Apr 04 - v0.19.0, GDN perf fix PR #38981
     container_name: myia_vllm-medium-qwen35-moe
     command: >
       --host 0.0.0.0
@@ -66,6 +66,8 @@ services:
               capabilities: [gpu]
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
