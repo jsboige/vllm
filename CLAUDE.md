@@ -551,13 +551,13 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
 - **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
 - **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
-- **vLLM versions**:
-  - GPUs 0,1 (Qwen3.5 MoE): nightly `d106bf39` (Mar 05)
-  - GPU 2 (OmniCoder): nightly Mar 28 (`0.18.1rc1.dev208+g148a5c122`) + transformers 5.4.0
+- **vLLM versions** (updated 2026-04-05):
+  - GPUs 0,1 (Qwen3.5 MoE): nightly `93726b2a1` (Apr 04, v0.19.1) — GDN perf fix PR #38981
+  - GPU 2 (OmniCoder): nightly Apr 04 (v0.19.1) + transformers 5.5.0
 - **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
 - **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers exist for direct OWUI users only.
-- **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13)
+- **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13), Qwen3.5-27B-Claude-Opus-Distilled-v2 AWQ (2026-04-05: 56 tok/s decode -36%, tool calling broken with qwen3_coder, concurrent -53%, KV cache 106K vs 324K)
 
 ## Related Resources
 
