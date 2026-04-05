@@ -8,7 +8,6 @@
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 
 import os
-from typing import Optional
 
 import torch
 
@@ -19,11 +18,12 @@ BT_LIST = [8, 16, 32, 64, 128]
 USE_DEFAULT_FLA_NORM = int(os.getenv("USE_DEFAULT_FLA_NORM", "0"))
 
 
-@triton.autotune(configs=[
-    triton.Config({}, num_warps=num_warps)
-    for num_warps in [1, 2, 4, 8, 16, 32]
-],
-                 key=['D'])
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=num_warps) for num_warps in [1, 2, 4, 8, 16, 32]
+    ],
+    key=["D"],
+)
 @triton.jit
 def l2norm_fwd_kernel1(
     x,
@@ -47,11 +47,14 @@ def l2norm_fwd_kernel1(
     tl.store(y + cols, b_y, mask=mask)
 
 
-@triton.autotune(configs=[
-    triton.Config({'BT': BT}, num_warps=num_warps)
-    for num_warps in [1, 2, 4, 8, 16] for BT in BT_LIST
-],
-                 key=['D'])
+@triton.autotune(
+    configs=[
+        triton.Config({"BT": BT}, num_warps=num_warps)
+        for num_warps in [1, 2, 4, 8, 16]
+        for BT in BT_LIST
+    ],
+    key=["D"],
+)
 @triton.jit(do_not_specialize=["NB"])
 def l2norm_fwd_kernel(
     x,
@@ -73,21 +76,25 @@ def l2norm_fwd_kernel(
 
 
 @triton.jit
-def l2norm_fwd_kernel2(X, Y, eps, M, N: tl.constexpr, MBLOCK: tl.constexpr):
+def l2norm_fwd_kernel2(
+    X, Y, eps, M, N: tl.constexpr, BD: tl.constexpr, MBLOCK: tl.constexpr
+):
     xoffset = tl.program_id(0) * MBLOCK
     row_idx = xoffset + tl.arange(0, MBLOCK)[:, None]
     xmask = row_idx < M
-    rindex = tl.arange(0, N)[None, :]
-    xs = tl.load(X + (rindex + N * row_idx), xmask).to(tl.float32)
-    square = tl.broadcast_to(xs * xs, [MBLOCK, N])
+    rindex = tl.arange(0, BD)[None, :]
+    cmask = rindex < N
+    mask = xmask & cmask
+    xs = tl.load(X + (rindex + N * row_idx), mask, other=0.0).to(tl.float32)
+    square = tl.broadcast_to(xs * xs, [MBLOCK, BD])
     square_sum = tl.sum(tl.where(xmask, square, 0), 1)[:, None]
     rsqrt = tl.rsqrt(square_sum + eps)
-    tl.store(Y + (rindex + N * row_idx), xs * rsqrt, xmask)
+    tl.store(Y + (rindex + N * row_idx), xs * rsqrt, mask)
 
 
-def l2norm_fwd(x: torch.Tensor,
-               eps: float = 1e-6,
-               output_dtype: Optional[torch.dtype] = None):
+def l2norm_fwd(
+    x: torch.Tensor, eps: float = 1e-6, output_dtype: torch.dtype | None = None
+):
     x_shape_og = x.shape
     x = x.view(-1, x.shape[-1])
     # allocate output
@@ -107,12 +114,13 @@ def l2norm_fwd(x: torch.Tensor,
     if not USE_DEFAULT_FLA_NORM:
         MBLOCK = 32
         # M, N = x.shape
-        l2norm_fwd_kernel2[(triton.cdiv(T, MBLOCK), )](
+        l2norm_fwd_kernel2[(triton.cdiv(T, MBLOCK),)](
             x,
             y,
             eps,
             T,
             D,
+            BD,
             MBLOCK,
         )
     else:
@@ -120,7 +128,7 @@ def l2norm_fwd(x: torch.Tensor,
             NB = triton.cdiv(T, 2048)
 
             def grid(meta):
-                return (triton.cdiv(T, meta['BT']), )
+                return (triton.cdiv(T, meta["BT"]),)
 
             l2norm_fwd_kernel[grid](
                 x,
@@ -132,7 +140,7 @@ def l2norm_fwd(x: torch.Tensor,
                 BD=BD,
             )
         else:
-            l2norm_fwd_kernel1[(T, )](
+            l2norm_fwd_kernel1[(T,)](
                 x,
                 y,
                 eps=eps,

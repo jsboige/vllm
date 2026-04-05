@@ -3,6 +3,7 @@
 
 import pytest
 import torch.nn.functional as F
+import transformers.utils
 from PIL import Image
 
 from vllm.assets.base import get_vllm_public_assets
@@ -12,6 +13,12 @@ from ....conftest import IMAGE_ASSETS, HfRunner, PromptImageInput, VllmRunner
 from ....utils import large_gpu_test
 from ...utils import check_embeddings_close
 
+# BC for method that was deleted in Transformers v5.
+# Only needed for generating the HF reference.
+transformers.utils.is_flash_attn_greater_or_equal_2_10 = (
+    lambda: transformers.utils.is_flash_attn_greater_or_equal("2.1.0")
+)
+
 HF_TEXT_PROMPTS = [
     # T -> X
     "Find me an everyday image that matches the given caption: The label of the object is stop sign",  # noqa: E501
@@ -19,14 +26,14 @@ HF_TEXT_PROMPTS = [
     "Retrieve an image of this caption: cherry blossom",
 ]
 
-HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts({
-    # T + I -> X
-    "stop_sign":
-    "<|image_1|> Select the portion of the image that isolates the object of the given label: The label of the object is stop sign",  # noqa: E501
-    # I -> X
-    "cherry_blossom":
-    "<|image_1|> Represent the given image for classification",  # noqa: E501
-})
+HF_IMAGE_PROMPTS = IMAGE_ASSETS.prompts(
+    {
+        # T + I -> X
+        "stop_sign": "<|image_1|> Select the portion of the image that isolates the object of the given label: The label of the object is stop sign",  # noqa: E501
+        # I -> X
+        "cherry_blossom": "<|image_1|> Represent the given image for classification",  # noqa: E501
+    }
+)
 
 MODELS = ["TIGER-Lab/VLM2Vec-Full"]
 
@@ -44,14 +51,14 @@ def _run_test(
     # vLLM needs a fresh new process without cuda initialization.
     # if we run HF first, the cuda initialization will be done and it
     # will hurt multiprocessing backend with fork method (the default method).
-    with vllm_runner(model, runner="pooling", dtype=dtype,
-                     enforce_eager=True) as vllm_model:
+    with vllm_runner(
+        model, runner="pooling", dtype=dtype, enforce_eager=True
+    ) as vllm_model:
         vllm_outputs = vllm_model.embed(input_texts, images=input_images)
 
     # use eager mode for hf runner, since phi3_v didn't work with flash_attn
     hf_model_kwargs = {"_attn_implementation": "eager"}
-    with hf_runner(model, dtype=dtype,
-                   model_kwargs=hf_model_kwargs) as hf_model:
+    with hf_runner(model, dtype=dtype, model_kwargs=hf_model_kwargs) as hf_model:
         all_inputs = hf_model.get_inputs(input_texts, images=input_images)
 
         all_outputs = []
@@ -114,18 +121,21 @@ def test_models_image(
     dtype: str,
 ) -> None:
     input_texts_images = [
-        (text, asset.pil_image)
-        for text, asset in zip(HF_IMAGE_PROMPTS, image_assets)
+        (text, asset.pil_image) for text, asset in zip(HF_IMAGE_PROMPTS, image_assets)
     ]
     # add cases for special_tokens
-    input_texts_images.append((
-        "\n<s><|user|>\n <|image_1|>\n\t <s>"
-        "Represent the given image for classification<|end|>"
-        "\n<|assistant|>\n",
-        Image.open(
-            get_vllm_public_assets(filename="cherry_blossom.jpg",
-                                   s3_prefix=VLM_IMAGES_DIR)),
-    ))
+    input_texts_images.append(
+        (
+            "\n<s><|user|>\n <|image_1|>\n\t <s>"
+            "Represent the given image for classification<|end|>"
+            "\n<|assistant|>\n",
+            Image.open(
+                get_vllm_public_assets(
+                    filename="cherry_blossom.jpg", s3_prefix=VLM_IMAGES_DIR
+                )
+            ),
+        )
+    )
     input_texts = [text for text, _ in input_texts_images]
     input_images = [image for _, image in input_texts_images]
 
