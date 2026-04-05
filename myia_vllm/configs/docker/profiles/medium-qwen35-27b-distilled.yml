@@ -1,0 +1,126 @@
+# Docker Compose profile for Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2 (AWQ 4-bit)
+# EXPERIMENTAL — benchmarking against Qwen3.5-35B-A3B MoE on 2x RTX 4090
+#
+# Hardware: 2x RTX 4090 (48GB VRAM) - GPUs 0,1
+# Model: AWQ 4-bit quantization (~21GB) from QuantTrio
+# Source: https://huggingface.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2
+# Quantized: https://huggingface.co/QuantTrio/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-AWQ
+#
+# ARCHITECTURE:
+#   - Base: Qwen3.5-27B (dense, 27B active per token)
+#   - Hybrid attention: Gated DeltaNet + Gated Attention (64 layers, 3:1 ratio)
+#   - Vision: Images, videos, documents (vision encoder preserved)
+#   - Thinking: <think>...</think> (Claude 4.6 Opus distilled reasoning)
+#   - Tool calling: qwen3_coder parser
+#   - Context: 262K native, configured at 131072 (conservative for first test)
+#   - Distillation: 14K Claude 4.6 Opus reasoning trajectories (v2: -24% CoT, +31.6% efficiency)
+#
+# vs Qwen3.5-35B-A3B MoE (current):
+#   + Claude Opus reasoning distillation (better reasoning quality expected)
+#   + 27B active params vs 3B (9x more compute per token)
+#   + HumanEval 96.91%, better tool calling stability
+#   - Expected ~2-3x slower decode (33-45 tok/s vs 88 tok/s)
+#   - MMLU-Pro -7.2% (general knowledge regression from SFT)
+#   = Vision, thinking, tool calling all preserved
+#
+# DEPLOYMENT:
+#   1. Stop MoE:  docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml down
+#   2. Build:     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-27b-distilled.yml build
+#   3. Run:       docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-27b-distilled.yml --env-file myia_vllm/.env up -d
+#   4. Monitor:   docker logs -f myia_vllm-medium-qwen35-27b-distilled
+#   5. Benchmark: python myia_vllm/scripts/testing/benchmark_current_models.py --model medium
+#   6. Rollback:  docker compose -f .../medium-qwen35-27b-distilled.yml down && docker compose -f .../medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-medium-qwen35-27b-distilled:
+    build:
+      context: ..
+      dockerfile: Dockerfile.omnicoder  # Reuse: adds transformers 5.x needed for qwen3_5 model_type
+    image: vllm-qwen35-27b-distilled:latest
+    container_name: myia_vllm-medium-qwen35-27b-distilled
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model QuantTrio/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-AWQ
+      --served-model-name qwen3.5-27b-distilled
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.85
+      --max-model-len 131072
+      --kv-cache-dtype fp8
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 64
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+
+      --trust-remote-code
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - OMP_NUM_THREADS=4
+    volumes:
+      - d:/vllm/models:/models:ro
+      - hf-cache:/root/.cache/huggingface
+      - vllm-compile-cache-27b-distilled:/root/.cache/vllm
+    working_dir: /app
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 minutes: first download (~21GB) + compile + CUDA graphs
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  vllm-compile-cache-27b-distilled:  # Separate compile cache (different model kernels)
+
+# =====================================================================
+# NOTES
+# =====================================================================
+#
+# === DIFFERENCES FROM medium-qwen35-moe.yml ===
+# 1. Dense model (no --enable-expert-parallel, no VLLM_USE_FLASHINFER_MOE_FP16)
+# 2. Custom image (needs transformers >= 5.0 for qwen3_5 model_type)
+# 3. max-model-len 131072 (conservative, vs 262144 for MoE)
+# 4. --trust-remote-code (may be needed for distilled model)
+# 5. Separate compile cache volume
+# 6. start_period 900s (first download + larger compile for 27B dense)
+#
+# === GPU MEMORY BUDGET (estimated) ===
+# Model weights (AWQ 4-bit): ~21 GB total / 2 GPUs = ~10.5 GB/GPU
+# Vision encoder (BF16): ~1-2 GB (if preserved in quant)
+# CUDA graphs overhead: ~4-6 GB/GPU
+# Available for KV cache: ~3-5 GB/GPU
+# Note: 27B dense has more KV heads than 3B-active MoE, so KV per token is higher
+# May need to reduce max-model-len if OOM. Try 65536 if 131072 fails.
+#
+# === ROLLBACK TO MoE ===
+# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-27b-distilled.yml down
+# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
