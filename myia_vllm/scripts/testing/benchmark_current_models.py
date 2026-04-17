@@ -3,7 +3,7 @@
 Benchmark suite for current deployed models.
 
 Tests both deployed vLLM models:
-  - Qwen3.5-35B-A3B MoE (GPUs 0,1, port 5002)
+  - Qwen3.6-35B-A3B MoE (GPUs 0,1, port 5002)
   - OmniCoder-9B (GPU 2, port 5001)
 
 Measures: decode speed, TTFT, tool calling, concurrent throughput, vision.
@@ -68,9 +68,9 @@ class Result:
 
 MODELS = {
     "medium": ModelConfig(
-        name="Qwen3.5-35B-A3B MoE",
+        name="Qwen3.6-35B-A3B MoE",
         url=f"http://localhost:{os.environ.get('VLLM_PORT_MEDIUM', '5002')}",
-        model_id="qwen3.5-35b-a3b",
+        model_id="qwen3.6-35b-a3b",
         api_key=os.environ.get("VLLM_API_KEY_MEDIUM", ""),
         supports_vision=True,
         supports_thinking=True,

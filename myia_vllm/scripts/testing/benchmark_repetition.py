@@ -485,7 +485,7 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark repetition in LLM responses")
     parser.add_argument("--api-url", default=os.environ.get("VLLM_API_URL", "http://localhost:5002/v1"),
                         help="vLLM API base URL")
-    parser.add_argument("--model", default="qwen3.5-35b-a3b", help="Model name")
+    parser.add_argument("--model", default="qwen3.6-35b-a3b", help="Model name")
     parser.add_argument("--api-key", default=os.environ.get("VLLM_API_KEY_MEDIUM", ""),
                         help="API key")
     parser.add_argument("--preset", choices=list(PRESETS.keys()),

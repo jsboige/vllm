@@ -40,13 +40,13 @@ except ImportError:
 # Model configurations
 MODELS = {
     "qwen": {
-        "name": "Qwen3.5-35B-A3B",
+        "name": "Qwen3.6-35B-A3B",
         "url": "http://localhost:5002/v1/chat/completions",
-        "model": "qwen3.5-35b-a3b",
+        "model": "qwen3.6-35b-a3b",
         "api_key_env": "VLLM_API_KEY_MEDIUM",
-        "container": "myia_vllm-medium-qwen35-moe",
-        "compose_file": "d:/vllm/myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml",
-        "service": "vllm-medium-qwen35-moe",
+        "container": "myia_vllm-medium-qwen36-moe",
+        "compose_file": "d:/vllm/myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml",
+        "service": "vllm-medium-qwen36-moe",
     },
     "zwz": {
         "name": "ZwZ-8B",

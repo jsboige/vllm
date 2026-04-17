@@ -12,7 +12,7 @@ Benchmarks:
 Usage:
   python -m myia_vllm.qwen3_benchmark.benchmarks.lmms_quality \
     --benchmarks gsm8k ifeval \
-    --model qwen3.5-35b-a3b \
+    --model qwen3.6-35b-a3b \
     --base-url http://localhost:5002/v1 \
     --output-dir ./myia_vllm/qwen3_benchmark/lmms_results
 """
@@ -818,7 +818,7 @@ def main():
     parser.add_argument("--benchmarks", nargs="+", default=["gsm8k", "ifeval"],
                         choices=list(BENCHMARKS.keys()),
                         help="Benchmarks to run")
-    parser.add_argument("--model", default="qwen3.5-35b-a3b", help="Model name")
+    parser.add_argument("--model", default="qwen3.6-35b-a3b", help="Model name")
     parser.add_argument("--base-url", default="http://localhost:5002/v1", help="vLLM API base URL")
     parser.add_argument("--api-key", default=None, help="API key (or OPENAI_API_KEY env var)")
     parser.add_argument("--output-dir", default="./myia_vllm/qwen3_benchmark/lmms_results",

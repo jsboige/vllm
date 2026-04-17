@@ -1,4 +1,4 @@
-"""Quick test: streaming thinking on Qwen3.5 with reasoning parser."""
+"""Quick test: streaming thinking on Qwen3.6 with reasoning parser."""
 import os, sys, requests, json
 
 # Load env
@@ -21,7 +21,7 @@ print("=" * 60)
 print("TEST 1: Streaming, thinking ENABLED (default)")
 print("=" * 60)
 data = {
-    "model": "qwen3.5-35b-a3b",
+    "model": "qwen3.6-35b-a3b",
     "messages": [{"role": "user", "content": "What is 15 + 27?"}],
     "max_tokens": 300,
     "temperature": 0.7,
@@ -55,7 +55,7 @@ print("\n" + "=" * 60)
 print("TEST 2: Streaming, thinking DISABLED")
 print("=" * 60)
 data2 = {
-    "model": "qwen3.5-35b-a3b",
+    "model": "qwen3.6-35b-a3b",
     "messages": [{"role": "user", "content": "What is 15 + 27?"}],
     "max_tokens": 100,
     "temperature": 0.7,

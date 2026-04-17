@@ -15,9 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment**: Qwen3.5-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking) on GPUs 0,1 with TP=2+EP. GPU 2: ZwZ-8B (vision, 128K ctx, solo mode) + Kokoro TTS.
+**Current deployment**: Qwen3.6-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking+preserve_thinking) on GPUs 0,1 with TP=2+EP. GPU 2: OmniCoder-9B (vision, 131K ctx) + Kokoro TTS.
 
-**Previous deployment**: GLM-4.7-Flash (31B MoE, AWQ 4-bit) - replaced by Qwen3.5 (+80% decode, +37% concurrent, +vision, +10pts SWE-bench).
+**Previous deployment**: Qwen3.5-35B-A3B (35B MoE, AWQ 4-bit) - replaced by Qwen3.6 on 2026-04-17 (+24% decode, -48% tool call, +19% concurrent, SWE-bench +3.4pts, Terminal-Bench +11pts, NL2Repo +8.9pts).
 
 ## Key Directories
 
@@ -40,9 +40,9 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Start Qwen3.5-35B-A3B MoE (primary model, GPUs 0,1)
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
-docker logs -f myia_vllm-medium-qwen35-moe
+# Start Qwen3.6-35B-A3B MoE (primary model, GPUs 0,1)
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen36-moe
 
 # Start ZwZ-8B (vision, GPU 2 solo mode)
 docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
@@ -88,9 +88,10 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
-| **medium-qwen35-moe** | **0,1** | **5002** | **Qwen3.5-35B-A3B-AWQ** | **medium-qwen35-moe.yml** |
+| **medium-qwen36-moe** | **0,1** | **5002** | **Qwen3.6-35B-A3B-AWQ** | **medium-qwen36-moe.yml** |
 | **mini-omnicoder** | **2** | **5001** | **OmniCoder-9B-AWQ-4bit** | **mini-omnicoder.yml** (gpu-util 0.85, 128K ctx) |
 | kokoro-tts | 2 | 8880 | Kokoro TTS (67 voices) | myia-open-webui compose |
+| medium-qwen35-moe | 0,1 | 5002 | Qwen3.5-35B-A3B-AWQ | archived 2026-04-17 (replaced by 3.6) |
 | mini-zwz | 2 | 5001 | ZwZ-8B-AWQ-4bit | mini-zwz.yml (replaced by OmniCoder) |
 | medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | medium-glm.yml (legacy) |
 | medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
@@ -103,8 +104,8 @@ GPUs 0,1 are on faster PCIe bus. GPU 2 runs OmniCoder-9B (gpu-util 0.85, 128K ct
 Configuration via `myia_vllm/.env` (not tracked) based on `.env.example`:
 - `HUGGING_FACE_HUB_TOKEN` - Required for model downloads
 - `VLLM_API_KEY_*` - API keys per service
-- `VLLM_MODEL_QWEN35_MOE` - Qwen3.5 MoE model (default: `cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit`)
-- `VLLM_PORT_GLM` - Medium model port (default: 5002, shared by GLM/Qwen3.5)
+- `VLLM_MODEL_QWEN36_MOE` - Qwen3.6 MoE model (default: `cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit`)
+- `VLLM_PORT_GLM` - Medium model port (default: 5002, shared by all medium profiles)
 - `VLLM_MODEL_ZWZ` - ZwZ-8B model path (default: `./models/ZwZ-8B-AWQ-4bit`)
 
 ## OmniCoder-9B Deployment (Current GPU 2 Model)
@@ -255,45 +256,47 @@ docker logs -f myia_vllm-mini-zwz
 
 7. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
 
-## Qwen3.5-35B-A3B Deployment (Current)
+## Qwen3.6-35B-A3B Deployment (Current)
 
 ### Model Specifications
-- **Architecture**: 35B MoE with 3B active parameters per token (256 experts, 9 active: 8 routed + 1 shared)
-- **Attention**: Hybrid GatedDeltaNet (linear, fixed state) + Gated Attention (standard KV cache)
+- **Architecture**: 35B MoE with 3B active parameters per token (256 experts, 9 active: 8 routed + 1 shared, 40 layers)
+- **Attention**: Hybrid GatedDeltaNet (30 layers, linear fixed state) + Gated Attention (10 layers, standard KV cache)
 - **Vision**: Images, videos, documents (vision encoder preserved in BF16)
 - **Thinking**: `<think>...</think>` modulation via `chat_template_kwargs`
-- **VRAM**: ~12 GiB per GPU with AWQ 4-bit + TP=2
-- **KV cache**: ~335K tokens at 0.85 GPU util with FP8 KV cache (was 438K at 0.92, reduced for Marlin MoE stability)
+- **NEW in 3.6**: `preserve_thinking: True` retains reasoning across multi-turn conversations — **ENABLED BY DEFAULT SERVER-SIDE** via `--default-chat-template-kwargs`
+- **VRAM**: ~11 GiB per GPU with AWQ 4-bit + TP=2
+- **KV cache**: ~322K tokens at 0.85 GPU util with FP8 KV cache
 - **Context window**: 262K native (YaRN extensible to 1M), configured at 262K (full native)
-- **Quantization**: AWQ 4-bit (compressed-tensors format) with Marlin MoE kernels
-- **Model source**: [cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
-- **vLLM class**: `Qwen3_5MoeForConditionalGeneration`
+- **Quantization**: AWQ 4-bit (compressed-tensors/pack-quantized, group_size=32) with Marlin MoE kernels
+- **Model source**: [cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit](https://huggingface.co/cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit)
+- **vLLM class**: `Qwen3_5MoeForConditionalGeneration` (same class as 3.5 — HF config reports this)
 - **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
-- **No custom Dockerfile needed** — uses official `vllm/vllm-openai:nightly` (pinned to Feb 23 commit)
+- **Image**: `vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670` (Apr 06 nightly, v0.19.1.dev45+gf6983f01d — proven stable; Apr 15/16 nightlies have init-time bugs)
 
 ### Deployment
 
 ```powershell
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen35-moe.yml --env-file myia_vllm/.env up -d
-docker logs -f myia_vllm-medium-qwen35-moe
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen36-moe
 ```
 
 ### Key vLLM Flags
 ```yaml
---model cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit
---served-model-name qwen3.5-35b-a3b
+--model cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+--served-model-name qwen3.6-35b-a3b
 --tensor-parallel-size 2
 --enable-expert-parallel          # EP=2: 128/256 experts per GPU
 --gpu-memory-utilization 0.85      # 0.92/0.88 OOM: Marlin MoE needs 852-994 MiB variable temp allocs
 --max-model-len 262144            # Full native 262K context
---kv-cache-dtype fp8              # FP8 KV: 373K tokens (2x vs auto)
+--kv-cache-dtype fp8              # FP8 KV: 322K tokens (2x vs auto)
 --dtype auto                      # MUST be auto (not half) for vision encoder BF16 compat
 --max-num-batched-tokens 32768
 --max-num-seqs 64
 --enable-prefix-caching
---tool-call-parser qwen3_coder    # Qwen3.5 function calling
+--tool-call-parser qwen3_coder    # Qwen3.6 function calling (XML format)
 --reasoning-parser qwen3          # <think>...</think> extraction
 --distributed-executor-backend mp
+--default-chat-template-kwargs '{"preserve_thinking":true}'  # Server-side default: multi-turn thinking retention
 --limit-mm-per-prompt '{"image":4,"video":0}'
 --mm-processor-kwargs '{"max_pixels":774000}'
 --skip-mm-profiling               # Required: avoids dtype mismatch during profiling
@@ -304,91 +307,68 @@ docker logs -f myia_vllm-medium-qwen35-moe
 VLLM_MARLIN_USE_ATOMIC_ADD=1      # Optimized Marlin kernel accumulation
 VLLM_USE_DEEP_GEMM=0              # Not needed for AWQ
 OMP_NUM_THREADS=4                 # CPU parallelism for scheduling
-VLLM_USE_FLASHINFER_MOE_FP16=1   # CRITICAL for MoE performance
+VLLM_USE_FLASHINFER_MOE_FP16=1    # CRITICAL for MoE performance
 ```
 
 ### Thinking Modulation
 To disable thinking per-request (clean, direct responses):
 ```json
 {
-  "model": "qwen3.5-35b-a3b",
+  "model": "qwen3.6-35b-a3b",
   "messages": [...],
   "chat_template_kwargs": {"enable_thinking": false}
 }
 ```
 **IMPORTANT**: `chat_template_kwargs` must be a **top-level** field in the request body, NOT inside `extra_body`.
 
-**Reasoning field**: With thinking enabled, the parser separates reasoning into the `reasoning` field (NOT `reasoning_content`, which is always `null`). Both streaming and non-streaming work correctly on pinned nightly (dev388, Feb 23). The `<think>` tag is injected by the chat template in the prompt; only `</think>` appears in generated output. OWUI needs adaptation to read `delta.reasoning` from SSE chunks (currently only parses `<think>` tags in `content`).
+**NEW `preserve_thinking` (Qwen3.6)**: Retains `<think>...</think>` blocks from assistant message history across turns — enables iterative reasoning without redo overhead. **Enabled by default server-side** via `--default-chat-template-kwargs '{"preserve_thinking":true}'` so ALL clients benefit automatically. To opt out per-request: `"chat_template_kwargs": {"preserve_thinking": false}`.
 
-### Performance (Benchmark 2026-02-25, FP8 KV, 262K context)
-**Note**: Benchmarked at 0.92 gpu-util. Production now runs at 0.85 (Marlin MoE stability fix). Speed impact is negligible since the bottleneck is compute, not memory.
+**Reasoning field**: With thinking enabled, the parser separates reasoning into the `reasoning` field (NOT `reasoning_content`, which is always `null`). Both streaming and non-streaming work correctly.
 
-| Metric | Qwen3.5-35B-A3B | GLM-4.7-Flash (previous) | Improvement |
+### Performance (Benchmark 2026-04-17, FP8 KV, 262K context, Apr 06 nightly)
+
+| Metric | Qwen3.6-35B-A3B | Qwen3.5-35B-A3B (previous) | Improvement |
 |--------|:---:|:---:|:---:|
-| Decode speed | **86.2 tok/s** | 56.0 tok/s | **+54%** |
-| Concurrent 5 users | **269.6 tok/s** | 197.2 tok/s | **+37%** |
-| 30K cold TTFT | 0.95s | 0.47s | -102% (MLA wins) |
-| 30K cached TTFT | 0.89s | 0.40s | -123% |
-| Tool calling | **893ms** | 1440ms | **-38%** |
-| Vision | **Yes** | No | New capability |
-| KV cache tokens | **335K** (0.85) | 222K | **+51%** |
-| Max context | **262K** | 128K | **+105%** |
-| SWE-bench | **69.2%** | 59.2% | **+10 pts** |
+| Decode speed | **107.0 tok/s** | 86.2 tok/s | **+24%** |
+| Thinking decode | **116.5 tok/s** | ~96 tok/s | **+21%** |
+| Concurrent 5 users | **369.4 tok/s** | 311.2 tok/s | **+19%** |
+| Tool calling | **0.47s** | 0.91s | **-48%** |
+| KV cache tokens | 322K (0.85) | 335K | -4% |
+| Context | 262K | 262K | = |
+| Vision | Yes | Yes | = |
+| Thinking | Yes + preserve | Yes | + preserve_thinking |
 
-Note: With auto KV (non-FP8), decode was faster (96-109 tok/s) but KV capacity was only 206K. FP8 KV trades ~15% decode speed for 2x KV capacity — the right tradeoff for multi-agent workloads.
-
-### Quality Benchmarks (2026-02-26, thinking disabled, custom benchmark script)
-
-| Benchmark | Qwen3.5-35B-A3B | Questions | Notes |
-|-----------|:---:|:---:|:---:|
-| **GSM8K** (math CoT 0-shot) | **88.0%** | 1319 | v2 answer extraction |
-| **IFEval** (instruction following) | **88.5%** strict | 541 | Simplified checker |
-| **MME** (vision Yes/No) | **1294.7** (91.0%) | 2374 | Perception 926.8, Cognition 367.9 |
-| **MMStar** (vision ABCD) | **53.2%** | 1500 | Hard multi-choice, 0 errors |
-
-### Vision Quality (vs ZwZ-8B, MME benchmark partial)
-
-| Category | Qwen3.5 MoE | ZwZ-8B | Delta |
-|----------|:---:|:---:|:---:|
-| OCR | **98%** | 82% | **+16 pts** |
-| artwork | **90%** | 83% | +7 pts |
-| position | **88%** | 80% | +8 pts |
-| celebrity | 93% | 91% | +2 pts |
-| commonsense | 88% | 84% | +4 pts |
-| code_reasoning | 95% | 95% | = |
-| color | 98% | 97% | = |
-| count | 90% | 90% | = |
-| numerical_calc | 90% | 90% | = |
-
-**Conclusion**: Qwen3.5 is significantly better than ZwZ-8B on perception tasks (OCR +16pts, artwork +7pts), while cognitive tasks are tied. ZwZ-8B is no longer needed as vision fallback — Qwen3.5 handles everything better.
-
-### Speed Performance (vs ZwZ-8B, manual tests)
-
-| Test | Qwen3.5 MoE (GPUs 0,1) | ZwZ-8B (GPU 2) | Quality |
-|------|:---:|:---:|:---:|
-| OCR | 43.8 tok/s | ~90 tok/s | Qwen3.5 better |
-| Diagram understanding | 98.9 tok/s | 118.5 tok/s | Identical |
-| Math from image | 91.0 tok/s | 90.9 tok/s | Identical |
+**Upstream quality improvements (Qwen Team blog)**:
+- SWE-bench: 70.0% → **73.4%** (+3.4 pts)
+- Terminal-Bench: 40.5% → **51.5%** (+11 pts)
+- NL2Repo: 20.5% → **29.4%** (+8.9 pts)
+- QwenWebBench: 978 → **1397** (+43%)
 
 ### Comparison with All Previous Deployments
 
-| | **Qwen3.5-35B-A3B** | GLM-4.7-Flash | Qwen3-Coder-Next | Qwen3-32B-AWQ |
+| | **Qwen3.6-35B-A3B** | Qwen3.5-35B-A3B | GLM-4.7-Flash | Qwen3-Coder-Next |
 |---|---|---|---|---|
-| Single user tok/s | **86** | 55 | 5-6 | ~15 |
-| Concurrent tok/s | **270** | 216 | 21.6 | ~40 |
-| GPUs used | 2 | 2 | 3 | 2 |
-| Context | **262K** | 128K | 65K | 32K |
-| KV cache | **335K** | 222K | ~65K | ~32K |
-| SWE-bench | **69.2%** | 59.2% | 70.6% | N/A |
-| Vision | **Yes** | No | No | No |
+| Single user tok/s | **107** | 86 | 55 | 5-6 |
+| Concurrent tok/s | **369** | 270 | 216 | 21.6 |
+| Tool call | **0.47s** | 0.91s | 1.44s | N/A |
+| GPUs used | 2 | 2 | 2 | 3 |
+| Context | **262K** | 262K | 128K | 65K |
+| KV cache | 322K | 335K | 222K | ~65K |
+| SWE-bench | **73.4%** | 69.2% | 59.2% | 70.6% |
+| Vision | Yes | Yes | No | No |
+| preserve_thinking | **Yes** | No | No | No |
 
 ### Claude Code Integration
 
 Students connect via `ANTHROPIC_BASE_URL`:
 ```bash
 export ANTHROPIC_BASE_URL="https://api.medium.text-generation-webui.myia.io"
-claude --model qwen3.5-35b-a3b
+claude --model qwen3.6-35b-a3b
 ```
+
+## Qwen3.5-35B-A3B (Archived 2026-04-17)
+
+Replaced by Qwen3.6-35B-A3B on 2026-04-17. Profile archived to `myia_vllm/archives/2026/medium-qwen35-moe.yml.archived-2026-04-17`. Key specs: 35B MoE (3B active), hybrid GDN+Gated Attention, AWQ 4-bit, 86 tok/s decode, 269 tok/s concurrent, FP8 KV 335K tokens, SWE-bench 69.2%, IFEval 88.5%, GSM8K 88.0%, MME 1294.7, MMStar 53.2%. Tool parser: `qwen3_coder`, reasoning: `qwen3`. Image: `nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670` (Apr 06).
 
 ## GLM-4.7-Flash (Archived)
 
@@ -532,37 +512,43 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-03-28)
+## Current State (2026-04-17)
 
-- **Qwen3.5-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-02-25**
-  - ✅ FlashInfer MoE, Expert Parallelism, CUDA graphs, prefix caching
+- **Qwen3.6-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-04-17** (replaces Qwen3.5)
+  - ✅ FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
   - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
-  - ✅ Middleware DISABLED (removed 2026-03-13, was temporary for sampling investigation)
+  - ✅ **NEW: `--default-chat-template-kwargs '{"preserve_thinking":true}'`** — server-side default for multi-turn reasoning retention (works for clients that can't customize chat_template_kwargs)
   - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
-  - FP8 KV cache: **335K tokens** (0.85 gpu-util, reduced 0.92→0.88→0.85 for Marlin MoE stability)
-  - Performance: **117.8 tok/s decode, 311.2 tok/s concurrent, 910ms tool call** (Mar 05 nightly)
-- **GPU 2**: OmniCoder-9B on port 5001 — **deployed 2026-03-28** (replaces ZwZ-8B)
-  - Custom Dockerfile: vLLM nightly Mar 28 + transformers 5.x (Qwen3.5 dense needs it)
+  - FP8 KV cache: **322K tokens** (0.85 gpu-util)
+  - Performance: **107.0 tok/s decode, 369.4 tok/s concurrent, 0.47s tool call, 116.5 tok/s thinking** (Apr 06 nightly, benchmarked 2026-04-17)
+  - vLLM class: `Qwen3_5MoeForConditionalGeneration` (same code path as 3.5)
+  - Quality upgrades (upstream): SWE-bench 70→73.4, Terminal-Bench 40.5→51.5, NL2Repo 20.5→29.4, QwenWebBench 978→1397
+- **GPU 2**: OmniCoder-9B on port 5001 — **deployed 2026-03-28**
+  - Custom Dockerfile: vLLM nightly Mar 28 + transformers 5.x (Qwen3.5-dense arch needs it)
   - gpu-util 0.85, 128K ctx, FP8 KV, CUDA graphs, keepalive sidecar
   - `--tool-call-parser qwen3_coder` (NOT hermes — XML format)
   - Decode 96-107 tok/s, tool call 1.09s, MME 1258.5, MMStar 58.5%
   - **torch.compile cache can corrupt** → 10-15x slowdown. Fix: delete volume + restart (fresh compile ~150s)
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
 - **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
-- **SK Agent MCP server** uses Qwen3.5-35B-A3B (port 5002, updated 2026-02-25) with sampling params from config
-- **vLLM versions** (updated 2026-04-05):
-  - GPUs 0,1 (Qwen3.5 MoE): nightly `93726b2a1` (Apr 04, v0.19.1) — GDN perf fix PR #38981
+- **SK Agent MCP server** uses Qwen3.6-35B-A3B (port 5002, updated 2026-04-17)
+- **roo-state-manager condensation** uses Qwen3.6-35B-A3B via `OPENAI_CHAT_MODEL_ID` env var
+- **Roo "simple" apiConfig** uses Qwen3.6-35B-A3B (in `roo-extensions/roo-config/model-configs.json`)
+- **vLLM versions** (updated 2026-04-17):
+  - GPUs 0,1 (Qwen3.6 MoE): **pinned to nightly `f6983f01de2bf2e92ab468fa735ebac39cddd670`** (Apr 06, v0.19.1.dev45+gf6983f01d). Apr 15 nightly hangs at compile init; Apr 16 nightly has broken transformers import (missing pandas). Apr 04 nightly has shm_broadcast PyCFunction bug.
   - GPU 2 (OmniCoder): nightly Apr 04 (v0.19.1) + transformers 5.5.0
 - **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
 - **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers exist for direct OWUI users only.
 - **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13), Qwen3.5-27B-Claude-Opus-Distilled-v2 AWQ (2026-04-05: 56 tok/s decode -36%, tool calling broken with qwen3_coder, concurrent -53%, KV cache 106K vs 324K)
+- **DEFERRED**: TurboQuant migration (PR #39931 targets Qwen3.5 hybrid support, still in review as of 2026-04-16)
 
 ## Related Resources
 
 - [vLLM Documentation](https://docs.vllm.ai)
-- [Qwen3.5-35B-A3B-AWQ on HuggingFace](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit)
-- [Qwen3.5 Official Blog](https://qwenlm.github.io/blog/qwen3.5/)
+- [Qwen3.6-35B-A3B-AWQ on HuggingFace](https://huggingface.co/cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit)
+- [Qwen3.6 Official Blog](https://qwen.ai/blog?id=qwen3.6-35b-a3b)
+- [Qwen3.5-35B-A3B-AWQ on HuggingFace](https://huggingface.co/cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit) (previous model)
 - [GLM-4.7-Flash on HuggingFace](https://huggingface.co/zai-org/GLM-4.7-Flash) (legacy)
 - [Unsloth vLLM Guide](https://unsloth.ai/docs/basics/inference-and-deployment/vllm-guide)

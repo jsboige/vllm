@@ -27,7 +27,7 @@
 
 services:
   vllm-medium-qwen35-moe:
-    image: vllm/vllm-openai:nightly-93726b2a1c766a27f10ad7c3f709ffbacb94bcf9  # Apr 04 - v0.19.0, GDN perf fix PR #38981
+    image: vllm/vllm-openai:nightly  # Apr 06 - v0.19.1.dev45+gf6983f01d (was: Apr 04 93726b2a1)
     container_name: myia_vllm-medium-qwen35-moe
     command: >
       --host 0.0.0.0
@@ -149,8 +149,8 @@ services:
               echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
               docker restart $$CONTAINER
               FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 300s for recovery..."
-              sleep 300
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
               continue
             fi
           else
@@ -161,8 +161,8 @@ services:
               echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
               docker restart $$CONTAINER
               FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 300s for recovery..."
-              sleep 300
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
               continue
             fi
           fi

@@ -1,0 +1,243 @@
+# Docker Compose profile for Qwen3.6-35B-A3B (MoE, 256 experts, 3B active)
+# PRODUCTION — replaces Qwen3.5-35B-A3B on 2x RTX 4090 (deployed 2026-04-17)
+#
+# Hardware: 2x RTX 4090 (48GB VRAM) - GPUs 0,1
+# Model: AWQ 4-bit quantization (~22GB) from cyankiwi
+# Source: https://huggingface.co/cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+#
+# ARCHITECTURE (identical to 3.5 — HF config reports architectures=["Qwen3_5MoeForConditionalGeneration"]):
+#   - vLLM class: Qwen3_5MoeForConditionalGeneration (same code path as 3.5)
+#   - Hybrid attention: Gated DeltaNet (30 layers, linear fixed state) + Gated Attention (10 layers, standard KV)
+#   - MoE: 256 experts, 9 active per token (8 routed + 1 shared) = 3B active
+#   - Vision: Images, videos, documents (vision encoder preserved in BF16)
+#   - Thinking: <think>...</think> modulation (enable_thinking: True/False)
+#   - NEW: preserve_thinking: True option (multi-turn reasoning retention)
+#   - Context: 262K native (YaRN extensible to 1M), configured at 262K
+#
+# UPGRADES vs Qwen3.5-35B-A3B:
+#   + SWE-bench:      70.0% → 73.4% (+3.4 pts)
+#   + Terminal-Bench: 40.5% → 51.5% (+11 pts)
+#   + NL2Repo:        20.5% → 29.4% (+8.9 pts)
+#   + QwenWebBench:   978 → 1397 (+43%)
+#   + preserve_thinking: retain reasoning across turns (new API feature)
+#   + Agentic coding: better frontend workflows + repo-level reasoning
+#
+# DEPLOYMENT:
+#   Run: docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+#   Monitor: docker logs -f myia_vllm-medium-qwen36-moe
+
+services:
+  vllm-medium-qwen36-moe:
+    image: vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670  # Apr 06 nightly (v0.19.1.dev45+gf6983f01d, proven stable with Qwen3.5; fixes Apr 04 shm_broadcast PyCFunction bug; Apr 15/16 nightlies broken)
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gpu-memory-utilization 0.85
+      --max-model-len 262144
+      --kv-cache-dtype fp8
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 64
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=4
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
+      - VLLM_LOG_REQUESTS_CONTENT=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36:/root/.cache/vllm
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s  # 10 minutes: model download + CUDA graph capture
+    restart: unless-stopped
+
+  # Watchdog sidecar: keepalive + port-forwarding monitor + auto-restart
+  # Pings via host.docker.internal (Windows host) to detect Docker Desktop
+  # port forwarding loss. Restarts container via Docker socket on failure.
+  # Incident 2026-03-09: port forwarding silently broke, 7 agents blocked 12+ hours.
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-35B-A3B"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          # Primary: ping via HOST to detect port forwarding loss
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          # Fallback: ping via internal Docker network (detects engine crash)
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            # All good
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            # Port forwarding broken (internal OK but host fails)
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            # Both failing — engine is down
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36:  # Separate compile cache for Qwen3.6 (fresh build, avoid stale 3.5 kernels)
+
+# =====================================================================
+# TUNING NOTES
+# =====================================================================
+#
+# === SEPARATE COMPILE CACHE ===
+# Uses vllm-compile-cache-qwen36 (not shared with Qwen3.5) even though the
+# vLLM class is identical. Fresh cache avoids any stale/corrupted torch.compile
+# artifacts from 3.5 that could cause 10-15x slowdown (see OmniCoder incident 2026-03-29).
+# Fresh compile takes ~150s.
+#
+# === ARCHITECTURE NOTE ===
+# HF config reports architectures=["Qwen3_5MoeForConditionalGeneration"] and
+# model_type="qwen3_5_moe". vLLM therefore uses the same code path as Qwen3.5
+# (GatedDeltaNet + GQA + Marlin MoE). No new vLLM version required beyond what
+# already works with 3.5 — 0.19.1.dev45 (Apr 06 nightly) is sufficient.
+#
+# === GPU MEMORY BUDGET ===
+# Identical to Qwen3.5 (same architecture, same active params, same quantization):
+# Model weights (AWQ 4-bit): ~22 GB total / 2 GPUs = ~11 GB/GPU
+# CUDA graphs overhead: ~4-6 GB/GPU
+# Available for KV cache: ~4-6 GB/GPU
+# gpu-memory-utilization at 0.85 (Marlin MoE fused_marlin_moe.py needs 852-994 MiB
+# variable temp allocations for intermediate_cache13 that OOM at 0.88+)
+# Expected KV cache: ~335K tokens at 0.85 with FP8 KV (same as 3.5)
+#
+# === VISION ===
+# Vision encoder (ViT): preserved in BF16 by cyankiwi AWQ quantization
+# limit-mm-per-prompt: 4 images, no video (conserve memory for eval)
+# max_pixels: 774000 (~880x880 resolution per image)
+# For text-only mode: add --language-model-only to skip vision encoder
+#
+# === THINKING MODULATION ===
+# Reasoning enabled by default (--reasoning-parser qwen3)
+# To disable per-request, client sends at TOP LEVEL of request body:
+#   "chat_template_kwargs": { "enable_thinking": false }
+#
+# NEW in 3.6: preserve reasoning across multi-turn conversations.
+# DEFAULT SET SERVER-SIDE: --default-chat-template-kwargs '{"preserve_thinking":true}'
+# This means ALL clients benefit automatically (no need to send chat_template_kwargs).
+# To OVERRIDE per-request (force no retention):
+#   "chat_template_kwargs": { "preserve_thinking": false }
+# Retains <think>...</think> blocks from assistant history for iterative workflows.
+#
+# === FP8 KV CACHE (inherited from 3.5 tuning) ===
+# Qwen3.6 uses GatedDeltaNet + GQA (same as 3.5). FP8 KV cache works:
+# doubles capacity (~335K tokens vs ~206K at auto).
+# Trade-off: ~15% decode speed loss. Worth it for multi-agent workloads.
+#
+# === MTP (NOT USED) ===
+# Model card mentions qwen3_next_mtp speculative decoding, but AWQ 4-bit
+# historically gives 0% acceptance rate at low precision. Not worth the complexity.
+# Re-evaluate if/when BF16 weights deploy.
+#
+# === IF DOWNLOAD FAILS ===
+# cyankiwi model on HuggingFace. If unavailable:
+# 1. Download manually: huggingface-cli download cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+# 2. Mount as local: --model /models/Qwen3.6-35B-A3B-AWQ-4bit
