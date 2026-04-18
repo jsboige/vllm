@@ -1,0 +1,11 @@
+{
+  "benchmark": "gsm8k_cot_zeroshot",
+  "model": "qwen3.6-35b-a3b",
+  "total_questions": 1319,
+  "completed": 1319,
+  "correct": 1155,
+  "errors": 0,
+  "accuracy_pct": 87.57,
+  "elapsed_s": 68.2,
+  "avg_s_per_question": 68.23
+}

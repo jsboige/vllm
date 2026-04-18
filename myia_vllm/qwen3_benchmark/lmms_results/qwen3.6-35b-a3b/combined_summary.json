@@ -1,0 +1,86 @@
+{
+  "mme": {
+    "benchmark": "mme",
+    "model": "qwen3.6-35b-a3b",
+    "total_questions": 2374,
+    "completed": 2374,
+    "accuracy_pct": 89.3,
+    "perception_score": 918.6,
+    "cognition_score": 355.0,
+    "total_score": 1273.6,
+    "errors": 0,
+    "elapsed_s": 1716.9,
+    "categories": {
+      "code_reasoning": {
+        "accuracy": 92.5,
+        "correct": 37,
+        "total": 40
+      },
+      "artwork": {
+        "accuracy": 88.5,
+        "correct": 354,
+        "total": 400
+      },
+      "celebrity": {
+        "accuracy": 87.9,
+        "correct": 299,
+        "total": 340
+      },
+      "numerical_calculation": {
+        "accuracy": 92.5,
+        "correct": 37,
+        "total": 40
+      },
+      "text_translation": {
+        "accuracy": 80.0,
+        "correct": 32,
+        "total": 40
+      },
+      "count": {
+        "accuracy": 90.0,
+        "correct": 54,
+        "total": 60
+      },
+      "color": {
+        "accuracy": 100.0,
+        "correct": 60,
+        "total": 60
+      },
+      "commonsense_reasoning": {
+        "accuracy": 90.0,
+        "correct": 126,
+        "total": 140
+      },
+      "position": {
+        "accuracy": 91.7,
+        "correct": 55,
+        "total": 60
+      },
+      "OCR": {
+        "accuracy": 95.0,
+        "correct": 38,
+        "total": 40
+      },
+      "landmark": {
+        "accuracy": 90.5,
+        "correct": 362,
+        "total": 400
+      },
+      "scene": {
+        "accuracy": 82.8,
+        "correct": 331,
+        "total": 400
+      },
+      "existence": {
+        "accuracy": 98.3,
+        "correct": 59,
+        "total": 60
+      },
+      "posters": {
+        "accuracy": 93.9,
+        "correct": 276,
+        "total": 294
+      }
+    }
+  }
+}

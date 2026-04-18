@@ -1,0 +1,10 @@
+{
+  "benchmark": "mmstar",
+  "model": "qwen3.6-35b-a3b",
+  "total_questions": 1500,
+  "completed": 1500,
+  "correct": 836,
+  "errors": 0,
+  "accuracy_pct": 55.73,
+  "elapsed_s": 591.5
+}

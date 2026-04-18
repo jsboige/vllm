@@ -344,6 +344,27 @@ To disable thinking per-request (clean, direct responses):
 - NL2Repo: 20.5% → **29.4%** (+8.9 pts)
 - QwenWebBench: 978 → **1397** (+43%)
 
+### Locally Measured Quality (Benchmark 2026-04-18, AWQ 4-bit)
+
+| Benchmark | Qwen3.6-35B-A3B | Qwen3.5-35B-A3B | Δ |
+|---|:---:|:---:|:---:|
+| **GSM8K** (math, 1319 q) | 87.6% (1155/1319) | 88.0% (1132/1286) | -0.4 pts (3.6 has **0 errors** vs 33) |
+| **IFEval** (instruction, 541 q) | 87.6% (474/541) | 88.5% (476/541) | -0.9 pts (3.6 has **0 errors** vs 3) |
+| **MMStar** (vision, 1500 q) | **55.7%** (836/1500) | 53.2% (798/1500) | **+2.5 pts** |
+| **MME total** (vision, 2374 q) | 1273.6 | 1294.7 | -1.6% (text_translation -15 pts is the main contributor) |
+| MME perception | 918.6 | 926.8 | -0.9% |
+| MME cognition | 355.0 | 367.9 | -3.5% |
+| **Tool calling accuracy** (12 scenarios) | 83.3% (10/12, 2 intelligent refusals) | not measured | new |
+| **Repetition 4-gram** (instruct preset) | 0.028 | 0.042 | **-33%** (less repetition) |
+| **TTR diversity** (instruct preset) | 0.78 | 0.54 | **+44%** (more diverse) |
+
+**Key findings:**
+- Math/instruction quality essentially unchanged (-0.4 / -0.9 pts within statistical noise) but with **0 errors** vs 33+3 for 3.5 → much more reliable
+- Vision: MMStar gains 2.5 pts; MME slightly down (-1.6%) driven by `text_translation` regression (95% → 80%, single category, 40 questions only — investigate if multilingual workloads affected)
+- Repetition / lexical diversity meaningfully improved (instruct preset)
+- Tool calling: model shows judgment (refused to call `get_weather` when temp already given, refused `calculator` for `sqrt(144)`)
+- Upstream SWE-bench / Terminal-Bench / NL2Repo gains NOT yet locally verified — those require dedicated agent harnesses
+
 ### Comparison with All Previous Deployments
 
 | | **Qwen3.6-35B-A3B** | Qwen3.5-35B-A3B | GLM-4.7-Flash | Qwen3-Coder-Next |
@@ -354,7 +375,11 @@ To disable thinking per-request (clean, direct responses):
 | GPUs used | 2 | 2 | 2 | 3 |
 | Context | **262K** | 262K | 128K | 65K |
 | KV cache | 322K | 335K | 222K | ~65K |
-| SWE-bench | **73.4%** | 69.2% | 59.2% | 70.6% |
+| SWE-bench (upstream) | **73.4%** | 69.2% | 59.2% | 70.6% |
+| GSM8K (local AWQ) | 87.6% | 88.0% | n/a | n/a |
+| IFEval (local AWQ) | 87.6% | 88.5% | n/a | n/a |
+| MME total (local AWQ) | 1273.6 | 1294.7 | n/a | n/a |
+| MMStar (local AWQ) | **55.7%** | 53.2% | n/a | n/a |
 | Vision | Yes | Yes | No | No |
 | preserve_thinking | **Yes** | No | No | No |
 
