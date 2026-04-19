@@ -272,6 +272,7 @@ docker logs -f myia_vllm-mini-zwz
 - **vLLM class**: `Qwen3_5MoeForConditionalGeneration` (same class as 3.5 — HF config reports this)
 - **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
 - **Image**: `vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670` (Apr 06 nightly, v0.19.1.dev45+gf6983f01d — proven stable; Apr 15/16 nightlies have init-time bugs)
+- **Stability fix (2026-04-19)**: Added `--gdn-prefill-backend triton` after 8 crashes in 48h. Symptom: V1 multiproc deadlock — worker hangs in `shm_broadcast.py:755 acquire_read`, EngineCore dies after 3x 60s timeouts. Match upstream vLLM issues #37729, #36921, #35465 (all OPEN, no merged fix). Workaround forces Triton/FLA GDN prefill kernel and prevents the heuristic from picking FlashInfer (which triggers the deadlock under multimodal / long-context requests). Validated by 3 independent users on Qwen3.5/3.6 with identical stack. **Not an idle bug** — crashes happen with `num_running_reqs=1, step_counter=0` under active load.
 
 ### Deployment
 
@@ -286,6 +287,7 @@ docker logs -f myia_vllm-medium-qwen36-moe
 --served-model-name qwen3.6-35b-a3b
 --tensor-parallel-size 2
 --enable-expert-parallel          # EP=2: 128/256 experts per GPU
+--gdn-prefill-backend triton      # Workaround shm_broadcast deadlock (vLLM #37729, added 2026-04-19 after 8 crashes/48h)
 --gpu-memory-utilization 0.85      # 0.92/0.88 OOM: Marlin MoE needs 852-994 MiB variable temp allocs
 --max-model-len 262144            # Full native 262K context
 --kv-cache-dtype fp8              # FP8 KV: 322K tokens (2x vs auto)

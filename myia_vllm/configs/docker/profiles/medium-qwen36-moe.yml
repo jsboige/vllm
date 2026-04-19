@@ -39,6 +39,7 @@ services:
 
       --tensor-parallel-size 2
       --enable-expert-parallel
+      --gdn-prefill-backend triton
       --gpu-memory-utilization 0.85
       --max-model-len 262144
       --kv-cache-dtype fp8
@@ -231,6 +232,17 @@ volumes:
 # Qwen3.6 uses GatedDeltaNet + GQA (same as 3.5). FP8 KV cache works:
 # doubles capacity (~335K tokens vs ~206K at auto).
 # Trade-off: ~15% decode speed loss. Worth it for multi-agent workloads.
+#
+# === SHM_BROADCAST DEADLOCK WORKAROUND (added 2026-04-19) ===
+# --gdn-prefill-backend triton forces the Triton/FLA GDN prefill kernel and prevents
+# the V1 multiproc executor from dead-locking in shm_broadcast.acquire_read between
+# TP0/TP1. Default (None) lets the heuristic pick — can fall back to FlashInfer for
+# certain batch sizes / multimodal requests, which triggers the deadlock.
+# Reference issues (still OPEN as of 2026-04-19): vllm-project/vllm#37729, #36921, #35465.
+# Pattern observed locally: 8 crashes in 48h before the fix, all matching the upstream
+# signature (`shm_broadcast.py:681 No available shared memory broadcast block found in 60s`
+# → 3x consecutive 60s timeouts → EngineDeadError in shm_broadcast.py:755 acquire_read).
+# Workaround validated by 3 independent users on Qwen3.5/3.6 with identical stack.
 #
 # === MTP (NOT USED) ===
 # Model card mentions qwen3_next_mtp speculative decoding, but AWQ 4-bit
