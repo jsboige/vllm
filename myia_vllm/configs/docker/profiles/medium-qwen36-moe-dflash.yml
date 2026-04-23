@@ -1,0 +1,194 @@
+# Docker Compose profile for Qwen3.6-35B-A3B + DFlash speculative decoding
+# EVALUATION — A/B vs medium-qwen36-moe.yml baseline (deployed 2026-04-24)
+#
+# Differences vs baseline (medium-qwen36-moe.yml):
+#   + --speculative-config dflash with z-lab/Qwen3.6-35B-A3B-DFlash drafter
+#   + --attention-backend flash_attn (REQUIRED by DFlash; affects only the 10
+#     GQA layers of the hybrid model; the 30 GDN layers use Triton/FLA regardless)
+#   - --no-enable-flashinfer-autotune REMOVED (was defensive against shm_broadcast
+#     bug, no longer needed with patched image)
+#   - --kv-cache-dtype fp8 REMOVED — flash_attn backend rejects fp8 KV cache
+#     ("Selected backend FLASH_ATTN is not valid for this configuration. Reason:
+#     ['kv_cache_dtype not supported']"). Falls back to auto (BF16/FP16).
+#   - --max-model-len 262144 → 163840 (160K) for the bench — without fp8 KV the
+#     10 GQA layers consume 2x more memory per token, plus drafter eats ~1 GiB,
+#     plus spec_decode adds 6 padding layers wasting up to 60% KV memory. With
+#     262K, vLLM estimates max possible = 192720 tokens (KV cache exhausted).
+#     163840 leaves comfortable headroom for the bench. Production decision will
+#     depend on whether DFlash speedup justifies the context loss vs baseline 262K.
+#
+# Base architecture, image, ports, env, watchdog: identical to medium-qwen36-moe.yml
+# (image vllm-qwen36-shmpatched:nightly-f6983f01d-patched1 includes the
+# shm_broadcast.memory_fence patch — vllm-project/vllm#40303)
+#
+# DEPLOYMENT (A/B):
+#   Down baseline:  docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env down
+#   Up DFlash:      docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe-dflash.yml --env-file myia_vllm/.env up -d
+#   Monitor:        docker logs -f myia_vllm-medium-qwen36-moe
+#   Rollback:       docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe-dflash.yml --env-file myia_vllm/.env down
+#                   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+#
+# DRAFTER (z-lab/Qwen3.6-35B-A3B-DFlash):
+#   - 8-layer Qwen3 dense, BF16, ~0.5B params (~1 GB VRAM additional)
+#   - Block diffusion, block_size=16
+#   - target_layer_ids=[1,10,19,28,37] — taps these 5 layers of the 40-layer target
+#   - Pair: target Qwen3.6-35B-A3B-AWQ-4bit (independent quantization OK per
+#     vLLM get_draft_quant_config: drafters use their own quant config)
+#
+# EXPECTED (extrapolated from upstream B200 BF16 benchmarks):
+#   - Math/code tasks: 1.5-2.5x decode speedup (B200: 2.4-2.9x, AWQ degradation
+#     reduces drafter/target distribution match → expect 30% loss)
+#   - Chat/instruct: 1.1-1.5x speedup (B200: 1.4-1.7x)
+#   - Acceptance length: ~5-7 tokens / draft step (B200 reported)
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
+    image: vllm-qwen36-shmpatched:nightly-f6983f01d-patched1
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --gpu-memory-utilization 0.85
+      --max-model-len 163840
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 64
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+
+      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":15}'
+      --attention-backend flash_attn
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=4
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
+      - VLLM_LOG_REQUESTS_CONTENT=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-dflash:/root/.cache/vllm  # SEPARATE compile cache
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 min: model load + drafter load + flash_attn compile + CUDA graphs
+    restart: unless-stopped
+
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-35B-A3B + DFlash"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-dflash:  # Separate from baseline -- flash_attn backend compile is different

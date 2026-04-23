@@ -1,0 +1,44 @@
+[
+  {
+    "name": "code_short_nothink",
+    "prompt_tokens": 82,
+    "completion_tokens": 239,
+    "wall_s": 1.8184007999952883,
+    "tok_s": 131.43417006889752,
+    "drafts": 48,
+    "draft_tokens": 720,
+    "accepted": 192,
+    "accept_rate_pct": 26.666666666666668,
+    "accept_per_step": 4.0,
+    "first_chars": "```python\nfrom typing import List\n\n\ndef merge_intervals(intervals: List[List[int]]) -> List[List[int]]:\n    \"\"\"Merge overlapping intervals and return sorted non-overlapping intervals.\"\"\"\n    if not in",
+    "reasoning_first": ""
+  },
+  {
+    "name": "reason_medium_think",
+    "prompt_tokens": 69,
+    "completion_tokens": 800,
+    "wall_s": 3.543554400006542,
+    "tok_s": 225.7620201903837,
+    "drafts": 99,
+    "draft_tokens": 1485,
+    "accepted": 704,
+    "accept_rate_pct": 47.40740740740741,
+    "accept_per_step": 7.111111111111111,
+    "first_chars": "",
+    "reasoning_first": "Here's a thinking process:\n\n1.  **Understand the User's Request:**\n   - Three friends: Alice, Bob, Charlie\n   - Total marbles: 60\n   - Relationships:\n     - Alice has twice as many as Bob: A = 2B\n    "
+  },
+  {
+    "name": "code_long_nothink",
+    "prompt_tokens": 89,
+    "completion_tokens": 809,
+    "wall_s": 4.750676099996781,
+    "tok_s": 170.29155071223403,
+    "drafts": 136,
+    "draft_tokens": 2040,
+    "accepted": 674,
+    "accept_rate_pct": 33.03921568627451,
+    "accept_per_step": 4.955882352941177,
+    "first_chars": "```python\nfrom collections import OrderedDict\nfrom typing import Optional\n\n\nclass LRUCache:\n    \"\"\"Least Recently Used (LRU) Cache implementation using OrderedDict.\n    \n    Both get and put operation",
+    "reasoning_first": ""
+  }
+]
