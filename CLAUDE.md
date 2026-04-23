@@ -248,7 +248,9 @@ docker logs -f myia_vllm-mini-zwz
 
 3. **MLA backends on RTX 4090 don't support FP8 KV cache** - Use `--kv-cache-dtype auto` (not fp8). TRITON_MLA is the only working MLA backend on Ada Lovelace (SM89).
 
-4. **MTP speculative decoding doesn't work with AWQ 4-bit** - 0% acceptance rate at 4-bit precision. Only viable with FP8 or FP16 models.
+4. **MTP speculative decoding doesn't work with AWQ 4-bit** - 0% acceptance rate at 4-bit precision (tested on GLM-4.6-AWQ). MTP heads are part of the target model and get AWQ-quantized along with it; at 4-bit the auxiliary heads have insufficient capacity → noise predictions. **Only viable with FP8 or FP16 models.**
+
+   **DFlash speculative decoding is architecturally different** — drafter is a separate 0.5B BF16 model with its own quantization config (vLLM `get_draft_quant_config()`), independent of target's quantization. Block diffusion approach generates K candidates per step. **Compatibility with AWQ targets is plausible** (drafter is BF16, not affected by target's quant degradation) but **not yet locally validated** — see "DFlash Evaluation" section.
 
 5. **Use `qwen3_coder` tool parser for Qwen3.5** and `qwen3` reasoning parser. Legacy: `glm47`/`glm45` for GLM-4.7-Flash.
 
@@ -272,7 +274,7 @@ docker logs -f myia_vllm-mini-zwz
 - **vLLM class**: `Qwen3_5MoeForConditionalGeneration` (same class as 3.5 — HF config reports this)
 - **Engine**: V1 (async scheduling, piecewise CUDA graphs, automatic chunked prefill)
 - **Image**: `vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670` (Apr 06 nightly, v0.19.1.dev45+gf6983f01d — proven stable; Apr 15/16 nightlies have init-time bugs)
-- **Stability fix (2026-04-19)**: Added `--gdn-prefill-backend triton` after 8 crashes in 48h. Symptom: V1 multiproc deadlock — worker hangs in `shm_broadcast.py:755 acquire_read`, EngineCore dies after 3x 60s timeouts. Match upstream vLLM issues #37729, #36921, #35465 (all OPEN, no merged fix). Workaround forces Triton/FLA GDN prefill kernel and prevents the heuristic from picking FlashInfer (which triggers the deadlock under multimodal / long-context requests). Validated by 3 independent users on Qwen3.5/3.6 with identical stack. **Not an idle bug** — crashes happen with `num_running_reqs=1, step_counter=0` under active load.
+- **Stability investigation (2026-04-19)**: 9 crashes in 50h on Apr 06 nightly. **Real root cause**: `SystemError: PyCFunction with class but no METH_METHOD flag` at `shm_broadcast.py:72` in `with _memory_fence_lock:` (a vanilla `threading.Lock`). Same bug as our own [issue #35104](https://github.com/vllm-project/vllm/issues/35104) (filed Feb 2026 for GLM-4.7-Flash idle crashes), but now fires UNDER LOAD on Qwen3.6 — keepalive sidecar not enough. Surface symptom (`shm_broadcast.py:681 No available shared memory broadcast block found in 60 seconds` → 3x → `EngineDeadError`) **looks identical** to the FlashInfer GDN deadlock from #37729 / #36921 / #35465 but the actual stack trace shows a different bug. `memory_fence()` was added by PR #30407 (Dec 2025) and extended by PR #32022 (Jan 2026). **PR #28053 did NOT fix this** (only removed busy-loop in idle reader — memory note correction). **No upstream fix in flight** as of 2026-04-19; design (per-op `threading.Lock` acquire as memory barrier) is fragile under runtime C-extension loads. Mitigations applied: (1) `--gdn-prefill-backend triton` (kept defensively, doesn't fix the crash), (2) **`--no-enable-flashinfer-autotune`** added 2026-04-19 16:05 UTC — hypothesis: FlashInfer JIT autotune dlopens new `.so` mid-runtime → corrupts CPython `_thread.lock` descriptor. Watch 24-48h. NOTE: there is NO env var for autotune — only the CLI flag on KernelConfig (we tried `VLLM_USE_FLASHINFER_AUTOTUNE=0` first, vLLM reported "Unknown environment variable").
 
 ### Deployment
 

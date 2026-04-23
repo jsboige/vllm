@@ -28,7 +28,7 @@
 
 services:
   vllm-medium-qwen36-moe:
-    image: vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670  # Apr 06 nightly (v0.19.1.dev45+gf6983f01d, proven stable with Qwen3.5; fixes Apr 04 shm_broadcast PyCFunction bug; Apr 15/16 nightlies broken)
+    image: vllm-qwen36-shmpatched:nightly-f6983f01d-patched1  # 2026-04-19: custom build = Apr 06 nightly (v0.19.1.dev45+gf6983f01d) + patches/shm_broadcast.py (memory_fence uses libc sched_yield via ctypes instead of threading.Lock — fixes vllm-project/vllm#35104). Build: docker build -t vllm-qwen36-shmpatched:nightly-f6983f01d-patched1 -f Dockerfile.qwen36-shmpatched myia_vllm/configs/docker
     container_name: myia_vllm-medium-qwen36-moe
     command: >
       --host 0.0.0.0
@@ -40,6 +40,7 @@ services:
       --tensor-parallel-size 2
       --enable-expert-parallel
       --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
       --gpu-memory-utilization 0.85
       --max-model-len 262144
       --kv-cache-dtype fp8
@@ -233,16 +234,41 @@ volumes:
 # doubles capacity (~335K tokens vs ~206K at auto).
 # Trade-off: ~15% decode speed loss. Worth it for multi-agent workloads.
 #
-# === SHM_BROADCAST DEADLOCK WORKAROUND (added 2026-04-19) ===
-# --gdn-prefill-backend triton forces the Triton/FLA GDN prefill kernel and prevents
-# the V1 multiproc executor from dead-locking in shm_broadcast.acquire_read between
-# TP0/TP1. Default (None) lets the heuristic pick — can fall back to FlashInfer for
-# certain batch sizes / multimodal requests, which triggers the deadlock.
-# Reference issues (still OPEN as of 2026-04-19): vllm-project/vllm#37729, #36921, #35465.
-# Pattern observed locally: 8 crashes in 48h before the fix, all matching the upstream
-# signature (`shm_broadcast.py:681 No available shared memory broadcast block found in 60s`
-# → 3x consecutive 60s timeouts → EngineDeadError in shm_broadcast.py:755 acquire_read).
-# Workaround validated by 3 independent users on Qwen3.5/3.6 with identical stack.
+# === SHM_BROADCAST PyCFunction CRASH — REAL ROOT CAUSE (revised 2026-04-19) ===
+# Symptom: `SystemError: PyCFunction with class but no METH_METHOD flag` raised in
+# shm_broadcast.py:72 `with _memory_fence_lock:` — kills worker mid-request, the
+# other side hangs in shm_broadcast.acquire_read, EngineCore declares EngineDeadError
+# after 3x 60s timeouts. Surface symptom (`No available shared memory broadcast block
+# found in 60 seconds`) looks identical to the GDN/FlashInfer-prefill deadlocks
+# reported in #37729 / #36921 / #35465, but the actual stack trace shows the bug is
+# in `memory_fence()` (added by PR #30407 in Dec 2025, extended by PR #32022 in Jan
+# 2026). Same bug as our own issue #35104 (filed Feb 2026 for GLM-4.7-Flash idle
+# crashes), but now reproducible UNDER LOAD too — keepalive sidecar no longer enough.
+#
+# Mitigations applied (in order):
+#   --gdn-prefill-backend triton           : narrow FlashInfer surface (does NOT fix the
+#                                             crash but reduces one trigger site).
+#   --no-enable-flashinfer-autotune (CLI)  : disable FlashInfer JIT autotune (CLI flag on
+#                                             KernelConfig — there is NO env var, vLLM
+#                                             rejects VLLM_USE_FLASHINFER_AUTOTUNE=0).
+#                                             Result: doubled time-to-crash (25 → 49 min)
+#                                             but did NOT eliminate. Crash #10 at 14:56:55.
+#   --attention-backend TRITON_ATTN (CLI)  : ROLLED BACK 2026-04-19 17:17 UTC. Tried at
+#                                             17:05 — caused INIT-TIME HANG (TP1 worker
+#                                             went silent for 9 min after attention block
+#                                             size logged; EngineCore stuck in 9× shm_broadcast
+#                                             60s warnings). May be Triton autotune of
+#                                             attention kernels for 262K context, or our
+#                                             bug firing at init. Either way TRITON_ATTN
+#                                             is NOT viable for this config. Backend
+#                                             selection auto-falls-back to FLASHINFER.
+#                                             Next plan: build custom vLLM image with
+#                                             memory_fence() patched (replace threading.Lock
+#                                             with multiprocessing.Lock or os.sync()).
+#
+# 9 crashes observed in 50h on Apr 06 nightly (f6983f01d) BEFORE the autotune disable.
+# Tracking upstream at https://github.com/vllm-project/vllm/issues/35104 — bug is
+# inherent to memory_fence()'s design (per-op threading.Lock acquire as memory barrier).
 #
 # === MTP (NOT USED) ===
 # Model card mentions qwen3_next_mtp speculative decoding, but AWQ 4-bit

@@ -1,0 +1,18 @@
+# Custom vLLM image with patched shm_broadcast.memory_fence()
+# Workaround for vllm-project/vllm#35104 (PyCFunction descriptor corruption
+# under FlashInfer/Triton JIT autotune). See patches/shm_broadcast.py.
+#
+# Base: pinned Apr 06 2026 nightly (v0.19.1.dev45+gf6983f01d), the same
+# image we ran in production with the bug.
+FROM vllm/vllm-openai:nightly-f6983f01de2bf2e92ab468fa735ebac39cddd670
+
+# Replace shm_broadcast.py with the patched version.
+COPY patches/shm_broadcast.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py
+
+# Sanity check: byte-compile the patched file at build time so any syntax
+# error surfaces immediately rather than at first request.
+RUN python3 -c "import py_compile; py_compile.compile('/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py', doraise=True)"
+
+# Also verify the patch is actually in place.
+RUN python3 -c "from vllm.distributed.device_communicators import shm_broadcast; assert callable(shm_broadcast._memory_barrier), 'patched _memory_barrier not found'; print('PATCH VERIFIED:', shm_broadcast._memory_barrier)"
