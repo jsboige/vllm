@@ -1,0 +1,44 @@
+{
+  "configuration": "chunked_only_safe",
+  "timestamp": "20251022_032250",
+  "base_url": "http://localhost:5002",
+  "summary": {
+    "all_tests_passed": false,
+    "timestamp_end": "2025-10-22 03:22:59",
+    "total_duration_seconds": 9.04
+  },
+  "tests": {
+    "reasoning": {
+      "response": "<think>\nOkay, let's see. The riddle says: If 2+2=4 and 3+3=6, how much is 4+4? Hmm, at first glance, this seems straightforward. Normally, 4 plus 4 is 8, right? But wait, riddles often have a twist. Maybe there's a pattern here that I'm missing. Let me break it down.\n\nSo, the first part is 2+2=4. That",
+      "error": null,
+      "prompt": "Si 2+2=4 et 3+3=6, combien font 4+4?",
+      "contains_correct_answer": true,
+      "response_time_ms": 4005.33,
+      "status": "OK"
+    },
+    "kv_cache_benchmark": {
+      "acceleration": 1.0,
+      "error": null,
+      "expected_acceleration": 3.22,
+      "deviation_percent": 68.94,
+      "ttft_cache_miss_ms": 1054.61,
+      "status": "ÉCHEC",
+      "ttft_cache_hit_ms": 1049.61
+    },
+    "health_check": {
+      "error": null,
+      "response": "",
+      "status": "ÉCHEC"
+    },
+    "tool_calling": {
+      "tool_name": null,
+      "has_tool_call": false,
+      "error": null,
+      "correct_tool": false,
+      "response_time_ms": 2260.16,
+      "tool_arguments": null,
+      "correct_param": false,
+      "status": "ÉCHEC"
+    }
+  }
+}

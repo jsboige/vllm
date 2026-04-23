@@ -1,0 +1,44 @@
+{
+  "timestamp": "20251022_032144",
+  "tests": {
+    "tool_calling": {
+      "status": "ÉCHEC",
+      "has_tool_call": false,
+      "correct_param": false,
+      "error": "Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée. (localhost:8000)",
+      "tool_arguments": null,
+      "correct_tool": false,
+      "response_time_ms": 0,
+      "tool_name": null
+    },
+    "kv_cache_benchmark": {
+      "status": "ÉCHEC",
+      "deviation_percent": 0,
+      "error": "Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée. (localhost:8000)",
+      "ttft_cache_miss_ms": 0,
+      "ttft_cache_hit_ms": 0,
+      "acceleration": 0,
+      "expected_acceleration": 3.22
+    },
+    "health_check": {
+      "status": "ÉCHEC",
+      "response": null,
+      "error": "Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée. (localhost:8000)"
+    },
+    "reasoning": {
+      "status": "ÉCHEC",
+      "response_time_ms": 0,
+      "prompt": "Si 2+2=4 et 3+3=6, combien font 4+4?",
+      "error": "Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée. (localhost:8000)",
+      "contains_correct_answer": false,
+      "response": null
+    }
+  },
+  "base_url": "http://localhost:8000",
+  "summary": {
+    "total_duration_seconds": 16.61,
+    "timestamp_end": "2025-10-22 03:22:01",
+    "all_tests_passed": false
+  },
+  "configuration": "chunked_only_safe"
+}

@@ -1,0 +1,131 @@
+{
+  "model": "qwen3.6-35b-a3b",
+  "passed": 10,
+  "total": 12,
+  "accuracy_pct": 83.3,
+  "avg_latency_s": 1.009,
+  "results": [
+    {
+      "idx": 0,
+      "ok": true,
+      "lat": 0.897,
+      "expected": "get_weather",
+      "got": "get_weather",
+      "args": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "What's the weather in Paris today?"
+    },
+    {
+      "idx": 1,
+      "ok": true,
+      "lat": 0.556,
+      "expected": "search_web",
+      "got": "search_web",
+      "args": "{\"query\": \"latest vLLM release notes\", \"num_results\": 5}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Search the web for the latest vLLM release notes."
+    },
+    {
+      "idx": 2,
+      "ok": true,
+      "lat": 0.656,
+      "expected": "send_email",
+      "got": "send_email",
+      "args": "{\"to\": \"alice@example.com\", \"subject\": \"Hi\", \"body\": \"Hello\"}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Send an email to alice@example.com with subject 'Hi' and bod"
+    },
+    {
+      "idx": 3,
+      "ok": true,
+      "lat": 0.545,
+      "expected": "calculator",
+      "got": "calculator",
+      "args": "{\"expression\": \"17 * 23 + 5\"}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Compute 17 * 23 + 5"
+    },
+    {
+      "idx": 4,
+      "ok": false,
+      "lat": 0.691,
+      "expected": "get_weather",
+      "got": null,
+      "prompt": "It's 35 degrees in Madrid, is that hot?",
+      "reason": "no_tool_call"
+    },
+    {
+      "idx": 5,
+      "ok": true,
+      "lat": 0.507,
+      "expected": "search_web",
+      "got": "search_web",
+      "args": "{\"query\": \"quantum computing\", \"num_results\": 5}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Find me articles about quantum computing"
+    },
+    {
+      "idx": 6,
+      "ok": false,
+      "lat": 0.269,
+      "expected": "calculator",
+      "got": null,
+      "prompt": "What is the square root of 144?",
+      "reason": "no_tool_call"
+    },
+    {
+      "idx": 7,
+      "ok": true,
+      "lat": 1.028,
+      "expected": "send_email",
+      "got": "send_email",
+      "args": "{\"to\": \"bob@corp.io\", \"subject\": \"Meeting Time Change\", \"body\": \"Hi Bob,\\n\\nJust a quick note to let you know that the m",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Email bob@corp.io that the meeting is moved to 3pm"
+    },
+    {
+      "idx": 8,
+      "ok": true,
+      "lat": 0.19,
+      "expected": null,
+      "got": [],
+      "prompt": "What is the capital of France?"
+    },
+    {
+      "idx": 9,
+      "ok": true,
+      "lat": 5.711,
+      "expected": null,
+      "got": [],
+      "prompt": "Explain how photosynthesis works."
+    },
+    {
+      "idx": 10,
+      "ok": true,
+      "lat": 0.541,
+      "expected": "get_weather",
+      "got": "get_weather",
+      "args": "{\"location\": \"Tokyo\", \"unit\": \"fahrenheit\"}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Get the weather in Tokyo in fahrenheit"
+    },
+    {
+      "idx": 11,
+      "ok": true,
+      "lat": 0.512,
+      "expected": "search_web",
+      "got": "search_web",
+      "args": "{\"query\": \"rust async runtime\", \"num_results\": 10}",
+      "params_ok": true,
+      "missing": [],
+      "prompt": "Search for 'rust async runtime' and return 10 results"
+    }
+  ]
+}

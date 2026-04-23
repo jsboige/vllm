@@ -1,0 +1,32 @@
+{
+  "summary": {
+    "total_scenarios": 3,
+    "json_validity": 0,
+    "parsing_accuracy": 0,
+    "success_rate": 0,
+    "ttft_avg": 0
+  },
+  "test_date": "2025-10-22T21:12:55Z",
+  "config": "chunked_only_safe",
+  "tool_call_parser": "qwen3_xml",
+  "scenarios": [
+    {
+      "name": "Appel Simple - get_weather",
+      "error": "Response status code does not indicate success: 404 (Not Found).",
+      "scenario_id": 1,
+      "error_handling": "timeout_or_crash"
+    },
+    {
+      "name": "Appels Enchaînés - 3 fonctions",
+      "error": "Response status code does not indicate success: 404 (Not Found).",
+      "scenario_id": 2,
+      "error_handling": "timeout_or_crash"
+    },
+    {
+      "name": "Fonction Complexe - create_user",
+      "error": "Response status code does not indicate success: 404 (Not Found).",
+      "scenario_id": 3,
+      "error_handling": "timeout_or_crash"
+    }
+  ]
+}

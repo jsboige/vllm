@@ -1,0 +1,163 @@
+{
+  "recommendations_by_use_case": {
+    "complex_reasoning": {
+      "justification": "Latence initiale acceptable (~3s), throughput élevé (110 tok/s avec cache)",
+      "alternative": "optimized_balanced si contextes très longs (>100k tokens)",
+      "recommended_config": "chunked_only_safe"
+    },
+    "tool_calling": {
+      "justification": "Parser tool calling non fonctionnel avec config actuelle - investigation requise",
+      "alternative": "Tester avec parser hermes avant recommandation",
+      "recommended_config": "À VALIDER"
+    },
+    "conversational_agents": {
+      "justification": "Meilleure accélération (x3.22), TTFT HIT excellent (908ms), stabilité démontrée",
+      "alternative": "safe_conservative si stabilité maximale requise",
+      "recommended_config": "chunked_only_safe"
+    },
+    "production_generic": {
+      "justification": "Configuration CHAMPION validée - ratio performance/stabilité optimal",
+      "alternative": "safe_conservative pour environnements contraints",
+      "recommended_config": "chunked_only_safe"
+    }
+  },
+  "trade_offs": {
+    "acceleration_vs_complexity": "Désactiver prefix-caching simplifie config et améliore performances contre-intuitivement",
+    "latency_vs_stability": "chunked_only_safe offre le meilleur compromis avec x3.22 accélération et stabilité prouvée",
+    "throughput_vs_vram": "Configurations avec prefix-caching augmentent VRAM mais réduisent accélération"
+  },
+  "configurations": [
+    {
+      "description": "CHAMPION - Chunked prefill only, GPU 0.85",
+      "configuration": {
+        "prefix_caching": false,
+        "max_num_seqs": 32,
+        "chunked_prefill": true,
+        "gpu_memory": 0.85
+      },
+      "name": "chunked_only_safe",
+      "metadata": {
+        "issues": [],
+        "source": "PRODUCTION_VALIDATION_REPORT.md + OPTIMIZATION_GUIDE.md",
+        "test_date": "2025-10-22"
+      },
+      "metrics": {
+        "ttft_cache_hit_ms": 908.67,
+        "vram_used_pct": 74.9,
+        "tokens_per_sec_hit": 110,
+        "acceleration": 3.22,
+        "tokens_per_sec_miss": 34,
+        "success_rate": 100,
+        "stability": "STABLE",
+        "ttft_cache_miss_ms": 2928.82,
+        "vram_used_mb": 18400
+      }
+    },
+    {
+      "description": "BASELINE - No optimizations, GPU 0.85",
+      "configuration": {
+        "prefix_caching": false,
+        "max_num_seqs": 32,
+        "chunked_prefill": false,
+        "gpu_memory": 0.85
+      },
+      "name": "safe_conservative",
+      "metadata": {
+        "issues": [],
+        "source": "OPTIMIZATION_GUIDE.md (baseline reference)",
+        "test_date": "2025-10-21"
+      },
+      "metrics": {
+        "ttft_cache_hit_ms": 1981.25,
+        "vram_used_pct": 74.9,
+        "tokens_per_sec_hit": 50,
+        "acceleration": 1.59,
+        "tokens_per_sec_miss": 32,
+        "success_rate": 100,
+        "stability": "STABLE",
+        "ttft_cache_miss_ms": 3150.0,
+        "vram_used_mb": 18400
+      }
+    },
+    {
+      "description": "Both enabled, GPU 0.90",
+      "configuration": {
+        "prefix_caching": true,
+        "max_num_seqs": 32,
+        "chunked_prefill": true,
+        "gpu_memory": 0.9
+      },
+      "name": "optimized_balanced",
+      "metadata": {
+        "issues": [
+          "Métriques estimées - Re-test recommandé"
+        ],
+        "source": "Grid Search Mission 14 (validé mais métriques incomplètes)",
+        "test_date": "2025-10-21"
+      },
+      "metrics": {
+        "ttft_cache_hit_ms": 2200,
+        "vram_used_pct": 79.3,
+        "tokens_per_sec_hit": 45,
+        "acceleration": 1.45,
+        "tokens_per_sec_miss": 31,
+        "success_rate": 100,
+        "stability": "STABLE",
+        "ttft_cache_miss_ms": 3200,
+        "vram_used_mb": 19500
+      }
+    },
+    {
+      "description": "Both enabled, GPU 0.95, high seqs",
+      "configuration": {
+        "prefix_caching": true,
+        "max_num_seqs": 48,
+        "chunked_prefill": true,
+        "gpu_memory": 0.95
+      },
+      "name": "aggressive_cache",
+      "metadata": {
+        "issues": [
+          "Métriques estimées - Re-test recommandé",
+          "Risque OOM avec max_num_seqs=48"
+        ],
+        "source": "Grid Search Mission 14 (validé mais métriques incomplètes)",
+        "test_date": "2025-10-21"
+      },
+      "metrics": {
+        "ttft_cache_hit_ms": 2100,
+        "vram_used_pct": 87.5,
+        "tokens_per_sec_hit": 48,
+        "acceleration": 1.48,
+        "tokens_per_sec_miss": 32,
+        "success_rate": 100,
+        "stability": "STABLE",
+        "ttft_cache_miss_ms": 3100,
+        "vram_used_mb": 21500
+      }
+    }
+  ],
+  "comparative_statistics": {
+    "best_ttft_miss": "chunked_only_safe",
+    "acceleration_range": {
+      "min": 1.45,
+      "max": 3.22
+    },
+    "best_acceleration": "chunked_only_safe",
+    "lowest_vram": "chunked_only_safe",
+    "best_ttft_hit": "chunked_only_safe",
+    "ttft_miss_range_ms": {
+      "min": 2928.82,
+      "max": 3200.0
+    }
+  },
+  "metadata": {
+    "configurations_analyzed": 4,
+    "generation_date": "2025-10-22T23:34:59.1672526+02:00",
+    "source_documents": [
+      "myia_vllm/docs/PRODUCTION_VALIDATION_REPORT.md",
+      "myia_vllm/docs/OPTIMIZATION_GUIDE.md",
+      "myia_vllm/docs/SYNTHESIS_GRID_SEARCH_MISSIONS_20251021.md"
+    ]
+  }
+}

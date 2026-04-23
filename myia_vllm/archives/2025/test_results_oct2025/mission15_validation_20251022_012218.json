@@ -1,0 +1,44 @@
+{
+  "configuration": "chunked_only_safe",
+  "timestamp": "20251022_032227",
+  "base_url": "http://localhost:5002",
+  "summary": {
+    "timestamp_end": "2025-10-22 03:22:27",
+    "all_tests_passed": false,
+    "total_duration_seconds": 0.12
+  },
+  "tests": {
+    "kv_cache_benchmark": {
+      "ttft_cache_miss_ms": 0,
+      "error": "Response status code does not indicate success: 401 (Unauthorized).",
+      "status": "ÉCHEC",
+      "expected_acceleration": 3.22,
+      "acceleration": 0,
+      "ttft_cache_hit_ms": 0,
+      "deviation_percent": 0
+    },
+    "reasoning": {
+      "response_time_ms": 0,
+      "status": "ÉCHEC",
+      "error": "Response status code does not indicate success: 401 (Unauthorized).",
+      "contains_correct_answer": false,
+      "response": null,
+      "prompt": "Si 2+2=4 et 3+3=6, combien font 4+4?"
+    },
+    "tool_calling": {
+      "has_tool_call": false,
+      "error": "Response status code does not indicate success: 401 (Unauthorized).",
+      "correct_tool": false,
+      "correct_param": false,
+      "response_time_ms": 0,
+      "tool_arguments": null,
+      "tool_name": null,
+      "status": "ÉCHEC"
+    },
+    "health_check": {
+      "status": "ÉCHEC",
+      "response": "",
+      "error": null
+    }
+  }
+}

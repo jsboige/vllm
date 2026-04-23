@@ -1,0 +1,136 @@
+[
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "health",
+    "success": true,
+    "latency_s": 0.0121,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "decode_512",
+    "success": true,
+    "latency_s": 5.3265,
+    "ttft_s": 0.3738,
+    "tokens": 512,
+    "tok_per_s": 96.12,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "tool_call",
+    "success": true,
+    "latency_s": 0.4018,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {
+      "function": "get_weather",
+      "tool_calls_count": 1
+    }
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "thinking",
+    "success": true,
+    "latency_s": 8.37,
+    "ttft_s": 0.0484,
+    "tokens": 908,
+    "tok_per_s": 108.48,
+    "error": null,
+    "details": {
+      "reasoning_tokens": 715,
+      "content_tokens": 193
+    }
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "concurrent_5",
+    "success": true,
+    "latency_s": 3.4797,
+    "ttft_s": 0.0,
+    "tokens": 1280,
+    "tok_per_s": 367.85,
+    "error": null,
+    "details": {
+      "n_users": 5,
+      "total_tokens": 1280,
+      "aggregate_tok_s": 367.8,
+      "avg_per_user_tok_s": 73.7,
+      "errors": 0
+    }
+  },
+  {
+    "model": "OmniCoder-9B",
+    "test": "health",
+    "success": true,
+    "latency_s": 0.0095,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "OmniCoder-9B",
+    "test": "decode_512",
+    "success": true,
+    "latency_s": 4.7694,
+    "ttft_s": 0.3602,
+    "tokens": 512,
+    "tok_per_s": 107.35,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "OmniCoder-9B",
+    "test": "tool_call",
+    "success": true,
+    "latency_s": 0.33,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {
+      "function": "get_weather",
+      "tool_calls_count": 1
+    }
+  },
+  {
+    "model": "OmniCoder-9B",
+    "test": "thinking",
+    "success": true,
+    "latency_s": 8.8171,
+    "ttft_s": 0.035,
+    "tokens": 1023,
+    "tok_per_s": 116.02,
+    "error": null,
+    "details": {
+      "reasoning_tokens": 892,
+      "content_tokens": 131
+    }
+  },
+  {
+    "model": "OmniCoder-9B",
+    "test": "concurrent_5",
+    "success": true,
+    "latency_s": 2.758,
+    "ttft_s": 0.0,
+    "tokens": 1280,
+    "tok_per_s": 464.11,
+    "error": null,
+    "details": {
+      "n_users": 5,
+      "total_tokens": 1280,
+      "aggregate_tok_s": 464.1,
+      "avg_per_user_tok_s": 93.1,
+      "errors": 0
+    }
+  }
+]

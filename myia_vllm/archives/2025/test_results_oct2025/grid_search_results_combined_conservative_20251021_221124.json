@@ -1,0 +1,37 @@
+{
+  "config_name": "combined_conservative",
+  "timestamp": "2025-10-21T22:54:09Z",
+  "config_params": {
+    "gpu_memory": 0.8,
+    "prefix_caching": true,
+    "chunked_prefill": true,
+    "max_num_seqs": 24,
+    "max_num_batched_tokens": null
+  },
+  "deployment": {
+    "logs": [],
+    "status": "success",
+    "startup_time_seconds": 8.01
+  },
+  "health_check": {
+    "status": "healthy",
+    "elapsed_seconds": 400.16,
+    "error_message": "",
+    "health_check_attempts": 27
+  },
+  "tests": {
+    "ttft_performance": {
+      "status": "not_found"
+    },
+    "kv_cache_acceleration": {
+      "cache_acceleration": 2.99,
+      "status": "success",
+      "ttft_cache_miss_ms": 2677.03,
+      "ttft_cache_hit_ms": 895.47
+    },
+    "throughput_performance": {
+      "status": "not_found"
+    }
+  },
+  "errors": []
+}

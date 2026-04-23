@@ -1,0 +1,69 @@
+[
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "health",
+    "success": true,
+    "latency_s": 0.01,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "decode_512",
+    "success": true,
+    "latency_s": 4.9682,
+    "ttft_s": 0.389,
+    "tokens": 512,
+    "tok_per_s": 103.06,
+    "error": null,
+    "details": {}
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "tool_call",
+    "success": true,
+    "latency_s": 0.363,
+    "ttft_s": 0.0,
+    "tokens": 0,
+    "tok_per_s": 0.0,
+    "error": null,
+    "details": {
+      "function": "get_weather",
+      "tool_calls_count": 1
+    }
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "thinking",
+    "success": true,
+    "latency_s": 8.3394,
+    "ttft_s": 0.0434,
+    "tokens": 927,
+    "tok_per_s": 111.16,
+    "error": null,
+    "details": {
+      "reasoning_tokens": 705,
+      "content_tokens": 222
+    }
+  },
+  {
+    "model": "Qwen3.5-35B-A3B MoE",
+    "test": "concurrent_5",
+    "success": true,
+    "latency_s": 3.8307,
+    "ttft_s": 0.0,
+    "tokens": 1280,
+    "tok_per_s": 334.14,
+    "error": null,
+    "details": {
+      "n_users": 5,
+      "total_tokens": 1280,
+      "aggregate_tok_s": 334.1,
+      "avg_per_user_tok_s": 67.1,
+      "errors": 0
+    }
+  }
+]
