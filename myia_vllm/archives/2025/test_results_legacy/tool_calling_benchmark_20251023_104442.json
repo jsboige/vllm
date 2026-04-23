@@ -1,0 +1,55 @@
+{
+  "config": "chunked_only_safe",
+  "scenarios": [
+    {
+      "function_called": null,
+      "notes": "Échec parsing ou paramètres incorrects",
+      "parameters_correct": false,
+      "tokens_generated": 128,
+      "total_duration_ms": 4843,
+      "scenario_id": 1,
+      "parsing_success": false,
+      "json_valid": false,
+      "error_handling": "none",
+      "name": "Appel Simple - get_weather",
+      "ttft_ms": 4843
+    },
+    {
+      "sequential_calls": 0,
+      "parameters_correct": false,
+      "tokens_generated": 500,
+      "total_duration_ms": 11199,
+      "scenario_id": 2,
+      "parsing_success": false,
+      "json_valid": false,
+      "notes": "0 appel(s) détecté(s): ",
+      "error_handling": "none",
+      "name": "Appels Enchaînés - 3 fonctions",
+      "ttft_ms": 11199,
+      "functions_called": []
+    },
+    {
+      "function_called": null,
+      "notes": "Échec parsing objet imbriqué",
+      "parameters_correct": false,
+      "tokens_generated": 345,
+      "total_duration_ms": 7779,
+      "scenario_id": 3,
+      "parsing_success": false,
+      "json_valid": false,
+      "error_handling": "none",
+      "name": "Fonction Complexe - create_user",
+      "ttft_ms": 7779,
+      "nested_object_correct": false
+    }
+  ],
+  "test_date": "2025-10-23T08:45:06Z",
+  "tool_call_parser": "qwen3_xml",
+  "summary": {
+    "parsing_accuracy": 0,
+    "success_rate": 0,
+    "json_validity": 0,
+    "total_scenarios": 3,
+    "ttft_avg": 7940
+  }
+}

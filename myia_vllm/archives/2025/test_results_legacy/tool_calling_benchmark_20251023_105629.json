@@ -1,0 +1,55 @@
+{
+  "scenarios": [
+    {
+      "json_valid": true,
+      "parsing_success": true,
+      "total_duration_ms": 4390,
+      "tokens_generated": 162,
+      "parameters_correct": true,
+      "notes": "Parsing immédiat, paramètres extraits correctement",
+      "name": "Appel Simple - get_weather",
+      "scenario_id": 1,
+      "error_handling": "none",
+      "ttft_ms": 4390,
+      "function_called": "get_weather"
+    },
+    {
+      "json_valid": true,
+      "parsing_success": true,
+      "total_duration_ms": 6924,
+      "tokens_generated": 333,
+      "sequential_calls": 1,
+      "functions_called": "search_database",
+      "name": "Appels Enchaînés - 3 fonctions",
+      "scenario_id": 2,
+      "error_handling": "none",
+      "ttft_ms": 6924,
+      "parameters_correct": true,
+      "notes": "1 appel(s) détecté(s): search_database"
+    },
+    {
+      "json_valid": true,
+      "parsing_success": true,
+      "total_duration_ms": 6182,
+      "tokens_generated": 302,
+      "parameters_correct": true,
+      "notes": "Objet preferences imbriqué correctement parsé",
+      "name": "Fonction Complexe - create_user",
+      "scenario_id": 3,
+      "error_handling": "none",
+      "ttft_ms": 6182,
+      "function_called": "create_user",
+      "nested_object_correct": true
+    }
+  ],
+  "test_date": "2025-10-23T08:56:46Z",
+  "summary": {
+    "success_rate": 100,
+    "ttft_avg": 5832,
+    "json_validity": 100,
+    "parsing_accuracy": 100,
+    "total_scenarios": 3
+  },
+  "config": "chunked_only_safe",
+  "tool_call_parser": "qwen3_xml"
+}
