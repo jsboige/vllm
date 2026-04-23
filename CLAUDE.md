@@ -47,9 +47,9 @@ docker logs -f myia_vllm-medium-qwen36-moe
 # Start ZwZ-8B (vision, GPU 2 solo mode)
 docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
 
-# Legacy: GLM-4.7-Flash (requires custom image build first)
-# docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml build
-# docker compose -f myia_vllm/configs/docker/profiles/medium-glm.yml --env-file myia_vllm/.env up -d
+# Legacy: GLM-4.7-Flash (archived 2026-04-24, requires custom image build first)
+# docker compose -f myia_vllm/archives/2026/profiles_legacy/medium-glm.yml build
+# docker compose -f myia_vllm/archives/2026/profiles_legacy/medium-glm.yml --env-file myia_vllm/.env up -d
 ```
 
 ### Testing
@@ -66,7 +66,7 @@ python myia_vllm/scripts/testing/benchmark_coder_next.py --model qwen3.5-35b-a3b
 .\myia_vllm\run_all_tests.ps1
 
 # Quick API test
-python myia_vllm/scripts/python/test_tool_calling.py
+python myia_vllm/scripts/python/tests/test_qwen3_tool_calling.py
 ```
 
 ### Grid Search Optimization
@@ -93,7 +93,7 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 | kokoro-tts | 2 | 8880 | Kokoro TTS (67 voices) | myia-open-webui compose |
 | medium-qwen35-moe | 0,1 | 5002 | Qwen3.5-35B-A3B-AWQ | archived 2026-04-17 (replaced by 3.6) |
 | mini-zwz | 2 | 5001 | ZwZ-8B-AWQ-4bit | mini-zwz.yml (replaced by OmniCoder) |
-| medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | medium-glm.yml (legacy) |
+| medium-glm | 0,1 | 5002 | GLM-4.7-Flash-AWQ | archives/2026/profiles_legacy/medium-glm.yml |
 | medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
 | mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
 
@@ -401,7 +401,7 @@ Replaced by Qwen3.6-35B-A3B on 2026-04-17. Profile archived to `myia_vllm/archiv
 
 ## GLM-4.7-Flash (Archived)
 
-Replaced by Qwen3.5-35B-A3B on 2026-02-25. Profile: `medium-glm.yml`. Requires custom Dockerfile for `transformers >= 5.0`. Key specs: 31B MoE, 3B active, MLA attention (~54 KB/token KV), 56 tok/s decode, 197 tok/s concurrent, SWE-bench 59.2%. No vision support. Tool parser: `glm47`, reasoning: `glm45`.
+Replaced by Qwen3.5-35B-A3B on 2026-02-25. Profile archived 2026-04-24 at `myia_vllm/archives/2026/profiles_legacy/medium-glm.yml`. Requires custom Dockerfile for `transformers >= 5.0`. Key specs: 31B MoE, 3B active, MLA attention (~54 KB/token KV), 56 tok/s decode, 197 tok/s concurrent, SWE-bench 59.2%. No vision support. Tool parser: `glm47`, reasoning: `glm45`.
 
 ## Qwen3-Coder-Next (Archived)
 
