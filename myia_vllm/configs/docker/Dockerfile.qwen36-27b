@@ -1,0 +1,19 @@
+# Dockerfile for Qwen3.6-27B dense VLM (GPU 2)
+# Base: Apr 23 2026 nightly (same commit date as v0.20.0 source release) — brings:
+#   * GDN kernel fusion + TMA aligned with upstream FLA (direct Qwen3.6 benefit)
+#   * TurboQuant KV cache upstream (--kv-cache-dtype turboquant_k8v4 etc.)
+#   * MLA crash fix with AWQ/GPTQ quantized models
+#   * FlashAttention 4 MLA prefill (SM90+, benign on Ada)
+# Note: v0.20.0 Docker image not yet published on Docker Hub as of 2026-04-24.
+# Using the Apr 23 nightly which carries the same commits.
+#
+# transformers >= 5.0 required for qwen3_5/qwen3_6 dense model_type
+# (same constraint as Dockerfile.omnicoder).
+#
+# Fallback bases if Apr 23 nightly misbehaves on our Ada Lovelace stack:
+#   FROM vllm/vllm-openai:v0.19.1-ubuntu2404                                  # Apr 20 stable, no TurboQuant?
+#   FROM vllm/vllm-openai:nightly-93726b2a1c766a27f10ad7c3f709ffbacb94bcf9    # Apr 04 nightly (used for OmniCoder)
+
+FROM vllm/vllm-openai:nightly-fe9c3d6c5f66c873d196800384ed6880687b9e52
+
+RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingface_hub>=0.30"

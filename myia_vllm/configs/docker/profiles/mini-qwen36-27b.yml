@@ -1,0 +1,167 @@
+# Docker Compose profile for Qwen3.6-27B dense VLM + TurboQuant KV cache (GPU 2)
+# EXPERIMENTAL — candidate replacement for OmniCoder-9B on GPU 2
+#
+# Hardware: 1x RTX 4090 (24 GB VRAM, GPU 2) — shared with Kokoro TTS
+# Model: AWQ 4-bit quantization (~14-17 GB) from cyankiwi
+# Source: https://huggingface.co/cyankiwi/Qwen3.6-27B-AWQ-INT4
+#
+# WHY this model (vs OmniCoder-9B) — see veille 2026-04-24:
+#   + SWE-bench Verified:   73.4 → 77.2 (+3.8 pts)
+#   + Terminal-Bench 2.0:   51.5 → 59.3 (+7.8 pts)
+#   + SkillsBench Avg5:     28.7 → 48.2 (+19.5 pts!)
+#   + Multimodal (vision+text preserved, BF16 encoder)
+#   + Same tool parser (qwen3_coder) + reasoning parser (qwen3) as Qwen3.6-35B-A3B
+#   + Apache 2.0
+#   - Dense 27B → per-token decode slower than 9B dense (expect ~30-50 tok/s vs 96-107)
+#   - Tight VRAM budget with Kokoro TTS on same GPU (see KV CACHE BUDGET below)
+#
+# KV CACHE STRATEGY — FP8 (TurboQuant NOT compatible):
+#   Qwen3.6-27B uses hybrid GDN + Gated Attention. Upstream vLLM raises
+#   NotImplementedError: "TurboQuant KV cache is not supported for hybrid
+#   (attention + Mamba) models. Boundary layer protection requires uniform
+#   attention layers." — this is a hard block, not an Ampere-only issue
+#   (issue #40124 was describing the symptom, actual guard is universal).
+#
+#   FP8 KV works fine (same as 35B-A3B production). With hybrid ~10 KB/token
+#   and ~3.5 GB KV budget, 262K native context fits comfortably.
+#
+# DEPLOYMENT:
+#   Build:   docker compose -f myia_vllm/configs/docker/profiles/mini-qwen36-27b.yml build
+#   Run:     docker compose -f myia_vllm/configs/docker/profiles/mini-qwen36-27b.yml --env-file myia_vllm/.env up -d
+#   Monitor: docker logs -f myia_vllm-mini-qwen36-27b
+#   Test:    pwsh myia_vllm/scripts/testing/test_qwen36_27b_boot.ps1
+#
+# ROLLBACK to OmniCoder-9B:
+#   docker compose -f myia_vllm/configs/docker/profiles/mini-qwen36-27b.yml down
+#   docker compose -f myia_vllm/configs/docker/profiles/mini-omnicoder.yml --env-file myia_vllm/.env up -d
+
+services:
+  vllm-mini-qwen36-27b:
+    build:
+      context: ..
+      dockerfile: Dockerfile.qwen36-27b
+    image: vllm-qwen36-27b:nightly-fe9c3d6c-t5  # Apr 23 nightly (v0.20.0 content) + transformers 5.x
+    container_name: myia_vllm-mini-qwen36-27b
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_MINI:-5001}
+      --model cyankiwi/Qwen3.6-27B-AWQ-INT4
+      --served-model-name qwen3.6-27b
+      --api-key ${VLLM_API_KEY_MINI}
+
+      --tensor-parallel-size 1
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.90
+      --max-model-len 262144
+      --kv-cache-dtype fp8
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 32
+
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --enable-prefix-caching
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+
+      --trust-remote-code
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+    ipc: host
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=2
+      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=8
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+    volumes:
+      - d:/vllm/models:/models:ro
+      - hf-cache:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-27b:/root/.cache/vllm
+    working_dir: /app
+    ports:
+      - "${VLLM_PORT_MINI:-5001}:${VLLM_PORT_MINI:-5001}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_MINI:-5001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 min: model download (~15 GB) + fresh compile cache
+    restart: unless-stopped
+
+  # Keepalive sidecar — prevents idle CUDA worker state corruption
+  keepalive-qwen36-27b:
+    image: curlimages/curl:latest
+    container_name: myia_vllm-keepalive-qwen36-27b
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Keepalive started for Qwen3.6-27B (interval: 120s)"
+        while true; do
+          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-mini-qwen36-27b:$${VLLM_PORT_MINI:-5001}/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MINI}" \
+            -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}')
+          echo "$$(date '+%Y-%m-%d %H:%M:%S') Qwen3.6-27B keepalive: HTTP $$RESULT"
+          sleep 120
+        done
+    environment:
+      - VLLM_API_KEY_MINI=${VLLM_API_KEY_MINI}
+      - VLLM_PORT_MINI=${VLLM_PORT_MINI:-5001}
+    depends_on:
+      vllm-mini-qwen36-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  vllm-compile-cache-qwen36-27b:  # Separate cache — different kernels than OmniCoder
+
+# =====================================================================
+# KV CACHE BUDGET ANALYSIS (see veille 2026-04-24)
+# =====================================================================
+# GPU 2: 24 GB total, shared with Kokoro TTS (~0.5 GB)
+# gpu-memory-utilization 0.90 → 21.6 GB usable for vLLM
+#
+# Expected breakdown:
+#   Weights (AWQ INT4 + BF16 vision):    ~16-17 GB
+#   CUDA graphs + workspace (piecewise):  ~2-3 GB
+#   Available for KV cache:                ~2-4 GB
+#
+# KV per token (hybrid GDN confirmed from boot log):
+#   FP8 : ~10 KB/token → 262K tokens ≈ 2.6 GB (fits in budget)
+#
+# If OOM at boot: reduce max-model-len (96K, 131K) and/or raise gpu-util
+# to 0.92 (but risk Kokoro OOM).
+#
+# TurboQuant KV cache is NOT compatible with this model (hybrid GDN).
+# Upstream raises NotImplementedError at create_engine_config.
+#
+# =====================================================================
+# THINKING / TOOL CALLING — identical to Qwen3.6-35B-A3B
+# =====================================================================
+# Same parsers (qwen3_coder + qwen3), same chat_template_kwargs (preserve_thinking).
+# Clients that work with qwen3.6-35b-a3b work unchanged with qwen3.6-27b.
+# To disable thinking per-request: "chat_template_kwargs": {"enable_thinking": false}
+# To opt out of preserve_thinking: "chat_template_kwargs": {"preserve_thinking": false}
+#
+# =====================================================================
+# SPECULATIVE DECODING — DISABLED
+# =====================================================================
+# Qwen recommends MTP for 3.6 but AWQ 4-bit gives 0% acceptance (same constraint as 3.5).
+# DFlash drafter exists for 3.6-35B-A3B MoE but not validated for dense 27B.
+# Start without spec_decode, evaluate later if single-user decode becomes a bottleneck.
