@@ -15,9 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment**: Qwen3.6-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking+preserve_thinking) on GPUs 0,1 with TP=2+EP. **GPU 2 freed 2026-04-30** for CoursIA training jobs (queue 5-7d) — OmniCoder-9B archived, Kokoro TTS pending migration to po-2023 (sleep mode + dedicated subdomain).
+**Current deployment (2026-05-06)**: **Qwen3.6-27B Dense + TurboQuant K8V4 KV cache** on GPUs 0,1 with TP=2 (no EP, Dense). Cutover from Qwen3.6-35B-A3B MoE on 2026-05-06 after PR #39931 (TurboQuant hybrid model support) merged upstream. **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
 
-**Previous deployment**: Qwen3.5-35B-A3B (35B MoE, AWQ 4-bit) - replaced by Qwen3.6 on 2026-04-17 (+24% decode, -48% tool call, +19% concurrent, SWE-bench +3.4pts, Terminal-Bench +11pts, NL2Repo +8.9pts).
+**Previous deployment (archived 2026-05-06)**: Qwen3.6-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking+preserve_thinking) — running 2026-04-17 → 2026-05-06. Profile retained at `myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml` for fast rollback.
 
 ## Key Directories
 
@@ -40,12 +40,13 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Start Qwen3.6-35B-A3B MoE (primary model, GPUs 0,1)
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
-docker logs -f myia_vllm-medium-qwen36-moe
+# Start Qwen3.6-27B Dense + TurboQuant K8V4 (primary model, GPUs 0,1, since 2026-05-06)
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen36-27b
 
-# Start ZwZ-8B (vision, GPU 2 solo mode)
-docker compose -f myia_vllm/configs/docker/profiles/mini-zwz.yml --env-file myia_vllm/.env up -d
+# Rollback to Qwen3.6-35B-A3B MoE if needed
+# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml down
+# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
 
 # Legacy: GLM-4.7-Flash (archived 2026-04-24, requires custom image build first)
 # docker compose -f myia_vllm/archives/2026/profiles_legacy/medium-glm.yml build
@@ -88,9 +89,10 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
-| **medium-qwen36-moe** | **0,1** | **5002** | **Qwen3.6-35B-A3B-AWQ** | **medium-qwen36-moe.yml** |
-| **GPU 2 — FREED 2026-04-30** | **2** | — | training jobs (CoursIA) | OmniCoder archived, Kokoro pending migration to po-2023 |
-| kokoro-tts (legacy on ai-01) | 2 | 8880 | Kokoro TTS (67 voices) | myia-open-webui compose — to be migrated to po-2023 |
+| **medium-qwen36-27b** | **0,1** | **5002** | **Qwen3.6-27B-AWQ-INT4 + TurboQuant K8V4** | **medium-qwen36-27b.yml** |
+| **GPU 2 — FULLY FREED 2026-05-01** | **2** | — | training jobs (CoursIA) | 78 MiB driver baseline only |
+| medium-qwen36-moe (rollback) | 0,1 | 5002 | Qwen3.6-35B-A3B-AWQ | medium-qwen36-moe.yml (retained) |
+| kokoro-tts (migrated to po-2023) | — | — | Kokoro TTS (67 voices) | now at `https://tts.myia.io/kokoro/v1` (po-2023, sleep mode) |
 | mini-omnicoder | 2 | 5001 | OmniCoder-9B-AWQ-4bit | archived 2026-04-30 (GPU 2 freed for trainings) |
 | medium-qwen35-moe | 0,1 | 5002 | Qwen3.5-35B-A3B-AWQ | archived 2026-04-17 (replaced by 3.6) |
 | mini-zwz | 2 | 5001 | ZwZ-8B-AWQ-4bit | mini-zwz.yml (replaced by OmniCoder) |
@@ -98,7 +100,7 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 | medium-qwen35-dense | 0,1 | 5002 | Qwen3.5-27B-AWQ | medium-qwen35-dense.yml (rejected: too slow) |
 | mini-solo | 2 | 5001 | Qwen3-VL-8B-Thinking-AWQ | mini-solo.yml (fallback) |
 
-GPUs 0,1 are on faster PCIe bus. **GPU 2 freed 2026-04-30** for CoursIA training jobs (queue 5-7d, sprint sustainable + Sudoku large + RL extension). Previously: OmniCoder-9B + Kokoro TTS. Kokoro temporarily still on GPU 2 (~128 MiB) pending migration to po-2023 with sleep mode + dedicated subdomain.
+GPUs 0,1 are on faster PCIe bus. **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline) for CoursIA training jobs (queue 5-7d, sprint sustainable + Sudoku large + RL extension). Previously: OmniCoder-9B + Kokoro TTS. OmniCoder archived 2026-04-30, Kokoro TTS migrated to po-2023 (`https://tts.myia.io/kokoro/v1`, sleep mode) on 2026-05-01 — 7/7 OWUI tenants switched, ai-01 compose service `kokoro-tts` removed.
 
 ### Environment Variables
 
@@ -260,7 +262,67 @@ docker logs -f myia_vllm-mini-zwz
 
 7. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
 
-## Qwen3.6-35B-A3B Deployment (Current)
+## Qwen3.6-27B Dense + TurboQuant K8V4 (Current, since 2026-05-06)
+
+### Why this migration
+PR [#39931](https://github.com/vllm-project/vllm/pull/39931) "TurboQuant: support hybrid models and uniform quantization" merged upstream 2026-05-05 00:14 UTC (commit `4f2af1a7c`). This unblocks `--kv-cache-dtype turboquant_k8v4` for hybrid GDN+attention models — Qwen3.6 family included. With Dense 27B, **100% of attention layers benefit** from TurboQuant (vs ~25% on 35B-A3B MoE since only the 10/40 attention layers used standard KV cache).
+
+Trade-off accepted: **single-user/concurrent decode regresses ~50%** (Dense 27B vs MoE-3B-active) in exchange for **+19.5pts SkillsBench, +7.8 Terminal-Bench, +3.8 SWE-bench upstream** (cyankiwi card / Qwen blog), plus **+60% KV cache** (516K vs 322K tokens).
+
+### Components
+- **Image**: `vllm-qwen36-27b-tq:nightly-e47c98ef-patched1` — base `vllm/vllm-openai:nightly-e47c98ef7a38792996e452ef53914e21e41928e9` (2026-05-06 nightly, post-merge) + `transformers>=5.0` (qwen3_5 model_type) + `patches/shm_broadcast.py` (PyCFunction crash workaround, our PR [#40303](https://github.com/vllm-project/vllm/pull/40303) still OPEN).
+- **Dockerfile**: [Dockerfile.qwen36-27b-tq](myia_vllm/configs/docker/Dockerfile.qwen36-27b-tq)
+- **Profile**: [medium-qwen36-27b.yml](myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml)
+- **Quant**: [cyankiwi/Qwen3.6-27B-AWQ-INT4](https://huggingface.co/cyankiwi/Qwen3.6-27B-AWQ-INT4) (709k DL/5d, same author as MoE prod, AWQ INT4, vision encoder BF16 preserved)
+
+### Key vLLM flags
+```yaml
+--model cyankiwi/Qwen3.6-27B-AWQ-INT4
+--served-model-name qwen3.6-27b
+--tensor-parallel-size 2                # NO --enable-expert-parallel (Dense, not MoE)
+--gdn-prefill-backend triton
+--no-enable-flashinfer-autotune
+--gpu-memory-utilization 0.85
+--max-model-len 262144
+--kv-cache-dtype turboquant_k8v4         # NEW: 8-bit keys / 4-bit values, ~5x KV vs fp8 on attn
+--dtype auto
+--enable-prefix-caching
+--tool-call-parser qwen3_coder
+--reasoning-parser qwen3
+--default-chat-template-kwargs '{"preserve_thinking":true}'
+--override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+```
+
+### Performance (Benchmark 2026-05-06, fresh boot, post-warmup)
+
+| Metric | 27B Dense + TurboQuant | MoE 35B-A3B (previous) | Δ |
+|---|:---:|:---:|:---:|
+| Decode tok/s (single, no thinking) | **52-54** | 107 | **-50%** |
+| Decode tok/s (thinking) | 50.5 | 116.5 | **-57%** |
+| 5 concurrent (aggregate) | **189** | 369 | **-49%** |
+| Tool call latency | 0.66s | 0.47s | +40% |
+| KV cache size | **516K tokens** | 322K | **+60%** |
+| Context | 262K | 262K | = |
+| Vision | Yes | Yes | = |
+| preserve_thinking | Yes | Yes | = |
+
+**TurboQuant boundary protection** working: vLLM logs `TQ hybrid: full-attention layers [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63]` (16 full-attn / 64 total). Backend chosen: `Using TURBOQUANT attention backend out of potential backends: ['TURBOQUANT']`.
+
+**Boot stats**: compile 91s (fresh cache), total init 178s (profile + create kv cache + warmup + capture), CUDA graphs 0.47 GiB / GPU.
+
+**Quality (upstream — NOT YET locally verified)**:
+- SWE-bench Verified: 73.4% → **77.2%** (+3.8 pts)
+- Terminal-Bench 2.0: 51.5% → **59.3%** (+7.8 pts)
+- SkillsBench Avg5: 28.7% → **48.2%** (+19.5 pts)
+
+### Rollback procedure
+```powershell
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml down
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+```
+~10-15 min downtime + ~150s fresh compile cache. MoE image `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` still present locally.
+
+## Qwen3.6-35B-A3B Deployment (Archived 2026-05-06)
 
 ### Model Specifications
 - **Architecture**: 35B MoE with 3B active parameters per token (256 experts, 9 active: 8 routed + 1 shared, 40 layers)
@@ -543,10 +605,20 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-04-30)
+## Current State (2026-05-06)
 
-- **Qwen3.6-35B-A3B MoE running** on port 5002 (GPUs 0,1) — **production since 2026-04-17** (replaces Qwen3.5)
-  - ✅ FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
+- **Qwen3.6-27B Dense + TurboQuant K8V4 KV cache** on port 5002 (GPUs 0,1) — **production since 2026-05-06** (replaces Qwen3.6-35B-A3B MoE)
+  - ✅ TurboQuant attention backend active (PR #39931 merged 2026-05-05)
+  - ✅ Hybrid layer detection: 16 full-attn / 64 total (boundary layer protection)
+  - ✅ shm_broadcast.py custom patch carried forward (PR #40303 still OPEN upstream)
+  - ✅ Vision (images, documents) + Thinking + preserve_thinking server-side default
+  - ✅ Watchdog sidecar (dual-ping host + Docker DNS, auto-restart 3 fails)
+  - **KV cache: 516K tokens** (vs MoE 322K, **+60%** with TurboQuant K8V4)
+  - **Decode**: 52-54 tok/s single-user (vs MoE 107, **-50%**), tool call 0.66s, 5-concurrent 189 tok/s aggregate (vs MoE 369, **-49%**)
+  - Trade-off rationale: Dense 27B activates all 27B params per token (vs MoE 3B active) → speed regression accepted for quality gains (upstream: SWE +3.8, Terminal-Bench +7.8, SkillsBench +19.5)
+  - Image: `vllm-qwen36-27b-tq:nightly-e47c98ef-patched1` (2026-05-06 nightly post-merge)
+- **Qwen3.6-35B-A3B MoE PREVIOUS** (archived 2026-05-06, ran 2026-04-17 → 2026-05-06)
+  - Was: FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
   - ✅ Vision (images, documents) + Thinking modulation
   - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
   - ✅ **NEW: `--default-chat-template-kwargs '{"preserve_thinking":true}'`** — server-side default for multi-turn reasoning retention (works for clients that can't customize chat_template_kwargs)
@@ -555,8 +627,8 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
   - Performance: **107.0 tok/s decode, 369.4 tok/s concurrent, 0.47s tool call, 116.5 tok/s thinking** (Apr 06 nightly, benchmarked 2026-04-17)
   - vLLM class: `Qwen3_5MoeForConditionalGeneration` (same code path as 3.5)
   - Quality upgrades (upstream): SWE-bench 70→73.4, Terminal-Bench 40.5→51.5, NL2Repo 20.5→29.4, QwenWebBench 978→1397
-- **GPU 2 — FREED 2026-04-30** for CoursIA training jobs (queue 5-7d : QC ML strategies, Sudoku large, RL extension). OmniCoder-9B archived (`myia_vllm/archives/2026/mini-omnicoder.yml.archived-2026-04-30`, `Dockerfile.omnicoder.archived-2026-04-30`). Reasoning: ai-01 piloting double-track (coordination + training) sprint sustainable. Issue CoursIA #626.
-- **Kokoro TTS migration to po-2023** (in progress 2026-04-30): currently still on ai-01 GPU 2 (~128 MiB baseline, port 8880, container `myia-open-webui-kokoro-tts-1`, image `ghcr.io/remsky/kokoro-fastapi-gpu:latest`). Target: po-2023 with sleep-mode (parallel to Orpheus pattern) + dedicated subdomain `kokoro-tts.myia.io` (proposed). OWUI clients (`open-webui` + tenants) reference `http://host.docker.internal:8880` → must switch to new endpoint after po-2023 ready. Coordination posted to vllm/CoursIA/myia-open-webui dashboards.
+- **GPU 2 — FULLY FREED 2026-05-01** for CoursIA training jobs (queue 5-7d : QC ML strategies, Sudoku large, RL extension). State: **78 MiB / 24564 MiB** (driver baseline only, no resident process). OmniCoder-9B archived 2026-04-30 (`myia_vllm/archives/2026/mini-omnicoder.yml.archived-2026-04-30`, `Dockerfile.omnicoder.archived-2026-04-30`). Reasoning: ai-01 piloting double-track (coordination + training) sprint sustainable. Issue CoursIA #626.
+- **Kokoro TTS migrated to po-2023** (2026-05-01): final endpoint `https://tts.myia.io/kokoro/v1` (path-strip via IIS, bearer auth required, sleep-mode like Orpheus). 7/7 OWUI tenants switched (myia, epf, epf-genai, ece, esg, epita, pauwels — synthesis tested HTTP 200 with `ff_siwis` voice, MP3 ID3 valid). Service `kokoro-tts` removed from `myia-open-webui` compose stack on ai-01, volume `kokoro-data` purged. Quirks noted: po-2023 endpoint serves `/v1/voices` (200) but NOT `/v1/audio/voices` (404, non-standard); `/v1/audio/speech` works fine (used by OWUI). Commit `d37df601b` (myia-open-webui workspace).
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
 - **OWUI sampling calibration** (2026-03-21): 8 model wrappers calibrated for AWQ Q4 (Reddit + HF + local benchmarks). Key Q4 adjustments: temp 1.0→0.7, pp capped at 1.5 (not 2.0), rp 1.05-1.1 anti-bleed, min_p 0.01-0.05. Bug fixed: `-fast` had missing `enable_thinking: false`.
 - **SK Agent MCP server** uses Qwen3.6-35B-A3B (port 5002, updated 2026-04-17)

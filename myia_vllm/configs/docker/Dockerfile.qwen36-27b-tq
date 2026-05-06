@@ -1,0 +1,39 @@
+# Custom vLLM image for Qwen3.6-27B Dense + TurboQuant K8V4 KV cache (PROD GPUs 0,1)
+#
+# Combines two layers on top of the upstream vLLM nightly :
+#   1. transformers>=5.0  — required for Qwen3.5/3.6 dense model_type (qwen3_5)
+#   2. patches/shm_broadcast.py  — workaround vllm-project/vllm#35104 PyCFunction
+#      descriptor corruption under FlashInfer/Triton JIT autotune (PR #40303 OPEN)
+#
+# Base : 2026-05-06 nightly (commit e47c98ef7a38792996e452ef53914e21e41928e9)
+# WHY this nightly :
+#   * Includes PR #39931 "TurboQuant: support hybrid models and uniform quantization"
+#     merged 2026-05-05 00:14 UTC (commit 4f2af1a7c). Verified via
+#     `git merge-base --is-ancestor 4f2af1a7c e47c98ef` → IS ancestor.
+#   * Hybrid GDN+Attention models (Qwen3.5/3.6 family) now eligible for
+#     `--kv-cache-dtype turboquant_k8v4` — unblocks ~5x KV cache vs fp8 on attention layers.
+#
+# shm_broadcast.py compatibility :
+#   Verified 2026-05-06 that upstream `shm_broadcast.py` is BIT-IDENTICAL
+#   between Apr 06 base (f6983f01d) and this nightly (e47c98ef) — `diff` empty,
+#   both files 917 lines. Our patch transposes as-is, no rebase needed.
+
+FROM vllm/vllm-openai:nightly-e47c98ef7a38792996e452ef53914e21e41928e9
+
+# transformers>=5.0 : required for Qwen3.5/3.6 dense model_type (qwen3_5)
+# vLLM nightly ships transformers 4.57.6 by default which lacks TokenizersBackend
+# support for the qwen3_5 dense model_type (used by Qwen3.6-27B).
+# tokenizers>=0.21 + huggingface_hub>=0.30 are companion bumps.
+RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingface_hub>=0.30"
+
+# Replace shm_broadcast.py with the patched version (same patch as Apr 06 prod).
+COPY patches/shm_broadcast.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py
+
+# Sanity check: byte-compile the patched file at build time so any syntax
+# error surfaces immediately rather than at first request.
+RUN python3 -c "import py_compile; py_compile.compile('/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py', doraise=True)"
+
+# Verify the patch is actually in place (memory_barrier callable, no descriptor
+# corruption surface).
+RUN python3 -c "from vllm.distributed.device_communicators import shm_broadcast; assert callable(shm_broadcast._memory_barrier), 'patched _memory_barrier not found'; print('PATCH VERIFIED:', shm_broadcast._memory_barrier)"

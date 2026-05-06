@@ -1,0 +1,243 @@
+# Docker Compose profile for Qwen3.6-27B Dense + TurboQuant K8V4 KV cache (PROD)
+# Replaces Qwen3.6-35B-A3B MoE on 2x RTX 4090 (deployed 2026-05-06)
+#
+# Hardware: 2x RTX 4090 (48 GB VRAM total) - GPUs 0,1
+# Model: AWQ INT4 quantization (~14 GB) from cyankiwi
+# Source: https://huggingface.co/cyankiwi/Qwen3.6-27B-AWQ-INT4
+#
+# WHY this model (vs Qwen3.6-35B-A3B MoE):
+#   + SWE-bench Verified:   73.4 -> 77.2 (+3.8 pts)
+#   + Terminal-Bench 2.0:   51.5 -> 59.3 (+7.8 pts)
+#   + SkillsBench Avg5:     28.7 -> 48.2 (+19.5 pts !) <-- massive agentic gain
+#   + 100% attention layers benefit from TurboQuant K8V4 (vs 25% on 35B-A3B MoE)
+#   - Per-token decode slower (Dense vs MoE): ~80-100 tok/s estimated vs 107 tok/s
+#   - Concurrent throughput lower (no expert parallelism): ~200-280 tok/s estimated vs 369
+#
+# WHY TurboQuant K8V4:
+#   PR #39931 (merged upstream 2026-05-05) unblocks TurboQuant for hybrid
+#   GDN+Attention models. K8V4 = 8-bit keys, 4-bit values = ~5x KV cache vs fp8
+#   on attention layers. With 2x 4090 TP=2, this gives ~1M+ tokens KV budget
+#   (we cap at 262K via --max-model-len initially, room to bump later).
+#
+# DEPLOYMENT:
+#   Build:   docker build -t vllm-qwen36-27b-tq:nightly-e47c98ef-patched1 \
+#                         -f Dockerfile.qwen36-27b-tq \
+#                         myia_vllm/configs/docker
+#   Run:     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml \
+#                          --env-file myia_vllm/.env up -d
+#   Monitor: docker logs -f myia_vllm-medium-qwen36-27b
+#
+# ROLLBACK to Qwen3.6-35B-A3B MoE:
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml down
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml \
+#                  --env-file myia_vllm/.env up -d
+
+services:
+  vllm-medium-qwen36-27b:
+    image: vllm-qwen36-27b-tq:nightly-e47c98ef-patched1
+    container_name: myia_vllm-medium-qwen36-27b
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_27B:-cyankiwi/Qwen3.6-27B-AWQ-INT4}
+      --served-model-name qwen3.6-27b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.85
+      --max-model-len 262144
+      --kv-cache-dtype turboquant_k8v4
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 64
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+
+      --trust-remote-code
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - OMP_NUM_THREADS=4
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
+      - VLLM_LOG_REQUESTS_CONTENT=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-27b:/root/.cache/vllm
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
+    restart: unless-stopped
+
+  watchdog-qwen36-27b:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-27b
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-27b"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-27B Dense"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-27b:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-27b:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-27b:
+
+# =====================================================================
+# TUNING NOTES
+# =====================================================================
+#
+# === KV CACHE BUDGET (TurboQuant K8V4 vs fp8) ===
+# 27B AWQ INT4 weights:        ~14 GB / 2 GPUs = 7 GB/GPU
+# CUDA graphs (piecewise):     ~3-4 GB/GPU
+# Available for KV cache:      ~12-13 GB/GPU = 24-26 GB total
+#
+# fp8 KV : ~10 KB/token  -> ~2.4M tokens budget (we cap at 262K)
+# turboquant_k8v4 KV  :  ~2 KB/token (estimated 5x compression vs fp8 on attn layers)
+#                                   -> ~12M tokens budget (we cap at 262K)
+#
+# We don't need 12M tokens. The TurboQuant gain is REAL but PRACTICALLY UNUSED
+# at max-model-len 262144. The benefit is :
+#   - More headroom for concurrent requests (max-num-seqs could safely go higher)
+#   - Lower VRAM pressure overall (more stable under load)
+#   - Future-proof : can bump max-model-len to 524K or 1M without hitting OOM
+#
+# === ARCHITECTURE NOTE ===
+# HF config reports model_type=qwen3_5 (NOT qwen3_5_moe). vLLM uses class
+# Qwen3_5ForCausalLM with hybrid GDN + Gated Attention. transformers>=5.0
+# required for qwen3_5 model_type (vLLM nightly ships 4.57.6 by default —
+# Dockerfile.qwen36-27b-tq adds the upgrade layer).
+#
+# === GPU MEMORY UTILIZATION ===
+# 0.85 (same as MoE) — Marlin AWQ kernels need similar headroom for variable
+# temp allocations. Higher (0.88+) risks OOM under concurrent load.
+#
+# === VISION ===
+# cyankiwi/Qwen3.6-27B-AWQ-INT4 preserves vision encoder in BF16 (same recipe
+# as their 35B-A3B). limit-mm-per-prompt: 4 images, no video.
+# max_pixels: 774000 (~880x880 per image).
+#
+# === THINKING / TOOL CALLING ===
+# Same parsers as 35B-A3B (qwen3_coder + qwen3) — clients work unchanged.
+# preserve_thinking: True default, opt-out per request via chat_template_kwargs.
+#
+# === DISTRIBUTED EXECUTOR ===
+# `mp` (multiprocessing). Dense model, no expert parallelism, no enable-expert-parallel.
+#
+# === SHM_BROADCAST PYCFUNCTION CRASH (preventive) ===
+# Same patch as MoE prod (Dockerfile.qwen36-27b-tq applies patches/shm_broadcast.py).
+# Memory fence uses libc sched_yield via ctypes instead of threading.Lock,
+# preventing PyCFunction descriptor corruption under FlashInfer/Triton JIT loads.
+# See vllm-project/vllm#35104 + our PR #40303 (OPEN).
+#
+# === SAMPLING DEFAULTS ===
+# Qwen3.6-27B uses same recommended sampling as Qwen3.6-35B-A3B :
+#   thinking general : temp 1.0, top_p 0.95, pp 1.5
+#   thinking coding  : temp 0.6, top_p 0.95, pp 0.0
+#   instruct general : temp 0.7, top_p 0.8,  pp 1.5
+# Server default kept conservative (temp 0.6, top_p 0.95, top_k 20, pp 0.0).
+# OWUI wrappers inject pp 1.5 / 2.0 / etc. per-request via Q4 calibration (2026-03-21).
+#
+# === MTP / DFLASH (NOT USED) ===
+# AWQ 4-bit gives 0% acceptance for MTP heads (tested on GLM-4.6-AWQ).
+# DFlash drafter exists for 35B-A3B MoE but not validated for dense 27B.
+# Run baseline first, evaluate spec_decode later if single-user decode is bottleneck.
