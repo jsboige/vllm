@@ -1,4 +1,7 @@
-# Custom vLLM image for Qwen3.6-27B Dense + TurboQuant K8V4 KV cache (PROD GPUs 0,1)
+# Custom vLLM image for Qwen3.6 family (MoE 35B-A3B and Dense 27B) + TurboQuant
+# K8V4 KV cache (PROD GPUs 0,1). Used by :
+#   - profiles/medium-qwen36-moe.yml (current production, 2026-05-06)
+#   - profiles/medium-qwen36-27b.yml (archived, rejected)
 #
 # Combines two layers on top of the upstream vLLM nightly :
 #   1. transformers>=5.0  — required for Qwen3.5/3.6 dense model_type (qwen3_5)

@@ -15,9 +15,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment (2026-05-06)**: **Qwen3.6-27B Dense + TurboQuant K8V4 KV cache** on GPUs 0,1 with TP=2 (no EP, Dense). Cutover from Qwen3.6-35B-A3B MoE on 2026-05-06 after PR #39931 (TurboQuant hybrid model support) merged upstream. **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
+**Current deployment (2026-05-06)**: **Qwen3.6-35B-A3B MoE + FP8 KV cache** on GPUs 0,1 with TP=2 + EP=2, Apr 06 nightly image (proven baseline since 2026-04-17). **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
 
-**Previous deployment (archived 2026-05-06)**: Qwen3.6-35B-A3B (35B MoE, 3B active, AWQ 4-bit, vision+thinking+preserve_thinking) — running 2026-04-17 → 2026-05-06. Profile retained at `myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml` for fast rollback.
+**Same-day cutover sequence (2026-05-06)** — both candidates rejected, returned to baseline:
+1. **Qwen3.6-27B Dense + TurboQuant K8V4** : tested briefly. All 3 perf metrics tripped the migration plan's "consider rollback" thresholds (decode -50%, concurrent -49%, tool latency +40%). Quality gains within sampling noise on locally-tested benchmarks. Profile archived to `myia_vllm/archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`.
+2. **Qwen3.6-35B-A3B MoE + TurboQuant K8V4** : booted cleanly with 1.49M-token KV (vs 322K with FP8, +4.6×) but EngineCore crashes on first chunked-prefill continuation (`AssertionError: Workspace is locked` at `turboquant_attn.py:720:_continuation_prefill`, requires 29.73 MB / has 16.31 MB). Already filed upstream as [#41726](https://github.com/vllm-project/vllm/issues/41726) (filed 2026-05-05 by `jhsmith409`); persists post-#39931 merge, not hybrid-specific. Candidate fix is PR [#40798](https://github.com/vllm-project/vllm/pull/40798) (open). Our reproduction posted as [#41726 comment](https://github.com/vllm-project/vllm/issues/41726#issuecomment-4389387531) — confirms persistence on hybrid MoE + Ada hardware.
+
+**Rolled back** to MoE + FP8 KV with the proven Apr 06 baseline image (`vllm-qwen36-shmpatched:nightly-f6983f01d-patched1`). The TQ image (`vllm-qwen36-tq:nightly-e47c98ef-patched1`) and Dockerfile (`Dockerfile.qwen36-tq`) retained for re-test once #40798 merges.
 
 ## Key Directories
 
@@ -40,13 +44,15 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Start Qwen3.6-27B Dense + TurboQuant K8V4 (primary model, GPUs 0,1, since 2026-05-06)
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml --env-file myia_vllm/.env up -d
-docker logs -f myia_vllm-medium-qwen36-27b
+# Start Qwen3.6-35B-A3B MoE + FP8 KV (primary model, GPUs 0,1, current baseline)
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-qwen36-moe
 
-# Rollback to Qwen3.6-35B-A3B MoE if needed
-# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml down
-# docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+# To re-test TurboQuant once upstream PR #40798 merges:
+# 1. Edit medium-qwen36-moe.yml: image → vllm-qwen36-tq:nightly-e47c98ef-patched1
+#    and --kv-cache-dtype fp8 → --kv-cache-dtype turboquant_k8v4
+# 2. docker compose down + up -d
+# (Image already local; rolled back 2026-05-06 due to upstream issue #41726)
 
 # Legacy: GLM-4.7-Flash (archived 2026-04-24, requires custom image build first)
 # docker compose -f myia_vllm/archives/2026/profiles_legacy/medium-glm.yml build
@@ -89,9 +95,9 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
-| **medium-qwen36-27b** | **0,1** | **5002** | **Qwen3.6-27B-AWQ-INT4 + TurboQuant K8V4** | **medium-qwen36-27b.yml** |
+| **medium-qwen36-moe** | **0,1** | **5002** | **Qwen3.6-35B-A3B-AWQ + FP8 KV** | **medium-qwen36-moe.yml** |
 | **GPU 2 — FULLY FREED 2026-05-01** | **2** | — | training jobs (CoursIA) | 78 MiB driver baseline only |
-| medium-qwen36-moe (rollback) | 0,1 | 5002 | Qwen3.6-35B-A3B-AWQ | medium-qwen36-moe.yml (retained) |
+| medium-qwen36-27b | 0,1 | 5002 | Qwen3.6-27B-AWQ-INT4 + TQ K8V4 | archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06 (rejected: -50% decode) |
 | kokoro-tts (migrated to po-2023) | — | — | Kokoro TTS (67 voices) | now at `https://tts.myia.io/kokoro/v1` (po-2023, sleep mode) |
 | mini-omnicoder | 2 | 5001 | OmniCoder-9B-AWQ-4bit | archived 2026-04-30 (GPU 2 freed for trainings) |
 | medium-qwen35-moe | 0,1 | 5002 | Qwen3.5-35B-A3B-AWQ | archived 2026-04-17 (replaced by 3.6) |
@@ -262,67 +268,48 @@ docker logs -f myia_vllm-mini-zwz
 
 7. **Credentials in `.env` were compromised** - Regenerate HuggingFace token and API keys before production deployment.
 
-## Qwen3.6-27B Dense + TurboQuant K8V4 (Current, since 2026-05-06)
+## TurboQuant K8V4 Migration Attempt (2026-05-06, REJECTED)
 
-### Why this migration
-PR [#39931](https://github.com/vllm-project/vllm/pull/39931) "TurboQuant: support hybrid models and uniform quantization" merged upstream 2026-05-05 00:14 UTC (commit `4f2af1a7c`). This unblocks `--kv-cache-dtype turboquant_k8v4` for hybrid GDN+attention models — Qwen3.6 family included. With Dense 27B, **100% of attention layers benefit** from TurboQuant (vs ~25% on 35B-A3B MoE since only the 10/40 attention layers used standard KV cache).
+### Why we tried
+PR [#39931](https://github.com/vllm-project/vllm/pull/39931) "TurboQuant: support hybrid models and uniform quantization" merged upstream 2026-05-05 00:14 UTC (commit `4f2af1a7c`). This unblocks `--kv-cache-dtype turboquant_k8v4` for hybrid GDN+attention models — Qwen3.6 family included.
 
-Trade-off accepted: **single-user/concurrent decode regresses ~50%** (Dense 27B vs MoE-3B-active) in exchange for **+19.5pts SkillsBench, +7.8 Terminal-Bench, +3.8 SWE-bench upstream** (cyankiwi card / Qwen blog), plus **+60% KV cache** (516K vs 322K tokens).
+### What we tested
 
-### Components
-- **Image**: `vllm-qwen36-27b-tq:nightly-e47c98ef-patched1` — base `vllm/vllm-openai:nightly-e47c98ef7a38792996e452ef53914e21e41928e9` (2026-05-06 nightly, post-merge) + `transformers>=5.0` (qwen3_5 model_type) + `patches/shm_broadcast.py` (PyCFunction crash workaround, our PR [#40303](https://github.com/vllm-project/vllm/pull/40303) still OPEN).
-- **Dockerfile**: [Dockerfile.qwen36-27b-tq](myia_vllm/configs/docker/Dockerfile.qwen36-27b-tq)
-- **Profile**: [medium-qwen36-27b.yml](myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml)
-- **Quant**: [cyankiwi/Qwen3.6-27B-AWQ-INT4](https://huggingface.co/cyankiwi/Qwen3.6-27B-AWQ-INT4) (709k DL/5d, same author as MoE prod, AWQ INT4, vision encoder BF16 preserved)
+**Attempt 1: Qwen3.6-27B Dense + TurboQuant K8V4** — Booted cleanly. Bench tripped all 3 of the migration plan's "consider rollback" thresholds:
 
-### Key vLLM flags
-```yaml
---model cyankiwi/Qwen3.6-27B-AWQ-INT4
---served-model-name qwen3.6-27b
---tensor-parallel-size 2                # NO --enable-expert-parallel (Dense, not MoE)
---gdn-prefill-backend triton
---no-enable-flashinfer-autotune
---gpu-memory-utilization 0.85
---max-model-len 262144
---kv-cache-dtype turboquant_k8v4         # NEW: 8-bit keys / 4-bit values, ~5x KV vs fp8 on attn
---dtype auto
---enable-prefix-caching
---tool-call-parser qwen3_coder
---reasoning-parser qwen3
---default-chat-template-kwargs '{"preserve_thinking":true}'
---override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
-```
-
-### Performance (Benchmark 2026-05-06, fresh boot, post-warmup)
-
-| Metric | 27B Dense + TurboQuant | MoE 35B-A3B (previous) | Δ |
+| Metric | 27B Dense + TurboQuant | MoE 35B-A3B (baseline) | Δ |
 |---|:---:|:---:|:---:|
-| Decode tok/s (single, no thinking) | **52-54** | 107 | **-50%** |
+| Decode tok/s (single, no thinking) | 52-54 | 107 | **-50%** |
 | Decode tok/s (thinking) | 50.5 | 116.5 | **-57%** |
-| 5 concurrent (aggregate) | **189** | 369 | **-49%** |
+| 5 concurrent (aggregate) | 189 | 369 | **-49%** |
 | Tool call latency | 0.66s | 0.47s | +40% |
-| KV cache size | **516K tokens** | 322K | **+60%** |
-| Context | 262K | 262K | = |
-| Vision | Yes | Yes | = |
-| preserve_thinking | Yes | Yes | = |
+| KV cache size | 516K tokens | 322K | +60% |
+| Repetition 4-gram | 0.044 | 0.028 | **+59% worse** |
+| GSM8K (300 samples) | 91.7% | 87.6% (full 1319) | +4.1pts (CIs overlap) |
+| IFEval (300 samples) | 91.0% | 87.6% (full 541) | +3.4pts (CIs overlap) |
 
-**TurboQuant boundary protection** working: vLLM logs `TQ hybrid: full-attention layers [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63]` (16 full-attn / 64 total). Backend chosen: `Using TURBOQUANT attention backend out of potential backends: ['TURBOQUANT']`.
+Quality gains within sampling noise on the benchmarks we ran locally. Profile archived to `myia_vllm/archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`.
 
-**Boot stats**: compile 91s (fresh cache), total init 178s (profile + create kv cache + warmup + capture), CUDA graphs 0.47 GiB / GPU.
+**Attempt 2: Qwen3.6-35B-A3B MoE + TurboQuant K8V4** (same image, switch model + add `--enable-expert-parallel`) — Booted cleanly with **1,494,999 tokens KV cache (+4.6× vs FP8 baseline 322K)**, hybrid layer detection `[3, 7, 11, 15, 19, 23, 27, 31, 35, 39]` (10/40), Marlin MoE active, EP=2 working.
 
-**Quality (upstream — NOT YET locally verified)**:
-- SWE-bench Verified: 73.4% → **77.2%** (+3.8 pts)
-- Terminal-Bench 2.0: 51.5% → **59.3%** (+7.8 pts)
-- SkillsBench Avg5: 28.7% → **48.2%** (+19.5 pts)
-
-### Rollback procedure
-```powershell
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-27b.yml down
-docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+EngineCore crashes on first chunked-prefill continuation request (~30K-token prompt from real OWUI traffic):
 ```
-~10-15 min downtime + ~150s fresh compile cache. MoE image `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` still present locally.
+AssertionError: Workspace is locked but allocation from
+'turboquant_attn.py:720:_continuation_prefill' requires 29.73 MB,
+current size is 16.31 MB. Workspace growth is not allowed after locking.
+```
 
-## Qwen3.6-35B-A3B Deployment (Archived 2026-05-06)
+Already filed upstream as [vllm#41726](https://github.com/vllm-project/vllm/issues/41726) (filed 2026-05-05 by `jhsmith409`). Bug is **not hybrid-specific** and **predates #39931** — bisected to pre-merge nightly on plain dense Qwen3-4B and Llama-3.1-8B. Candidate fix: PR [#40798](https://github.com/vllm-project/vllm/pull/40798) "Share decode scratch workspace across layers" (open). [Our reproduction comment](https://github.com/vllm-project/vllm/issues/41726#issuecomment-4389387531) confirms the bug persists post-#39931 merge on hybrid MoE + Ada hardware.
+
+### Rollback completed (2026-05-06)
+Restored MoE + FP8 KV with proven baseline image `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` (Apr 06 nightly, stable since 2026-04-19). The TQ image (`vllm-qwen36-tq:nightly-e47c98ef-patched1`) and Dockerfile (`Dockerfile.qwen36-tq`) **retained** for re-test once #40798 merges.
+
+To re-test TurboQuant later:
+1. Edit [medium-qwen36-moe.yml](myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml) line 36 → `image: vllm-qwen36-tq:nightly-e47c98ef-patched1`
+2. Edit line 51 → `--kv-cache-dtype turboquant_k8v4`
+3. `docker compose down && docker compose up -d`
+
+## Qwen3.6-35B-A3B Deployment (Current — production since 2026-04-17, FP8 KV)
 
 ### Model Specifications
 - **Architecture**: 35B MoE with 3B active parameters per token (256 experts, 9 active: 8 routed + 1 shared, 40 layers)
@@ -605,28 +592,21 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-05-06)
+## Current State (2026-05-06, post-rollback)
 
-- **Qwen3.6-27B Dense + TurboQuant K8V4 KV cache** on port 5002 (GPUs 0,1) — **production since 2026-05-06** (replaces Qwen3.6-35B-A3B MoE)
-  - ✅ TurboQuant attention backend active (PR #39931 merged 2026-05-05)
-  - ✅ Hybrid layer detection: 16 full-attn / 64 total (boundary layer protection)
-  - ✅ shm_broadcast.py custom patch carried forward (PR #40303 still OPEN upstream)
-  - ✅ Vision (images, documents) + Thinking + preserve_thinking server-side default
-  - ✅ Watchdog sidecar (dual-ping host + Docker DNS, auto-restart 3 fails)
-  - **KV cache: 516K tokens** (vs MoE 322K, **+60%** with TurboQuant K8V4)
-  - **Decode**: 52-54 tok/s single-user (vs MoE 107, **-50%**), tool call 0.66s, 5-concurrent 189 tok/s aggregate (vs MoE 369, **-49%**)
-  - Trade-off rationale: Dense 27B activates all 27B params per token (vs MoE 3B active) → speed regression accepted for quality gains (upstream: SWE +3.8, Terminal-Bench +7.8, SkillsBench +19.5)
-  - Image: `vllm-qwen36-27b-tq:nightly-e47c98ef-patched1` (2026-05-06 nightly post-merge)
-- **Qwen3.6-35B-A3B MoE PREVIOUS** (archived 2026-05-06, ran 2026-04-17 → 2026-05-06)
-  - Was: FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
-  - ✅ Vision (images, documents) + Thinking modulation
+- **Qwen3.6-35B-A3B MoE + FP8 KV** on port 5002 (GPUs 0,1) — restored as production baseline 2026-05-06 16:02 UTC after same-day TurboQuant migration attempts both rejected
+  - Image: `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` (Apr 06 nightly + transformers>=5.0 + shm_broadcast.py patch — proven stable since 2026-04-19, no shm crashes in 17 days)
+  - FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
+  - ✅ Vision (images, documents) + Thinking modulation + `preserve_thinking` server-side default
   - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
-  - ✅ **NEW: `--default-chat-template-kwargs '{"preserve_thinking":true}'`** — server-side default for multi-turn reasoning retention (works for clients that can't customize chat_template_kwargs)
-  - ✅ Watchdog sidecar: dual-ping (host.docker.internal + Docker DNS), auto-restart after 3 fails
-  - FP8 KV cache: **322K tokens** (0.85 gpu-util)
-  - Performance: **107.0 tok/s decode, 369.4 tok/s concurrent, 0.47s tool call, 116.5 tok/s thinking** (Apr 06 nightly, benchmarked 2026-04-17)
+  - ✅ Watchdog sidecar (dual-ping host + Docker DNS, auto-restart 3 fails)
+  - **KV cache: 322K tokens** (FP8, 0.85 gpu-util)
+  - **Decode**: 107 tok/s single-user, 369 tok/s 5-concurrent, 0.47s tool call, 116.5 tok/s thinking (Apr 06 nightly, benchmarked 2026-04-17)
   - vLLM class: `Qwen3_5MoeForConditionalGeneration` (same code path as 3.5)
-  - Quality upgrades (upstream): SWE-bench 70→73.4, Terminal-Bench 40.5→51.5, NL2Repo 20.5→29.4, QwenWebBench 978→1397
+  - Quality upgrades over Qwen3.5 (upstream): SWE-bench 70→73.4, Terminal-Bench 40.5→51.5, NL2Repo 20.5→29.4, QwenWebBench 978→1397
+- **TurboQuant K8V4 migration ATTEMPTED 2026-05-06, REJECTED** (both candidates):
+  1. **Qwen3.6-27B Dense + TQ** : Tripped all 3 perf rollback thresholds (decode -50%, concurrent -49%, tool +40%); quality gains within sampling noise locally. Profile archived to `archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`.
+  2. **Qwen3.6-35B-A3B MoE + TQ** : Crashed on first chunked-prefill continuation (workspace sizing bug, [vllm#41726](https://github.com/vllm-project/vllm/issues/41726) — already filed by `jhsmith409`, candidate fix [PR #40798](https://github.com/vllm-project/vllm/pull/40798) open). Our reproduction posted as [issue comment](https://github.com/vllm-project/vllm/issues/41726#issuecomment-4389387531) — confirms persistence post-#39931 merge on hybrid MoE + Ada hardware. Image `vllm-qwen36-tq:nightly-e47c98ef-patched1` and `Dockerfile.qwen36-tq` retained for re-test once #40798 merges.
 - **GPU 2 — FULLY FREED 2026-05-01** for CoursIA training jobs (queue 5-7d : QC ML strategies, Sudoku large, RL extension). State: **78 MiB / 24564 MiB** (driver baseline only, no resident process). OmniCoder-9B archived 2026-04-30 (`myia_vllm/archives/2026/mini-omnicoder.yml.archived-2026-04-30`, `Dockerfile.omnicoder.archived-2026-04-30`). Reasoning: ai-01 piloting double-track (coordination + training) sprint sustainable. Issue CoursIA #626.
 - **Kokoro TTS migrated to po-2023** (2026-05-01): final endpoint `https://tts.myia.io/kokoro/v1` (path-strip via IIS, bearer auth required, sleep-mode like Orpheus). 7/7 OWUI tenants switched (myia, epf, epf-genai, ece, esg, epita, pauwels — synthesis tested HTTP 200 with `ff_siwis` voice, MP3 ID3 valid). Service `kokoro-tts` removed from `myia-open-webui` compose stack on ai-01, volume `kokoro-data` purged. Quirks noted: po-2023 endpoint serves `/v1/voices` (200) but NOT `/v1/audio/voices` (404, non-standard); `/v1/audio/speech` works fine (used by OWUI). Commit `d37df601b` (myia-open-webui workspace).
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`
@@ -640,9 +620,9 @@ Non-standard params (top_k, min_p) sent via `extra_body`.
 - **API keys rotated** (2026-03-13): all 3 keys regenerated after accidental git exposure, hardcoded keys removed from 13 files
 - **Sampling optimization** (2026-03-08): presence_penalty 1.5 reduces repetition 2-3x with no speed impact
 - **OWUI routing for Roo: ABANDONED** (2026-03-10): 83+ MCP tools overwhelm OWUI pipe. OWUI wrappers exist for direct OWUI users only.
-- **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13), Qwen3.5-27B-Claude-Opus-Distilled-v2 AWQ (2026-04-05: 56 tok/s decode -36%, tool calling broken with qwen3_coder, concurrent -53%, KV cache 106K vs 324K), **Qwen3.6-27B dense AWQ INT4** (2026-04-24: 19.06 GB weights don't fit single RTX 4090 24GB with KV cache headroom — `ValueError: No available memory for the cache blocks` at gpu-util 0.90. TurboQuant KV cache NOT compatible with hybrid GDN+Attention models — `NotImplementedError: TurboQuant KV cache is not supported for hybrid (attention + Mamba) models. Boundary layer protection requires uniform attention layers.` Universal upstream guard, not Ampere-specific. Profile `mini-qwen36-27b.yml` retained for TP=2 deployment or future 4B/9B variants)
+- **Models rejected**: Qwen3.5-27B Dense (2026-02-25), GPTQ-Int4 (2026-03-03), BNB NF4 distill (2026-03-13), Qwen3.5-27B-Claude-Opus-Distilled-v2 AWQ (2026-04-05: 56 tok/s decode -36%, tool calling broken with qwen3_coder, concurrent -53%, KV cache 106K vs 324K), **Qwen3.6-27B dense AWQ INT4 single-GPU** (2026-04-24: 19.06 GB weights don't fit single RTX 4090 24GB with KV cache headroom. Universal upstream guard, not Ampere-specific. Profile `mini-qwen36-27b.yml` retained for TP=2 deployment or future 4B/9B variants), **Qwen3.6-27B dense + TurboQuant K8V4 TP=2** (2026-05-06 same-day cutover attempt: decode -50%, 5-concurrent -49%, tool +40% — all 3 rollback thresholds tripped; quality gains within sampling noise. Profile archived to `archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`), **Qwen3.6-35B-A3B MoE + TurboQuant K8V4** (2026-05-06: booted with 1.49M-token KV but EngineCore crashes on first chunked-prefill continuation — upstream bug [vllm#41726](https://github.com/vllm-project/vllm/issues/41726), candidate fix [PR #40798](https://github.com/vllm-project/vllm/pull/40798). Re-test when #40798 merges)
 - **DFlash speculative decoding** (evaluated 2026-04-24, NOT deployed in prod): drafter `z-lab/Qwen3.6-35B-A3B-DFlash` (8-layer Qwen3 dense, BF16, ~0.5B). Block diffusion, block_size=16, target_layer_ids=[1,10,19,28,37]. Profile `medium-qwen36-moe-dflash.yml` retained as opt-in. **Empirical bench vs baseline 3.6**: single-user code +23% (131 vs 107 tok/s), single-user reasoning **+94%** (226 vs 116.5 tok/s), single-user code long +59% (170 tok/s); 5-user concurrent **-15%** (315 vs 369 tok/s aggregate). **Trade-offs**: requires `--attention-backend flash_attn` which **rejects fp8 KV cache** → max-model-len capped at 160K (vs baseline 262K), KV cache 93K tokens (vs baseline 322K), max concurrency 1.15× (vs baseline 4.69×). **Acceptance rate confirmed compatible with AWQ target**: 26-47% per-position, 4-7 tokens accepted per draft step. **The "0% acceptance with AWQ" claim previously in MEMORY.md was a hallucination** — only MTP (multi-token prediction, vLLM `--speculative-config method=mtp`) shows 0% with AWQ (tested on GLM-4.6-AWQ, see CLAUDE.md "Critical Configuration Notes" #4). DFlash drafter is a separate BF16 model with its own quant config via `vllm.model_executor.models.utils.get_draft_quant_config`, hence AWQ target compatibility. **Decision (2026-04-24)**: rollback to baseline — concurrent throughput + 262K context matter more for our Roo orchestrator + multi-student workload than single-user speedup. Profile retained at `myia_vllm/configs/docker/profiles/medium-qwen36-moe-dflash.yml` for benchmarks or future single-user-heavy use cases.
-- **DEFERRED**: TurboQuant migration. **Update 2026-04-25**: PR #39931 (hybrid model support) still OPEN, REVIEW_REQUIRED as of 2026-04-24, all CI green incl. `lm-eval-turboquant-kv-cache`. Issue [#40807](https://github.com/vllm-project/vllm/issues/40807) (filed 2026-04-24) documents a 2nd bug: TurboQuant + spec-dec MTP + chunked-prefill crashes CUDA graph capture at `turboquant_attn.py:570` (`query_start_loc.tolist()` not graph-safe) — does NOT affect us since we don't run spec-dec in prod. Downstream `Sandermage/genesis-vllm-patches` v7.10.0 has a working patch tree (Patch 22/23/38/44) tested on Qwen3-Next-35B-A3B-**AWQ** (= our model class) on SHA `fe9c3d6c5` (Apr 23): **258K context, 64.8 t/s decode @ 100K ctx, 0 leak after 100 reqs**. TurboQuant gives **~5× KV** vs fp8 on Qwen3.6-27B (874K vs 171K tokens, 2× 3090 TP=2). For us: stay deferred until PR #39931 merges, then test on prod Qwen3.6-35B-A3B-AWQ (would need to bump prod from `f6983f01d` Apr 06 → ≥`fe9c3d6c5` Apr 23). Also unlocks Qwen3.6-27B Dense on GPU 2 if we relocate Kokoro (noonghunna proves 85 TPS / 125K ctx / vision on 1× 3090 with `patch_tolist_cudagraph.py`).
+- **DEFERRED**: TurboQuant migration. **2026-05-06 attempt**: PR [#39931](https://github.com/vllm-project/vllm/pull/39931) merged 2026-05-05 unblocks hybrid models. We tested both 27B Dense (perf regression rejected) and MoE 35B-A3B (upstream workspace bug [#41726](https://github.com/vllm-project/vllm/issues/41726) crashes on chunked-prefill continuation). Re-test when [PR #40798](https://github.com/vllm-project/vllm/pull/40798) "Share decode scratch workspace across layers" merges. Also still tracking issue [#40807](https://github.com/vllm-project/vllm/issues/40807) (TurboQuant + spec-dec MTP + chunked-prefill — does NOT affect us, no spec-dec in prod).
 
 ## Related Resources
 

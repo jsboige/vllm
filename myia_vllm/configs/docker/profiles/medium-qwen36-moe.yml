@@ -28,7 +28,19 @@
 
 services:
   vllm-medium-qwen36-moe:
-    image: vllm-qwen36-shmpatched:nightly-f6983f01d-patched1  # 2026-04-19: custom build = Apr 06 nightly (v0.19.1.dev45+gf6983f01d) + patches/shm_broadcast.py (memory_fence uses libc sched_yield via ctypes instead of threading.Lock — fixes vllm-project/vllm#35104). Build: docker build -t vllm-qwen36-shmpatched:nightly-f6983f01d-patched1 -f Dockerfile.qwen36-shmpatched myia_vllm/configs/docker
+    # 2026-05-06: ROLLED BACK to FP8 KV + Apr 06 baseline image after MoE+TurboQuant
+    # rejection. TurboQuant K8V4 was attempted on this MoE profile (image
+    # vllm-qwen36-tq:nightly-e47c98ef-patched1) but crashed on first chunked-prefill
+    # continuation: AssertionError at turboquant_attn.py:720:_continuation_prefill —
+    # workspace was sized for 16.31 MB at warmup, real prefill needed 29.73 MB,
+    # workspace.py:157 refuses growth post-lock. Bug specific to TurboQuant + hybrid
+    # GDN MoE + chunked prefill (27B Dense never hit it because no GDN layers).
+    # Cannot be worked around at config level. Reverting to proven baseline.
+    # Image: vllm-qwen36-shmpatched:nightly-f6983f01d-patched1 (Apr 06 + transformers
+    # >=5.0 + shm_broadcast.py custom patch). Stable since 2026-04-19 (no shm crashes).
+    # The TQ image stays local at vllm-qwen36-tq:nightly-e47c98ef-patched1 in case
+    # an upstream fix lands.
+    image: vllm-qwen36-shmpatched:nightly-f6983f01d-patched1
     container_name: myia_vllm-medium-qwen36-moe
     command: >
       --host 0.0.0.0
