@@ -87,13 +87,13 @@ services:
       --enable-expert-parallel
       --gdn-prefill-backend triton
       --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.82
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
       --dtype float16
       --language-model-only
       --max-num-batched-tokens 4096
-      --max-num-seqs 2
+      --max-num-seqs 8
       --performance-mode interactivity
       --enable-chunked-prefill
       --enable-prefix-caching
@@ -155,6 +155,10 @@ services:
       - GENESIS_ENABLE_P98=1
       - GENESIS_ENABLE_P101=1
       - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      # P40 — Genesis dispatcher recommended for RTX 4090 (SM 128, L2 72 MB, mixed regime).
+      # TQ k8v4 GQA grouping kernel from vllm#40792. Author measured +27% on H100;
+      # +5-15% expected on Ada. Cache-locality benefit needs L2 >= 24 MB (we have 72).
+      - GENESIS_ENABLE_P40=1
       - GENESIS_VLLM_PIN_POLICY=strict
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
