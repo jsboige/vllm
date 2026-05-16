@@ -64,7 +64,6 @@ services:
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --distributed-executor-backend mp
-
       --default-chat-template-kwargs '{"preserve_thinking":true}'
       --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
 
