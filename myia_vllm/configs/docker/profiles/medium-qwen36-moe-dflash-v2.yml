@@ -1,0 +1,221 @@
+# Docker Compose profile for Qwen3.6-35B-A3B + DFlash speculative decoding (V2)
+# EVALUATION TEST A (2026-05-14) — independent drafter attention backend (PR #39930)
+#
+# What changed vs medium-qwen36-moe-dflash.yml (v1, 2026-04-24) :
+#   + PR #39930 (merged 2026-04-28) "Allow independent drafter attention backend
+#     selection" lets us pin drafter to FLASH_ATTN while the target stays on a
+#     fp8-KV-compatible backend (TRITON_ATTN). Resolves the v1 blocker that forced
+#     --kv-cache-dtype off and max-model-len 262K→160K.
+#
+#   Restored vs v1 (i.e. matched the FP8 production baseline) :
+#   + --kv-cache-dtype fp8 (was removed in v1 because flash_attn target rejects fp8 KV)
+#   + --max-model-len 262144 (was 163840 in v1 due to KV pressure without fp8)
+#
+#   New for v2 :
+#   + --speculative-config now includes "attention_backend":"FLASH_ATTN"
+#     (drafter only, via PR #39930)
+#   + --attention-backend left to auto-select for the target (vLLM picks a
+#     fp8-KV-compatible backend; we can pin TRITON_ATTN if auto-select misfires)
+#   + Updated base image — built from a nightly that includes #39930
+#
+# Base architecture, env, watchdog: identical to medium-qwen36-moe.yml.
+#
+# DRAFTER (z-lab/Qwen3.6-35B-A3B-DFlash, same model as v1) :
+#   - 8-layer Qwen3 dense, BF16, ~0.5B params (~1 GB VRAM additional)
+#   - Block diffusion, block_size=16
+#   - target_layer_ids=[1,10,19,28,37] — taps these 5 layers of the 40-layer target
+#   - Pair: target Qwen3.6-35B-A3B-AWQ-4bit (independent quant config OK)
+#
+# IMAGE (TODO 2026-05-14):
+#   The image tag below is a placeholder. To build :
+#     1. Update Dockerfile.qwen36-tq FROM line to the 2026-05-14 nightly commit
+#        (post #39949 merge, will be published ~06:00 UTC on Docker Hub as
+#        vllm/vllm-openai:nightly-<commit>).
+#     2. Verify shm_broadcast.py upstream is still bit-identical to our patched
+#        version (likely yes — file has been stable for weeks).
+#     3. Build: docker build -f myia_vllm/configs/docker/Dockerfile.qwen36-tq
+#                            -t vllm-qwen36-dflash-v2:nightly-<commit>-patched1
+#                            myia_vllm/configs/docker/
+#     4. Update the image: line below.
+#
+# DEPLOYMENT (A/B) :
+#   Down baseline:  docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env down
+#   Up dflash-v2:   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe-dflash-v2.yml --env-file myia_vllm/.env up -d
+#   Logs:           docker logs -f myia_vllm-medium-qwen36-moe
+#   Rollback:       docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe-dflash-v2.yml --env-file myia_vllm/.env down
+#                   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+#
+# WHAT TO MEASURE (bench plan):
+#   1. Boot clean, smoke tests (chat, thinking, tool call) — pass/fail
+#   2. Single-user decode (no thinking) — compare to baseline 107 tok/s
+#   3. Single-user decode (thinking) — compare to baseline 116.5 tok/s
+#   4. Single-user code/reasoning long prompt — DFlash strongest case
+#   5. 5-user concurrent aggregate — compare to baseline 369 tok/s
+#      (this is what killed v1 : -15 % concurrent due to backend forcing)
+#   6. Tool call latency — compare to baseline 0.47 s
+#   7. Per-position acceptance rate (1..15) — confirm AWQ target ok
+#   8. Long context (100K+) — confirm 262K capacity preserved
+#
+# EXPECTED IF V2 WORKS :
+#   - Single-user code: +20-90% (v1 measured +23 to +94 % vs baseline 107 tok/s)
+#   - 5-user concurrent: ≥ baseline (the v1 -15 % was the flash_attn-everywhere cost)
+#   - Tool calling: unchanged or slightly better
+#   - 262K context: preserved
+#
+# IF V2 STILL REGRESSES ON CONCURRENT :
+#   The 5-user concurrent loss in v1 was likely from flash_attn on target (10
+#   attention layers x batched workload). V2 should fix that. If it doesn't,
+#   DFlash inherently costs concurrent throughput because drafter compute is
+#   serialized per draft step.
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
+    image: vllm-qwen36-dflash-v2:placeholder-rebuild-2026-05-14
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --gpu-memory-utilization 0.85
+      --max-model-len 262144
+      --kv-cache-dtype fp8
+      --dtype auto
+      --max-num-batched-tokens 32768
+      --max-num-seqs 64
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+
+      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":15,"attention_backend":"FLASH_ATTN"}'
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=4
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - PYTHONPATH=/middleware
+      - VLLM_LOG_DIR=/logs
+      - VLLM_LOG_REQUESTS_CONTENT=1
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-dflash-v2:/root/.cache/vllm  # separate compile cache
+      - ./../../../middleware:/middleware:ro
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 min: model load + drafter load + flash_attn compile + CUDA graphs
+    restart: unless-stopped
+
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-35B-A3B + DFlash v2"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-dflash-v2:  # separate from baseline and v1 — different backend combo

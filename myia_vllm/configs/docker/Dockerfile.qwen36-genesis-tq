@@ -1,0 +1,75 @@
+# Custom vLLM image — Qwen3.6-35B-A3B-AWQ + TurboQuant k8v4 via the Genesis patch tree.
+#
+# PURPOSE: step 1 of the TurboQuant migration — TurboQuant-only (no spec-decode).
+# DFlash gets layered on top in step 2 (separate A/B). See the profile header of
+# profiles/medium-qwen36-genesis-tq.yml for the full runbook.
+#
+# WHY Genesis (Option B): upstream PR #40798 (the _continuation_prefill workspace
+# fix) is OPEN + BLOCKED with no ETA. Our 2026-05-06 MoE+TQ attempt crashed on
+# exactly that path. The Sandermage/genesis-vllm-patches tree carries downstream
+# fixes (P22/P38-class) that resolve it — externally confirmed in vllm#41726 by
+# `xyehya` (2026-05-09: "patches P38 and P22 ... fixed my issue").
+#
+# THREE LAYERS on top of the Genesis-pinned upstream nightly:
+#   1. Genesis patch tree — the vllm/_genesis package + entry-point plugin
+#      (auto-loads in spawn workers via vllm.general_plugins → genesis_v7).
+#   2. transformers>=5.0 — Qwen3.6 model class (carry-forward from prod image).
+#   3. patches/shm_broadcast.py — vllm#35104 PyCFunction workaround (carry-forward).
+#
+# BASE IMAGE: the EXACT commit Genesis v7.72 pins to — vLLM nightly 01d4d1ad3
+# (2026-05-04, v0.20.2rc1.dev9+g01d4d1ad3, per the Genesis README badge).
+# Genesis applies text-patches at known source anchors; a different nightly
+# risks anchor drift (install.sh explicitly warns on pin mismatch).
+FROM vllm/vllm-openai:nightly-01d4d1ad375dc5854779c593eee093bcebb0cada
+
+# ── Layer 2: transformers>=5.0 (Qwen3.6 model class) ──
+# vLLM nightlies ship transformers 4.57.x; the Qwen3.6 family needs >=5.0.
+# Same bump as Dockerfile.qwen36-shmpatched / Dockerfile.qwen36-tq.
+RUN pip install --no-cache-dir "transformers>=5.0" "tokenizers>=0.21" "huggingface_hub>=0.30"
+
+# ── Genesis runtime dependencies ──
+# The Genesis compose entrypoints pip-install these at container start; we bake
+# them at build time instead (deps don't change, faster + reproducible boots).
+RUN pip install --no-cache-dir pandas scipy xxhash
+
+# ── Layer 1: Genesis patch tree ──
+# Pinned to commit fbecee31 (v7.72.5, "Cliff 2b club-3090#22 fix"). Genesis does
+# NOT push git tags, so we pin the SHA for reproducibility.
+#   - vllm/_genesis  → copied into site-packages (the patch package).
+#   - tools/genesis_vllm_plugin → pip install -e (registers the entry point so
+#     vLLM auto-loads Genesis in spawn workers).
+ARG GENESIS_COMMIT=fbecee31fd42fa7de9c2e2e8d780a28c01f46abb
+RUN git clone https://github.com/Sandermage/genesis-vllm-patches.git /opt/genesis \
+ && git -C /opt/genesis checkout ${GENESIS_COMMIT} \
+ && cp -r /opt/genesis/vllm/_genesis \
+       /usr/local/lib/python3.12/dist-packages/vllm/_genesis \
+ && pip install --no-cache-dir --no-deps -e /opt/genesis/tools/genesis_vllm_plugin
+
+# Verify the Genesis package imports and the entry point is registered.
+RUN python3 -c "from vllm._genesis import __version__; print('Genesis', __version__)" \
+ && python3 -c "from importlib.metadata import entry_points; n=[e.name for e in entry_points(group='vllm.general_plugins')]; assert 'genesis_v7' in n, n; print('GENESIS PLUGIN REGISTERED:', n)"
+
+# ── Layer 3: shm_broadcast.py patch (carry-forward, vllm#35104) ──
+# Apr 06 and May 06 nightlies were verified bit-identical for this file; the
+# Genesis pin (May 04) sits between them, so the patch transposes cleanly.
+# The verify step below fails the build loudly if upstream changed the file.
+COPY patches/shm_broadcast.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py
+RUN python3 -c "import py_compile; py_compile.compile('/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/shm_broadcast.py', doraise=True)" \
+ && python3 -c "from vllm.distributed.device_communicators import shm_broadcast; assert callable(shm_broadcast._memory_barrier), 'patched _memory_barrier not found'; print('SHM PATCH VERIFIED')"
+
+# ── Entrypoint wrapper: apply Genesis text-patches, then serve ──
+# Genesis applies its text-patches at process start (matches the Sandermage PROD
+# compose flow: `apply_all` before `vllm serve`). The plugin installed above
+# handles the worker-side rebinds. The script is created via printf to guarantee
+# LF line endings regardless of host git autocrlf settings.
+RUN printf '%s\n' \
+  '#!/bin/bash' \
+  'set -e' \
+  'echo "=== Genesis: applying patch tree (vllm._genesis.patches.apply_all) ==="' \
+  'python3 -m vllm._genesis.patches.apply_all' \
+  'echo "=== Genesis: handoff to vLLM OpenAI API server ==="' \
+  'exec python3 -m vllm.entrypoints.openai.api_server "$@"' \
+  > /usr/local/bin/genesis-entrypoint.sh \
+ && chmod +x /usr/local/bin/genesis-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/genesis-entrypoint.sh"]

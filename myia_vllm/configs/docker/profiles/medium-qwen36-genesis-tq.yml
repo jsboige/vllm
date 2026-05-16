@@ -1,0 +1,264 @@
+# Docker Compose profile — Qwen3.6-35B-A3B-AWQ + TurboQuant k8v4 via Genesis patch tree
+# ============================================================================
+# STATUS: PREPARED 2026-05-14, NOT YET BUILT OR DEPLOYED. Step 1 of the
+#         TurboQuant migration (Option B). Inert until explicitly built/deployed.
+#
+# WHAT THIS IS
+#   The 2026-05-06 attempt at Qwen3.6-35B-A3B MoE + TurboQuant k8v4 booted with
+#   1.49M-token KV (x4.6 vs FP8 322K) but crashed on the first ~30K-prefix
+#   chunked-prefill continuation: AssertionError at
+#   turboquant_attn.py:720:_continuation_prefill. Upstream fix PR #40798 is
+#   OPEN + BLOCKED. This profile takes Option B instead: the
+#   Sandermage/genesis-vllm-patches downstream tree, whose P22/P38-class patches
+#   fix exactly that crash (externally confirmed in vllm#41726 by `xyehya`).
+#
+# SCOPE: TurboQuant ONLY. No spec-decode. DFlash is step 2 (separate A/B) — see
+#        MEMORY.md project_turboquant_hybrid_status.md.
+#
+# ----------------------------------------------------------------------------
+# RUNBOOK
+# ----------------------------------------------------------------------------
+#   1. BUILD (does NOT touch prod — independent docker build):
+#        docker build -f myia_vllm/configs/docker/Dockerfile.qwen36-genesis-tq \
+#                     -t vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 \
+#                     myia_vllm/configs/docker/
+#
+#   2. A/B DEPLOY (takes prod down — only when claudish validation is done):
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env down
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d
+#        docker logs -f myia_vllm-medium-qwen36-moe   # same container_name
+#
+#   3. VALIDATE — the gate is the failure mode that warmup misses:
+#        a. Boot clean. Check logs for the Genesis structured boot summary and
+#           "GPU KV cache size" (expect ~1.5M tokens vs FP8 322K).
+#        b. Smoke: chat, thinking, tool calling (qwen3_coder XML).
+#        c. CRASH TEST: replay ~30K-token-prefix prompts (real OWUI traffic
+#           class) — this is what crashed 2026-05-06. Must NOT raise the
+#           _continuation_prefill assertion.
+#        d. Needle recall at ~254K context.
+#        e. Leak check: VRAM steady after 100 requests.
+#        f. Decode tok/s + concurrent slot count vs FP8 baseline.
+#
+#   4. ROLLBACK (instant — baseline image is retained, nothing was deleted):
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+#
+# ----------------------------------------------------------------------------
+# !!! VERIFY BEFORE FIRST BOOT !!!
+# ----------------------------------------------------------------------------
+#   * GENESIS ENV-FLAG SET (below) is a FIRST DRAFT derived from Genesis's
+#     compose/docker-compose.integration-awq.yml (their config for our exact
+#     model + turboquant_k8v4) plus the TQ-critical flags the docs name
+#     (P67/P98/P101/P78). It MUST be cross-checked against the Genesis
+#     docs/PATCHES.md + docs/CONFIGURATION.md before this is trusted —
+#     ~32 patches are default-ON, ~90 are opt-in, and the right minimal set for
+#     "35B-A3B-AWQ MoE + TQ k8v4, no spec-decode" has not been pinned down yet.
+#   * --max-num-batched-tokens / --max-num-seqs start CONSERVATIVE (8192 / 16).
+#     The crash is on the continuation path — validate the 30K-prefix crash test
+#     at these values FIRST, then ramp toward prod (32768 / 64) measuring stability.
+#   * VISION: kept ON (--dtype auto + --limit-mm-per-prompt, prod parity). Genesis'
+#     own integration test ran --language-model-only --dtype float16. If boot or
+#     TQ stability issues appear, that is the genesis-validated fallback to try.
+#   * shm_broadcast patch: verify vllm#35104 is still unfixed on the 01d4d1ad3
+#     nightly; if upstream fixed it, drop the COPY layer from the Dockerfile.
+# ============================================================================
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.85
+      --max-model-len 262144
+      --kv-cache-dtype turboquant_k8v4
+      --dtype auto
+      --max-num-batched-tokens 8192
+      --max-num-seqs 16
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --prefix-caching-hash-algo xxhash
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
+      --async-scheduling
+      --no-scheduler-reserve-full-isl
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=4
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - VLLM_LOG_DIR=/logs
+      # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
+      # These matter for TurboQuant memory accounting — the profiler must size
+      # the KV pool correctly around the TQ dequant/continuation transient peaks.
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      # ── Genesis patch flags — FIRST DRAFT, VERIFY against docs/PATCHES.md ──
+      # P37 — shared MoE intermediate-cache pool (integration-awq.yml sets this).
+      # P38/P38B — persistent K_full/V_full continuation-prefill workspace +
+      #            compile-safe variant. This is the crash-fix family.
+      # P67 — TurboQuant multi-query Triton kernel (docs: TQ k8v4 requires it).
+      # P98 — TurboQuant WorkspaceManager revert (Ampere/Ada small-batch perf).
+      # P101 — TurboQuant continuation 64-token slicing (long-prefix OOM guard).
+      # P78 — TurboQuant .tolist() cudagraph-capture guard.
+      - GENESIS_ENABLE_P37=1
+      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
+      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P101=1
+      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      - GENESIS_VLLM_PIN_POLICY=strict
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-genesis-tq:/root/.cache/vllm  # separate cache: different vLLM pin + Genesis rebinds
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 min: model load + Genesis apply_all + TQ + CUDA graph capture (cold)
+    restart: unless-stopped
+
+  # Watchdog sidecar — identical to medium-qwen36-moe.yml (keepalive + port-fwd
+  # monitor + auto-restart). Pings host.docker.internal to catch Docker Desktop
+  # port-forwarding loss; falls back to internal DNS to catch engine crashes.
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-genesis-tq:  # separate from baseline + dflash caches
+
+# =====================================================================
+# CHANGES vs medium-qwen36-moe.yml (the FP8 baseline)
+# =====================================================================
+#   image                  vllm-qwen36-shmpatched  → vllm-qwen36-genesis-tq
+#   --kv-cache-dtype        fp8                     → turboquant_k8v4
+#   --max-num-batched-tokens 32768                  → 8192   (conservative first boot)
+#   --max-num-seqs          64                      → 16     (conservative first boot)
+#   + --enable-chunked-prefill        (Genesis requires it; the old "forces V0"
+#                                      caveat does NOT apply to vLLM 0.20.x — V1
+#                                      is default and the flag is V1-native)
+#   + --prefix-caching-hash-algo xxhash   (Genesis integration-awq parity)
+#   + --disable-custom-all-reduce         (Genesis integration-awq parity)
+#   + --async-scheduling                  (Genesis integration-awq parity)
+#   + --no-scheduler-reserve-full-isl     (Genesis integration-awq parity)
+#   + Genesis runtime env block + GENESIS_ENABLE_* patch flags (see VERIFY banner)
+#   - --middleware prefix_capture.PrefixCapture  (that was the claudish diag, not this)
+#   - PYTHONPATH=/middleware, VLLM_LOG_REQUESTS_CONTENT, middleware mount (not needed here)
+#
+# Unchanged: TP=2, EP=2, gdn-prefill-backend triton, no-flashinfer-autotune,
+#   gpu-util 0.85, max-model-len 262144, dtype auto + vision, tool/reasoning
+#   parsers, preserve_thinking, sampling overrides, watchdog, GPU ids 0,1.
