@@ -93,7 +93,7 @@ services:
       --dtype float16
       --language-model-only
       --max-num-batched-tokens 4096
-      --max-num-seqs 8
+      --max-num-seqs 16
       --performance-mode interactivity
       --enable-chunked-prefill
       --enable-prefix-caching
