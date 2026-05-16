@@ -101,7 +101,18 @@ For OWUI/Roo/Claudish multi-user long-context workload:
 - Net delta vs v2e: -67K KV tokens (vision encoder cost), N=16 throughput essentially identical (829 vs 823).
 - **REGRESSION discovered on idle soak (see v2f-soak section)** — promotion to prod blocked.
 
-## v2f — SOAK FAILURE at +90min idle (shm_broadcast deadlock)
+## v2f — SOAK FAILURE at +90min UNDER TRAFFIC (shm_broadcast deadlock)
+**CORRECTION (07:00Z)**: my earlier "idle deadlock" framing was wrong. Audit of
+the vLLM access logs over the 60min preceding the deadlock shows **~90 external
+POST `/v1/chat/completions` requests from `172.27.0.1`** (Docker gateway =
+reverse-proxy traffic from claudish / OWUI / Roo / roo-state-manager
+condensation). The container was NOT idle — it was serving real production
+traffic. The deadlock fires under continuous light load, matching the pattern
+of the historical 2026-04-19 saga (9 crashes in 50h on Apr 06 nightly under
+OWUI/Roo load) — which means the FlashInfer JIT autotune hypothesis from that
+investigation is back on the table and should NOT have been confidently called
+"idle" tonight.
+
 **Timeline (UTC):**
 - 03:55:13Z — v2f Application startup complete, healthy
 - 03:56-04:30Z — smokes + crash gate + 3-iter scaling bench (all PASS)
@@ -137,8 +148,37 @@ For OWUI/Roo/Claudish multi-user long-context workload:
 - v2f Genesis image + profile RETAINED. v2f bench results stand as upper bound for what TurboQuant CAN deliver on this hardware once the idle-deadlock cause is resolved.
 - Block on promoting v2f to prod until idle stability is reproduced over 2-3 hours.
 
-## v2g (next attempt, not run tonight)
-Hypotheses to test:
-- Run with `VLLM_USE_FLASHINFER_SAMPLER=0` (the historical 2026-04-19 finding fingered FlashInfer JIT autotune as a deadlock vector; sampler may have its own autotune path even when `--no-enable-flashinfer-autotune` is set).
-- Verify shm_broadcast.py patch is loaded at RUNTIME (not just present in the image) by `import inspect; inspect.getsource(vllm.distributed.device_communicators.shm_broadcast._memory_fence)`.
-- Investigate Genesis patches PN33 / P78 / P101 for any new threading.Lock acquisition paths.
+## v2g — WIN: soak T+~104min under real traffic, NO shm_broadcast deadlock
+Same Genesis image + profile as v2f, single change: `VLLM_USE_FLASHINFER_SAMPLER=1` → `=0`.
+Hypothesis tested: FlashInfer sampler has its own autotune path that dlopens .so mid-runtime →
+corrupts CPython `_thread.lock` descriptor → triggers the `shm_broadcast.py:733`
+`No available shared memory broadcast block` deadlock that took v2f down at T+1h35.
+
+**Timeline (UTC, 2026-05-16):**
+- 06:29Z — boot, "Application startup complete" at 06:34Z
+- 06:31:40Z — single benign `shm_broadcast.py:733` warning during startup compile (engine pid=110 init, "typically happens when some processes are doing time-consuming work e.g. compilation")
+- 06:55Z → 07:40Z — **sustained 8-11 concurrent requests for 45 min** (real OWUI/Roo/Claudish prod traffic, matches v2f's load profile)
+- 07:12:35Z → 07:17:36Z — watchdog flagged ENGINE-DOWN fail 1/3 + 2/3, then RECOVERED. Engine was running 8-10 reqs at 0.5-1.6 tok/s aggregate (thrashing under heavy concurrency), KV grew 22% → 27%, then unblocked. **NOT a deadlock — engine recovered organically with no restart needed.**
+- 07:45Z onwards — load drops to 7 then 0 concurrent
+- 08:13Z — T+~104min, 0 active reqs, KV 0%, health 4.7ms, vision smoke 0.33s PASS
+
+**Counters since boot:**
+| Metric | Value |
+|---|---|
+| Total POSTs served | 202 (~100/h) |
+| Deadlock signatures (`shm_broadcast.py:733`, `EngineCore.died`, `EngineDeadError`) | 0 real (1 benign startup) |
+| Watchdog ENGINE-DOWN events | 1 transient (recovered after 2 fails of 3, no restart) |
+| Peak concurrent requests | 11 (sustained 8-11 for 45 min) |
+| GPU 0,1 utilization at peak | 100% / 100% (113-114W per GPU) |
+| GPU 0,1 utilization idle | 3% / 0% (20-28W) — Genesis TQ has NO at-rest overhead |
+
+**Verdict: v2g PASSES the v2f failure window.** The `VLLM_USE_FLASHINFER_SAMPLER=0` hypothesis holds.
+Soak passed under **the same prod traffic class** that broke v2f. The single transient watchdog flag at 07:12-07:17 was NOT the v2f failure mode — engine kept running 8-10 reqs, no `shm_broadcast` warning, no `EngineDeadError`. Generation throughput recovered to ~85 tok/s at 07:16-07:17 without intervention.
+
+**Side-finding (unrelated to TQ stability):** ~50 `qwen3.5-35b-a3b` 404s/hour from `172.27.0.1` (Docker gateway). Source could not be identified from access logs alone — `172.27.0.1` NATs both host-side processes AND external traffic reverse-proxied via IIS. **Action**: wrote `myia_vllm/middleware/error_source_capture.py` (logs all `/v1/*` request sources to `/logs/error_sources.jsonl` with status + client IP + X-Forwarded-For + X-Real-IP + User-Agent + Host + model + 1.5 KB body_head + 1.5 KB body_tail). Wired opt-in (commented `--middleware` flag) in both `medium-qwen36-moe.yml` and `medium-qwen36-genesis-tq.yml`. Activate at next container restart. Backlog issue for diff-aware session logging filed: vllm#8.
+
+## v2h (not needed for now — v2g cleared the gate)
+Hypotheses parked in case v2g regresses later:
+- Verify shm_broadcast.py patch is loaded at RUNTIME (not just present in image): `import inspect; inspect.getsource(vllm.distributed.device_communicators.shm_broadcast._memory_fence)`.
+- Audit Genesis patches PN33 / P78 / P101 for new threading.Lock acquisition paths.
+- Try a different vLLM nightly pin under Genesis (current is `01d4d1ad3`).

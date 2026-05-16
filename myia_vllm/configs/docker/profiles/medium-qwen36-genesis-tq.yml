@@ -110,6 +110,14 @@ services:
 
       --default-chat-template-kwargs '{"preserve_thinking":true}'
       --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+
+      # --- DIAG OPT-IN (uncomment to log ALL /v1/* request sources to /logs/error_sources.jsonl) ---
+      # Diagnostic — added 2026-05-16 to track stale qwen3.5-35b-a3b 404 source AND
+      # characterize legitimate traffic. One JSONL line per request with status, client IP,
+      # X-Forwarded-For, X-Real-IP, User-Agent, Host, model, body_head (first 1.5KB) +
+      # body_tail (last 1.5KB). Body excerpt may contain prompts/PII — log is privileged.
+      # Filter 4xx with `jq 'select(.status >= 400)' /logs/error_sources.jsonl`.
+      #--middleware error_source_capture.ErrorSourceCapture
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -130,6 +138,7 @@ services:
       - OMP_NUM_THREADS=1
       - VLLM_USE_FLASHINFER_MOE_FP16=1
       - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
       # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
       # These matter for TurboQuant memory accounting — the profiler must size
       # the KV pool correctly around the TQ dequant/continuation transient peaks.
@@ -138,7 +147,7 @@ services:
       - VLLM_FLOAT32_MATMUL_PRECISION=high
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
       - NCCL_P2P_DISABLE=1
-      - VLLM_USE_FLASHINFER_SAMPLER=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0  # v2g: was =1 in v2f, suspected idle-deadlock vector (FlashInfer sampler autotune dlopens .so → CPython _thread.lock corruption)
       - CUDA_DEVICE_MAX_CONNECTIONS=8
       - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
       - VLLM_MOE_USE_DEEP_GEMM=0
@@ -167,6 +176,7 @@ services:
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
       - vllm-compile-cache-qwen36-genesis-tq:/root/.cache/vllm  # separate cache: different vLLM pin + Genesis rebinds
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../middleware:/middleware:ro  # error_source_capture diag (zero-cost mount, --middleware flag opt-in)
     ports:
       - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
     healthcheck:

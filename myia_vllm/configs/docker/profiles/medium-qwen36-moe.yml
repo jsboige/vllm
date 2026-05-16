@@ -70,6 +70,14 @@ services:
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
       --skip-mm-profiling
+
+      # --- DIAG OPT-IN (uncomment to log ALL /v1/* request sources to /logs/error_sources.jsonl) ---
+      # Diagnostic — added 2026-05-16 to track stale qwen3.5-35b-a3b 404 source AND
+      # characterize legitimate traffic. One JSONL line per request with status, client IP,
+      # X-Forwarded-For, X-Real-IP, User-Agent, Host, model, body_head (first 1.5KB) +
+      # body_tail (last 1.5KB). Body excerpt may contain prompts/PII — log is privileged.
+      # Filter 4xx with `jq 'select(.status >= 400)' /logs/error_sources.jsonl`.
+      #--middleware error_source_capture.ErrorSourceCapture
     ipc: host
     shm_size: '16gb'
     deploy:
