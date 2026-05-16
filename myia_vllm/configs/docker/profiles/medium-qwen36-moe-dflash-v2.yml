@@ -26,17 +26,15 @@
 #   - target_layer_ids=[1,10,19,28,37] — taps these 5 layers of the 40-layer target
 #   - Pair: target Qwen3.6-35B-A3B-AWQ-4bit (independent quant config OK)
 #
-# IMAGE (TODO 2026-05-14):
-#   The image tag below is a placeholder. To build :
-#     1. Update Dockerfile.qwen36-tq FROM line to the 2026-05-14 nightly commit
-#        (post #39949 merge, will be published ~06:00 UTC on Docker Hub as
-#        vllm/vllm-openai:nightly-<commit>).
-#     2. Verify shm_broadcast.py upstream is still bit-identical to our patched
-#        version (likely yes — file has been stable for weeks).
-#     3. Build: docker build -f myia_vllm/configs/docker/Dockerfile.qwen36-tq
-#                            -t vllm-qwen36-dflash-v2:nightly-<commit>-patched1
-#                            myia_vllm/configs/docker/
-#     4. Update the image: line below.
+# IMAGE (RESOLVED 2026-05-16):
+#   Reuses the EXISTING TurboQuant image vllm-qwen36-tq:nightly-e47c98ef-patched1
+#   (built from 2026-05-06 nightly + shm_broadcast patch + transformers>=5.0).
+#   Verified 2026-05-16:
+#     - Nightly e47c98ef (2026-05-06) is post-PR #39930 (merged 2026-04-28).
+#     - vllm/config/speculative.py exposes `attention_backend: AttentionBackendEnum | None`
+#       with docstring: "DFlash needs a non-causal-capable backend like FLASH_ATTN".
+#     - vllm/v1/spec_decode/llm_base_proposer.py wires it.
+#   No rebuild needed. Drafter (~0.5B BF16) downloads on first boot to /root/.cache/huggingface.
 #
 # DEPLOYMENT (A/B) :
 #   Down baseline:  docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env down
@@ -70,7 +68,7 @@
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
-    image: vllm-qwen36-dflash-v2:placeholder-rebuild-2026-05-14
+    image: vllm-qwen36-tq:nightly-e47c98ef-patched1  # 2026-05-06 nightly, post-PR #39930
     container_name: myia_vllm-medium-qwen36-moe
     command: >
       --host 0.0.0.0
