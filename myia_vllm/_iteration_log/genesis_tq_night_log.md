@@ -95,8 +95,50 @@ Smokes:
 
 VRAM: GPU 0 24044→24039 MiB (delta -5), GPU 1 22880→22880 (delta 0), GPU 2 45 MiB. Zero leak.
 
-## Summary — v2f is the production candidate
+## Summary — v2f is the production candidate (REVISED — see soak failure below)
 For OWUI/Roo/Claudish multi-user long-context workload:
-- WIN: KV +6.3× (322K → 2.03M tokens), 16-conc throughput +125% vs FP8 baseline, vision restored, single-user +12%.
-- NO REGRESSIONS vs FP8 baseline.
+- WIN under load: KV +6.3× (322K → 2.03M tokens), 16-conc throughput +125% vs FP8 baseline, vision restored, single-user +12%.
 - Net delta vs v2e: -67K KV tokens (vision encoder cost), N=16 throughput essentially identical (829 vs 823).
+- **REGRESSION discovered on idle soak (see v2f-soak section)** — promotion to prod blocked.
+
+## v2f — SOAK FAILURE at +90min idle (shm_broadcast deadlock)
+**Timeline (UTC):**
+- 03:55:13Z — v2f Application startup complete, healthy
+- 03:56-04:30Z — smokes + crash gate + 3-iter scaling bench (all PASS)
+- 04:30Z → ~05:25Z — idle (55 min)
+- **05:29:37Z — first `[shm_broadcast.py:733] No available shared memory broadcast block found in 60 seconds`** (EngineCore pid=103)
+- 05:30:37Z — same warning fires again (idle deadlock loop)
+- 05:30:24Z — watchdog flags `ENGINE-DOWN host=000 internal=000 (fail 1/3)`
+- 05:31:37, 05:32:37Z — warning continues firing every 60s
+- (eventually watchdog would have auto-restarted at fail 3/3, but we caught it earlier on soak check)
+
+**Surface symptom**: same `shm_broadcast.py:733` message that drove our historical vllm#35104 investigation (Apr 2026). The patch we carry forward (`patches/shm_broadcast.py` → replaces `with _memory_fence_lock:` with `_yield_fast()` helper) is **VERIFIED present at build time** on the Genesis image (BUILD VERIFICATION banner in the profile confirms `SHM PATCH VERIFIED`). On the Apr 06 baseline image with the same patch, that machine has run 17 days without this symptom — so either:
+  - (a) the patch doesn't cover all code paths exercised by the May 2026 nightly `01d4d1ad3` that Genesis is pinned to, OR
+  - (b) Genesis patches introduce new threading paths that re-expose the underlying issue, OR
+  - (c) TurboQuant k8v4 idle workspace state has its own deadlock vector.
+
+**What was VERIFIED**:
+- v2f hits shm_broadcast deadlock after ~55-60 min of idle (one occurrence).
+- Same surface log line as historical vllm#35104.
+- Baseline FP8 image (different nightly: Apr 06 `f6983f01d`) with same patch does NOT show this on this hardware.
+
+**What was NOT verified**:
+- Whether the patch is actually loaded at runtime (banner verifies build-time presence, not runtime application).
+- Whether the deadlock would recur or was a one-off.
+- Whether it's introduced by Genesis patches vs. by the newer vLLM nightly itself.
+
+**Action taken (per user rule "en cas de pb, tu recharge la baseline qui fonctionne")**:
+1. 05:35Z: `docker compose -f medium-qwen36-genesis-tq.yml down`
+2. 05:35Z: `docker compose -f medium-qwen36-moe.yml up -d` (FP8 baseline image `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1`)
+3. Baseline healthy, 5.42s "OK" smoke (slow first request normal post-restart).
+
+## Status post-rollback (05:36Z)
+- Baseline FP8 SERVING prod again. KV 322K. Vision ON. No regression.
+- v2f Genesis image + profile RETAINED. v2f bench results stand as upper bound for what TurboQuant CAN deliver on this hardware once the idle-deadlock cause is resolved.
+- Block on promoting v2f to prod until idle stability is reproduced over 2-3 hours.
+
+## v2g (next attempt, not run tonight)
+Hypotheses to test:
+- Run with `VLLM_USE_FLASHINFER_SAMPLER=0` (the historical 2026-04-19 finding fingered FlashInfer JIT autotune as a deadlock vector; sampler may have its own autotune path even when `--no-enable-flashinfer-autotune` is set).
+- Verify shm_broadcast.py patch is loaded at RUNTIME (not just present in the image) by `import inspect; inspect.getsource(vllm.distributed.device_communicators.shm_broadcast._memory_fence)`.
+- Investigate Genesis patches PN33 / P78 / P101 for any new threading.Lock acquisition paths.
