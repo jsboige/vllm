@@ -44,23 +44,32 @@
 #        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
 #
 # ----------------------------------------------------------------------------
-# !!! VERIFY BEFORE FIRST BOOT !!!
+# BUILD VERIFICATION — done 2026-05-16, image vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
 # ----------------------------------------------------------------------------
-#   * GENESIS ENV-FLAG SET (below) is a FIRST DRAFT derived from Genesis's
-#     compose/docker-compose.integration-awq.yml (their config for our exact
-#     model + turboquant_k8v4) plus the TQ-critical flags the docs name
-#     (P67/P98/P101/P78). It MUST be cross-checked against the Genesis
-#     docs/PATCHES.md + docs/CONFIGURATION.md before this is trusted —
-#     ~32 patches are default-ON, ~90 are opt-in, and the right minimal set for
-#     "35B-A3B-AWQ MoE + TQ k8v4, no spec-decode" has not been pinned down yet.
+#   ✅ Genesis package imports cleanly (reports v7.63.x; the `__version__`
+#      constant is stale relative to SHA fbecee31 — Sandermage doesn't bump
+#      it per tag, the SHA is the source of truth).
+#   ✅ `genesis_v7` entry point registered in `vllm.general_plugins`.
+#   ✅ vLLM pin gate allowlist contains our pin `0.20.2rc1.dev9+g01d4d1ad3`.
+#   ✅ shm_broadcast patch (vllm#35104 carry-forward) verifies on the
+#      01d4d1ad3 nightly — `_memory_barrier` callable, SHM PATCH VERIFIED
+#      at build time. Reservation #2 cleared.
+#   ✅ All 6 GENESIS_ENABLE_P* flags below exist verbatim as opt-in env vars
+#      in /opt/genesis/vllm/_genesis (grep-confirmed). Reservation #1 cleared.
+#   ℹ️  P22 (TurboQuant shared dequant prealloc) and P38 (workspace fix that
+#      resolves the 2026-05-06 _continuation_prefill crash, per xyehya in
+#      vllm#41726) are AUTO-APPLIED on NVIDIA — no flag needed. Our opt-ins
+#      are TQ-perf extras (P67 multi-query kernel, P98/P101 dispatch
+#      routing, P78 tolist guard from noonghunna), the compile-safe P38B
+#      variant, and P37.
+#
+# REMAINING CARE BEFORE FIRST BOOT
 #   * --max-num-batched-tokens / --max-num-seqs start CONSERVATIVE (8192 / 16).
 #     The crash is on the continuation path — validate the 30K-prefix crash test
 #     at these values FIRST, then ramp toward prod (32768 / 64) measuring stability.
 #   * VISION: kept ON (--dtype auto + --limit-mm-per-prompt, prod parity). Genesis'
 #     own integration test ran --language-model-only --dtype float16. If boot or
 #     TQ stability issues appear, that is the genesis-validated fallback to try.
-#   * shm_broadcast patch: verify vllm#35104 is still unfixed on the 01d4d1ad3
-#     nightly; if upstream fixed it, drop the COPY layer from the Dockerfile.
 # ============================================================================
 
 services:

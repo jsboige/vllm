@@ -38,6 +38,12 @@ RUN pip install --no-cache-dir pandas scipy xxhash
 #   - vllm/_genesis  → copied into site-packages (the patch package).
 #   - tools/genesis_vllm_plugin → pip install -e (registers the entry point so
 #     vLLM auto-loads Genesis in spawn workers).
+# Base nightly image ships without `git`, so we install it before cloning.
+# `--no-install-recommends` keeps the layer small; apt lists are purged after.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 ARG GENESIS_COMMIT=fbecee31fd42fa7de9c2e2e8d780a28c01f46abb
 RUN git clone https://github.com/Sandermage/genesis-vllm-patches.git /opt/genesis \
  && git -C /opt/genesis checkout ${GENESIS_COMMIT} \
