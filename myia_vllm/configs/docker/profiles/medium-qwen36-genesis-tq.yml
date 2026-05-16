@@ -110,14 +110,7 @@ services:
 
       --default-chat-template-kwargs '{"preserve_thinking":true}'
       --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
-
-      # --- DIAG OPT-IN (uncomment to log ALL /v1/* request sources to /logs/error_sources.jsonl) ---
-      # Diagnostic — added 2026-05-16 to track stale qwen3.5-35b-a3b 404 source AND
-      # characterize legitimate traffic. One JSONL line per request with status, client IP,
-      # X-Forwarded-For, X-Real-IP, User-Agent, Host, model, body_head (first 1.5KB) +
-      # body_tail (last 1.5KB). Body excerpt may contain prompts/PII — log is privileged.
-      # Filter 4xx with `jq 'select(.status >= 400)' /logs/error_sources.jsonl`.
-      #--middleware error_source_capture.ErrorSourceCapture
+      --middleware error_source_capture.ErrorSourceCapture
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -176,7 +169,7 @@ services:
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
       - vllm-compile-cache-qwen36-genesis-tq:/root/.cache/vllm  # separate cache: different vLLM pin + Genesis rebinds
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
-      - ./../../middleware:/middleware:ro  # error_source_capture diag (zero-cost mount, --middleware flag opt-in)
+      - ./../../../middleware:/middleware:ro  # error_source_capture diag
     ports:
       - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
     healthcheck:
