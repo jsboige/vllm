@@ -87,12 +87,14 @@ services:
       --enable-expert-parallel
       --gdn-prefill-backend triton
       --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
-      --dtype auto
-      --max-num-batched-tokens 8192
-      --max-num-seqs 16
+      --dtype float16
+      --language-model-only
+      --max-num-batched-tokens 4096
+      --max-num-seqs 2
+      --performance-mode interactivity
       --enable-chunked-prefill
       --enable-prefix-caching
       --prefix-caching-hash-algo xxhash
@@ -106,10 +108,6 @@ services:
 
       --default-chat-template-kwargs '{"preserve_thinking":true}'
       --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
-
-      --limit-mm-per-prompt '{"image":4,"video":0}'
-      --mm-processor-kwargs '{"max_pixels":774000}'
-      --skip-mm-profiling
     ipc: host
     shm_size: '16gb'
     deploy:
@@ -127,7 +125,7 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
-      - OMP_NUM_THREADS=4
+      - OMP_NUM_THREADS=1
       - VLLM_USE_FLASHINFER_MOE_FP16=1
       - VLLM_LOG_DIR=/logs
       # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
@@ -137,6 +135,12 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
       - VLLM_FLOAT32_MATMUL_PRECISION=high
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      - VLLM_USE_FLASHINFER_MOE_FP8=0
       # ── Genesis patch flags — FIRST DRAFT, VERIFY against docs/PATCHES.md ──
       # P37 — shared MoE intermediate-cache pool (integration-awq.yml sets this).
       # P38/P38B — persistent K_full/V_full continuation-prefill workspace +
