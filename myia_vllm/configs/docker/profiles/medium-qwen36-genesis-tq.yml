@@ -90,8 +90,10 @@ services:
       --gpu-memory-utilization 0.82
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
-      --dtype float16
-      --language-model-only
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
       --max-num-batched-tokens 4096
       --max-num-seqs 16
       --performance-mode interactivity

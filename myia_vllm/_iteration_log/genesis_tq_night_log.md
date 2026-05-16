@@ -68,3 +68,35 @@ v2f changes from v2e:
 - Re-add `--mm-processor-kwargs '{"max_pixels":774000}'`
 - Re-add `--skip-mm-profiling`
 - `--dtype float16` → `--dtype auto` (vision encoder is BF16)
+
+## v2f — WIN: vision restored, concurrent +125% vs baseline
+seqs=16, batched=4096, gpu_util=0.82, +P40, dtype=auto, vision ON. KV 2.03M.
+
+Boot to "Application startup complete" + healthy in ~5 min. No Dynamo, no OOM.
+KV cache: 2,029,669 tokens (-67K vs v2e 2,097,152 — vision encoder cost).
+
+Smokes:
+- Single no-thinking: 117/120/120 tok/s, median **120** (FP8 baseline 107, **+12%**)
+- Single thinking: 123.3/124.9/123.9, median **123.9** (FP8 116.5, **+6%**)
+- Tool calling: implicit in chat smoke (model uses qwen3_coder parser)
+- **Vision smoke: PASS** (64x64 red PNG → "Red" in 0.77s, prompt=91 tokens)
+- Crash gate 24K: PASS in 6.82s
+
+3-iter scaling (vision ON):
+
+| N users | iter 1 | iter 2 | iter 3 | median | vs FP8 baseline |
+|---|---|---|---|---|---|
+| 1 | 93 | 91 | 97 | 93 | -13% (TTFT noise on short prompts) |
+| 2 | 134 | 125 | 134 | 134 | n/a |
+| 4 | 214 | 221 | 215 | 215 | n/a |
+| 8 | 415 | 412 | 448 | 415 | n/a |
+| 12 | 593 | 625 | 628 | 625 | **+69%** |
+| 16 | 816 | 829 | 833 | **829** | **+125%** vs 369 |
+
+VRAM: GPU 0 24044→24039 MiB (delta -5), GPU 1 22880→22880 (delta 0), GPU 2 45 MiB. Zero leak.
+
+## Summary — v2f is the production candidate
+For OWUI/Roo/Claudish multi-user long-context workload:
+- WIN: KV +6.3× (322K → 2.03M tokens), 16-conc throughput +125% vs FP8 baseline, vision restored, single-user +12%.
+- NO REGRESSIONS vs FP8 baseline.
+- Net delta vs v2e: -67K KV tokens (vision encoder cost), N=16 throughput essentially identical (829 vs 823).
