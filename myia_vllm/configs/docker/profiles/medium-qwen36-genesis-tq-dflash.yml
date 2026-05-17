@@ -1,6 +1,24 @@
 # Docker Compose profile — Qwen3.6-35B-A3B + Genesis TurboQuant k8v4 + DFlash spec-dec
 # ============================================================================
-# STATUS: DRAFTED 2026-05-17 17:55Z — combo "niche-2" (Genesis-TQ k8v4 + DFlash)
+# STATUS: ATTEMPT 2 — drafted 2026-05-17 17:55Z, ATTEMPT 1 crashed in tokenizer
+#         deepcopy at boot 18:38Z (`AttributeError: 'code' object has no
+#         attribute 'get'` → segfault in `_Py_NoneStruct`). See
+#         myia_vllm/_iteration_log/dflash_v2g_attempt1/boot_crash_summary.md
+#
+# CHANGES FROM ATTEMPT 1:
+#   1. DROPPED `--default-chat-template-kwargs '{"preserve_thinking":true}'`
+#      Hypothesis: this flag injects a code object into the processor's
+#      `init_kwargs`; the spec-dec second-processor load deepcopies that
+#      and crashes on the code object. v2g has the same flag but only
+#      loads one processor, so doesn't hit the bug. OWUI wrappers can
+#      inject `preserve_thinking` client-side if needed.
+#   2. K=15 → 7 (reduce scheduling pressure; vLLM warning at K=15 said
+#      `max_num_scheduled_tokens=3928` was close to the 4096 budget cap).
+#   3. `max_num_batched_tokens` 4096 → 8192 (more headroom for spec-verify).
+#   4. Enabled DFlash opt-in patches: PN21 (SWA), PN23 (dtype cast), PN24
+#      (aux layer indexing). Genesis ships these as opt-in; for Qwen3.6
+#      (which has SWA) at least PN21 may be load-bearing.
+# combo "niche-2" (Genesis-TQ k8v4 + DFlash)
 #
 # RATIONALE
 #   Stock DFlash v2 (image vllm-qwen36-tq:nightly-e47c98ef-patched1 + FP8 KV)
@@ -97,9 +115,8 @@ services:
       --async-scheduling
       --no-scheduler-reserve-full-isl
 
-      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":15,"attention_backend":"FLASH_ATTN"}'
+      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":7,"attention_backend":"FLASH_ATTN"}'
 
-      --default-chat-template-kwargs '{"preserve_thinking":true}'
       --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
       --middleware error_source_capture.ErrorSourceCapture
     ipc: host
@@ -158,6 +175,19 @@ services:
       # path. Prevents tool_call truncation on speculative finalization.
       - GENESIS_ENABLE_P107_MTP_TRUNCATION_DETECTOR=1
       # PN33 (spec-decode warmup K-aware) is already applied by default — no flag needed.
+      # ── Attempt 2: DFlash-specific opt-ins (Qwen3.6 SWA + dtype + aux-layer indexing) ──
+      # PN21 = DFlash SWA support partial backport (vllm#40898). Qwen3.6 uses
+      # SWA (Sliding Window Attention) in some layers; without PN21 the drafter
+      # may produce inconsistent attention shapes on a SWA target.
+      - GENESIS_ENABLE_PN21_DFLASH_SWA=1
+      # PN23 = DFlash combine_hidden_states dtype cast (vllm#40334 backport).
+      # Fixes silent dtype mismatch in DFlash's combine step. Recommended for
+      # any DFlash + BF16-mix target.
+      - GENESIS_ENABLE_PN23_DFLASH_DTYPE_FIX=1
+      # PN24 = DFlash aux layer +1 indexing fix (vllm#40727). Drafter uses
+      # target_layer_ids=[1,10,19,28,37] on Qwen3.6 — without PN24 there is
+      # an off-by-one when reading aux hidden states from layer i+1.
+      - GENESIS_ENABLE_PN24_DFLASH_AUX_LAYER_FIX=1
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface

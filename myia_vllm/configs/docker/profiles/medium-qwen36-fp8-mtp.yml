@@ -1,0 +1,153 @@
+# Docker Compose profile — Qwen3.6-35B-A3B-FP8 + Genesis + MTP spec-dec
+# ============================================================================
+# STATUS: DRAFTED 2026-05-17 ~20:05Z after DFlash-v2g triple-failure on AWQ+TQ.
+#
+# RATIONALE — WHY FP8 + MTP IS THE NEXT BET
+#   1. DFlash-on-AWQ-TQ failed in 3 distinct ways across 3 attempts:
+#      - Att1: tokenizer init_kwargs deepcopy/segfault (chat_template_kwargs hypothesis)
+#      - Att2: torch.compile fake-tensor mul shape mismatch (K=7 + batched=8192)
+#      - Att3: page size mismatch 1136064 vs 3408192 (TQ-page vs FLASH_ATTN-page,
+#               exact 3:1 ratio — head-count or per-head-dim mismatch between
+#               target's 10 Gated Attention layers and DFlash drafter's 8 layers)
+#      None fixable by remaining CLI levers; requires cross-attention-backend
+#      page interop patch that doesn't exist in Genesis v7.72.5.
+#
+#   2. AWQ-cyankiwi drops the built-in mtp_* tensors during pack-quantization
+#      (see project_mtp_qwen36_blocked.md). MTP method has nothing to call.
+#
+#   3. FP8 (Qwen/Qwen3.6-35B-A3B-FP8 official) preserves the mtp_* heads.
+#      Spec-dec `method=qwen3_next_mtp` uses target's own heads — NO separate
+#      drafter, so NO page-size cross-backend issue.
+#
+#   4. PN8 (vllm#40849) explicitly verified by Sandermage on this exact stack:
+#      "~1 GiB VRAM saved per GPU on 35B-A3B-FP8 + MTP K=3, +5-10% TPS
+#       when FlashInfer is the chosen backend". This is the canonical PN8 test
+#       config.
+#
+# TRADE-OFFS VS v2g
+#   - Loses TurboQuant k8v4 KV (×6.3 gain on v2g). FP8 KV → ~322K tokens
+#     (same as Apr 2026 baseline pre-Genesis-TQ).
+#   - Loses preserve_thinking server-side default (FP8 model may not have it
+#     in its chat template). Drop the flag to be safe.
+#   - Gains MTP speculative decoding +5-10% TPS (per PN8) IF AWQ-stripping
+#     hypothesis is correct and FP8 actually preserves heads.
+#
+# FALLBACK
+#   If FP8+MTP also fails: retire both spec-dec profiles to documentation,
+#   stay on v2g (which is already at 829 tok/s aggregate concurrent N=16 —
+#   excellent for our multi-user workload anyway).
+#
+# IMAGE: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 (same as v2g)
+# MODEL: Qwen/Qwen3.6-35B-A3B-FP8 (downloaded 2026-05-17, 56 files, ~34 GB)
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as v2g — only one runs at a time
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model Qwen/Qwen3.6-35B-A3B-FP8
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.85
+      --max-model-len 262144
+      --kv-cache-dtype fp8
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+      --max-num-batched-tokens 4096
+      --max-num-seqs 12
+      --performance-mode interactivity
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --prefix-caching-hash-algo xxhash
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
+      --async-scheduling
+      --no-scheduler-reserve-full-isl
+
+      --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":3}'
+
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+      --middleware error_source_capture.ErrorSourceCapture
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      # Genesis runtime env (same as v2g)
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      - VLLM_USE_FLASHINFER_MOE_FP8=0
+      # Genesis baseline patches (same as v2g, minus TQ-specific P67)
+      - GENESIS_ENABLE_P37=1
+      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P101=1
+      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      - GENESIS_ENABLE_P40=1
+      - GENESIS_VLLM_PIN_POLICY=strict
+      # ── MTP-specific Genesis patches ──
+      # PN8 = MTP/draft online-quant propagation (vllm#40849). Verified by
+      # Sandermage on 35B-A3B-FP8 + MTP K=3: ~1 GiB VRAM saved per GPU,
+      # +5-10% TPS when FlashInfer is the chosen backend. THIS IS THE
+      # PRIMARY PATCH WE'RE TESTING.
+      - GENESIS_ENABLE_PN8_MTP_DRAFT_ONLINE_QUANT=1
+      # P107 = MTP truncation detector at reasoning→tool_call boundary.
+      - GENESIS_ENABLE_P107_MTP_TRUNCATION_DETECTOR=1
+      # PN58 = spec-decode reasoning boundary validation.
+      - GENESIS_ENABLE_PN58_SPEC_REASONING_BOUNDARY=1
+      # PN33 (warmup K-aware) already applied by default.
+      # NOTE: PN9 (independent drafter attn) NOT NEEDED — MTP has no separate
+      #       drafter, so no cross-backend page issue. Skip to keep boot clean.
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-fp8-mtp:/root/.cache/vllm  # separate cache
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-fp8-mtp:

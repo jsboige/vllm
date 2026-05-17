@@ -1,0 +1,18 @@
+services:
+  hf-fp8-dl:
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-hf-fp8-dl
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        echo "Starting FP8 download to /root/.cache/huggingface"
+        HF_HUB_ENABLE_HF_TRANSFER=1 hf download Qwen/Qwen3.6-35B-A3B-FP8 2>&1 | tail -200
+        echo DOWNLOAD_DONE
+        sleep infinity
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+    volumes:
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    restart: "no"
