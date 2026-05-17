@@ -1,0 +1,250 @@
+# Docker Compose profile — Qwen3.6-35B-A3B + Genesis TurboQuant k8v4 + DFlash spec-dec
+# ============================================================================
+# STATUS: DRAFTED 2026-05-17 17:55Z — combo "niche-2" (Genesis-TQ k8v4 + DFlash)
+#
+# RATIONALE
+#   Stock DFlash v2 (image vllm-qwen36-tq:nightly-e47c98ef-patched1 + FP8 KV)
+#   crashed at boot 2026-05-17 17:53Z with:
+#     AssertionError: new_spec.page_size_bytes == max_page_size
+#   Root cause hypothesis: the stock nightly e47c98ef did NOT fully wire
+#   PR #39930 (independent drafter attention backend) into SpeculativeConfig
+#   parsing — the speculative_config log line dropped the "attention_backend"
+#   field. With target on auto-select (probably FLASH_ATTN due to spec-dec
+#   heuristic) AND drafter on FLASH_ATTN AND --kv-cache-dtype fp8, the KV
+#   spec page size assertion fires.
+#
+#   Genesis tree ships PN9 — explicit backport of vllm#39930 — gated by
+#   GENESIS_ENABLE_PN9_INDEPENDENT_DRAFTER_ATTN=1. With PN9 the drafter
+#   can be on FLASH_ATTN while the target uses TurboQuant attention (the
+#   k8v4 backend Genesis selects, which carries its own page size and is
+#   the source of v2g's ×6.3 KV capacity).
+#
+# WHY THIS BEATS BOTH OPTIONS
+#   - v2g baseline (Genesis-TQ alone): KV 2.03M tokens, concurrent +125%,
+#     but single-user decode +12% only.
+#   - DFlash v1 (April 2026, FP8 target): single-user +23-94% but
+#     concurrent -15%, KV 322K→93K, max ctx 262K→160K.
+#   - DFlash v2 stock: crashes at boot, no data.
+#   - THIS profile: keep Genesis-TQ KV capacity AND get DFlash single-user
+#     boost. The drafter uses its own FLASH_ATTN backend (PN9) which keeps
+#     the target on TurboQuant. The crash mode is *expected to be averted*
+#     because PN9 explicitly handles heterogeneous backends; if the
+#     page-size assertion still fires, the cause is a deeper Genesis
+#     incompat that needs investigation.
+#
+# IMAGE: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 (same as v2g)
+#   - No rebuild needed. Same Genesis patch tree as v2g currently in prod.
+#   - Adds spec-dec drafter download (~1 GB BF16) on first boot.
+#
+# RUNBOOK
+#   Down v2g:    docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
+#   Up dflash:   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq-dflash.yml --env-file myia_vllm/.env up -d
+#   Logs:        docker logs -f myia_vllm-medium-qwen36-moe
+#   Rollback:    docker compose -f medium-qwen36-genesis-tq-dflash.yml down
+#                docker compose -f medium-qwen36-genesis-tq.yml up -d
+#
+# WHAT TO MEASURE (bench plan)
+#   1. Boot clean + Genesis applies PN9 + spec-dec init OK (no page_size crash)
+#   2. Smoke (chat, thinking, tool call) — pass/fail
+#   3. KV cache size — expect 1.5M+ tokens (drafter takes some VRAM)
+#   4. Single-user decode no-think — vs v2g 120 tok/s
+#   5. Single-user decode thinking — vs v2g 124 tok/s
+#   6. Per-position acceptance rate (1..15) — confirm AWQ+TQ target ok
+#   7. Long context (100K+ prefix) — DFlash strongest case
+#   8. 5-user concurrent — vs v2g 369+ (likely regress; DFlash trade-off)
+#   9. 24K crash gate — must NOT raise turboquant_attn assertion
+#  10. Tool call latency — vs v2g 0.47s baseline
+#
+# EXPECTED OUTCOME
+#   IF works: single-user 200+ tok/s (DFlash speedup on top of TQ), KV 1.5M+,
+#             concurrent maybe -10 to -20% (DFlash drafter cost).
+#   IF page_size still fails: PN9 alone insufficient for TQ+spec-dec; need
+#             deeper Genesis investigation or fall back to v2g.
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as v2g — only one runs at a time
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.82
+      --max-model-len 262144
+      --kv-cache-dtype turboquant_k8v4
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+      --max-num-batched-tokens 4096
+      --max-num-seqs 12
+      --performance-mode interactivity
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --prefix-caching-hash-algo xxhash
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
+      --async-scheduling
+      --no-scheduler-reserve-full-isl
+
+      --speculative-config '{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":15,"attention_backend":"FLASH_ATTN"}'
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+      --middleware error_source_capture.ErrorSourceCapture
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      # ── Genesis runtime env (same as v2g baseline) ──
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      - VLLM_USE_FLASHINFER_MOE_FP8=0
+      # ── Genesis patches (v2g baseline) ──
+      - GENESIS_ENABLE_P37=1
+      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
+      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P101=1
+      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      - GENESIS_ENABLE_P40=1
+      - GENESIS_VLLM_PIN_POLICY=strict
+      # ── NEW: spec-decode opt-ins for DFlash on TurboQuant ──
+      # PN9 = backport of vllm#39930 (independent drafter attention backend).
+      # WITHOUT THIS the stock e47c98ef nightly crashes at boot with
+      # page_size_bytes assertion. PN9 makes the target stay on TurboQuant
+      # while the drafter runs on FLASH_ATTN.
+      - GENESIS_ENABLE_PN9_INDEPENDENT_DRAFTER_ATTN=1
+      # PN58 = spec-decode reasoning boundary validation (narrower than P62).
+      # Important for thinking-mode + spec-dec: bounds where draft tokens can
+      # cross <think>/</think> tags. Genesis docstring: "alt to P62".
+      - GENESIS_ENABLE_PN58_SPEC_REASONING_BOUNDARY=1
+      # P107 = MTP truncation detector at reasoning→tool_call boundary
+      # (vllm#41467). Also applies to DFlash since both share the speculative
+      # path. Prevents tool_call truncation on speculative finalization.
+      - GENESIS_ENABLE_P107_MTP_TRUNCATION_DETECTOR=1
+      # PN33 (spec-decode warmup K-aware) is already applied by default — no flag needed.
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-genesis-tq-dflash:/root/.cache/vllm  # separate cache: spec-dec changes compiled graphs
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s  # 15 min: model load + Genesis + drafter download + spec-dec init + CUDA graphs (cold)
+    restart: unless-stopped
+
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=3
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant + DFlash"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-genesis-tq-dflash:

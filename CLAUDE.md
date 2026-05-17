@@ -15,13 +15,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment (2026-05-06)**: **Qwen3.6-35B-A3B MoE + FP8 KV cache** on GPUs 0,1 with TP=2 + EP=2, Apr 06 nightly image (proven baseline since 2026-04-17). **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
+**Current deployment (2026-05-17, promoted after 35h+ soak)**: **Qwen3.6-35B-A3B MoE + TurboQuant K8V4 (Genesis-patched)** on GPUs 0,1 with TP=2 + EP=2, image `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` (Sandermage Genesis patch tree on nightly `01d4d1ad3`). Profile `medium-qwen36-genesis-tq.yml`. KV cache 2.03M tokens (×6.3 vs prior FP8 322K), 262K context preserved, vision OK, concurrent N=16 = **829 tok/s aggregate (+125%)**, single decode 120 tok/s (+12%), single thinking 124 tok/s (+6%). **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
 
-**Same-day cutover sequence (2026-05-06)** — both candidates rejected, returned to baseline:
-1. **Qwen3.6-27B Dense + TurboQuant K8V4** : tested briefly. All 3 perf metrics tripped the migration plan's "consider rollback" thresholds (decode -50%, concurrent -49%, tool latency +40%). Quality gains within sampling noise on locally-tested benchmarks. Profile archived to `myia_vllm/archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`.
-2. **Qwen3.6-35B-A3B MoE + TurboQuant K8V4** : booted cleanly with 1.49M-token KV (vs 322K with FP8, +4.6×) but EngineCore crashes on first chunked-prefill continuation (`AssertionError: Workspace is locked` at `turboquant_attn.py:720:_continuation_prefill`, requires 29.73 MB / has 16.31 MB). Already filed upstream as [#41726](https://github.com/vllm-project/vllm/issues/41726) (filed 2026-05-05 by `jhsmith409`); persists post-#39931 merge, not hybrid-specific. Candidate fix is PR [#40798](https://github.com/vllm-project/vllm/pull/40798) (open). Our reproduction posted as [#41726 comment](https://github.com/vllm-project/vllm/issues/41726#issuecomment-4389387531) — confirms persistence on hybrid MoE + Ada hardware.
+**Promotion path (2026-05-16 → 2026-05-17)**:
+1. v2f (Genesis-TQ + vision) PASSED active load benches but regressed on +55min idle soak (shm_broadcast.py:733 deadlock). Rolled back to FP8 baseline 05:35Z.
+2. v2g = v2f + `VLLM_USE_FLASHINFER_SAMPLER=0` (FlashInfer sampler had its own JIT autotune path corrupting CPython `_thread.lock` descriptor under load). Deployed 2026-05-16 06:29Z.
+3. v2g soak 35h+ clean — promoted as new baseline 2026-05-17.
 
-**Rolled back** to MoE + FP8 KV with the proven Apr 06 baseline image (`vllm-qwen36-shmpatched:nightly-f6983f01d-patched1`). The TQ image (`vllm-qwen36-tq:nightly-e47c98ef-patched1`) and Dockerfile (`Dockerfile.qwen36-tq`) retained for re-test once #40798 merges.
+**Why this path beats the 2026-05-06 attempt**: 2026-05-06 used `vllm-qwen36-tq:nightly-e47c98ef-patched1` (stock nightly + transformers/shm patches), which crashed on first ~30K chunked-prefill continuation (`AssertionError turboquant_attn.py:720`). Genesis patch tree includes P22+P38 which fix exactly that crash (externally confirmed in [vllm#41726](https://github.com/vllm-project/vllm/issues/41726) by `xyehya`). Upstream candidate fix PR [#40798](https://github.com/vllm-project/vllm/pull/40798) remains OPEN+BLOCKED, so Genesis was the actionable Option B.
+
+**Prior baseline** (`vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` Apr 06 + shm patch + FP8 KV) and **TQ image** (`vllm-qwen36-tq:nightly-e47c98ef-patched1`) retained on disk for instant rollback. Rollback command: `docker compose -f medium-qwen36-genesis-tq.yml down && docker compose -f medium-qwen36-moe.yml up -d`.
 
 ## Key Directories
 
@@ -592,21 +595,33 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-05-06, post-rollback)
+## Current State (2026-05-17, v2g Genesis-TQ promoted after 35h+ soak)
 
-- **Qwen3.6-35B-A3B MoE + FP8 KV** on port 5002 (GPUs 0,1) — restored as production baseline 2026-05-06 16:02 UTC after same-day TurboQuant migration attempts both rejected
-  - Image: `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` (Apr 06 nightly + transformers>=5.0 + shm_broadcast.py patch — proven stable since 2026-04-19, no shm crashes in 17 days)
-  - FlashInfer MoE, Expert Parallelism (EP=2), CUDA graphs, prefix caching
+- **Qwen3.6-35B-A3B MoE + Genesis TurboQuant k8v4** on port 5002 (GPUs 0,1) — promoted from experimental to production baseline 2026-05-17 after the +35h post-deploy soak completed clean
+  - Image: `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` (Sandermage Genesis patch tree on nightly `01d4d1ad3`)
+  - Profile: `medium-qwen36-genesis-tq.yml` (Genesis patches P3/P4/P6/P22[skipped]/P26[skipped]/P37/P38B/P40/P67/P78/P98/P101 + PN33 by-default + custom env)
+  - Marlin MoE, Expert Parallelism (EP=2), CUDA graphs (full+piecewise), prefix caching (xxhash), chunked prefill, async scheduling
   - ✅ Vision (images, documents) + Thinking modulation + `preserve_thinking` server-side default
-  - ✅ `--override-generation-config` with defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
+  - ✅ `--override-generation-config` defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
   - ✅ Watchdog sidecar (dual-ping host + Docker DNS, auto-restart 3 fails)
-  - **KV cache: 322K tokens** (FP8, 0.85 gpu-util)
-  - **Decode**: 107 tok/s single-user, 369 tok/s 5-concurrent, 0.47s tool call, 116.5 tok/s thinking (Apr 06 nightly, benchmarked 2026-04-17)
-  - vLLM class: `Qwen3_5MoeForConditionalGeneration` (same code path as 3.5)
+  - ✅ `error_source_capture` ASGI middleware active (logs body_head + body_tail 1500B to /logs/error_sources.jsonl)
+  - **KV cache: 2,029,669 tokens (×6.3 vs prior FP8 322K)** — `--kv-cache-dtype turboquant_k8v4` + Genesis P22/P38B continuation-prefill workspace fix
+  - **Single-user decode**: 120 tok/s no-think (+12% vs FP8), 124 tok/s thinking (+6%)
+  - **Concurrent**: N=12 → 625 tok/s, N=16 → **829 tok/s aggregate (+125%)** — main reason for promotion. Prior FP8 saturated at ~N=5.
+  - **Context**: 262K native, max-model-len 262144
+  - **Critical env**: `VLLM_USE_FLASHINFER_SAMPLER=0` (v2f had idle deadlock at +55min; v2g fix). `--no-enable-flashinfer-autotune`. `NCCL_P2P_DISABLE=1`.
   - Quality upgrades over Qwen3.5 (upstream): SWE-bench 70→73.4, Terminal-Bench 40.5→51.5, NL2Repo 20.5→29.4, QwenWebBench 978→1397
-- **TurboQuant K8V4 migration ATTEMPTED 2026-05-06, REJECTED** (both candidates):
-  1. **Qwen3.6-27B Dense + TQ** : Tripped all 3 perf rollback thresholds (decode -50%, concurrent -49%, tool +40%); quality gains within sampling noise locally. Profile archived to `archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06`.
-  2. **Qwen3.6-35B-A3B MoE + TQ** : Crashed on first chunked-prefill continuation (workspace sizing bug, [vllm#41726](https://github.com/vllm-project/vllm/issues/41726) — already filed by `jhsmith409`, candidate fix [PR #40798](https://github.com/vllm-project/vllm/pull/40798) open). Our reproduction posted as [issue comment](https://github.com/vllm-project/vllm/issues/41726#issuecomment-4389387531) — confirms persistence post-#39931 merge on hybrid MoE + Ada hardware. Image `vllm-qwen36-tq:nightly-e47c98ef-patched1` and `Dockerfile.qwen36-tq` retained for re-test once #40798 merges.
+- **Why Genesis (Option B) was the actionable path**: The 2026-05-06 stock attempt with `vllm-qwen36-tq:nightly-e47c98ef-patched1` + `--kv-cache-dtype turboquant_k8v4` crashed on first chunked-prefill continuation ([vllm#41726](https://github.com/vllm-project/vllm/issues/41726): `AssertionError turboquant_attn.py:720`, requires 29.73 MB / has 16.31 MB). Upstream candidate fix [PR #40798](https://github.com/vllm-project/vllm/pull/40798) was OPEN+BLOCKED with no ETA, so we adopted [`Sandermage/genesis-vllm-patches`](https://github.com/Sandermage/genesis-vllm-patches) v7.72.x downstream patch tree whose P22/P38 family fixes exactly that crash (externally confirmed by `xyehya` in vllm#41726).
+- **Promotion path 2026-05-16 → 2026-05-17**:
+  - v2a/v2d/v2e iterations: tuned KV/concurrent tradeoffs
+  - v2f (Genesis-TQ + vision): PASSED active load benches but regressed on +55min IDLE soak (shm_broadcast.py:733 deadlock at 05:29Z). Auto-rolled back to FP8 baseline 05:35Z per user rule.
+  - v2g = v2f + `VLLM_USE_FLASHINFER_SAMPLER=0` (FlashInfer sampler had its own JIT autotune path corrupting CPython `_thread.lock` descriptor under load). Deployed 06:29Z. **35h soak clean → promoted 2026-05-17.**
+  - Iteration log: `myia_vllm/_iteration_log/genesis_tq_night_log.md`
+- **Prior FP8 baseline retained for instant rollback**: `vllm-qwen36-shmpatched:nightly-f6983f01d-patched1` (Apr 06 + shm_broadcast.py patch + transformers>=5.0). Image still local, profile `medium-qwen36-moe.yml` untouched. Rollback: `docker compose -f medium-qwen36-genesis-tq.yml down && docker compose -f medium-qwen36-moe.yml up -d`.
+- **Spec-decode experiments on Genesis-TQ baseline (2026-05-17)**:
+  - **DFlash v2 stock attempt FAILED at boot** (17:53Z): used stock image `vllm-qwen36-tq:nightly-e47c98ef-patched1` + `--speculative-config '{"method":"dflash",...,"attention_backend":"FLASH_ATTN"}'`. Crashed with `AssertionError: new_spec.page_size_bytes == max_page_size` because nightly e47c98ef did NOT fully wire PR #39930 — the `SpeculativeConfig` log line dropped the `attention_backend` field. Auto-rollback to v2g.
+  - **PIVOT — DFlash-v2g profile** (`medium-qwen36-genesis-tq-dflash.yml`): combo niche-2 = Genesis-TQ k8v4 + DFlash via Genesis PN9 (explicit backport of vllm#39930, opt-in via `GENESIS_ENABLE_PN9_INDEPENDENT_DRAFTER_ATTN=1`). Keeps target on TurboQuant attention while drafter runs on FLASH_ATTN. Plus PN58 (spec-dec reasoning boundary) + P107 (MTP truncation detector at reasoning→tool_call). To be cold-deployed and benched after v2g soak window.
+  - **MTP backup DRAFT** (`medium-qwen36-genesis-tq-mtp.yml`): Genesis PN8 (vllm#40849 MTP/draft online-quant propagation — `~1 GiB VRAM saved per GPU on 35B-A3B-FP8 + MTP K=3, +5-10% TPS`) + PN9 + PN58 + P107 + PN33 (default). **Drafter URL is placeholder** — Qwen3.6-AWQ does not ship with MTP heads, and we haven't located a standalone MTP drafter yet. Profile inert until drafter is identified.
 - **GPU 2 — FULLY FREED 2026-05-01** for CoursIA training jobs (queue 5-7d : QC ML strategies, Sudoku large, RL extension). State: **78 MiB / 24564 MiB** (driver baseline only, no resident process). OmniCoder-9B archived 2026-04-30 (`myia_vllm/archives/2026/mini-omnicoder.yml.archived-2026-04-30`, `Dockerfile.omnicoder.archived-2026-04-30`). Reasoning: ai-01 piloting double-track (coordination + training) sprint sustainable. Issue CoursIA #626.
 - **Kokoro TTS migrated to po-2023** (2026-05-01): final endpoint `https://tts.myia.io/kokoro/v1` (path-strip via IIS, bearer auth required, sleep-mode like Orpheus). 7/7 OWUI tenants switched (myia, epf, epf-genai, ece, esg, epita, pauwels — synthesis tested HTTP 200 with `ff_siwis` voice, MP3 ID3 valid). Service `kokoro-tts` removed from `myia-open-webui` compose stack on ai-01, volume `kokoro-data` purged. Quirks noted: po-2023 endpoint serves `/v1/voices` (200) but NOT `/v1/audio/voices` (404, non-standard); `/v1/audio/speech` works fine (used by OWUI). Commit `d37df601b` (myia-open-webui workspace).
 - **Orpheus TTS moved to po-2023** (2026-03-18): `https://orpheus-tts.myia.io/v1/audio/speech`

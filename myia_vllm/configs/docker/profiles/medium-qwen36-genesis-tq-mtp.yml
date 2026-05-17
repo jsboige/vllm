@@ -1,0 +1,176 @@
+# Docker Compose profile — Qwen3.6-35B-A3B + Genesis TurboQuant k8v4 + MTP spec-dec
+# ============================================================================
+# STATUS: DRAFTED 2026-05-17 — BACKUP plan if DFlash-v2g underperforms or fails.
+#         **NOT READY TO DEPLOY** — drafter URL is a placeholder. Verify a real
+#         MTP head/drafter exists for Qwen3.6-35B-A3B before booting this.
+#
+# WHY MTP BACKUP
+#   r/LocalLLaMA week of 2026-05-09→2026-05-16 had multiple front-page posts
+#   on MTP + TurboQuant working together:
+#     - "MTP for Qwen on llama.cpp + TurboQuant" 367 pts
+#     - "BeeLlama.cpp: DFlash & TurboQuant Qwen3.6 27B Q5 200K ctx on 3090,
+#        2-3x faster (peak 135 tps)" 315 pts
+#     - "A First Comprehensive Study of TurboQuant" 219 pts
+#   These were on llama.cpp; vLLM-side feasibility is what we verify here.
+#
+#   Our prior local test (Q1-2026 on GLM-4.6-AWQ): MTP head accept rate = 0%
+#   because heads were AWQ-quantized along with the target and lost capacity.
+#   Genesis ships several MTP-specific patches that may rehabilitate this:
+#     - PN8 (vllm#40849) — MTP/draft online-quant propagation:
+#         "~1 GiB VRAM saved per GPU on 35B-A3B-FP8 + MTP K=3
+#          +5-10% TPS (when FlashInfer is the chosen backend)"
+#     - PN33 (vllm#37521 extended) — spec-decode warmup K-aware; closes
+#         "noonghunna workspace-lock AssertionError on TQ + MTP K=3 single-card"
+#     - P107 (vllm#41467) — MTP truncation detector at reasoning→tool_call
+#         boundary
+#     - PN58 — spec-decode reasoning boundary validation (alt P62)
+#
+#   These suggest Genesis maintainers tested MTP+TQ on 35B-A3B (probably FP8).
+#   Whether AWQ-target reaches non-zero acceptance is the open question.
+#
+# DRAFTER MODEL — TBD
+#   For MTP, vLLM needs either:
+#     (a) a target model that contains pre-trained MTP heads (rare — Qwen3.6
+#         AWQ does NOT ship with MTP heads), OR
+#     (b) a separate small MTP drafter model (analogous to DFlash's
+#         z-lab/Qwen3.6-35B-A3B-DFlash).
+#
+#   As of 2026-05-17 we have not located an MTP drafter for
+#   cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit. Search candidates before deploying:
+#     - HF z-lab/Qwen3.6-35B-A3B-MTP (does it exist?)
+#     - HF cyankiwi or Qwen org MTP variants
+#     - The BeeLlama.cpp post may link to the drafter they used
+#
+#   The "model" field in --speculative-config below is a PLACEHOLDER until
+#   a real MTP drafter is identified. DO NOT DEPLOY THIS PROFILE BEFORE
+#   replacing the placeholder.
+#
+# RUNBOOK (when ready)
+#   Down v2g:    docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
+#   Up mtp:      docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq-mtp.yml --env-file myia_vllm/.env up -d
+#   Rollback:    docker compose -f medium-qwen36-genesis-tq-mtp.yml down
+#                docker compose -f medium-qwen36-genesis-tq.yml up -d
+#
+# WHAT TO MEASURE
+#   1. Acceptance rate per position (1..K) — must be > 0% to validate AWQ+MTP
+#   2. Single-user decode no-think vs v2g 120 tok/s
+#   3. Single-user thinking vs v2g 124 tok/s
+#   4. Concurrent N=5,12 vs v2g 369+, 625+ tok/s
+#   5. Tool call latency vs v2g baseline 0.47s
+#   6. Long context (100K+) — MTP+TQ compatibility check
+#
+# IMAGE: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 (same as v2g + DFlash)
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as v2g — only one runs at a time
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.82
+      --max-model-len 262144
+      --kv-cache-dtype turboquant_k8v4
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+      --max-num-batched-tokens 4096
+      --max-num-seqs 12
+      --performance-mode interactivity
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --prefix-caching-hash-algo xxhash
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
+      --async-scheduling
+      --no-scheduler-reserve-full-isl
+
+      --speculative-config '{"method":"mtp","model":"TBD-mtp-drafter-Qwen3.6-35B-A3B","num_speculative_tokens":3}'
+
+      --default-chat-template-kwargs '{"preserve_thinking":true}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+      --middleware error_source_capture.ErrorSourceCapture
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      # Genesis runtime env (same as v2g)
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      - VLLM_USE_FLASHINFER_MOE_FP8=0
+      # Genesis baseline patches (same as v2g)
+      - GENESIS_ENABLE_P37=1
+      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
+      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P101=1
+      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      - GENESIS_ENABLE_P40=1
+      - GENESIS_VLLM_PIN_POLICY=strict
+      # ── MTP-specific Genesis patches ──
+      # PN8 = MTP/draft online-quant propagation (vllm#40849). Verified
+      # ~1 GiB VRAM saved per GPU on 35B-A3B-FP8 + MTP K=3, +5-10% TPS.
+      # This is the patch that may rehabilitate MTP on AWQ targets.
+      - GENESIS_ENABLE_PN8_MTP_DRAFT_ONLINE_QUANT=1
+      # PN9 = independent drafter attention backend. Same logic as DFlash —
+      # keep target on TurboQuant, drafter on FLASH_ATTN.
+      - GENESIS_ENABLE_PN9_INDEPENDENT_DRAFTER_ATTN=1
+      # P107 = MTP truncation detector at reasoning→tool_call boundary.
+      - GENESIS_ENABLE_P107_MTP_TRUNCATION_DETECTOR=1
+      # PN58 = spec-decode reasoning boundary validation.
+      - GENESIS_ENABLE_PN58_SPEC_REASONING_BOUNDARY=1
+      # PN33 (warmup K-aware) already applied by default.
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-qwen36-genesis-tq-mtp:/root/.cache/vllm  # separate cache
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-genesis-tq-mtp:
