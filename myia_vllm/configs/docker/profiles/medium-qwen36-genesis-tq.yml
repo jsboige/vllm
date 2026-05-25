@@ -63,10 +63,25 @@
 #      routing, P78 tolist guard from noonghunna), the compile-safe P38B
 #      variant, and P37.
 #
-# REMAINING CARE BEFORE FIRST BOOT
-#   * --max-num-batched-tokens / --max-num-seqs start CONSERVATIVE (8192 / 16).
-#     The crash is on the continuation path — validate the 30K-prefix crash test
-#     at these values FIRST, then ramp toward prod (32768 / 64) measuring stability.
+# BATCH SIZING — STAYS AT 4096 / 16. RAMP TO 32768 / 64 REJECTED 2026-05-24.
+#   * These run 4096 / 16 (NOT the 8192 first-boot draft above, NOT the FP8
+#     baseline's 32768 / 64). This is a HARD CONSTRAINT of the Genesis-TQ image,
+#     not a forgotten first-boot caution.
+#   * 2026-05-24 ramp attempt 4096→32768 / 16→64 CRASHED the engine in a boot
+#     loop. Root cause is NOT OOM and NOT the continuation-prefill workspace —
+#     it is a torch.compile/Dynamo fake-tensor shape mismatch at
+#     determine_available_memory() profiling:
+#         mul(FakeTensor(65536,128), FakeTensor(16*s59,128))
+#         -> tensor a (65536) must match tensor b (16*s59) at dim 0
+#     65536 = 2 * max-num-batched-tokens. The TQ k8v4 GQA/multi-query kernel
+#     (P40 vllm#40792 / P67) cannot specialize that shape at large batch. This
+#     is the SAME signature as DFlash Attempt 2 (see CLAUDE.md spec-dec section).
+#   * 4096 never traverses that compile path, which is why the 7-day soak was
+#     clean — but it also means the watchdog flapping is NOT fixable by ramping
+#     batch here. Other levers: healthcheck timeout/start_period, or find the
+#     compile ceiling with an OFF-PROD A/B (try 8192 / 16384) before touching
+#     prod again. Compile range endpoint = max-num-batched-tokens, so the safe
+#     ceiling is whatever value the P40/P67 kernel can still specialize.
 #   * VISION: kept ON (--dtype auto + --limit-mm-per-prompt, prod parity). Genesis'
 #     own integration test ran --language-model-only --dtype float16. If boot or
 #     TQ stability issues appear, that is the genesis-validated fallback to try.
@@ -194,7 +209,12 @@ services:
         CONTAINER="myia_vllm-medium-qwen36-moe"
         PORT="$${VLLM_PORT_GLM:-5002}"
         INTERVAL=120
-        MAX_FAIL=3
+        # MAX_FAIL 3->5 + --max-time 30->60 (2026-05-25): reduce false restarts under
+        # saturation. A saturated-but-alive engine queues the "hi" ping >30s and returns
+        # 000 (looks dead); a truly dead engine returns 000 instantly (conn refused), so
+        # the longer timeout + higher fail threshold ride out transient load windows
+        # without slowing real-death detection. Flapping was ~4 restarts/day pre-tune.
+        MAX_FAIL=5
         FAIL_COUNT=0
 
         echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant"
@@ -203,13 +223,13 @@ services:
         echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
 
         while true; do
-          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
             -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
             -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
 
-          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
             -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
@@ -268,8 +288,8 @@ volumes:
 # =====================================================================
 #   image                  vllm-qwen36-shmpatched  → vllm-qwen36-genesis-tq
 #   --kv-cache-dtype        fp8                     → turboquant_k8v4
-#   --max-num-batched-tokens 32768                  → 8192   (conservative first boot)
-#   --max-num-seqs          64                      → 16     (conservative first boot)
+#   --max-num-batched-tokens 32768                  → 4096   (STAYS 4096; ramp to 32768 crashed torch.compile 2026-05-24)
+#   --max-num-seqs          64                      → 16     (STAYS 16; ramp to 64 crashed torch.compile 2026-05-24)
 #   + --enable-chunked-prefill        (Genesis requires it; the old "forces V0"
 #                                      caveat does NOT apply to vLLM 0.20.x — V1
 #                                      is default and the flag is V1-native)
