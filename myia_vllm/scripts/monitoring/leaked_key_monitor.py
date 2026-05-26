@@ -57,18 +57,33 @@ ENV_PATH = os.path.join(MYIA_VLLM, ".env")
 # --- Allowlist: known-good public/LAN IPs of legitimate users/services. ---
 # Editable here OR via the state file's "allowlist" array (state takes precedence
 # when present, so you can acknowledge a new legit IP without touching code).
+#
+# Identifications confirmed 2026-05-26 by user:
+#   - 37.187.180.135 = myia-web1 (OVH server, NOT po-2023; po-2023 is local-loop only)
+#   - 92.150.81.115  = jsboige itinerant (Marseille 2026-05, Free.fr); when in Paris
+#                      next week the user is on local loop, so a new Paris IP will be
+#                      him as well — flag but don't panic.
+#   - 212.222.31.210 = EPITA Travel-Planner CP-SAT project (Atos/Bouygues egress)
+#   - 86.246.3.30    = EPITA student from home (IDF, Orange)
+#   - 163.5.3.41     = EPITA school machine (RENATER campus)
+#   - 192.168.0.254  = LAN reverse proxy
+#
+# Authorized non-listed populations: EPITA students (if usage stays reasonable),
+# Jamin and Candy on the Hacienda projects. New IPs from any of these are expected.
 DEFAULT_ALLOWLIST = {
-    "37.187.180.135",   # OVH (po-2023 / infra)
-    "212.222.31.210",
-    "92.150.81.115",
-    "86.246.3.30",
-    "163.5.3.41",
+    "37.187.180.135",   # myia-web1 (OVH)
+    "212.222.31.210",   # EPITA Travel-Planner CP-SAT (Atos/Bouygues egress)
+    "92.150.81.115",    # jsboige Marseille (Free.fr)
+    "86.246.3.30",      # étudiant EPITA depuis chez lui (Orange IDF)
+    "163.5.3.41",       # machine EPITA école (RENATER)
     "192.168.0.254",    # LAN reverse proxy
 }
 
 # --- Anomaly thresholds ---
 VOLUME_SPIKE_PER_HOUR = 300   # >N reqs/h from a single non-allowlist IP -> spike alert
 OFF_HOURS = range(0, 6)       # local hours considered "off-hours" (00:00-05:59)
+BODY_SAMPLE_CHARS = 220       # head-chars kept per body sample shown in the alert
+BODY_SAMPLES_PER_IP = 3       # max distinct body samples surfaced per new IP
 
 
 def load_medium_key_prefix() -> str | None:
@@ -135,10 +150,23 @@ def save_state(state: dict) -> None:
 
 
 def scan(key_prefix: str, since_ts: float):
-    """Aggregate leaked-key requests with ts > since_ts, grouped by real public IP."""
-    agg = defaultdict(lambda: {"count": 0, "first": 9e18, "last": 0.0,
-                               "status": defaultdict(int), "off_hours": 0,
-                               "user_agents": defaultdict(int)})
+    """Aggregate leaked-key requests with ts > since_ts, grouped by real public IP.
+
+    Per IP we keep: counts/timestamps/status/off-hours, top user-agents, top hosts,
+    top model names, top paths, and up to BODY_SAMPLES_PER_IP distinct body_head
+    samples (truncated to BODY_SAMPLE_CHARS) so the alert can show *what* the IP
+    is actually doing — not just that it exists.
+    """
+    def _fresh():
+        return {"count": 0, "first": 9e18, "last": 0.0,
+                "status": defaultdict(int), "off_hours": 0,
+                "user_agents": defaultdict(int),
+                "hosts": defaultdict(int),
+                "models": defaultdict(int),
+                "paths": defaultdict(int),
+                "body_samples": [],            # list[str], deduped, max BODY_SAMPLES_PER_IP
+                "_sample_keys": set()}         # in-memory dedup, not serialized
+    agg = defaultdict(_fresh)
     max_ts = since_ts
     total = internal = 0
     with open(LOG_PATH, "r", encoding="utf-8") as f:
@@ -165,7 +193,18 @@ def scan(key_prefix: str, since_ts: float):
             a["first"] = min(a["first"], ts)
             a["last"] = max(a["last"], ts)
             a["status"][int(d.get("status", 0) or 0)] += 1
-            a["user_agents"][(d.get("user_agent") or "?")[:60]] += 1
+            a["user_agents"][(d.get("user_agent") or "?")[:80]] += 1
+            host = (d.get("x_forwarded_host") or d.get("host") or "?").split(",")[0].strip()
+            a["hosts"][host[:60]] += 1
+            a["models"][(d.get("model") or "?")[:40]] += 1
+            a["paths"][(d.get("path") or "?")[:60]] += 1
+            body = (d.get("body_head") or "").strip()
+            if body and len(a["body_samples"]) < BODY_SAMPLES_PER_IP:
+                # dedup on a stable shape (key first ~120 chars compressed)
+                key = " ".join(body.split())[:120]
+                if key and key not in a["_sample_keys"]:
+                    a["_sample_keys"].add(key)
+                    a["body_samples"].append(body[:BODY_SAMPLE_CHARS])
             if datetime.fromtimestamp(ts).hour in OFF_HOURS:
                 a["off_hours"] += 1
     return agg, max_ts, total, internal
@@ -258,26 +297,85 @@ def main() -> int:
               f"aucune nouvelle IP non autorisée.")
         return 0
 
-    # Build dashboard-ready French markdown + structured alert records
-    lines = [f"🚨 **Alerte clé leakée (medium)** — {len(new_alerts)} événement(s) "
-             f"nouveau(x) — {now}", ""]
+    # Build dashboard-ready French markdown + structured alert records.
+    # Tone is intentionally factual (not alarmist): legitimate populations are
+    # documented just below the heading so the reader can attribute fast.
+    n_new_ip = sum(1 for k, _, _ in new_alerts if k == "NEW_IP")
+    n_spike  = sum(1 for k, _, _ in new_alerts if k == "VOLUME_SPIKE")
+    heading_bits = []
+    if n_new_ip: heading_bits.append(f"{n_new_ip} nouvelle(s) IP à identifier")
+    if n_spike:  heading_bits.append(f"{n_spike} pic(s) de volume")
+    heading = " · ".join(heading_bits) or f"{len(new_alerts)} événement(s)"
+
+    lines = [
+        f"🔎 **Monitoring clé medium — {heading}** ({now})",
+        "",
+        "_Décision en vigueur : monitoring seulement, **pas de rotation** "
+        "(toute la classe + la prod en dépendent)._",
+        "",
+        "**Sources légitimes connues** (pas une alerte si l'IP correspond) : "
+        "étudiants EPITA (école RENATER, Atos/Bouygues, Orange IDF), "
+        "projets Hacienda (Jamin, Candy), `myia-web1` OVH, "
+        "jsboige itinérant (Marseille cette semaine, Paris semaine prochaine). "
+        "L'IP locale `192.168.0.254` est le reverse-proxy LAN.",
+        "",
+    ]
     for kind, ip, a in new_alerts:
-        label = "Nouvelle IP non autorisée" if kind == "NEW_IP" else "Pic de volume"
-        sts = ", ".join(f"{k}:{v}" for k, v in sorted(a["status"].items()))
-        ua = max(a["user_agents"].items(), key=lambda kv: kv[1])[0] if a["user_agents"] else "?"
-        lines.append(f"- **{label}** `{ip}` — {a['count']} req "
-                     f"({fmt_ts(a['first'])} → {fmt_ts(a['last'])}), statuts [{sts}], "
-                     f"UA `{ua}`, off-hours: {a['off_hours']}")
+        if kind == "NEW_IP":
+            label = "Nouvelle IP à identifier"
+        else:
+            label = f"Pic de volume (≥ {VOLUME_SPIKE_PER_HOUR} req/h)"
+        sts  = ", ".join(f"{k}:{v}" for k, v in sorted(a["status"].items())) or "?"
+        # top-N helpers
+        def _top(d, n):
+            return sorted(d.items(), key=lambda kv: -kv[1])[:n]
+        top_ua    = _top(a["user_agents"], 2)
+        top_host  = _top(a["hosts"], 2)
+        top_model = _top(a["models"], 3)
+        top_path  = _top(a["paths"], 3)
+        ua_top = top_ua[0][0] if top_ua else "?"
+
+        lines.append(f"### {label} — `{ip}`")
+        lines.append(
+            f"- **{a['count']} req** ({fmt_ts(a['first'])} → {fmt_ts(a['last'])}) "
+            f"· statuts [{sts}] · off-hours: {a['off_hours']}"
+        )
+        if top_ua:
+            ua_str = ", ".join(f"`{u}` ×{c}" for u, c in top_ua)
+            lines.append(f"- **UA** : {ua_str}")
+        if top_host:
+            lines.append(f"- **Host** : "
+                         + ", ".join(f"`{h}` ×{c}" for h, c in top_host))
+        if top_model:
+            lines.append(f"- **Modèle(s)** : "
+                         + ", ".join(f"`{m}` ×{c}" for m, c in top_model))
+        if top_path:
+            lines.append(f"- **Endpoint(s)** : "
+                         + ", ".join(f"`{p}` ×{c}" for p, c in top_path))
+        if a["body_samples"]:
+            lines.append(f"- **Extraits de prompt** (max {BODY_SAMPLES_PER_IP}, "
+                         f"~{BODY_SAMPLE_CHARS} car. chacun) :")
+            for s in a["body_samples"]:
+                # one-line code block, collapse whitespace for readability
+                compact = " ".join(s.split())
+                lines.append(f"  - `{compact}`")
+        lines.append("")
+
         with open(ALERT_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "ts": time.time(), "iso": now, "kind": kind, "ip": ip,
                 "count": a["count"], "first": a["first"], "last": a["last"],
                 "status": dict(a["status"]), "off_hours": a["off_hours"],
-                "top_user_agent": ua,
+                "top_user_agent": ua_top,
+                "top_hosts": dict(top_host),
+                "top_models": dict(top_model),
+                "top_paths": dict(top_path),
+                "body_samples": a["body_samples"],
             }) + "\n")
-    lines.append("")
-    lines.append("_Décision en vigueur : monitoring seulement, pas de rotation de clé. "
-                 "Si l'IP est légitime, l'ajouter à l'allowlist du state._")
+    lines.append(
+        "_Si l'IP est légitime (étudiant, Hacienda, infra MYIA), l'ajouter à "
+        "`leaked_key_monitor_state.json` → `allowlist[]` pour ne plus être alerté._"
+    )
     alert_md = "\n".join(lines)
     # Persist the dashboard-ready markdown so the relay can post it verbatim.
     with open(LAST_ALERT_PATH, "w", encoding="utf-8") as f:
