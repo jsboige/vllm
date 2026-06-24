@@ -63,32 +63,36 @@
 #      routing, P78 tolist guard from noonghunna), the compile-safe P38B
 #      variant, and P37.
 #
-# BATCH SIZING — 8192 / 16 via P72+P74 (2026-06-24). 4096 was NOT a hard ceiling.
-#   * UPDATE 2026-06-24: the "HARD 4096 CONSTRAINT" conclusion below was INCOMPLETE.
-#     Genesis ships P72 (profile_run M cap) + P74 (chunk-clamp) SPECIFICALLY to
-#     unblock --max-num-batched-tokens > 4096 on MoE. Now enabled in the env block;
-#     runtime batch is 8192 (Genesis-validated; their own TQ-k8v4 launch scripts use
-#     P72=1 + GENESIS_PROFILE_RUN_CAP_M=4096 + P74=1 + batch 8192). The 2026-05-24
-#     ramp crashed ONLY because P72 was OFF — profile_run tried the full M=2*32768
-#     shape. With P72 the profile is capped at M=4096 while the runtime batch is 8192.
-#     Rationale: 4096 = 30 chunks for a 120K context (slow TTFT + decode starvation);
-#     8192 halves that. 32768/64 remains out of scope (untested with P72).
-#   * Historical detail of the 2026-05-24 crash (still accurate — it's WHY P72 exists):
-#   * 2026-05-24 ramp attempt 4096→32768 / 16→64 CRASHED the engine in a boot
-#     loop. Root cause is NOT OOM and NOT the continuation-prefill workspace —
-#     it is a torch.compile/Dynamo fake-tensor shape mismatch at
-#     determine_available_memory() profiling:
-#         mul(FakeTensor(65536,128), FakeTensor(16*s59,128))
-#         -> tensor a (65536) must match tensor b (16*s59) at dim 0
-#     65536 = 2 * max-num-batched-tokens. The TQ k8v4 GQA/multi-query kernel
-#     (P40 vllm#40792 / P67) cannot specialize that shape at large batch. This
-#     is the SAME signature as DFlash Attempt 2 (see CLAUDE.md spec-dec section).
-#   * 4096 never traverses that compile path, which is why the 7-day soak was
-#     clean — but it also means the watchdog flapping is NOT fixable by ramping
-#     batch here. Other levers: healthcheck timeout/start_period, or find the
-#     compile ceiling with an OFF-PROD A/B (try 8192 / 16384) before touching
-#     prod again. Compile range endpoint = max-num-batched-tokens, so the safe
-#     ceiling is whatever value the P40/P67 kernel can still specialize.
+# BATCH SIZING — 4096 / 16. The 8192 unlock was REVERTED 2026-06-24 after a crash.
+#   * 2026-06-24 ATTEMPT (REVERTED): set --max-num-batched-tokens 8192 with Genesis
+#     P72 (profile_run M cap = 4096) + P74 (chunk-clamp). Boot was clean and a short
+#     bench passed (80K single-prefill crash test, N=16 decode) — but those NEVER
+#     produce a single forward batch in (4096, 8192]: the 80K prefill is P74-chunked
+#     to <=4096, and N=16 decode is ~16 tokens/step. Under real mixed traffic
+#     (claudish long context + condensation + decode) a combined forward batch of
+#     5536 tokens hit a GDN buffer sized for 4096 and the worker died:
+#         RuntimeError: setStorage: sizes [5536, 16, 128] ... requiring a storage
+#         size of 22675456 are out of bounds for storage of size 16777216
+#         (16777216 = 4096*16*128*2 ; 22675456 = 5536*16*128*2)
+#     at qwen3_next.py:495 via the inductor/cuda-graph as_strided aliasing path,
+#     ~1h25 after deploy (2026-06-24 15:23:56Z). The condensation outage that
+#     followed was THIS crash. This is itself an instance of verify-before-propagating:
+#     "8192 validated" was declared from a bench that could not trigger the failure.
+#   * ROOT CAUSE: P72 caps the profiled/compiled shape at GENESIS_PROFILE_RUN_CAP_M
+#     (4096), so the qwen3_next (GatedDeltaNet) compiled buffers are 4096-sized.
+#     P72 lets the engine BOOT at batch 8192, but the GDN buffer stays coupled to
+#     the 4096 profile cap, so any runtime forward >4096 tokens overflows it. The
+#     runtime batch is therefore bounded by GENESIS_PROFILE_RUN_CAP_M, NOT by
+#     --max-num-batched-tokens. 4096 IS the effective ceiling unless the profile cap
+#     AND a fresh compile are BOTH raised to 8192 — which risks re-triggering the
+#     2026-05-24 boot crash below and is UNTESTED. Do not retry on prod.
+#   * 2026-05-24 ramp 4096→32768 / 16→64 CRASHED at boot (the reason P72 exists):
+#     torch.compile/Dynamo fake-tensor mismatch at determine_available_memory():
+#         mul(FakeTensor(65536,128), FakeTensor(16*s59,128))  [65536 = 2*batched-tokens]
+#     The TQ k8v4 GQA/multi-query kernel (P40 vllm#40792 / P67) cannot specialize
+#     that shape at large batch. Same signature as DFlash Attempt 2.
+#   * NET: 4096 is the proven-stable runtime batch (7-day soak + this revert).
+#     Watchdog flapping is NOT fixable by ramping batch — tune the watchdog.
 #   * VISION: kept ON (--dtype auto + --limit-mm-per-prompt, prod parity). Genesis'
 #     own integration test ran --language-model-only --dtype float16. If boot or
 #     TQ stability issues appear, that is the genesis-validated fallback to try.
@@ -116,7 +120,7 @@ services:
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
       --skip-mm-profiling
-      --max-num-batched-tokens 8192
+      --max-num-batched-tokens 4096
       --max-num-seqs 16
       --performance-mode interactivity
       --enable-chunked-prefill
@@ -156,9 +160,8 @@ services:
       - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
       # Oversize-request guard DISABLED 2026-06-24 (=0). The 512 KB HTTP 413 reject
       # turned slow z.ai->qwen fallback overflow into hard-fails -> cascade outage.
-      # Real levers are the P72/P74 batch unlock (8192) below + claudish-side
-      # concurrency cap, NOT body size. Middleware stays on for logging. Set >0 to
-      # re-enable the reject if ever needed.
+      # Real lever is the claudish-side concurrency cap (no-fallback routing), NOT
+      # body size. Middleware stays on for logging. Set >0 to re-enable if needed.
       - VLLM_MAX_REQUEST_BODY_BYTES=0
       # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
       # These matter for TurboQuant memory accounting — the profiler must size
@@ -191,15 +194,12 @@ services:
       # TQ k8v4 GQA grouping kernel from vllm#40792. Author measured +27% on H100;
       # +5-15% expected on Ada. Cache-locality benefit needs L2 >= 24 MB (we have 72).
       - GENESIS_ENABLE_P40=1
-      # P72/P74 (2026-06-24) — unblock --max-num-batched-tokens > 4096 on MoE.
-      # P72 caps the profile_run shape at M=GENESIS_PROFILE_RUN_CAP_M (4096), dodging
-      # the Dynamo fake-tensor mismatch at determine_available_memory() that crashed
-      # the 2026-05-24 ramp, while the RUNTIME batch runs at 8192. P74 is the companion
-      # chunk-clamp (auto long_prefill_token_threshold) — anti-starvation net for decode.
-      # Genesis's own TQ-k8v4 launch scripts pair exactly these three with batch 8192.
-      - GENESIS_ENABLE_P72_PROFILE_RUN_CAP=1
-      - GENESIS_PROFILE_RUN_CAP_M=4096
-      - GENESIS_ENABLE_P74_CHUNK_CLAMP=1
+      # P72/P74 batch-8192 unlock REVERTED 2026-06-24 (see BATCH SIZING banner).
+      # batch 8192 + P72 profile-cap M=4096 caused a runtime setStorage overflow
+      # crash in qwen3_next.py at 15:23:56Z (GDN buffer sized for 4096, a runtime
+      # forward of 5536 tokens overflowed it). P72 sized the compiled buffers to the
+      # cap, so the runtime batch is bounded by the cap — not by max-num-batched-tokens.
+      # Runtime batch is back to the proven 4096. Do not re-add P72+8192 on prod.
       - GENESIS_VLLM_PIN_POLICY=strict
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
