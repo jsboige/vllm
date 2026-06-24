@@ -63,10 +63,17 @@
 #      routing, P78 tolist guard from noonghunna), the compile-safe P38B
 #      variant, and P37.
 #
-# BATCH SIZING — STAYS AT 4096 / 16. RAMP TO 32768 / 64 REJECTED 2026-05-24.
-#   * These run 4096 / 16 (NOT the 8192 first-boot draft above, NOT the FP8
-#     baseline's 32768 / 64). This is a HARD CONSTRAINT of the Genesis-TQ image,
-#     not a forgotten first-boot caution.
+# BATCH SIZING — 8192 / 16 via P72+P74 (2026-06-24). 4096 was NOT a hard ceiling.
+#   * UPDATE 2026-06-24: the "HARD 4096 CONSTRAINT" conclusion below was INCOMPLETE.
+#     Genesis ships P72 (profile_run M cap) + P74 (chunk-clamp) SPECIFICALLY to
+#     unblock --max-num-batched-tokens > 4096 on MoE. Now enabled in the env block;
+#     runtime batch is 8192 (Genesis-validated; their own TQ-k8v4 launch scripts use
+#     P72=1 + GENESIS_PROFILE_RUN_CAP_M=4096 + P74=1 + batch 8192). The 2026-05-24
+#     ramp crashed ONLY because P72 was OFF — profile_run tried the full M=2*32768
+#     shape. With P72 the profile is capped at M=4096 while the runtime batch is 8192.
+#     Rationale: 4096 = 30 chunks for a 120K context (slow TTFT + decode starvation);
+#     8192 halves that. 32768/64 remains out of scope (untested with P72).
+#   * Historical detail of the 2026-05-24 crash (still accurate — it's WHY P72 exists):
 #   * 2026-05-24 ramp attempt 4096→32768 / 16→64 CRASHED the engine in a boot
 #     loop. Root cause is NOT OOM and NOT the continuation-prefill workspace —
 #     it is a torch.compile/Dynamo fake-tensor shape mismatch at
@@ -109,7 +116,7 @@ services:
       --limit-mm-per-prompt '{"image":4,"video":0}'
       --mm-processor-kwargs '{"max_pixels":774000}'
       --skip-mm-profiling
-      --max-num-batched-tokens 4096
+      --max-num-batched-tokens 8192
       --max-num-seqs 16
       --performance-mode interactivity
       --enable-chunked-prefill
@@ -147,6 +154,12 @@ services:
       - VLLM_USE_FLASHINFER_MOE_FP16=1
       - VLLM_LOG_DIR=/logs
       - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
+      # Oversize-request guard DISABLED 2026-06-24 (=0). The 512 KB HTTP 413 reject
+      # turned slow z.ai->qwen fallback overflow into hard-fails -> cascade outage.
+      # Real levers are the P72/P74 batch unlock (8192) below + claudish-side
+      # concurrency cap, NOT body size. Middleware stays on for logging. Set >0 to
+      # re-enable the reject if ever needed.
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
       # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
       # These matter for TurboQuant memory accounting — the profiler must size
       # the KV pool correctly around the TQ dequant/continuation transient peaks.
@@ -178,6 +191,15 @@ services:
       # TQ k8v4 GQA grouping kernel from vllm#40792. Author measured +27% on H100;
       # +5-15% expected on Ada. Cache-locality benefit needs L2 >= 24 MB (we have 72).
       - GENESIS_ENABLE_P40=1
+      # P72/P74 (2026-06-24) — unblock --max-num-batched-tokens > 4096 on MoE.
+      # P72 caps the profile_run shape at M=GENESIS_PROFILE_RUN_CAP_M (4096), dodging
+      # the Dynamo fake-tensor mismatch at determine_available_memory() that crashed
+      # the 2026-05-24 ramp, while the RUNTIME batch runs at 8192. P74 is the companion
+      # chunk-clamp (auto long_prefill_token_threshold) — anti-starvation net for decode.
+      # Genesis's own TQ-k8v4 launch scripts pair exactly these three with batch 8192.
+      - GENESIS_ENABLE_P72_PROFILE_RUN_CAP=1
+      - GENESIS_PROFILE_RUN_CAP_M=4096
+      - GENESIS_ENABLE_P74_CHUNK_CLAMP=1
       - GENESIS_VLLM_PIN_POLICY=strict
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro

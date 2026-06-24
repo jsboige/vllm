@@ -34,6 +34,22 @@ from pathlib import Path
 
 _BODY_BYTES = int(os.environ.get("ERROR_SOURCE_BODY_BYTES", "1500"))
 
+# Oversize-request guard. Refuse generation requests whose body exceeds this many
+# bytes with HTTP 413 BEFORE they reach the engine. Added 2026-06-24 after large
+# claudish (Claude Code -> local Qwen) contexts of 200-762 KB were dragging the
+# TurboQuant-k8v4 continuous batch down to ~0 tok/s for minutes, timing out the
+# small co-scheduled dashboard-condensation calls (OpenAI/JS, <=59 KB).
+#
+# DEFAULT = 0 (DISABLED). The guard is OPT-IN. A 512 KB default-on guard caused a
+# cluster-wide cascade outage the same day (2026-06-24): it hard-failed the slow
+# z.ai->qwen fallback overflow instead of letting it through, so a degraded-but-
+# working fallback became a hard error storm. The structural fix is elsewhere
+# (Genesis P72/P74 batch unlock to 8192 + claudish-side concurrency cap), NOT
+# body-size rejection. Set VLLM_MAX_REQUEST_BODY_BYTES=<bytes> to arm it; the
+# profile keeps it explicitly =0. The check is Content-Length-based (no body
+# buffering) and FAILS OPEN: any error in the guard lets the request through.
+_MAX_BODY_BYTES = int(os.environ.get("VLLM_MAX_REQUEST_BODY_BYTES", "0"))
+
 
 class ErrorSourceCapture:
     def __init__(self, app):
@@ -55,6 +71,23 @@ class ErrorSourceCapture:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
         client = scope.get("client") or ("-", 0)
+
+        # --- Oversize-request guard (refuse giant requests up-front) ---
+        # Use Content-Length to reject without buffering the body. FAIL OPEN:
+        # any error here must never break a legitimate request.
+        if _MAX_BODY_BYTES > 0:
+            try:
+                # "/v1/chat/completions" and "/v1/completions" both end this way.
+                if scope.get("path", "").endswith("/completions"):
+                    cl = headers.get("content-length")
+                    if cl is not None and int(cl) > _MAX_BODY_BYTES:
+                        await self._reject_oversize(
+                            receive, send, scope, headers, client, int(cl)
+                        )
+                        return
+            except Exception:
+                pass
+
         body_chunks = bytearray()
         captured_model = None
 
@@ -113,6 +146,73 @@ class ErrorSourceCapture:
             asyncio.get_running_loop().run_in_executor(
                 None, _append_line, self.out_path, entry
             )
+
+    async def _reject_oversize(self, receive, send, scope, headers, client, body_len):
+        # Drain the request body so the HTTP/1.1 connection stays clean, then 413.
+        # Draining reads ~512 KB+ off the socket (cheap) but never hits the GPU —
+        # the expensive prefill/decode of the giant context is what we are avoiding.
+        try:
+            while True:
+                m = await receive()
+                if m["type"] == "http.disconnect":
+                    break
+                if m["type"] == "http.request" and not m.get("more_body", False):
+                    break
+        except Exception:
+            pass
+
+        payload = json.dumps({
+            "error": {
+                "message": (
+                    f"Request body of {body_len} bytes exceeds the "
+                    f"{_MAX_BODY_BYTES}-byte limit for this endpoint. "
+                    "Reduce the prompt/context length and retry."
+                ),
+                "type": "invalid_request_error",
+                "param": "messages",
+                "code": "request_too_large",
+            }
+        }).encode("utf-8")
+        try:
+            await send({
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode("latin-1")),
+                ],
+            })
+            await send({"type": "http.response.body", "body": payload})
+        except Exception:
+            pass
+
+        # Log the rejection (same schema as captured requests, + oversize flag).
+        entry = {
+            "ts": time.time(),
+            "status": 413,
+            "path": scope.get("path", ""),
+            "client": f"{client[0]}:{client[1]}",
+            "model": None,
+            "user_agent": headers.get("user-agent", ""),
+            "x_forwarded_for": headers.get("x-forwarded-for", ""),
+            "x_real_ip": headers.get("x-real-ip", ""),
+            "x_forwarded_host": headers.get("x-forwarded-host", ""),
+            "host": headers.get("host", ""),
+            "referer": headers.get("referer", ""),
+            "auth_prefix": (headers.get("authorization", "")[:24] + "...")
+            if headers.get("authorization") else "",
+            "body_bytes": body_len,
+            "body_truncated_bytes": 0,
+            "body_head": "",
+            "body_tail": "",
+            "oversize_rejected": True,
+        }
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None, _append_line, self.out_path, entry
+            )
+        except Exception:
+            pass
 
 
 def _append_line(path, entry):
