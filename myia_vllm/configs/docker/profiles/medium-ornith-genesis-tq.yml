@@ -1,0 +1,248 @@
+# Docker Compose profile — Ornith-1.0-35B (AWQ-INT4) + TurboQuant k8v4 via Genesis patch tree
+# ============================================================================
+# STATUS: PROD CUTOVER ATTEMPT 2026-07-02 (user GO: "tenter de remplacer la prod,
+#         même archi sur GPUs 0,1, GPU 2 libre pour les trainings").
+#
+# WHAT THIS IS
+#   Same Genesis-TQ v2g stack as medium-qwen36-genesis-tq.yml, model swapped to
+#   DeepReinforce Ornith-1.0-35B (agentic-coding RL fine-tune of Qwen3.5-35B-A3B,
+#   SAME Qwen3_5MoeForConditionalGeneration class). Eval tracker:
+#   jsboige/roo-extensions#2716 + myia_vllm/_iteration_log/ornith_evaluation/plan.md.
+#
+# QUANT — ATTEMPT LOG
+#   ATTEMPT 1 (2026-07-02 02:22Z, FAILED at boot): cyankiwi/Ornith-1.0-35B-AWQ-INT4.
+#     Both workers died in ~90s: "AssertionError: Only symmetric quantization is
+#     supported for MoE". Root cause: that quant is compressed-tensors pack-quantized
+#     int4 g32 **sym=False**, and vLLM's compressed-tensors MoE loader is
+#     symmetric-only. The prod Qwen3.6 quant is NOT the same format despite the
+#     same quantizer author: it is legacy AWQ GEMM (quant_method: awq,
+#     zero_point: true) loaded via AWQ-Marlin, which DOES support asymmetric.
+#     "Same recipe" in the S2 notes was wrong — always diff quant_method/format,
+#     not just bits/group.
+#   ATTEMPT 2 (2026-07-02 02:36Z, FAILED at boot): cyburn/Ornith-1.0-35B-int4-AutoRound
+#     with default Genesis flags. GPTQ-Marlin path taken (MarlinLinearKernel logged)
+#     but workers died on a tiny quantized layer: "output_size_per_partition = 32
+#     is not divisible by min_thread_n = 64" — a 64-wide projection (GDN beta/alpha,
+#     quantized because cyburn's block_name_to_quantize covers ALL of
+#     language_model.layers, unlike prod's ignore-list) splits to 32/rank at TP=2,
+#     below Marlin's tile floor.
+#   ATTEMPT 3 (current config): same cyburn quant + GENESIS_ENABLE_P87=1
+#     (Marlin W4A16 sub-tile output dim pad-on-load, backport vllm#40361 — exactly
+#     this failure) + GENESIS_ENABLE_P91=1 (AutoRound row-parallel group cdiv +
+#     start-idx fix, backport vllm#39460 — correctness for AutoRound+TP row shards).
+#     Sym=True int4 group_size=128, packing auto_round:auto_gptq → GPTQ-Marlin.
+#     Only model.language_model.layers quantized (vision BF16, like prod).
+#     20.5 GB → ~10.2 GB/GPU TP=2. Watch boot for kernel routing: if MoE falls
+#     back to Triton moe_wna16 instead of Marlin, expect the 2026-03-03 GPTQ
+#     perf cliff (-98.5% concurrent) and reject.
+#
+# CHANGES vs medium-qwen36-genesis-tq.yml (everything else IDENTICAL):
+#   --model                cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit → cyankiwi/Ornith-1.0-35B-AWQ-INT4
+#   --served-model-name    qwen3.6-35b-a3b → ornith-1.0-35b + ALIAS qwen3.6-35b-a3b
+#                          (alias keeps OWUI / roo-state-manager condensation /
+#                          Roo / sk-agent / claudish working with zero client edits)
+#   --default-chat-template-kwargs '{"preserve_thinking":true}' → REMOVED
+#                          (Ornith's template re-injects <think> history
+#                          unconditionally — no preserve_thinking conditional; the
+#                          kwarg is inert on this template. Verified 2026-07-02,
+#                          template otherwise byte-identical to prod Qwen3.6's.)
+#   compile-cache volume   vllm-compile-cache-qwen36-genesis-tq → ...-ornith-genesis-tq
+#                          (MANDATORY fresh compile: vocab 248320 vs ~151k)
+#
+# ROLLBACK (instant — nothing deleted):
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-ornith-genesis-tq.yml --env-file myia_vllm/.env down
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d
+#
+# VALIDATE (same gates as the Genesis-TQ promotion):
+#   a. Boot clean: Genesis boot summary + "GPU KV cache size" (expect ~1.9-2M tokens;
+#      slightly below Qwen3.6's 2.03M — bigger vocab eats some pool).
+#   b. Smoke: chat, thinking (<think> + reasoning field), tool calling (qwen3_coder
+#      XML — template block byte-identical to prod), vision.
+#   c. CRASH TEST: ~30K-token-prefix continuation prefill (the 2026-05-06 TQ killer).
+#   d. Decode tok/s + N-concurrent vs Qwen3.6 v2g baseline (120 tok/s / 829 agg).
+#   e. Idle soak ≥1h (v2f regressed at +55min idle — VLLM_USE_FLASHINFER_SAMPLER=0 kept).
+# ============================================================================
+
+services:
+  vllm-medium-qwen36-moe:  # SAME service/container names as baseline — only one runs at a time
+    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_ORNITH:-cyburn/Ornith-1.0-35B-int4-AutoRound}
+      --served-model-name ornith-1.0-35b qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gdn-prefill-backend triton
+      --no-enable-flashinfer-autotune
+      --gpu-memory-utilization 0.82
+      --max-model-len 262144
+      --kv-cache-dtype turboquant_k8v4
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --skip-mm-profiling
+      --max-num-batched-tokens 4096
+      --max-num-seqs 16
+      --performance-mode interactivity
+      --enable-chunked-prefill
+      --enable-prefix-caching
+      --prefix-caching-hash-algo xxhash
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --distributed-executor-backend mp
+      --disable-custom-all-reduce
+      --async-scheduling
+      --no-scheduler-reserve-full-isl
+
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+      --middleware error_source_capture.ErrorSourceCapture
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
+      # Oversize-request guard DISABLED (=0) since 2026-06-24 — see qwen36 profile banner.
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      # ── Genesis runtime env (identical to qwen36-genesis-tq v2g) ──
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0  # v2g fix: FlashInfer sampler JIT autotune corrupts CPython _thread.lock
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      - VLLM_USE_FLASHINFER_MOE_FP8=0
+      # ── Genesis patch flags — identical to qwen36-genesis-tq v2g ──
+      - GENESIS_ENABLE_P37=1
+      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
+      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
+      - GENESIS_ENABLE_P98=1
+      - GENESIS_ENABLE_P101=1
+      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
+      - GENESIS_ENABLE_P40=1
+      # ── Ornith/AutoRound-specific opt-ins (attempt 3, 2026-07-02) ──
+      - GENESIS_ENABLE_P87=1   # Marlin sub-tile output pad-on-load (vllm#40361) — fixes 32<min_thread_n=64 boot crash at TP=2
+      - GENESIS_ENABLE_P91=1   # AutoRound row-parallel group cdiv + start-idx (vllm#39460) — scale indexing correctness on TP shards
+      # P72/P74 batch-8192 unlock NOT enabled (reverted 2026-06-24 on qwen36 — same GDN arch here)
+      - GENESIS_VLLM_PIN_POLICY=strict
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-ornith-genesis-tq:/root/.cache/vllm  # FRESH cache: vocab 248320 ≠ qwen36
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro  # error_source_capture diag
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s  # 20 min: fresh compile (new vocab) + Genesis apply_all + TQ + CUDA graphs
+    restart: unless-stopped
+
+  # Watchdog sidecar — identical to qwen36-genesis-tq. Ping payload keeps the
+  # qwen3.6-35b-a3b ALIAS on purpose: it exercises the exact model name every
+  # existing client uses, so an alias break surfaces as watchdog failures.
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=5
+        FAIL_COUNT=0
+
+        echo "Watchdog started for Ornith-1.0-35B + Genesis TurboQuant (alias qwen3.6-35b-a3b)"
+        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
+        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
+        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+
+        while true; do
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$HOST_RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+            else
+              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
+            fi
+            FAIL_COUNT=0
+          elif [ "$$INT_RESULT" = "200" ]; then
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-ornith-genesis-tq:  # fresh — never share with qwen36 caches (vocab mismatch)
