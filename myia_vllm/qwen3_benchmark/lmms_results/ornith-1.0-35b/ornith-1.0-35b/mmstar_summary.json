@@ -1,0 +1,10 @@
+{
+  "benchmark": "mmstar",
+  "model": "ornith-1.0-35b",
+  "total_questions": 150,
+  "completed": 150,
+  "correct": 74,
+  "errors": 0,
+  "accuracy_pct": 49.33,
+  "elapsed_s": 82.4
+}

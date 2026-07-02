@@ -69,7 +69,20 @@ Architecturally a **drop-in** for our stack; vendor claims big agentic-coding ga
     - `quantization=inc` auto-detected (AutoRound/Intel Neural Compressor loader) → GPTQMarlinLinearMethod.
   - **Smoke gates (02:5xZ): 7/7 PASS** — models(both names) / simple 3.0s "OK" / thinking reasoning_len=1118 + "391" / tool call get_weather{city:Paris} qwen3_coder / vision "red" 0.8s / **58,415-token continuation-prefill needle BLUE-7742 found in 34.6s (the 2026-05-06 TQ killer, ~14 chunks at batch 4096)** / decode 116.6 tok/s single-user thinking-off (−3% vs v2g ~120, within ±5% threshold).
   - Watchdog sidecar up 02:57Z. 1h stability monitor armed (v2f idle regression fired at +55min — watch window covers it).
-  - **STATUS: prod = Ornith serving BOTH `ornith-1.0-35b` + alias `qwen3.6-35b-a3b`. NOT yet permanent** — S4 benchmarks vs Qwen3.6 + user/ai-01 sign-off still required per S5. Rollback stays instant (qwen36 profile + image + compile cache untouched).
+  - ~~STATUS: prod = Ornith serving~~ → **ROLLED BACK to Qwen3.6 same day (see S4/S5 below).**
+- [x] **S4-light (2026-07-02, executed same session at user request "benchmarks légers")**: sequential harness (1-2 requests in flight of 16 slots), 150-sample subsets, **same-item comparison** vs Qwen3.6's full-run results on identical indexes:
+  | Bench (150 same items) | Ornith | Qwen3.6 | Δ |
+  |---|---|---|---|
+  | GSM8K | 87.3% | 88.0% | −0.7 (noise) |
+  | IFEval strict | 86.7% | 90.0% | **−3.3** |
+  | MMStar (vision) | 49.3% | 54.0% | **−4.7** |
+  | Tool-calling (12 scen.) | 83.3% | 83.3% | = (same 2 intelligent refusals) |
+  | Decode single | 116.6 tok/s | ~120 | −3% |
+  | KV cache | **2.43M** | 2.03M | **+20%** |
+  - **Behavioral findings**: (a) Ornith **IGNORES `/no_think`** (still reasons ~1K chars — verified; Qwen3.x honors it) → any client relying on the marker + tight max_tokens breaks (LLMService.ts:502 synthesis path; synthesis currently disabled #788). (b) Ornith thinks MUCH longer by default (~3-5K chars even for trivial condensation tasks): with max_tokens=800 → `finish=length`, **content EMPTY** — this pattern would have broken utility clients. (c) **Dashboard condensation VERIFIED OK** (exact-shape test 35KB/15.9K tokens/max 12000/enable_thinking:false → stop, 17s): immune because `OPENAI_BASE_URL=localhost` routes to `chat_template_kwargs`. User's "condensations ne marchent plus" report = the S3 maintenance-window outages (02:20–02:57Z), verified no failing requests post-boot.
+  - Repetition bench (qwen-instruct) killed mid-run by the rollback decision — not needed for the verdict.
+- [x] **S5 DECISION (2026-07-02, user: "si les résultats sont moins bons on rollback non?")**: **REJECT for the generalist prod slot → ROLLED BACK to Qwen3.6 Genesis-TQ v2g.** Rationale: measured regressions on instruction-following (−3.3) and vision (−4.7, below even the 3.5 base) + `/no_think` incompatibility + heavy-thinking latency/empty-content risk on utility clients, while the headline coding gains (vendor Terminal-Bench +13.6) were NOT locally verifiable without an agentic harness. KV +20% and tool parity don't offset a generalist-role regression (OWUI multi-tenant, students, vision, condensation).
+  - **Retained for the future ("coding-specialist split" option)**: profile `medium-ornith-genesis-tq.yml` (P87+P91 boot recipe proven), cyburn quant cached in prod HF cache, S4 coding benches only if a dedicated coding endpoint is ever wanted.
   - Smoke gate script ready: `smoke_test.py` (models/chat/thinking/tool/vision/30K-continuation-prefill-needle/decode-speed).
 - [ ] **S4**: benchmark vs current 3.6 with OUR harness: coding (have students/agentic proxy), GSM8K, IFEval, MMStar, MME, tool-calling accuracy, repetition 4gram/TTR, decode tok/s, N=16 concurrent agg, KV cache size. Side-by-side table.
 - [ ] **S5**: decide. If win (or coding-win with acceptable non-coding) → **propose to user + ai-01** before any prod cutover. Document rejection if it loses (cemetery entry).

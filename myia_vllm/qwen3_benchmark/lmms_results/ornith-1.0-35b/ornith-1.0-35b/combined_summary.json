@@ -1,0 +1,12 @@
+{
+  "ifeval": {
+    "benchmark": "ifeval",
+    "model": "ornith-1.0-35b",
+    "total_prompts": 150,
+    "completed": 150,
+    "strict_accuracy": 86.67,
+    "instruction_correct": 130,
+    "errors": 0,
+    "elapsed_s": 1209.4
+  }
+}
