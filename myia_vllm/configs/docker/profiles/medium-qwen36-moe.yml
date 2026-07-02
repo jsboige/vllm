@@ -131,8 +131,15 @@ services:
         CONTAINER="myia_vllm-medium-qwen36-moe"
         PORT="$${VLLM_PORT_GLM:-5002}"
         INTERVAL=120
-        MAX_FAIL=3
+        # MAX_FAIL 3->5 + --max-time 30->60 + PROBE_MAX_TOKENS 1->24: synced from the
+        # active genesis-tq profile (2026-05-25 anti-flap tuning + 2026-07-02 wedge-#2
+        # fix). A max_tokens:1 probe only needs one decode step, which a partial wedge
+        # (gen ~0.8 tok/s) can intermittently satisfy -> resets FAIL_COUNT -> the wedge
+        # never triggers auto-restart. 24 tokens forces sustained decode: fast when
+        # healthy, reliably >60s (timeout=fail) when forward passes are stuck.
+        MAX_FAIL=5
         FAIL_COUNT=0
+        PROBE_MAX_TOKENS=24
 
         echo "Watchdog started for Qwen3.6-35B-A3B"
         echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
@@ -141,18 +148,18 @@ services:
 
         while true; do
           # Primary: ping via HOST to detect port forwarding loss
-          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
             -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
 
           # Fallback: ping via internal Docker network (detects engine crash)
-          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
             -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
 
           TS=$$(date '+%Y-%m-%d %H:%M:%S')
 

@@ -238,6 +238,15 @@ services:
         # without slowing real-death detection. Flapping was ~4 restarts/day pre-tune.
         MAX_FAIL=5
         FAIL_COUNT=0
+        # PROBE_MAX_TOKENS 1->24 (2026-07-02, after wedge #2): a max_tokens:1 probe
+        # only needs ONE decode step, which a PARTIAL wedge (gen ~0.8 tok/s, not exactly
+        # 0) can intermittently satisfy -> 200 -> FAIL_COUNT resets -> the wedge persists
+        # for hours without auto-restart (observed 2026-07-02 09:45Z, container up 6h,
+        # GPU pegged 100% at 112W, KV 8%). 24 tokens forces SUSTAINED decode: <1s when
+        # healthy even under load, but reliably >60s (timeout=fail) when forward passes
+        # are stuck. This makes the probe an implicit throughput test. MAX_FAIL 5 still
+        # rides out transient saturation (a healthy engine finishes 24 tokens fast).
+        PROBE_MAX_TOKENS=24
 
         echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant"
         echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
@@ -249,13 +258,13 @@ services:
             -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
 
           INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
             -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
 
           TS=$$(date '+%Y-%m-%d %H:%M:%S')
 
