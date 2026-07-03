@@ -311,6 +311,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Wedge-telemetry sidecar (2026-07-03) — passive, READ-ONLY sampler of the
+  # engine's /metrics. Appends one JSONL line per interval (gen_rate, prompt_rate,
+  # running, waiting, kv_pct + wedge flag) to _iteration_log/wedge_telemetry.jsonl
+  # so the NEXT wedge onset (see MEMORY.md project-engine-wedge) leaves a
+  # diagnostic trace and the load-correlation hypothesis gets tested on real
+  # numbers (does `running` spike? does a big `prompt_rate` prefill land just
+  # before? is KV low as the signature predicts?). NO GPU access: the decisive
+  # signal — gen_rate<1 WHILE running>0 — comes from /metrics alone; GPU
+  # power/util (an unreliable standalone tell — it also fires on healthy prefill
+  # bursts) is captured host-side by the cron ops check. /metrics is
+  # unauthenticated (the same endpoint the watchdog already polls) → no API key
+  # is used or logged. Touches no prod config, the model, GPUs, or throughput.
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-qwen36-moe:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   vllm-compile-cache-qwen36-genesis-tq:  # separate from baseline + dflash caches
 
