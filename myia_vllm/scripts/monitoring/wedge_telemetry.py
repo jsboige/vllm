@@ -133,8 +133,14 @@ def emit(rec, out):
         print(f"[{hhmm}] endpoint DOWN (booting/crashed)", flush=True)
         return
     flag = ""
-    if rec["wedge"]:
-        flag = "  *** WEDGE ***"
+    if rec.get("wedge_sustained"):
+        flag = f"  *** SUSTAINED WEDGE (streak {rec.get('wedge_streak')}) ***"
+    elif rec["wedge"]:
+        # single/short streak: almost always the prefill->decode window of a
+        # concurrent batch (running just ramped 0->N, decode ~0 in this 60s,
+        # prompt_rate elevated), which recovers next sample. Only streak>=3
+        # (~3 min sustained gen<1 while running>0) is a real wedge.
+        flag = f"  (wedge flag, streak {rec.get('wedge_streak', 1)} — likely prefill transient)"
     elif rec["gpu_lowpower_pegged"]:
         flag = "  (pegged@lowpower)"
     elif rec["running"] == 0 and (rec["gen_rate"] or 0) < 1:
@@ -154,9 +160,13 @@ def main():
 
     prev = fetch_metrics()
     t_prev = time.time()
+    streak = 0                       # consecutive wedge:true samples
     if a.once:
         time.sleep(a.interval)
         rec, _ = sample(prev, time.time() - t_prev)
+        streak = streak + 1 if rec.get("wedge") else 0
+        rec["wedge_streak"] = streak
+        rec["wedge_sustained"] = streak >= 3
         emit(rec, out)
         return
 
@@ -165,6 +175,12 @@ def main():
     while True:
         time.sleep(a.interval)
         rec, now = sample(prev, time.time() - t_prev)
+        # A single wedge:true sample is almost always the prefill->decode window
+        # of a concurrent batch (see project-engine-wedge). Track consecutive
+        # flags: streak>=3 (~3 min sustained gen<1 while running>0) = REAL wedge.
+        streak = streak + 1 if rec.get("wedge") else 0
+        rec["wedge_streak"] = streak
+        rec["wedge_sustained"] = streak >= 3
         emit(rec, out)
         if now is not None:          # keep prev on endpoint-down so rate resumes cleanly
             prev, t_prev = now, time.time()
