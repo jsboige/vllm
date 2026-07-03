@@ -230,70 +230,90 @@ services:
 
         CONTAINER="myia_vllm-medium-qwen36-moe"
         PORT="$${VLLM_PORT_GLM:-5002}"
-        INTERVAL=120
-        # MAX_FAIL 3->5 + --max-time 30->60 (2026-05-25): reduce false restarts under
-        # saturation. A saturated-but-alive engine queues the "hi" ping >30s and returns
-        # 000 (looks dead); a truly dead engine returns 000 instantly (conn refused), so
-        # the longer timeout + higher fail threshold ride out transient load windows
-        # without slowing real-death detection. Flapping was ~4 restarts/day pre-tune.
-        MAX_FAIL=5
-        FAIL_COUNT=0
-        # PROBE_MAX_TOKENS 1->24 (2026-07-02, after wedge #2): a max_tokens:1 probe
-        # only needs ONE decode step, which a PARTIAL wedge (gen ~0.8 tok/s, not exactly
-        # 0) can intermittently satisfy -> 200 -> FAIL_COUNT resets -> the wedge persists
-        # for hours without auto-restart (observed 2026-07-02 09:45Z, container up 6h,
-        # GPU pegged 100% at 112W, KV 8%). 24 tokens forces SUSTAINED decode: <1s when
-        # healthy even under load, but reliably >60s (timeout=fail) when forward passes
-        # are stuck. This makes the probe an implicit throughput test. MAX_FAIL 5 still
-        # rides out transient saturation (a healthy engine finishes 24 tokens fast).
+        # Watchdog v2 (2026-07-03) — FAST, boot-safe, wedge-specific auto-heal.
+        # Prior design (INTERVAL 120, MAX_FAIL 5, two 60s POST probes/cycle) took
+        # ~15-20 MIN to restart a wedge -> the whole cluster's condensation died
+        # that long each time (roosync_dashboard 180s timeouts, DM fallbacks).
+        # It also could not tell "booting" (health down, must wait) from
+        # "API up but decode stuck" (the wedge, must restart NOW).
+        #
+        # v2 splits those two failure modes on a cheap GET /health FIRST:
+        #   health==200 -> API server alive (NOT booting). Run the decisive test:
+        #                  a real 24-token decode. Two consecutive timeouts while
+        #                  health is 200 = confirmed WEDGE -> restart in ~2 min.
+        #                  (A healthy engine finishes 24 tokens in ~1s even at N=16
+        #                  saturation — decode is continuously batched — so a 40s
+        #                  timeout twice is genuinely stuck, not just busy.)
+        #   health!=200 -> booting or crashed. STAY PATIENT: cold boot is ~6-10 min
+        #                  (CUDA-graph TQ+GDN capture); a fast restart here boot-loops.
+        #                  Separate counter, high threshold (~12 min). Docker's own
+        #                  restart:unless-stopped already recovers a hard crash.
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
         PROBE_MAX_TOKENS=24
+        WEDGE_MAX=2     # health 200 + decode stuck: restart after ~2 min
+        DOWN_MAX=24     # health down: restart only after ~12 min (boot-safe backstop)
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
 
-        echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant"
-        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
-        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
-        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+        echo "Watchdog v2 (fast wedge auto-heal) for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "  WEDGE  (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
+        echo "  DOWN   (health != 200, booting/crashed):          restart after $$DOWN_MAX fails (~12 min, boot-safe)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
 
         while true; do
-          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
-
-          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
-
           TS=$$(date '+%Y-%m-%d %H:%M:%S')
 
-          if [ "$$HOST_RESULT" = "200" ]; then
-            if [ $$FAIL_COUNT -gt 0 ]; then
-              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+          # 1. Cheap liveness: is the API answering on the host-forwarded port?
+          #    (/health is unauthenticated and served by the HTTP layer, which
+          #     stays up during a wedge — the wedge is in the GENERATION path.)
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            # API up (not booting). Decisive test: a REAL sustained decode.
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GEN_TIMEOUT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
             else
-              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
-            fi
-            FAIL_COUNT=0
-          elif [ "$$INT_RESULT" = "200" ]; then
-            FAIL_COUNT=$$((FAIL_COUNT + 1))
-            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
-            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
-              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
-              docker restart $$CONTAINER
-              FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 600s for recovery..."
-              sleep 600
-              continue
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (24 tok >$${GEN_TIMEOUT}s) (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
             fi
           else
-            FAIL_COUNT=$$((FAIL_COUNT + 1))
-            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
-            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
-              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+            # Host /health not 200. Distinguish port-fwd loss from engine down.
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-qwen36-moe:$$PORT/health" 2>/dev/null)
+            WEDGE_FAIL=0
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 (fail $$DOWN_FAIL/$$DOWN_MAX)"
+            else
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI (fail $$DOWN_FAIL/$$DOWN_MAX)"
+            fi
+            if [ $$DOWN_FAIL -ge $$DOWN_MAX ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles ~12 min)"
               docker restart $$CONTAINER
-              FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              DOWN_FAIL=0
+              echo "$$TS Restart issued. Waiting 600s for boot..."
               sleep 600
               continue
             fi
