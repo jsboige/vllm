@@ -595,17 +595,18 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-06-24: batch-8192 attempt REVERTED after a prod crash — runtime batch stays 4096; 413 guard removed; v2g baseline since 2026-05-17)
+## Current State (2026-07-14: gpu-util lowered 0.82→0.78 to cure a boot-time CUDA-OOM crash-loop on the desktop-shared GPU 0 — KV now ~1.74M; batch stays 4096; 413 guard removed; v2g baseline since 2026-05-17)
 
 - **Qwen3.6-35B-A3B MoE + Genesis TurboQuant k8v4** on port 5002 (GPUs 0,1) — promoted from experimental to production baseline 2026-05-17 after the +35h post-deploy soak completed clean
   - Image: `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` (Sandermage Genesis patch tree on nightly `01d4d1ad3`)
   - Profile: `medium-qwen36-genesis-tq.yml` (Genesis patches P3/P4/P6/P22[skipped]/P26[skipped]/P37/P38B/P40/P67/P78/P98/P101 + PN33 by-default + custom env)
+  - **`--gpu-memory-utilization 0.78`** (was 0.82; lowered 2026-07-14). GPU 0 is shared with the Windows desktop (explorer/VSCode/Edge, fluctuating VRAM baseline); GPU 1 has none. At 0.82, a desktop spike between memory-profiling and KV-cache-tensor allocation could push GPU 0 over its own gpu-util pool cap → **boot-time CUDA-OOM crash-loop** (2026-07-13: RestartCount 53→59+, OOM on a 34 MiB alloc with "9.91 GiB free" = pool-cap not true exhaustion, at `_allocate_kv_cache_tensors`). 0.78 leaves ~1 GiB extra headroom on the shared GPU; costs ~13% KV (2.0M→1.74M tokens). **Watchdog v3 blind spot — FIXED in v4 (2026-07-15):** a crash-loop re-enters Docker `starting` on each restart → the DOWN-path treated `starting` as boot-safe (never-restart) → the watchdog never intervened (07-13 crash-loop was completely silent). Watchdog **v4** now reads `RestartCount` inside the `starting` branch: a patient cold boot keeps it flat, a crash-loop makes it climb → after 3 restart-increments (~6 min) it emits a loud greppable `CRASH-LOOP` line. No auto-restart (futile while Docker is already relooping the container; the real cure is the gpu-util drop or freeing GPU-0 VRAM) — detection + visibility only. Simulated (flat RC → BOOTING, climbing RC → CRASH-LOOP at churn≥3, single restart → no false positive) and `sh -n` clean. **Committed on branch `fix/boot-oom-crashloop-detection`; NOT yet redeployed** — recreating only the watchdog sidecar activates it: `docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d watchdog-qwen36-moe` (leaves the vLLM engine untouched). Both the gpu-util value and the watchdog comment live OUTSIDE the `command: >` folded scalar (a `#` inside it becomes a literal vLLM arg).
   - Marlin MoE, Expert Parallelism (EP=2), CUDA graphs (full+piecewise), prefix caching (xxhash), chunked prefill, async scheduling
   - ✅ Vision (images, documents) + Thinking modulation + `preserve_thinking` server-side default
   - ✅ `--override-generation-config` defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
   - ✅ Watchdog sidecar (dual-ping host + Docker DNS, auto-restart 3 fails)
   - ✅ `error_source_capture` ASGI middleware active (logs body_head + body_tail 1500B to /logs/error_sources.jsonl)
-  - **KV cache: 2,029,669 tokens (×6.3 vs prior FP8 322K)** — `--kv-cache-dtype turboquant_k8v4` + Genesis P22/P38B continuation-prefill workspace fix
+  - **KV cache: 1,736,379 tokens @ gpu-util 0.78 (×5.4 vs prior FP8 322K; was ~2.0M @0.82)** — `--kv-cache-dtype turboquant_k8v4` + Genesis P22/P38B continuation-prefill workspace fix
   - **Single-user decode**: 120 tok/s no-think (+12% vs FP8), 124 tok/s thinking (+6%)
   - **Concurrent**: N=12 → 625 tok/s, N=16 → **829 tok/s aggregate (+125%)** — main reason for promotion. Prior FP8 saturated at ~N=5.
   - **Context**: 262K native, max-model-len 262144

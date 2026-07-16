@@ -102,6 +102,12 @@ services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
     image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
     container_name: myia_vllm-medium-qwen36-moe
+    # gpu-memory-utilization 0.82→0.78 (2026-07-14): GPU 0 is shared with the Windows desktop
+    # (explorer/VSCode/Edge, fluctuating baseline). At 0.82 a desktop spike between memory-profiling
+    # and KV-cache-tensor allocation pushed GPU 0 over its pool budget → boot-time CUDA-OOM crash-loop
+    # (2026-07-13, RestartCount 53→59+, "Tried to allocate 34 MiB … 9.91 GiB free" at
+    # _allocate_kv_cache_tensors). 0.78 leaves ~1 GiB extra headroom on the desktop-shared GPU;
+    # costs ~13% KV (~2.0M→1,736,379 tokens, measured 2026-07-14). See MEMORY.md project_engine_wedge.md (3rd failure mode).
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_GLM:-5002}
@@ -113,7 +119,7 @@ services:
       --enable-expert-parallel
       --gdn-prefill-backend triton
       --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.82
+      --gpu-memory-utilization 0.78
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
       --dtype auto
@@ -264,12 +270,23 @@ services:
         DOWN_MAX=24       # health down, docker status unknown: ~12 min blind backstop
         WEDGE_FAIL=0
         DOWN_FAIL=0
+        # v4 (2026-07-14): boot-OOM crash-loop detection. A crash-looping container
+        # re-enters docker=starting on EVERY restart, so the 'starting' branch below
+        # (never-restart, boot-safe) hid the 2026-07-13 CUDA-OOM crash-loop entirely
+        # (RestartCount 53->59+, watchdog silent). Track RestartCount churn WHILE
+        # docker=starting: a patient cold boot keeps RestartCount flat, a crash-loop
+        # makes it climb. A docker restart is FUTILE here (it is already restarting),
+        # so we emit a loud, greppable CRASH-LOOP line instead of the misleading BOOTING.
+        STARTING_MAX=3   # 3 restart-increments while stuck in 'starting' = crash-loop (~6 min), not a boot
+        PREV_RC=-1
+        STARTING_CHURN=0
 
-        echo "Watchdog v3 (wedge + hard-hang auto-heal) for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "Watchdog v4 (wedge + hard-hang + boot-crash-loop detection) for Qwen3.6-35B-A3B + Genesis TurboQuant"
         echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
         echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
         echo "  BOOTING (docker=starting):                            never restart (15-min grace)"
         echo "  DOWN    (health != 200, docker status unknown):       restart after $$DOWN_MAX fails (~12 min backstop)"
+        echo "  CRASHLOOP(docker=starting + RestartCount churning):   flagged loud after $$STARTING_MAX (~6 min), NO futile restart (v4)"
         echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
 
         while true; do
@@ -289,6 +306,7 @@ services:
               -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
               -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
             DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1   # v4: serving /health => not crash-looping, clear churn state
             if [ "$$G" = "200" ]; then
               if [ $$WEDGE_FAIL -gt 0 ]; then
                 echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
@@ -316,8 +334,20 @@ services:
             if [ "$$HS" = "starting" ]; then
               # Within the 15-min boot grace — a cold TQ+GDN boot legitimately fails
               # /health here. NEVER restart (this is the fix for v2's 12min<15min hole).
+              # v4: BUT a boot-OOM crash-loop ALSO lives in 'starting' (each crash resets
+              # docker health to starting), so tell the two apart by RestartCount churn.
               DOWN_FAIL=0
-              echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient)"
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                echo "$$TS CRASH-LOOP $$CONTAINER docker=starting but RestartCount churning (=$$RC, +$$STARTING_CHURN) — boot-time crash (likely CUDA-OOM at KV alloc, see project_engine_wedge 3rd mode). docker restart is FUTILE (already restarting); NOT auto-restarting. Fix externally: lower --gpu-memory-utilization or free GPU-0 desktop VRAM."
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient; RestartCount=$$RC)"
+              fi
               sleep $$INTERVAL
               continue
             fi
