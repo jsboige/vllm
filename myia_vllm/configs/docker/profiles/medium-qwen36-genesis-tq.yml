@@ -102,12 +102,18 @@ services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
     image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
     container_name: myia_vllm-medium-qwen36-moe
-    # gpu-memory-utilization 0.82→0.78 (2026-07-14): GPU 0 is shared with the Windows desktop
-    # (explorer/VSCode/Edge, fluctuating baseline). At 0.82 a desktop spike between memory-profiling
-    # and KV-cache-tensor allocation pushed GPU 0 over its pool budget → boot-time CUDA-OOM crash-loop
-    # (2026-07-13, RestartCount 53→59+, "Tried to allocate 34 MiB … 9.91 GiB free" at
-    # _allocate_kv_cache_tensors). 0.78 leaves ~1 GiB extra headroom on the desktop-shared GPU;
-    # costs ~13% KV (~2.0M→1,736,379 tokens, measured 2026-07-14). See MEMORY.md project_engine_wedge.md (3rd failure mode).
+    # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
+    # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
+    # CUDA-OOM crash-loops at _allocate_kv_cache_tensors hit on 2026-07-13 (0.82, RestartCount
+    # 53→59+), then AGAIN at 0.78 on 07-28 and 08-01 (686 MiB alloc failing with 2.66 GiB "free"
+    # = pool-cap, not physical exhaustion). 0.78 moved the failure point by only ~0.2 GiB.
+    # WHY: vLLM's real footprint is ~21.9 GiB/GPU, i.e. ~2.7 GiB ABOVE the nominal 0.78×24564
+    # budget — Marlin-MoE variable temp allocs (RFC #27951) and the Genesis prealloc pools
+    # (P28 GDN / P37 MoE / TQ-dequant) live OUTSIDE the gpu-util pool. So the effective margin
+    # on the desktop-shared GPU 0 was <1 GiB, which also caused WDDM paging slowdowns that mimic
+    # a decode wedge. 0.70 (nominal 17,195 MiB → ~19.9 GiB real) restores ~2.7 GiB of headroom.
+    # Cost: KV cache 1,736,379 → ~1.34M tokens — still ~5x the 262K max-model-len, and prod runs
+    # at 5-7% KV occupancy. See MEMORY.md project_engine_wedge.md (3rd failure mode).
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_GLM:-5002}
@@ -119,7 +125,7 @@ services:
       --enable-expert-parallel
       --gdn-prefill-backend triton
       --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.78
+      --gpu-memory-utilization 0.70
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
       --dtype auto
