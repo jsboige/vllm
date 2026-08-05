@@ -111,9 +111,12 @@ services:
     # budget — Marlin-MoE variable temp allocs (RFC #27951) and the Genesis prealloc pools
     # (P28 GDN / P37 MoE / TQ-dequant) live OUTSIDE the gpu-util pool. So the effective margin
     # on the desktop-shared GPU 0 was <1 GiB, which also caused WDDM paging slowdowns that mimic
-    # a decode wedge. 0.70 (nominal 17,195 MiB → ~19.9 GiB real) restores ~2.7 GiB of headroom.
-    # Cost: KV cache 1,736,379 → ~1.34M tokens — still ~5x the 262K max-model-len, and prod runs
-    # at 5-7% KV occupancy. See MEMORY.md project_engine_wedge.md (3rd failure mode).
+    # a decode wedge. 0.70 MEASURED after deploy (2026-08-04, no longer an estimate): GPU 0 at
+    # 21,145 MiB / GPU 1 at 19,340 MiB used, i.e. +2,600 / +2,588 MiB of headroom regained; the
+    # out-of-pool overshoot shrinks to +2,145 MiB (vs +2,768 @0.78, measured on desktop-free GPU 1).
+    # Cost: KV cache 1,736,379 → 1,238,046 tokens (−29%) — still 4.72x the 262K max-model-len while
+    # prod runs at 2-7% KV occupancy, so no functional impact; decode throughput unchanged.
+    # See MEMORY.md project_engine_wedge.md (3rd failure mode).
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_GLM:-5002}
