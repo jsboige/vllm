@@ -1,0 +1,224 @@
+# Docker Compose profile — MTP k=3 spike on stock vLLM + AWQ (isolated test)
+# ============================================================================
+# STATUS: DRAFT 2026-05-30 (issue #2433)
+#
+# PURPOSE
+#   Isolated spike to bench MTP (Multi-Token Prediction) on our hardware
+#   (Ada SM89 + dual 4090) using stock vLLM (no Genesis layer).
+#
+#   Two questions this spike answers:
+#   1. Does MTP k=3 work on AWQ + FP8 KV on stock vLLM? (community reports
+#      70-85% acceptance, +27.5% TPOT on dual 3090 Ampere)
+#   2. Does the Att4 deepcopy poison reproduce on stock vLLM? If NOT, it
+#      confirms Att4 was a Genesis-specific interaction (dual-config-load),
+#      not a vLLM general bug. Cf. project_spec_dec_retired_post_v2g.md.
+#
+# WHY NOT PROD
+#   Production v2g (Genesis-TQ k8v4) delivers 829 tok/s aggregate N=16 with
+#   2.03M KV tokens. MTP on stock vLLM loses TurboQuant → ~322K KV tokens,
+#   and requires --no-enable-prefix-caching (vllm#38182 A3B-class interaction).
+#   Multi-user capacity would regress. This spike is for DATAPoints only.
+#
+# REFERENCES
+#   - HackMD thc1006: https://hackmd.io/@thc1006/qwen3.6-vllm-2x3090
+#   - Zenodo: 10.5281/zenodo.20247229
+#   - vllm#38182 (prefix-cache x MTP A3B interaction)
+#   - vllm#41726 (v2g follow-up)
+#   - gugletter community guide (2026-05-12, MTP recette 24GB tier)
+#
+# ----------------------------------------------------------------------------
+# RUNBOOK
+# ----------------------------------------------------------------------------
+#   PREREQUISITE: Coordinate with CoursIA for GPU 0/1 maintenance window.
+#                 Do NOT run during EPITA soutenance or class events.
+#
+#   1. STOP PROD (takes down serving):
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml \
+#                       --env-file myia_vllm/.env down
+#
+#   2. UP SPIKE:
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-mtp-spike.yml \
+#                       --env-file myia_vllm/.env up -d
+#        docker logs -f myia_vllm-medium-qwen36-moe  # same container_name
+#
+#   3. BENCH (capture all results in myia_vllm/_iteration_log/mtp_spike_YYYY-MM-DD/):
+#        a. Boot clean: check for MTP head detection + KV cache size (~322K)
+#        b. Smoke: chat, thinking mode, tool_call (qwen3_coder XML)
+#        c. Single-user decode (no-think): measure tok/s
+#        d. Single-user decode (thinking): measure tok/s
+#        e. 5-user concurrent: aggregate tok/s
+#        f. 16-user concurrent: aggregate tok/s
+#        g. KV cache size verification
+#        h. Prefix cache hit rate (should be ~0 with --no-enable-prefix-caching)
+#
+#   4. GO/NO-GO CRITERIA:
+#        - If N=16 aggregate >= 700 tok/s AND single-user decode >= 150 tok/s:
+#          consider MTP for prod (requires Genesis integration)
+#        - Else: stay v2g, document datapoint, post upstream
+#
+#   5. ROLLBACK (instant):
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-mtp-spike.yml \
+#                       --env-file myia_vllm/.env down
+#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml \
+#                       --env-file myia_vllm/.env up -d
+#
+#   6. POST-SPIKE:
+#        - If bench clean: post datapoint upstream (vLLM discussion, Ada SM89)
+#        - If Att4 not reproduced: update project_spec_dec_retired_post_v2g.md
+#        - Document decision (go MTP / stay v2g) in _iteration_log
+# ============================================================================
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as prod — only one runs at a time
+    image: vllm/vllm-openai:v0.19.1  # STOCK vLLM — no Genesis layer
+    container_name: myia_vllm-medium-qwen36-moe
+    command: >
+      --host 0.0.0.0
+      --port ${VLLM_PORT_GLM:-5002}
+      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
+      --served-model-name qwen3.6-35b-a3b
+      --api-key ${VLLM_API_KEY_MEDIUM}
+
+      --tensor-parallel-size 2
+      --enable-expert-parallel
+      --gpu-memory-utilization 0.90
+      --max-model-len 131072
+      --kv-cache-dtype fp8
+      --dtype auto
+      --limit-mm-per-prompt '{"image":4,"video":0}'
+      --mm-processor-kwargs '{"max_pixels":774000}'
+      --max-num-batched-tokens 4096
+      --max-num-seqs 16
+      --enable-chunked-prefill
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --no-enable-prefix-caching
+
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OMP_NUM_THREADS=1
+      - NCCL_P2P_DISABLE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-compile-cache-mtp-spike:/root/.cache/vllm  # isolated cache
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s  # 10 min: stock vLLM loads faster than Genesis (no patch apply)
+    restart: unless-stopped
+
+  # Watchdog sidecar — same as Genesis-TQ profile but simplified for spike
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=120
+        MAX_FAIL=5
+        FAIL_COUNT=0
+
+        echo "Watchdog started for MTP spike (stock vLLM + AWQ)"
+
+        while true; do
+          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' 2>/dev/null)
+
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          if [ "$$RESULT" = "200" ]; then
+            if [ $$FAIL_COUNT -gt 0 ]; then
+              echo "$$TS RECOVERED after $$FAIL_COUNT failures"
+            else
+              echo "$$TS OK"
+            fi
+            FAIL_COUNT=0
+          else
+            FAIL_COUNT=$$((FAIL_COUNT + 1))
+            echo "$$TS FAIL result=$$RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
+            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
+              echo "$$TS RESTARTING $$CONTAINER"
+              docker restart $$CONTAINER
+              FAIL_COUNT=0
+              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-mtp-spike:
+
+# =====================================================================
+# DIFF vs medium-qwen36-genesis-tq.yml (current prod)
+# =====================================================================
+#   image                  vllm-qwen36-genesis-tq:v7.72.5  → vllm/vllm-openai:v0.19.1 (stock)
+#   --kv-cache-dtype       turboquant_k8v4                 → fp8
+#   --gpu-memory-utilization 0.82                          → 0.90
+#   --max-model-len        262144                          → 131072 (AWQ + FP8 KV constraint)
+#   + --speculative-config  '{"method":"mtp","num_speculative_tokens":3}'
+#   + --no-enable-prefix-caching  (workaround vllm#38182 A3B-class)
+#   - --gdn-prefill-backend triton     (Genesis-specific)
+#   - --no-enable-flashinfer-autotune  (Genesis-specific)
+#   - --performance-mode interactivity (Genesis-specific)
+#   - --prefix-caching-hash-algo       (irrelevant with prefix caching OFF)
+#   - --distributed-executor-backend   (let stock vLLM auto-select)
+#   - --disable-custom-all-reduce      (Genesis-specific)
+#   - --async-scheduling               (Genesis-specific)
+#   - --no-scheduler-reserve-full-isl  (Genesis-specific)
+#   - --default-chat-template-kwargs   (not needed for spike)
+#   - --middleware                     (no custom middleware on stock)
+#   - All GENESIS_ENABLE_* env vars    (not applicable)
+#   - VLLM_MARLIN_* env vars          (stock handles AWQ natively)
+#   - VLLM_USE_FLASHINFER_* env vars  (stock auto-selects backend)
+#   Watchdog: simplified (no host.docker.internal port-fwd check for spike)
+#
+# EXPECTED RESULTS (based on community benchmarks dual 3090 + AWQ + vLLM 0.19.1):
+#   - KV cache: ~322K tokens (FP8, no TurboQuant)
+#   - Single-user decode: +27.5% TPOT vs no-MTP
+#   - MTP acceptance rate: 70-85% (k=3)
+#   - Multi-user N=16: unknown (key datapoint we're gathering)
+#   - Prefix cache hit rate: ~0% (--no-enable-prefix-caching)
