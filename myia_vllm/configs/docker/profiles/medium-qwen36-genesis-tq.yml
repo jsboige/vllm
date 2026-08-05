@@ -102,6 +102,21 @@ services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
     image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
     container_name: myia_vllm-medium-qwen36-moe
+    # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
+    # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
+    # CUDA-OOM crash-loops at _allocate_kv_cache_tensors hit on 2026-07-13 (0.82, RestartCount
+    # 53→59+), then AGAIN at 0.78 on 07-28 and 08-01 (686 MiB alloc failing with 2.66 GiB "free"
+    # = pool-cap, not physical exhaustion). 0.78 moved the failure point by only ~0.2 GiB.
+    # WHY: vLLM's real footprint is ~21.9 GiB/GPU, i.e. ~2.7 GiB ABOVE the nominal 0.78×24564
+    # budget — Marlin-MoE variable temp allocs (RFC #27951) and the Genesis prealloc pools
+    # (P28 GDN / P37 MoE / TQ-dequant) live OUTSIDE the gpu-util pool. So the effective margin
+    # on the desktop-shared GPU 0 was <1 GiB, which also caused WDDM paging slowdowns that mimic
+    # a decode wedge. 0.70 MEASURED after deploy (2026-08-04, no longer an estimate): GPU 0 at
+    # 21,145 MiB / GPU 1 at 19,340 MiB used, i.e. +2,600 / +2,588 MiB of headroom regained; the
+    # out-of-pool overshoot shrinks to +2,145 MiB (vs +2,768 @0.78, measured on desktop-free GPU 1).
+    # Cost: KV cache 1,736,379 → 1,238,046 tokens (−29%) — still 4.72x the 262K max-model-len while
+    # prod runs at 2-7% KV occupancy, so no functional impact; decode throughput unchanged.
+    # See MEMORY.md project_engine_wedge.md (3rd failure mode).
     command: >
       --host 0.0.0.0
       --port ${VLLM_PORT_GLM:-5002}
@@ -113,7 +128,7 @@ services:
       --enable-expert-parallel
       --gdn-prefill-backend triton
       --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.82
+      --gpu-memory-utilization 0.70
       --max-model-len 262144
       --kv-cache-dtype turboquant_k8v4
       --dtype auto
@@ -230,70 +245,140 @@ services:
 
         CONTAINER="myia_vllm-medium-qwen36-moe"
         PORT="$${VLLM_PORT_GLM:-5002}"
-        INTERVAL=120
-        # MAX_FAIL 3->5 + --max-time 30->60 (2026-05-25): reduce false restarts under
-        # saturation. A saturated-but-alive engine queues the "hi" ping >30s and returns
-        # 000 (looks dead); a truly dead engine returns 000 instantly (conn refused), so
-        # the longer timeout + higher fail threshold ride out transient load windows
-        # without slowing real-death detection. Flapping was ~4 restarts/day pre-tune.
-        MAX_FAIL=5
-        FAIL_COUNT=0
-        # PROBE_MAX_TOKENS 1->24 (2026-07-02, after wedge #2): a max_tokens:1 probe
-        # only needs ONE decode step, which a PARTIAL wedge (gen ~0.8 tok/s, not exactly
-        # 0) can intermittently satisfy -> 200 -> FAIL_COUNT resets -> the wedge persists
-        # for hours without auto-restart (observed 2026-07-02 09:45Z, container up 6h,
-        # GPU pegged 100% at 112W, KV 8%). 24 tokens forces SUSTAINED decode: <1s when
-        # healthy even under load, but reliably >60s (timeout=fail) when forward passes
-        # are stuck. This makes the probe an implicit throughput test. MAX_FAIL 5 still
-        # rides out transient saturation (a healthy engine finishes 24 tokens fast).
+        # Watchdog v3 (2026-07-03) — FAST, boot-safe, wedge- AND hard-hang-aware.
+        # Prior design (INTERVAL 120, MAX_FAIL 5, two 60s POST probes/cycle) took
+        # ~15-20 MIN to restart a wedge -> the whole cluster's condensation died
+        # that long each time (roosync_dashboard 180s timeouts, DM fallbacks).
+        # It also could not tell "booting" (health down, must wait) from
+        # "API up but decode stuck" (the wedge, must restart NOW).
+        #
+        # v2 splits those two failure modes on a cheap GET /health FIRST:
+        #   health==200 -> API server alive (NOT booting). Run the decisive test:
+        #                  a real 24-token decode. Two consecutive timeouts while
+        #                  health is 200 = confirmed WEDGE -> restart in ~2 min.
+        #                  (A healthy engine finishes 24 tokens in ~1s even at N=16
+        #                  saturation — decode is continuously batched — so a 40s
+        #                  timeout twice is genuinely stuck, not just busy.)
+        #   health!=200 -> booting OR hung. v3 asks Docker's OWN healthcheck to tell
+        #                  them apart (start_period=900s):
+        #                    docker=starting  -> in the 15-min boot grace -> NEVER
+        #                       restart (fixes v2's latent hole: DOWN_MAX=12min < 15min
+        #                       start_period could restart a slow cold boot).
+        #                    docker=unhealthy -> past grace AND 5 healthchecks failed =
+        #                       definitively broken, NOT booting -> restart in ~2 min
+        #                       (UNHEALTHY_MAX). Cuts a hard-hang outage 12min -> ~2min.
+        #                    docker=<other>   -> blind DOWN_MAX backstop (~12 min).
+        #                  The 2026-07-03 ~12:57Z hard-hang (health=000, no traceback,
+        #                  silent engine-loop freeze) is exactly the unhealthy case.
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
         PROBE_MAX_TOKENS=24
+        WEDGE_MAX=2       # health 200 + decode stuck: restart after ~2 min
+        UNHEALTHY_MAX=4   # v3: docker=unhealthy (post-boot, definitively broken): ~2 min fast-path
+        DOWN_MAX=24       # health down, docker status unknown: ~12 min blind backstop
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
+        # v4 (2026-07-14): boot-OOM crash-loop detection. A crash-looping container
+        # re-enters docker=starting on EVERY restart, so the 'starting' branch below
+        # (never-restart, boot-safe) hid the 2026-07-13 CUDA-OOM crash-loop entirely
+        # (RestartCount 53->59+, watchdog silent). Track RestartCount churn WHILE
+        # docker=starting: a patient cold boot keeps RestartCount flat, a crash-loop
+        # makes it climb. A docker restart is FUTILE here (it is already restarting),
+        # so we emit a loud, greppable CRASH-LOOP line instead of the misleading BOOTING.
+        STARTING_MAX=3   # 3 restart-increments while stuck in 'starting' = crash-loop (~6 min), not a boot
+        PREV_RC=-1
+        STARTING_CHURN=0
 
-        echo "Watchdog started for Qwen3.6-35B-A3B + Genesis TurboQuant"
-        echo "  Ping target: host.docker.internal:$$PORT (detects port forwarding loss)"
-        echo "  Fallback:    vllm-medium-qwen36-moe:$$PORT (internal keepalive)"
-        echo "  Interval:    $${INTERVAL}s, auto-restart after $$MAX_FAIL consecutive failures"
+        echo "Watchdog v4 (wedge + hard-hang + boot-crash-loop detection) for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
+        echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
+        echo "  BOOTING (docker=starting):                            never restart (15-min grace)"
+        echo "  DOWN    (health != 200, docker status unknown):       restart after $$DOWN_MAX fails (~12 min backstop)"
+        echo "  CRASHLOOP(docker=starting + RestartCount churning):   flagged loud after $$STARTING_MAX (~6 min), NO futile restart (v4)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
 
         while true; do
-          HOST_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-            -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
-
-          INT_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-            -X POST "http://vllm-medium-qwen36-moe:$$PORT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
-            -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
-
           TS=$$(date '+%Y-%m-%d %H:%M:%S')
 
-          if [ "$$HOST_RESULT" = "200" ]; then
-            if [ $$FAIL_COUNT -gt 0 ]; then
-              echo "$$TS RECOVERED after $$FAIL_COUNT failures (host=$$HOST_RESULT internal=$$INT_RESULT)"
+          # 1. Cheap liveness: is the API answering on the host-forwarded port?
+          #    (/health is unauthenticated and served by the HTTP layer, which
+          #     stays up during a wedge — the wedge is in the GENERATION path.)
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            # API up (not booting). Decisive test: a REAL sustained decode.
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GEN_TIMEOUT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1   # v4: serving /health => not crash-looping, clear churn state
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
             else
-              echo "$$TS OK host=$$HOST_RESULT internal=$$INT_RESULT"
-            fi
-            FAIL_COUNT=0
-          elif [ "$$INT_RESULT" = "200" ]; then
-            FAIL_COUNT=$$((FAIL_COUNT + 1))
-            echo "$$TS PORT-FWD-LOSS host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
-            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
-              echo "$$TS RESTARTING $$CONTAINER (port forwarding lost, internal still healthy)"
-              docker restart $$CONTAINER
-              FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 600s for recovery..."
-              sleep 600
-              continue
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (24 tok >$${GEN_TIMEOUT}s) (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
             fi
           else
-            FAIL_COUNT=$$((FAIL_COUNT + 1))
-            echo "$$TS ENGINE-DOWN host=$$HOST_RESULT internal=$$INT_RESULT (fail $$FAIL_COUNT/$$MAX_FAIL)"
-            if [ $$FAIL_COUNT -ge $$MAX_FAIL ]; then
-              echo "$$TS RESTARTING $$CONTAINER (engine unresponsive)"
+            # Host /health not 200. Ask Docker's OWN healthcheck to tell booting from
+            # broken (start_period=900s makes this signal boot-safe):
+            HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
+            WEDGE_FAIL=0
+            if [ "$$HS" = "starting" ]; then
+              # Within the 15-min boot grace — a cold TQ+GDN boot legitimately fails
+              # /health here. NEVER restart (this is the fix for v2's 12min<15min hole).
+              # v4: BUT a boot-OOM crash-loop ALSO lives in 'starting' (each crash resets
+              # docker health to starting), so tell the two apart by RestartCount churn.
+              DOWN_FAIL=0
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                echo "$$TS CRASH-LOOP $$CONTAINER docker=starting but RestartCount churning (=$$RC, +$$STARTING_CHURN) — boot-time crash (likely CUDA-OOM at KV alloc, see project_engine_wedge 3rd mode). docker restart is FUTILE (already restarting); NOT auto-restarting. Fix externally: lower --gpu-memory-utilization or free GPU-0 desktop VRAM."
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient; RestartCount=$$RC)"
+              fi
+              sleep $$INTERVAL
+              continue
+            fi
+            # Not booting. Distinguish port-fwd loss from a hung/down engine.
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-qwen36-moe:$$PORT/health" 2>/dev/null)
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              THRESH=$$DOWN_MAX  # engine fine internally; port-fwd hiccup may self-heal — stay patient
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            elif [ "$$HS" = "unhealthy" ]; then
+              THRESH=$$UNHEALTHY_MAX  # docker's 5 checks failed post-grace = definitively broken
+              echo "$$TS ENGINE-HUNG host=$$H internal=$$HI docker=unhealthy (fail $$DOWN_FAIL/$$THRESH, ~2min fast-path)"
+            else
+              THRESH=$$DOWN_MAX  # docker status unknown/transient — blind backstop
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            fi
+            if [ $$DOWN_FAIL -ge $$THRESH ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
               docker restart $$CONTAINER
-              FAIL_COUNT=0
-              echo "$$TS Restart issued. Waiting 600s for recovery..."
+              DOWN_FAIL=0
+              echo "$$TS Restart issued. Waiting 600s for boot..."
               sleep 600
               continue
             fi
@@ -306,6 +391,32 @@ services:
     environment:
       - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
       - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Wedge-telemetry sidecar (2026-07-03) — passive, READ-ONLY sampler of the
+  # engine's /metrics. Appends one JSONL line per interval (gen_rate, prompt_rate,
+  # running, waiting, kv_pct + wedge flag) to _iteration_log/wedge_telemetry.jsonl
+  # so the NEXT wedge onset (see MEMORY.md project-engine-wedge) leaves a
+  # diagnostic trace and the load-correlation hypothesis gets tested on real
+  # numbers (does `running` spike? does a big `prompt_rate` prefill land just
+  # before? is KV low as the signature predicts?). NO GPU access: the decisive
+  # signal — gen_rate<1 WHILE running>0 — comes from /metrics alone; GPU
+  # power/util (an unreliable standalone tell — it also fires on healthy prefill
+  # bursts) is captured host-side by the cron ops check. /metrics is
+  # unauthenticated (the same endpoint the watchdog already polls) → no API key
+  # is used or logged. Touches no prod config, the model, GPUs, or throughput.
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-qwen36-moe:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
     depends_on:
       vllm-medium-qwen36-moe:
         condition: service_healthy
