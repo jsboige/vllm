@@ -217,8 +217,30 @@ services:
       # Runtime batch is back to the proven 4096. Do not re-add P72+8192 on prod.
       - GENESIS_VLLM_PIN_POLICY=strict
     volumes:
+      # ./models is VESTIGIAL for this profile — --model is an HF repo id
+      # (cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit), resolved from the HF cache below, so
+      # this bind carries nothing (the host dir is empty). Left on the SHORT
+      # syntax deliberately: hardening it would make `up -d` fail on a fresh
+      # clone over a directory git cannot even track (empty). Only the bind that
+      # actually carries the 47 GB of weights is hardened.
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
-      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+      # The HF cache bind uses the LONG syntax with create_host_path: false ON
+      # PURPOSE (2026-08-06 incident). With the short syntax Docker CREATES a
+      # missing source path instead of failing, so the container starts happily
+      # on an EMPTY cache. That is not hypothetical: after a `wsl --shutdown` the
+      # \\wsl.localhost\Ubuntu\... source was momentarily unreachable, Docker
+      # substituted an empty directory, and vLLM started re-downloading the 19 GB
+      # model into that phantom mount at 0 MiB/min. Symptoms were maximally
+      # misleading — container "Up", docker health "starting", watchdog printing
+      # a patient BOOTING — for ~1 h of extra downtime. create_host_path: false
+      # converts that silent phantom mount into a loud `up -d` failure. Recovery
+      # is then the documented one: make sure `wsl -l -v` shows Ubuntu Running,
+      # then retry `up -d`.
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
       - vllm-compile-cache-qwen36-genesis-tq:/root/.cache/vllm  # separate cache: different vLLM pin + Genesis rebinds
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro  # error_source_capture diag
@@ -274,6 +296,19 @@ services:
         HEALTH_TIMEOUT=5
         GEN_TIMEOUT=40
         PROBE_MAX_TOKENS=24
+        # v5 (2026-08-06): post-boot WARM-UP grace on the WEDGE path. A freshly
+        # booted engine answers its first decodes slowly (measured 2026-07-28:
+        # 52s -> 16s -> 0.49s) because kernels and caches are cold. Against a flat
+        # GEN_TIMEOUT=40 that reads as two consecutive wedge timeouts, so the
+        # watchdog restarts a perfectly healthy engine. It did exactly that at
+        # 2026-08-06 00:30:12Z — five minutes after a 1-hour outage had just been
+        # repaired — costing another full boot. The first probes after the API
+        # comes up therefore get a longer timeout AND never count toward
+        # WEDGE_MAX. The grace is re-armed on every boot and after every restart
+        # this watchdog issues; it is consumed by the first successful decode.
+        GEN_TIMEOUT_WARM=120
+        WARMUP_PROBES=3
+        WARMUP_LEFT=$$WARMUP_PROBES
         WEDGE_MAX=2       # health 200 + decode stuck: restart after ~2 min
         UNHEALTHY_MAX=4   # v3: docker=unhealthy (post-boot, definitively broken): ~2 min fast-path
         DOWN_MAX=24       # health down, docker status unknown: ~12 min blind backstop
@@ -289,13 +324,28 @@ services:
         STARTING_MAX=3   # 3 restart-increments while stuck in 'starting' = crash-loop (~6 min), not a boot
         PREV_RC=-1
         STARTING_CHURN=0
+        # v5 (2026-08-06): BOOT-STALL — the THIRD way a boot can fail, and the one
+        # v4 was structurally blind to. On 2026-08-06 a `wsl --shutdown` left the
+        # \\wsl.localhost HF-cache bind unreachable; Docker silently mounted an
+        # EMPTY directory in its place and vLLM started re-downloading the 19 GB
+        # model into that phantom mount at 0 MiB/min. Nothing ever crashed, so
+        # RestartCount stayed FLAT and v4's churn detector could not fire — the
+        # watchdog printed a patient BOOTING for the entire hour. Detect it
+        # POSITIVELY instead: 'Starting to load model' present in the log but
+        # 'Model loading took' never reached, while docker=starting persists past
+        # any legitimate cold boot (measured 3-6 min, incl. cold page cache).
+        # Detection-only, like CRASH-LOOP: a restart re-mounts the same empty dir.
+        STALL_MAX=24        # 24 cycles x 30s = 12 min in 'starting' with weights never loaded
+        STARTING_CYCLES=0
 
-        echo "Watchdog v4 (wedge + hard-hang + boot-crash-loop detection) for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "Watchdog v5 (wedge + hard-hang + boot-crash-loop + boot-stall detection) for Qwen3.6-35B-A3B + Genesis TurboQuant"
         echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
+        echo "  WARMUP  (first $$WARMUP_PROBES probes after each boot):        timeout $${GEN_TIMEOUT_WARM}s, never counted as a wedge (v5)"
         echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
         echo "  BOOTING (docker=starting):                            never restart (15-min grace)"
         echo "  DOWN    (health != 200, docker status unknown):       restart after $$DOWN_MAX fails (~12 min backstop)"
         echo "  CRASHLOOP(docker=starting + RestartCount churning):   flagged loud after $$STARTING_MAX (~6 min), NO futile restart (v4)"
+        echo "  BOOTSTALL(docker=starting + RestartCount FLAT):       flagged loud after $$STALL_MAX cycles (~12 min), NO futile restart (v5)"
         echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
 
         while true; do
@@ -309,20 +359,30 @@ services:
 
           if [ "$$H" = "200" ]; then
             # API up (not booting). Decisive test: a REAL sustained decode.
-            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GEN_TIMEOUT \
+            # v5: while the warm-up grace is unspent, probe with the longer timeout.
+            if [ $$WARMUP_LEFT -gt 0 ]; then GT=$$GEN_TIMEOUT_WARM; else GT=$$GEN_TIMEOUT; fi
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GT \
               -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
               -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
             DOWN_FAIL=0
             STARTING_CHURN=0; PREV_RC=-1   # v4: serving /health => not crash-looping, clear churn state
+            STARTING_CYCLES=0              # v5: serving /health => the boot completed, clear stall state
             if [ "$$G" = "200" ]; then
               if [ $$WEDGE_FAIL -gt 0 ]; then
                 echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              elif [ $$WARMUP_LEFT -gt 0 ]; then
+                echo "$$TS OK health=200 decode=200 (warm-up grace consumed — engine is warm)"
               else
                 echo "$$TS OK health=200 decode=200"
               fi
               WEDGE_FAIL=0
+              WARMUP_LEFT=0   # v5: it served a decode, so it is warm — spend the grace
+            elif [ $$WARMUP_LEFT -gt 0 ]; then
+              # v5: slow decode while still warming up is EXPECTED, not a wedge.
+              WARMUP_LEFT=$$((WARMUP_LEFT - 1))
+              echo "$$TS WARMUP health=200 decode=$$G (24 tok >$${GT}s) — post-boot grace, $$WARMUP_LEFT probe(s) left, NOT counted as wedge"
             else
               WEDGE_FAIL=$$((WEDGE_FAIL + 1))
               echo "$$TS WEDGE health=200 decode=$$G (24 tok >$${GEN_TIMEOUT}s) (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
@@ -330,6 +390,7 @@ services:
                 echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
                 docker restart $$CONTAINER
                 WEDGE_FAIL=0
+                WARMUP_LEFT=$$WARMUP_PROBES   # v5: re-arm the grace for the boot we just triggered
                 echo "$$TS Restart issued. Waiting 600s for boot..."
                 sleep 600
                 continue
@@ -346,6 +407,8 @@ services:
               # v4: BUT a boot-OOM crash-loop ALSO lives in 'starting' (each crash resets
               # docker health to starting), so tell the two apart by RestartCount churn.
               DOWN_FAIL=0
+              STARTING_CYCLES=$$((STARTING_CYCLES + 1))
+              WARMUP_LEFT=$$WARMUP_PROBES   # v5: a boot is under way — re-arm the warm-up grace
               RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
               RC=$${RC:-0}
               if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
@@ -353,13 +416,34 @@ services:
               fi
               PREV_RC=$$RC
               if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
-                echo "$$TS CRASH-LOOP $$CONTAINER docker=starting but RestartCount churning (=$$RC, +$$STARTING_CHURN) — boot-time crash (likely CUDA-OOM at KV alloc, see project_engine_wedge 3rd mode). docker restart is FUTILE (already restarting); NOT auto-restarting. Fix externally: lower --gpu-memory-utilization or free GPU-0 desktop VRAM."
+                # Crash-loop is confirmed by the churn itself. The CAUSE is not:
+                # v4 asserted CUDA-OOM unconditionally, which would have misdirected
+                # the operator on 2026-08-06. Name it only when the log shows it.
+                OOMHITS=$$(docker logs --since 10m $$CONTAINER 2>&1 | grep -ci "out of memory")
+                if [ "$${OOMHITS:-0}" -gt 0 ]; then
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), CUDA-OOM present in log ($$OOMHITS hits) — boot-time OOM at KV alloc (project_engine_wedge 3rd mode). docker restart is FUTILE (already restarting); NOT auto-restarting. Fix externally: lower --gpu-memory-utilization."
+                else
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), NO OOM in log — cause UNKNOWN, do not assume gpu-util. Read: docker logs $$CONTAINER. docker restart is FUTILE (already restarting); NOT auto-restarting."
+                fi
+              elif [ $$STARTING_CYCLES -ge $$STALL_MAX ]; then
+                # v5: RestartCount FLAT but the boot never completes. Ask the boot log
+                # whether the weights ever finished loading — that splits the phantom
+                # -mount stall from a post-load stall (compile / KV alloc / graph capture).
+                LOADING=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Starting to load model")
+                LOADED=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Model loading took")
+                MINS=$$((STARTING_CYCLES * INTERVAL / 60))
+                if [ "$${LOADING:-0}" -gt 0 ] && [ "$${LOADED:-0}" -eq 0 ]; then
+                  echo "$$TS BOOT-STALL $$CONTAINER stuck LOADING WEIGHTS for $${MINS} min, RestartCount FLAT (=$$RC). Prime suspect: the HF-cache bind resolved to an EMPTY phantom dir, so vLLM is re-downloading the model (2026-08-06 incident). CHECK: docker exec $$CONTAINER du -sh /root/.cache/huggingface/hub/models--cyankiwi--Qwen3.6-35B-A3B-AWQ-4bit  -> must be ~47G, NOT ~300M. If empty: confirm 'wsl -l -v' shows Ubuntu Running, then compose down && up -d. NOT auto-restarting (a restart re-mounts the same empty dir)."
+                else
+                  echo "$$TS BOOT-STALL $$CONTAINER docker=starting for $${MINS} min, RestartCount FLAT (=$$RC), weights already loaded — stalled AFTER load (torch.compile / KV alloc / CUDA-graph capture). Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
               else
-                echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient; RestartCount=$$RC)"
+                echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient; RestartCount=$$RC, cycle $$STARTING_CYCLES/$$STALL_MAX)"
               fi
               sleep $$INTERVAL
               continue
             fi
+            STARTING_CYCLES=0   # v5: left the 'starting' state — stall counter no longer applies
             # Not booting. Distinguish port-fwd loss from a hung/down engine.
             HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
               "http://vllm-medium-qwen36-moe:$$PORT/health" 2>/dev/null)
@@ -378,6 +462,7 @@ services:
               echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
               docker restart $$CONTAINER
               DOWN_FAIL=0
+              WARMUP_LEFT=$$WARMUP_PROBES   # v5: re-arm the grace for the boot we just triggered
               echo "$$TS Restart issued. Waiting 600s for boot..."
               sleep 600
               continue
