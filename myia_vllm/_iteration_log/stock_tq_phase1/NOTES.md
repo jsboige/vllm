@@ -126,30 +126,41 @@ lentes, et la grâce de warm-up du watchdog v5 (3 sondes à 120 s) pourrait ne p
    **ne peut donc pas** détecter un entraînement CoursIA concurrent : à remplacer avant toute
    réutilisation (inventaire des conteneurs, ou accord explicite sur le dashboard).
 
-## Suites
+## ⚠️ Incident prod pendant la fenêtre de test (13:20:47Z → 15:02:02Z, ~1 h 41, **5 restarts**)
 
-## ⚠️ Incident prod pendant la fenêtre de test (14:17:34Z → 15:02:02Z, ~44 min)
+> **Correction 2026-08-11.** La première rédaction annonçait « 14:17:34Z → 15:02:02Z, ~44 min,
+> trois restarts ». Elle reposait sur un `docker logs --since 60m` qui ne couvrait que
+> 14:00Z→15:00Z. La fenêtre 12 h de la surveillance a révélé **deux restarts antérieurs**
+> (13:21:57 et 13:56:03). La chronologie ci-dessous est la bonne ; elle **resserre** la
+> corrélation avec mon test au lieu de la desserrer (voir « responsabilité » plus bas).
 
-La prod (GPUs 0,1) a été indisponible pendant une partie du test. **Trois restarts watchdog :**
+La prod (GPUs 0,1) a été indisponible pendant une grande partie du test. **Cinq restarts watchdog :**
 
 | Heure (UTC) | Événement |
 |---|---|
-| 14:17:34 / 14:18:44 | `WEDGE health=200 decode=000 (24 tok >40s)` fail 1/2 puis 2/2 → **RESTARTING** |
-| 14:41:45 | `RESTARTING (unresponsive 4 cycles, docker=unhealthy)` — le boot précédent n'a jamais abouti |
+| **13:19:04** | *(repère)* premières lignes de log de **mon** conteneur de banc sur GPU 2 |
+| 13:20:47 / 13:21:57 | `WEDGE health=200 decode=000 (24 tok >40s)` 1/2 puis 2/2 → **RESTARTING (1ᵉ)** |
+| 13:39:51 → 13:40:52 | `ENGINE-HUNG … docker=unhealthy` 1/4 → 3/4 (boot laborieux, n'atteint pas 4) |
+| 13:54:53 / 13:56:03 | `WEDGE health=200 decode=000` 1/2 puis 2/2 → **RESTARTING (2ᵉ)** |
+| 14:17:34 / 14:18:44 | `WEDGE health=200 decode=000` 1/2 puis 2/2 → **RESTARTING (3ᵉ)** |
+| 14:40:15 → 14:41:45 | `ENGINE-HUNG … docker=unhealthy` 1/4 → 4/4 → **RESTARTING (4ᵉ)** |
 | 14:51:54 / 14:54:24 | `WARMUP … decode=000` puis `decode=500` (grâce v5, non comptés en wedge) |
 | 14:56:03 → 14:57:33 | `ENGINE-DOWN host=000 internal=000 docker=healthy` ×4 |
-| 14:58:03 | `ENGINE-HUNG … docker=unhealthy` → **RESTARTING** (3ᵉ) |
+| 14:58:03 | `ENGINE-HUNG … docker=unhealthy` → **RESTARTING (5ᵉ)** |
 | 15:02:02 | health **200**, decode 200 en 0,79 s, RC=0, `healthy` — KV 1 238 046, boot nominal en ~3 min |
 
 **Non causes, écartées sur preuve :** 0 `out of memory` depuis le boot ; cache HF à **47 G**
 (donc pas de phantom mount) ; RAM hôte 73 GB libres sur 191 GB (pas d'épuisement WSL).
 
-**Ma responsabilité n'est ni établie ni écartée.** Contre : le **premier** wedge (14:17:34)
-tombe dans un creux où mon conteneur GPU 2 était **inactif** (mesures TQ finies ~14:09,
-conteneur fp8 démarré seulement à 14:20:54). Pour : les échecs de boot suivants (14:41, 14:58)
-sont concomitants des gels de mon propre conteneur (14:44 → 14:58), et la prod n'a réussi son
-boot qu'une fois la GPU 2 libérée. Deux moteurs vLLM malades dans la même fenêtre oriente vers
-une cause **hôte**, pas GPU.
+**Ma responsabilité n'est ni établie ni écartée — mais la chronologie corrigée l'aggrave.**
+Le premier wedge tombe **1 min 43 après** le démarrage de mon conteneur de banc (13:19:04 →
+13:20:47). La version initiale de ces notes affirmait au contraire qu'il tombait « dans un creux
+où mon conteneur était inactif » : c'était un artefact de la fenêtre de logs tronquée, et
+cette affirmation est **retirée**. Les échecs de boot suivants (14:41, 14:58) restent
+concomitants des gels de mon propre conteneur (14:44 → 14:58), et la prod n'a réussi son boot
+qu'une fois la GPU 2 libérée. Deux moteurs vLLM malades dans la même fenêtre continue
+d'orienter vers une cause **hôte** plutôt que GPU — mais un simple « c'est indépendant » n'est
+plus soutenable.
 
 **Hypothèse principale (non prouvée) : pagination WDDM sur GPU 0.** Avant l'incident, GPU 0 a
 été relevée à **22 966 – 23 386 MiB / 24 564** — au-dessus du seuil d'alerte 23 000 de la
