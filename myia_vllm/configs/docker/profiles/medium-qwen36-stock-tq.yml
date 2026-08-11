@@ -1,106 +1,112 @@
-# Docker Compose profile — Qwen3.6-35B-A3B-AWQ + TurboQuant k8v4 via Genesis patch tree
+# Docker Compose profile - Qwen3.6-35B-A3B-AWQ + TurboQuant k8v4 on STOCK upstream vLLM
 # ============================================================================
-# STATUS: PREPARED 2026-05-14, NOT YET BUILT OR DEPLOYED. Step 1 of the
-#         TurboQuant migration (Option B). Inert until explicitly built/deployed.
+# PHASE 2 of the "can we drop Genesis?" experiment. Created 2026-08-11.
 #
-# WHAT THIS IS
-#   The 2026-05-06 attempt at Qwen3.6-35B-A3B MoE + TurboQuant k8v4 booted with
-#   1.49M-token KV (x4.6 vs FP8 322K) but crashed on the first ~30K-prefix
-#   chunked-prefill continuation: AssertionError at
-#   turboquant_attn.py:720:_continuation_prefill. Upstream fix PR #40798 is
-#   OPEN + BLOCKED. This profile takes Option B instead: the
-#   Sandermage/genesis-vllm-patches downstream tree, whose P22/P38-class patches
-#   fix exactly that crash (externally confirmed in vllm#41726 by `xyehya`).
+# WHY THIS EXISTS
+#   Production runs vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 (Sandermage
+#   downstream patch tree) for exactly ONE reason: vllm#41726 - AssertionError at
+#   turboquant_attn.py:720:_continuation_prefill - crashed the EngineCore on the
+#   first chunked-prefill continuation with --kv-cache-dtype turboquant_k8v4.
+#   Genesis P22+P38 fixed it; upstream had nothing.
 #
-# SCOPE: TurboQuant ONLY. No spec-decode. DFlash is step 2 (separate A/B) — see
-#        MEMORY.md project_turboquant_hybrid_status.md.
+#   That image is IRREPRODUCIBLE: its base nightly-01d4d1ad3 was GC'd from Docker
+#   Hub (~5-day nightly retention). Backed up as a tar, but a single point of
+#   failure for the endpoint that carries roo-state-manager condensation, Roo and
+#   OWUI for the whole fleet.
+#
+#   Upstream has since merged 4 TurboQuant bugfixes - #44053 (reserve workspace
+#   BEFORE cuda graph capture, i.e. our crash), #47609, #39988, #50533 - all four
+#   verified git ancestors of the v0.27.0 tag. v0.27.0 is a RELEASE tag: unlike
+#   nightlies it is never garbage-collected, so an image built on it stays
+#   reproducible forever. Published 2026-08-10 20:13Z.
+#
+# PHASE 1 (2026-08-10, GPU 2, proxy Qwen3.5-9B-AWQ, TP=1, 40K) already showed the
+#   crash does NOT reproduce on stock: 31,376-token prefill chunked into ~8 pieces
+#   at 0% cache + survival request, zero "Workspace is locked" /
+#   "turboquant_attn.py" / "EngineDeadError" traces, in turboquant_k8v4 as in fp8.
+#   See myia_vllm/_iteration_log/stock_tq_phase1/NOTES.md and PR jsboige/vllm#13.
+#   Phase 2 is what phase 1 could NOT answer: MoE + EP=2 + Marlin + TP=2 + 262K.
+#
+# ----------------------------------------------------------------------------
+# KNOWN RISKS carried by dropping the Genesis layer (watch these in the logs)
+# ----------------------------------------------------------------------------
+#   1. shm_broadcast PyCFunction bug (vllm#35104 family). v0.27.0 STILL contains
+#      `_memory_fence_lock = threading.Lock()` + `with _memory_fence_lock:`
+#      verbatim - the construct that produced
+#      "SystemError: PyCFunction with class but no METH_METHOD flag" and 9 crashes
+#      in 50h in April 2026. Our Genesis image patches it; this one does not.
+#      MITIGATION KEPT: the two settings that actually cured it in production are
+#      still here - `--no-enable-flashinfer-autotune` and
+#      VLLM_USE_FLASHINFER_SAMPLER=0. The working hypothesis was that FlashInfer
+#      JIT dlopen'ing a fresh .so mid-runtime corrupts the CPython _thread.lock
+#      descriptor; with both autotune paths off, the trigger is gone regardless of
+#      the lock construct. GREP FOR: "PyCFunction", "METH_METHOD", "SystemError".
+#   2. TurboQuant Triton JIT compiles DURING inference on stock (measured in
+#      phase 1: `_tq_full_dequant_kv`, first prefills 328s -> 187s -> 3.8s, i.e.
+#      ~8000 tok/s only once warm). Two consequences: the first requests after a
+#      boot are very slow, and that JIT is itself a mid-runtime dlopen (see risk 1).
+#      The watchdog v5 warm-up grace is 3 probes x 120s - it may not cover a 328s
+#      first compile. GREP FOR: "JIT compilation during inference".
+#   3. Genesis prealloc pools (P28 GDN / P37 MoE / TQ-dequant) are GONE, so the
+#      memory profile differs from prod. gpu-util stays at the conservative 0.70
+#      for the first boot; do NOT raise it in the same change.
+#   4. batch 4096 / max-num-seqs 16 are KEPT. The 4096 ceiling was a Genesis P28
+#      artifact and may not bind on stock - but do not test two things at once.
 #
 # ----------------------------------------------------------------------------
 # RUNBOOK
 # ----------------------------------------------------------------------------
-#   1. BUILD (does NOT touch prod — independent docker build):
-#        docker build -f myia_vllm/configs/docker/Dockerfile.qwen36-genesis-tq \
-#                     -t vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 \
-#                     myia_vllm/configs/docker/
+#   DEPLOY (takes prod down; same container_name, so only one runs at a time):
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml   --env-file myia_vllm/.env up -d
 #
-#   2. A/B DEPLOY (takes prod down — only when claudish validation is done):
-#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env down
-#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d
-#        docker logs -f myia_vllm-medium-qwen36-moe   # same container_name
+#   ROLLBACK (instant - the Genesis image is retained locally AND tarred in
+#   D:/vllm_image_backups/):
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml   --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d
 #
-#   3. VALIDATE — the gate is the failure mode that warmup misses:
-#        a. Boot clean. Check logs for the Genesis structured boot summary and
-#           "GPU KV cache size" (expect ~1.5M tokens vs FP8 322K).
-#        b. Smoke: chat, thinking, tool calling (qwen3_coder XML).
-#        c. CRASH TEST: replay ~30K-token-prefix prompts (real OWUI traffic
-#           class) — this is what crashed 2026-05-06. Must NOT raise the
-#           _continuation_prefill assertion.
-#        d. Needle recall at ~254K context.
-#        e. Leak check: VRAM steady after 100 requests.
-#        f. Decode tok/s + concurrent slot count vs FP8 baseline.
+#   GATE (all must pass before this replaces prod for good):
+#     a. Boot clean, KV cache size reported, health 200.
+#     b. CRASH TEST: ~30K-token prefill (the 2026-05-06 killer) - must not raise.
+#     c. Long context: ~95K prefill (the known heavy-client class) and near-262K.
+#     d. Vision, tool calling (qwen3_coder XML), thinking + preserve_thinking.
+#     e. Concurrent N=16 aggregate vs the 829 tok/s Genesis baseline.
+#     f. Soak with zero WEDGE / SystemError / EngineDeadError.
 #
-#   4. ROLLBACK (instant — baseline image is retained, nothing was deleted):
-#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
-#        docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
+# EVERYTHING ELSE IS BYTE-FOR-BYTE the Genesis profile: same flags, same env
+# (minus GENESIS_*), same watchdog v5, same telemetry sidecar, same container
+# names, same hardened HF-cache bind. Only the image and the compile-cache volume
+# differ - so a diff between the two files IS the experiment.
 #
 # ----------------------------------------------------------------------------
-# BUILD VERIFICATION — done 2026-05-16, image vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+# ONE FORCED CONFIG DIVERGENCE: --prefix-caching-hash-algo sha256 (was xxhash)
 # ----------------------------------------------------------------------------
-#   ✅ Genesis package imports cleanly (reports v7.63.x; the `__version__`
-#      constant is stale relative to SHA fbecee31 — Sandermage doesn't bump
-#      it per tag, the SHA is the source of truth).
-#   ✅ `genesis_v7` entry point registered in `vllm.general_plugins`.
-#   ✅ vLLM pin gate allowlist contains our pin `0.20.2rc1.dev9+g01d4d1ad3`.
-#   ✅ shm_broadcast patch (vllm#35104 carry-forward) verifies on the
-#      01d4d1ad3 nightly — `_memory_barrier` callable, SHM PATCH VERIFIED
-#      at build time. Reservation #2 cleared.
-#   ✅ All 6 GENESIS_ENABLE_P* flags below exist verbatim as opt-in env vars
-#      in /opt/genesis/vllm/_genesis (grep-confirmed). Reservation #1 cleared.
-#   ℹ️  P22 (TurboQuant shared dequant prealloc) and P38 (workspace fix that
-#      resolves the 2026-05-06 _continuation_prefill crash, per xyehya in
-#      vllm#41726) are AUTO-APPLIED on NVIDIA — no flag needed. Our opt-ins
-#      are TQ-perf extras (P67 multi-query kernel, P98/P101 dispatch
-#      routing, P78 tolist guard from noonghunna), the compile-safe P38B
-#      variant, and P37.
+#   The stock image does NOT ship the `xxhash` Python module (verified: `import
+#   xxhash` -> ModuleNotFoundError). Our Genesis image did. vLLM only imports it
+#   lazily, inside request_block_hasher, so the failure is INVISIBLE on short
+#   prompts and fires only once a request fills a complete KV block:
+#     ModuleNotFoundError: xxhash is required for the 'xxhash' prefix caching
+#     hash algorithms      (v1/core/kv_cache_utils.py:622 -> utils/hashing.py:63)
+#   -> HTTP 500 on every long request, engine still alive. Cost us the first
+#   30K/95K gate runs on 2026-08-11 (00:16Z) and looked, for a minute, like the
+#   TurboQuant crash we were hunting.
 #
-# BATCH SIZING — 4096 / 16. The 8192 unlock was REVERTED 2026-06-24 after a crash.
-#   * 2026-06-24 ATTEMPT (REVERTED): set --max-num-batched-tokens 8192 with Genesis
-#     P72 (profile_run M cap = 4096) + P74 (chunk-clamp). Boot was clean and a short
-#     bench passed (80K single-prefill crash test, N=16 decode) — but those NEVER
-#     produce a single forward batch in (4096, 8192]: the 80K prefill is P74-chunked
-#     to <=4096, and N=16 decode is ~16 tokens/step. Under real mixed traffic
-#     (claudish long context + condensation + decode) a combined forward batch of
-#     5536 tokens hit a GDN buffer sized for 4096 and the worker died:
-#         RuntimeError: setStorage: sizes [5536, 16, 128] ... requiring a storage
-#         size of 22675456 are out of bounds for storage of size 16777216
-#         (16777216 = 4096*16*128*2 ; 22675456 = 5536*16*128*2)
-#     at qwen3_next.py:495 via the inductor/cuda-graph as_strided aliasing path,
-#     ~1h25 after deploy (2026-06-24 15:23:56Z). The condensation outage that
-#     followed was THIS crash. This is itself an instance of verify-before-propagating:
-#     "8192 validated" was declared from a bench that could not trigger the failure.
-#   * ROOT CAUSE: P72 caps the profiled/compiled shape at GENESIS_PROFILE_RUN_CAP_M
-#     (4096), so the qwen3_next (GatedDeltaNet) compiled buffers are 4096-sized.
-#     P72 lets the engine BOOT at batch 8192, but the GDN buffer stays coupled to
-#     the 4096 profile cap, so any runtime forward >4096 tokens overflows it. The
-#     runtime batch is therefore bounded by GENESIS_PROFILE_RUN_CAP_M, NOT by
-#     --max-num-batched-tokens. 4096 IS the effective ceiling unless the profile cap
-#     AND a fresh compile are BOTH raised to 8192 — which risks re-triggering the
-#     2026-05-24 boot crash below and is UNTESTED. Do not retry on prod.
-#   * 2026-05-24 ramp 4096→32768 / 16→64 CRASHED at boot (the reason P72 exists):
-#     torch.compile/Dynamo fake-tensor mismatch at determine_available_memory():
-#         mul(FakeTensor(65536,128), FakeTensor(16*s59,128))  [65536 = 2*batched-tokens]
-#     The TQ k8v4 GQA/multi-query kernel (P40 vllm#40792 / P67) cannot specialize
-#     that shape at large batch. Same signature as DFlash Attempt 2.
-#   * NET: 4096 is the proven-stable runtime batch (7-day soak + this revert).
-#     Watchdog flapping is NOT fixable by ramping batch — tune the watchdog.
-#   * VISION: kept ON (--dtype auto + --limit-mm-per-prompt, prod parity). Genesis'
-#     own integration test ran --language-model-only --dtype float16. If boot or
-#     TQ stability issues appear, that is the genesis-validated fallback to try.
+#   TWO possible fixes; we deliberately took the second:
+#     (1) overlay image `FROM vllm/vllm-openai:v0.27.0` + `pip install xxhash`
+#         -> keeps the flag identical, but reintroduces a BUILD ARTIFACT, which
+#            is precisely what phase 2 exists to eliminate.
+#     (2) use sha256, which is upstream's own DEFAULT
+#         (PrefixCachingHashAlgo = sha256 | sha256_cbor | xxhash | xxhash_cbor,
+#          config/cache.py:39,95) -> the image stays a pure `docker pull`.
+#   The hash algo is an internal digest choice: it changes no output, only the
+#   cost of hashing each complete block once at prefill. Measured impact is in
+#   the gate results (NOTES.md) - revert to (1) if prefill throughput regresses
+#   against the Genesis reference.
 # ============================================================================
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
-    image: vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3
+    image: vllm/vllm-openai:v0.27.0
     container_name: myia_vllm-medium-qwen36-moe
     # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
     # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
@@ -140,7 +146,7 @@ services:
       --performance-mode interactivity
       --enable-chunked-prefill
       --enable-prefix-caching
-      --prefix-caching-hash-algo xxhash
+      --prefix-caching-hash-algo sha256
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
@@ -189,7 +195,21 @@ services:
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
       - OMP_NUM_THREADS=1
-      - VLLM_USE_FLASHINFER_MOE_FP16=1
+      # ⚠️ 2026-08-11 : vLLM stock v0.27.0 log "Unknown vLLM environment variable
+      # detected" pour VLLM_USE_FLASHINFER_MOE_FP16, VLLM_USE_FLASHINFER_MOE_FP8 et
+      # VLLM_MARLIN_MOE_BLOCK_SIZE_M — v0.27.0 a remplacé ces leviers par
+      # KernelConfig.moe_backend (laissé à "auto" → sélectionne MarlinExperts, le
+      # chemin attendu pour de l'AWQ INT4). Les trois sont RETIRÉES ici.
+      #
+      # CORRECTION DE DOCUMENTATION au passage : VLLM_USE_FLASHINFER_MOE_FP16 était
+      # inscrite chez nous comme "+110 % MoE" (MEMORY.md, CLAUDE.md). Vérifié dans
+      # l'image Genesis elle-même : elle n'est lue que par
+      # model_executor/layers/fused_moe/oracle/UNQUANTIZED.py — elle ne s'applique
+      # qu'au MoE non quantifié. Notre modèle est AWQ INT4 : cette variable n'a
+      # JAMAIS eu le moindre effet sur ce déploiement, ni ici ni sous Genesis.
+      #
+      # VLLM_LOG_DIR et VLLM_MAX_REQUEST_BODY_BYTES sont lues par NOTRE middleware,
+      # pas par vLLM : leur avertissement est attendu et sans conséquence.
       - VLLM_LOG_DIR=/logs
       - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
       # Oversize-request guard DISABLED 2026-06-24 (=0). The 512 KB HTTP 413 reject
@@ -207,34 +227,29 @@ services:
       - NCCL_P2P_DISABLE=1
       - VLLM_USE_FLASHINFER_SAMPLER=0  # v2g: was =1 in v2f, suspected idle-deadlock vector (FlashInfer sampler autotune dlopens .so → CPython _thread.lock corruption)
       - CUDA_DEVICE_MAX_CONNECTIONS=8
-      - VLLM_MARLIN_MOE_BLOCK_SIZE_M=8
       - VLLM_MOE_USE_DEEP_GEMM=0
-      - VLLM_USE_FLASHINFER_MOE_FP8=0
-      # ── Genesis patch flags — FIRST DRAFT, VERIFY against docs/PATCHES.md ──
-      # P37 — shared MoE intermediate-cache pool (integration-awq.yml sets this).
-      # P38/P38B — persistent K_full/V_full continuation-prefill workspace +
-      #            compile-safe variant. This is the crash-fix family.
-      # P67 — TurboQuant multi-query Triton kernel (docs: TQ k8v4 requires it).
-      # P98 — TurboQuant WorkspaceManager revert (Ampere/Ada small-batch perf).
-      # P101 — TurboQuant continuation 64-token slicing (long-prefix OOM guard).
-      # P78 — TurboQuant .tolist() cudagraph-capture guard.
-      - GENESIS_ENABLE_P37=1
-      - GENESIS_ENABLE_P38B_COMPILE_SAFE=1
-      - GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1
-      - GENESIS_ENABLE_P98=1
-      - GENESIS_ENABLE_P101=1
-      - GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD=1
-      # P40 — Genesis dispatcher recommended for RTX 4090 (SM 128, L2 72 MB, mixed regime).
-      # TQ k8v4 GQA grouping kernel from vllm#40792. Author measured +27% on H100;
-      # +5-15% expected on Ada. Cache-locality benefit needs L2 >= 24 MB (we have 72).
-      - GENESIS_ENABLE_P40=1
-      # P72/P74 batch-8192 unlock REVERTED 2026-06-24 (see BATCH SIZING banner).
-      # batch 8192 + P72 profile-cap M=4096 caused a runtime setStorage overflow
-      # crash in qwen3_next.py at 15:23:56Z (GDN buffer sized for 4096, a runtime
-      # forward of 5536 tokens overflowed it). P72 sized the compiled buffers to the
-      # cap, so the runtime batch is bounded by the cap — not by max-num-batched-tokens.
-      # Runtime batch is back to the proven 4096. Do not re-add P72+8192 on prod.
-      - GENESIS_VLLM_PIN_POLICY=strict
+      # ── NO GENESIS_ENABLE_* HERE — that is the whole point of this profile ──
+      # The Genesis profile sets P37/P38B/P40/P67/P78/P98/P101. Upstream must now
+      # cover them natively; what each one did, and who covers it here:
+      #   P38/P38B (persistent K_full/V_full continuation-prefill workspace) —
+      #     THE crash-fix family for vllm#41726. Upstream equivalent = #44053,
+      #     which reserves the workspace in __init__ via _reserve_workspace()
+      #     sized on max_model_len instead of growing it after locking.
+      #     Verified a git ancestor of the v0.27.0 tag, and empirically clean on
+      #     a 31 376-token chunked prefill in phase 1.
+      #   P67 (TQ multi-query Triton kernel), P78 (.tolist() cudagraph guard),
+      #   P98 (WorkspaceManager revert), P101 (continuation 64-token slicing) —
+      #     no 1:1 upstream mapping. Upstream shipped #47609 / #39988 / #50533 in
+      #     the same area; whether they cover the same ground is UNPROVEN. This is
+      #     the main residual risk of the profile and the reason for the gate.
+      #   P37 (shared MoE intermediate-cache pool) and the Genesis prealloc pools
+      #     are simply GONE. They lived OUTSIDE the gpu-util budget, so their
+      #     removal frees VRAM rather than costing it — see gpu-util note above.
+      # P72/P74 batch-8192 unlock was REVERTED on Genesis 2026-06-24 (runtime
+      # setStorage overflow in qwen3_next.py, GDN buffer sized 4096 vs a 5536-token
+      # forward). That overflow was a *Genesis P28 prealloc* failure mode, so it
+      # may not exist here at all — but batch stays 4096 regardless: one variable
+      # at a time. Do not raise it during this migration.
     volumes:
       # ./models is VESTIGIAL for this profile — --model is an HF repo id
       # (cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit), resolved from the HF cache below, so
@@ -260,7 +275,7 @@ services:
         target: /root/.cache/huggingface
         bind:
           create_host_path: false
-      - vllm-compile-cache-qwen36-genesis-tq:/root/.cache/vllm  # separate cache: different vLLM pin + Genesis rebinds
+      - vllm-compile-cache-qwen36-stock-tq:/root/.cache/vllm  # separate cache: stock v0.27.0 build differs from the Genesis one
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro  # error_source_capture diag
     ports:
@@ -270,7 +285,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 900s  # 15 min: model load + Genesis apply_all + TQ + CUDA graph capture (cold)
+      # 1800s (30 min), releve de 900s le 2026-08-11 : un boot A FROID mesure sur
+      # cette image depasse 15 min — poids 262 s, torch.compile 211 s, profil +
+      # allocation KV + capture des graphes 474 s au total, PUIS le warm-up
+      # multi-modal cote API server (nouveau en v0.27.0, non couvert par
+      # --skip-mm-profiling qui ne concerne que le profilage GPU). A T+17 min le
+      # service etait encore en warm-up et Docker l'avait deja passe `unhealthy`.
+      # Les boots suivants reutilisent le volume de cache de compilation et sont
+      # bien plus courts ; 1800 s couvre le cas froid (rebuild d'image, purge du
+      # volume) sans jamais retarder un boot chaud.
+      start_period: 1800s
     restart: unless-stopped
 
   # Watchdog sidecar — identical to medium-qwen36-moe.yml (keepalive + port-fwd
@@ -301,9 +325,10 @@ services:
         #                  saturation — decode is continuously batched — so a 40s
         #                  timeout twice is genuinely stuck, not just busy.)
         #   health!=200 -> booting OR hung. v3 asks Docker's OWN healthcheck to tell
-        #                  them apart (start_period=900s):
-        #                    docker=starting  -> in the 15-min boot grace -> NEVER
-        #                       restart (fixes v2's latent hole: DOWN_MAX=12min < 15min
+        #                  them apart (start_period=1800s on stock v0.27.0, was 900s
+        #                  under Genesis — a cold boot here exceeds 15 min):
+        #                    docker=starting  -> in the 30-min boot grace -> NEVER
+        #                       restart (fixes v2's latent hole: DOWN_MAX=12min < the
         #                       start_period could restart a slow cold boot).
         #                    docker=unhealthy -> past grace AND 5 healthchecks failed =
         #                       definitively broken, NOT booting -> restart in ~2 min
@@ -357,7 +382,7 @@ services:
         STALL_MAX=24        # 24 cycles x 30s = 12 min in 'starting' with weights never loaded
         STARTING_CYCLES=0
 
-        echo "Watchdog v5 (wedge + hard-hang + boot-crash-loop + boot-stall detection) for Qwen3.6-35B-A3B + Genesis TurboQuant"
+        echo "Watchdog v5 (wedge + hard-hang + boot-crash-loop + boot-stall detection) for Qwen3.6-35B-A3B + stock TurboQuant v0.27.0"
         echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
         echo "  WARMUP  (first $$WARMUP_PROBES probes after each boot):        timeout $${GEN_TIMEOUT_WARM}s, never counted as a wedge (v5)"
         echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
@@ -417,11 +442,11 @@ services:
             fi
           else
             # Host /health not 200. Ask Docker's OWN healthcheck to tell booting from
-            # broken (start_period=900s makes this signal boot-safe):
+            # broken (start_period=1800s makes this signal boot-safe):
             HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
             WEDGE_FAIL=0
             if [ "$$HS" = "starting" ]; then
-              # Within the 15-min boot grace — a cold TQ+GDN boot legitimately fails
+              # Within the 30-min boot grace — a cold TQ+GDN boot legitimately fails
               # /health here. NEVER restart (this is the fix for v2's 12min<15min hole).
               # v4: BUT a boot-OOM crash-loop ALSO lives in 'starting' (each crash resets
               # docker health to starting), so tell the two apart by RestartCount churn.
@@ -527,7 +552,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  vllm-compile-cache-qwen36-genesis-tq:  # separate from baseline + dflash caches
+  vllm-compile-cache-qwen36-stock-tq:  # separate: different vLLM build (stock v0.27.0)
 
 # =====================================================================
 # CHANGES vs medium-qwen36-moe.yml (the FP8 baseline)
@@ -539,7 +564,8 @@ volumes:
 #   + --enable-chunked-prefill        (Genesis requires it; the old "forces V0"
 #                                      caveat does NOT apply to vLLM 0.20.x — V1
 #                                      is default and the flag is V1-native)
-#   + --prefix-caching-hash-algo xxhash   (Genesis integration-awq parity)
+#   + --prefix-caching-hash-algo sha256   (xxhash in Genesis; module absent from
+#                                          the stock image — see header)
 #   + --disable-custom-all-reduce         (Genesis integration-awq parity)
 #   + --async-scheduling                  (Genesis integration-awq parity)
 #   + --no-scheduler-reserve-full-isl     (Genesis integration-awq parity)

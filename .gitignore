@@ -283,3 +283,7 @@ myia_vllm/benchmark_results/
 
 # Wedge-telemetry sidecar output (runtime JSONL appended every 60s, grows unbounded)
 myia_vllm/_iteration_log/wedge_telemetry.jsonl
+
+# Phase-1 stock-TurboQuant scratch HF cache (proxy model Qwen3.5-9B, ~8.5 GB).
+# Kept on disk so a phase-1 re-run needs no re-download; safe to delete.
+_phase1_cache/
