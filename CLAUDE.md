@@ -15,9 +15,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment (2026-05-17, promoted after 35h+ soak)**: **Qwen3.6-35B-A3B MoE + TurboQuant K8V4 (Genesis-patched)** on GPUs 0,1 with TP=2 + EP=2, image `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` (Sandermage Genesis patch tree on nightly `01d4d1ad3`). Profile `medium-qwen36-genesis-tq.yml`. KV cache 2.03M tokens (×6.3 vs prior FP8 322K), 262K context preserved, vision OK, concurrent N=16 = **829 tok/s aggregate (+125%)**, single decode 120 tok/s (+12%), single thinking 124 tok/s (+6%). **GPU 2 fully freed 2026-05-01** (78 MiB driver baseline only) for CoursIA training jobs.
+**Current deployment (2026-08-11)**: **Qwen3.6-35B-A3B MoE + TurboQuant K8V4 on STOCK vLLM `v0.27.0`** — GPUs 0,1, TP=2 + EP=2, image `vllm/vllm-openai:v0.27.0` (a plain `docker pull`, **no patch tree**), profile `medium-qwen36-stock-tq.yml`. gpu-util 0.70, KV **1,030,407 tokens** (3.93× the 262K window), 262K context, vision + thinking + `preserve_thinking`. GPU 0 **19,336 MiB** / GPU 1 19,040. **GPU 2 free** for CoursIA training jobs.
 
-**Promotion path (2026-05-16 → 2026-05-17)**:
+**Genesis was retired 2026-08-11** after phase 2 established that the crash which forced its adoption ([vllm#41726](https://github.com/vllm-project/vllm/issues/41726), `AssertionError turboquant_attn.py:720:_continuation_prefill`) no longer reproduces on stock: a **253,503-token chunked prefill** on the real MoE model passed in 58.6 s with a clean survival request, alongside 13/13 functional gates. Upstream fixes #44053/#47609/#39988/#50533 are verified git ancestors of the release. Three further reasons: the image becomes **reproducible** (a release tag is not subject to the ~5-day nightly GC that made `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` unbuildable); a same-night A/B showed stock **faster** than Genesis (+14% at N=16, +29% single-stream); and GPU 0 gains ~1.8 GiB of headroom (Genesis prealloc pools P28/P37/TQ-dequant gone), the direct lever against the boot-OOM history. Cost accepted: −17% KV (1,238,046 → 1,030,407), immaterial at 2–7% observed occupancy. Full record: `myia_vllm/_iteration_log/stock_tq_phase2/NOTES.md`.
+
+**⚠️ The May performance figures in this file are no longer reproducible on this machine.** The same-night A/B put Genesis at 461 tok/s aggregate at N=16 and stock at 525, against **829** documented in May — *both* stacks ~45% down, so the loss is **the machine, not the software**. Cause not established (GPU clocks / P8 states, driver, Windows power plan, desktop load on GPU 0); tracked as a separate investigation. Until it is resolved, treat every perf number dated May 2026 as historical, and compare only against a same-night A/B.
+
+**Rollback (Genesis, still armed)**: `docker compose -f medium-qwen36-stock-tq.yml down && docker compose -f medium-qwen36-genesis-tq.yml up -d`. The Genesis image tars in `D:\vllm_image_backups\` remain production assets until the stock soak concludes — do not delete them.
+
+**Genesis promotion path (2026-05-16 → 2026-05-17, historical)**:
 1. v2f (Genesis-TQ + vision) PASSED active load benches but regressed on +55min idle soak (shm_broadcast.py:733 deadlock). Rolled back to FP8 baseline 05:35Z.
 2. v2g = v2f + `VLLM_USE_FLASHINFER_SAMPLER=0` (FlashInfer sampler had its own JIT autotune path corrupting CPython `_thread.lock` descriptor under load). Deployed 2026-05-16 06:29Z.
 3. v2g soak 35h+ clean — promoted as new baseline 2026-05-17.
@@ -365,8 +371,16 @@ docker logs -f myia_vllm-medium-qwen36-moe
 VLLM_MARLIN_USE_ATOMIC_ADD=1      # Optimized Marlin kernel accumulation
 VLLM_USE_DEEP_GEMM=0              # Not needed for AWQ
 OMP_NUM_THREADS=4                 # CPU parallelism for scheduling
-VLLM_USE_FLASHINFER_MOE_FP16=1    # CRITICAL for MoE performance
+VLLM_USE_FLASHINFER_MOE_FP16=1    # INERT on this deployment — see correction below
 ```
+
+**Correction (2026-08-11)**: `VLLM_USE_FLASHINFER_MOE_FP16` is read **only** by
+`model_executor/layers/fused_moe/oracle/unquantized.py` — it applies to the **unquantized** MoE path.
+Our model is AWQ INT4, so this variable has **never had any effect on this deployment**, under
+Genesis or stock. The "+110% MoE" figure previously attributed to it came from a different context
+and is not reproducible here. Verified by reading the source inside our own Genesis image. Dropped
+from the stock profile along with `VLLM_MARLIN_MOE_BLOCK_SIZE_M` and `VLLM_USE_FLASHINFER_MOE_FP8`
+(v0.27.0 selects the MoE path via `KernelConfig.moe_backend`, not env vars).
 
 ### Thinking Modulation
 To disable thinking per-request (clean, direct responses):
@@ -595,9 +609,32 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-08-06: ~1h outage from a phantom HF-cache mount after `wsl --shutdown` — HF bind now `create_host_path: false`, watchdog **v5** adds a post-boot warm-up grace + BOOT-STALL detection, prod image found irreproducible and backed up; gpu-util 0.70 since 08-04, KV 1,238,046; batch stays 4096; 413 guard removed; v2g baseline since 2026-05-17)
+## Current State (2026-08-11: **prod migrated off Genesis onto stock `vllm/vllm-openai:v0.27.0` + TurboQuant k8v4** — the image is reproducible again, 13/13 gates incl. a 253K chunked prefill, stock beats Genesis in a same-night A/B, GPU 0 gains ~1.8 GiB; one forced divergence `--prefix-caching-hash-algo sha256`; `autoheal=False` label added to both profiles; gpu-util 0.70, KV 1,030,407, batch 4096; May perf figures no longer reproducible on this machine)
 
-### ⚠️ The production image is IRREPRODUCIBLE — back it up, never prune it
+### Stock v0.27.0 — what changed vs the Genesis profile
+
+Beyond `image`, the `GENESIS_ENABLE_*` variables and a separate compile-cache volume, exactly four differences:
+
+1. **`--prefix-caching-hash-algo sha256`** (Genesis used `xxhash`). The stock image **does not ship the `xxhash` module**, and vLLM imports it **lazily** inside `request_block_hasher` — so short prompts pass and only requests that fill a complete KV block fail, with an HTTP 500 (`ModuleNotFoundError: xxhash is required...` at `vllm/utils/hashing.py:63`). That masquerades convincingly as the TurboQuant crash we were hunting. `sha256` is the upstream default and keeps the image a pure `docker pull`; the alternative (an overlay image adding `pip install xxhash`) was rejected for exactly that reason.
+2. **`labels: ["autoheal=False"]`** — see the autoheal section below. Added to the **Genesis profile too**, so a rollback keeps the fix.
+3. **`start_period: 1800s`** (was 900s). A cold boot with an empty compile-cache volume exceeds 900 s: weights 262 s, torch.compile 209 s, engine init 474 s, then a **multi-modal warmup on the API-server side that is new in v0.27.0 and not covered by `--skip-mm-profiling`**. A warm boot is ~8 min.
+4. **Three env vars dropped**: `VLLM_USE_FLASHINFER_MOE_FP16`, `VLLM_MARLIN_MOE_BLOCK_SIZE_M`, `VLLM_USE_FLASHINFER_MOE_FP8`. v0.27.0 selects the MoE path via `KernelConfig.moe_backend`, not env vars — and the first of those never did anything here anyway (see the Environment Variables correction above).
+
+Everything else is byte-identical to the Genesis profile: gpu-util 0.70, batch 4096 / max-num-seqs 16, `turboquant_k8v4`, 262144 context, `VLLM_USE_FLASHINFER_SAMPLER=0`, `--no-enable-flashinfer-autotune`, `NCCL_P2P_DISABLE=1`, watchdog v5, telemetry, same `container_name` (only one stack runs at a time).
+
+### ⚠️ `autoheal` — a competing restart authority with almost no signature
+
+This host runs `qdrant_autoheal` (`willfarrell/autoheal`) with **`AUTOHEAL_CONTAINER_LABEL=all`**: it `docker restart`s **every** container that goes `unhealthy`. It came from the Qdrant stack and was never meant for vLLM, but `all` does not discriminate — so it has been restarting the engine **in competition with our watchdog**, cancelling the watchdog's deliberate "patient boot" design (watchdog v5 never restarts during `starting`; autoheal fires the moment `start_period` expires).
+
+**Its signature is almost nil**, which is why it hid for months: `ExitCode=0`, `OOMKilled=false`, and crucially **`RestartCount` unchanged** — `docker restart` does not increment it, so the watchdog's CRASH-LOOP detector (which reads `RestartCount`) is *structurally blind* to it. On the vLLM side the only trace is a `KeyboardInterrupt: terminated` from `_interrupt_init`.
+
+Observed: it killed the first cold boot of the stock image at 2026-08-11 00:03:04Z, **and** it fired at 2026-08-10 13:40:15 and 14:40:50 on the prod container — inside that day's incident window, which **revises** that incident's analysis (previously attributed to watchdog + WDDM paging alone).
+
+Fix: `labels: ["autoheal=False"]` — capital F is mandatory, the filter is `select(.Labels["autoheal"] != "False")`, an exact string comparison. **General rule: before analysing any unexplained container restart, check whether another restart authority exists on the host (`docker ps | grep -i heal`) — a flat `RestartCount` does not prove no restart happened.**
+
+### ⚠️ The Genesis image is IRREPRODUCIBLE — keep the backups until the stock soak concludes
+
+This is what motivated the migration, and it still governs the rollback path.
 
 `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` **cannot be rebuilt**. Its base, `vllm/vllm-openai:nightly-01d4d1ad375dc5854779c593eee093bcebb0cada`, now **404s on Docker Hub** — nightly tags are retained only ~5 days. The pinned Genesis commit `fbecee31fd42…` *does* still resolve (200 via the repo-rename redirect), so **only the base layer is unobtainable**. Until 2026-08-06 the image existed in exactly one place: the local Docker store.
 
@@ -616,13 +653,15 @@ docker exec myia_vllm-medium-qwen36-moe du -sh /root/.cache/huggingface/hub/mode
 
 **Fix in the profile:** the HF-cache bind uses the long syntax with `bind: { create_host_path: false }`, which turns the silent substitution into a loud `up -d` failure. `./models` is deliberately left on the short syntax — `--model` is an HF repo id, so that bind carries nothing (host dir is empty) and hardening it would make `up -d` fail on a fresh clone over a directory git cannot track.
 
-**Boot timing, corrected:** container start → `/health` 200 is **~6 min**, and health stays **000** for the last ~3 of them (engine init at T+3 min → multi-modal warmup ~34 s → API routes). `health=000` at T+4 min is normal, not a hang.
+**Boot timing, corrected:** on Genesis, container start → `/health` 200 was **~6 min**, health staying **000** for the last ~3. **On stock v0.27.0 a warm boot is ~8 min** and a cold one (empty compile-cache volume) exceeds 15 — hence `start_period: 1800s`. `health=000` at T+4 min is normal, not a hang.
 
-- **Qwen3.6-35B-A3B MoE + Genesis TurboQuant k8v4** on port 5002 (GPUs 0,1) — promoted from experimental to production baseline 2026-05-17 after the +35h post-deploy soak completed clean
-  - Image: `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` (Sandermage Genesis patch tree on nightly `01d4d1ad3`)
-  - Profile: `medium-qwen36-genesis-tq.yml` (Genesis patches P3/P4/P6/P22[skipped]/P26[skipped]/P37/P38B/P40/P67/P78/P98/P101 + PN33 by-default + custom env)
+- **Qwen3.6-35B-A3B MoE + TurboQuant k8v4 on stock `vllm/vllm-openai:v0.27.0`** on port 5002 (GPUs 0,1) — migrated off Genesis 2026-08-11, gates 13/13 (see the migration record in `myia_vllm/_iteration_log/stock_tq_phase2/NOTES.md`)
+  - Image: `vllm/vllm-openai:v0.27.0` — a plain `docker pull`, **reproducible**, no patch tree. Prefill throughput measured at gate: 31,417 tok in 7.2 s, 101,838 in 21.1 s, **253,503 in 58.6 s** (~4,300–4,800 tok/s), each followed by a passing survival request.
+  - Profile: `medium-qwen36-stock-tq.yml`. Previous: `medium-qwen36-genesis-tq.yml` (Genesis patches P3/P4/P6/P22[skipped]/P26[skipped]/P37/P38B/P40/P67/P78/P98/P101 + PN33 by-default + custom env) — retained as the armed rollback.
+  - **KV cache: 1,030,407 tokens @ gpu-util 0.70** (3.93× the 262K window), down 17% from Genesis's 1,238,046 — immaterial at 2–7% observed occupancy. VRAM **GPU 0 19,336 MiB / GPU 1 19,040** vs Genesis 21,145 / 19,340: the Genesis prealloc pools (P28 GDN / P37 MoE / TQ-dequant) lived *outside* the gpu-util budget, so dropping them returns ~1.8 GiB of headroom to the desktop-shared GPU 0. **The `/vllm-surveillance` VRAM reference is therefore ~19,300–19,400 MiB on GPU 0, not the ~21,150 written for Genesis**; the 23,000 MiB alert threshold is unchanged.
+  - **Do not raise gpu-util to recover the lost KV** until the soak concludes — the out-of-pool budget changed with the pools gone and would need re-measuring.
   - **`--gpu-memory-utilization 0.70`** (0.82 → 0.78 on 2026-07-14 → **0.70 on 2026-08-04**). GPU 0 is shared with the Windows desktop (explorer/VSCode/Edge, fluctuating VRAM baseline); GPU 1 has none. A desktop spike between memory-profiling and KV-cache-tensor allocation pushes GPU 0 over its own gpu-util pool cap → **boot-time CUDA-OOM crash-loop** at `_allocate_kv_cache_tensors`. Three occurrences in 19 days: 2026-07-13 @0.82 (RestartCount 53→59+, OOM on a 34 MiB alloc with "9.91 GiB free" = pool-cap not true exhaustion), then **again at 0.78** on 07-28 and 08-01 (686 MiB alloc failing with 2.66 GiB free) — the 0.82→0.78 step had moved the failure point by only ~0.2 GiB. **Why the nominal budget lies:** vLLM's real footprint exceeds `gpu-util × 24564` by **+2 768 MiB @0.78 and +2 145 MiB @0.70** (measured on GPU 1, desktop-free) because Marlin-MoE variable temp allocs (RFC #27951), the Genesis prealloc pools (P28 GDN / P37 MoE / TQ-dequant) **and the CUDA graphs** all live outside it — vLLM warns about the last one at boot, since we run `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`. Pre-change GPU 0 was at 23,745/24,564 MiB = **819 MiB free**. At 0.70: GPU 0 **21,145 MiB**, GPU 1 **19,340 MiB**, KV **1,736,379 → 1,238,046 tokens (−29%, still 4.72× the 262K window; prod occupancy is 2–7%)**, no decode regression. **Untested alternative if KV is ever needed back:** re-enable `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1` and run gpu-util **0.7349** as vLLM's own boot warning suggests. **Watchdog v3 blind spot — FIXED in v4 (2026-07-15, deployed 07-28, field-proven correct-negative 08-01):** a crash-loop re-enters Docker `starting` on each restart → the DOWN-path treated `starting` as boot-safe (never-restart) → the watchdog never intervened (07-13 crash-loop was completely silent). Watchdog **v4** now reads `RestartCount` inside the `starting` branch: a patient cold boot keeps it flat, a crash-loop makes it climb → after 3 restart-increments (~6 min) it emits a loud greppable `CRASH-LOOP` line. No auto-restart (futile while Docker is already relooping the container; the real cure is the gpu-util drop or freeing GPU-0 VRAM) — detection + visibility only. Simulated (flat RC → BOOTING, climbing RC → CRASH-LOOP at churn≥3, single restart → no false positive) and `sh -n` clean; deployed 07-28 and field-proven on 08-01 (flat `RestartCount=2` → patient `BOOTING`, no false `CRASH-LOOP`). Shipped in [PR jsboige/vllm#11](https://github.com/jsboige/vllm/pull/11) (merged `d6342acc40`) with the gpu-util change. Both the gpu-util value and the watchdog comment live OUTSIDE the `command: >` folded scalar (a `#` inside it becomes a literal vLLM arg). **Watchdog v5 (2026-08-06)** closes two more gaps: (a) a **post-boot warm-up grace** — a freshly booted engine answers its first decodes slowly (measured 52 s → 16 s → 0.49 s) while `/health` already returns 200, so v4's WEDGE path counted two fails and **restarted a perfectly healthy engine** at 00:30:12Z; v5 gives the first 3 probes after any boot a 120 s timeout and never counts them as a wedge, re-arms that grace on entering `starting` and after a watchdog-issued restart, and spends it the instant one decode succeeds; (b) **BOOT-STALL** — `docker=starting` for ≥12 min with `RestartCount` FLAT (so v4's churn detector structurally cannot fire) and `Starting to load model` present without `Model loading took` ⇒ the phantom-mount case above, flagged with the `du` check and the recovery command inline, detection-only (an auto-restart would re-mount the same empty dir). v5 also stops the crash-loop message asserting CUDA-OOM unconditionally — it names OOM only when the log shows it.
-  - Marlin MoE, Expert Parallelism (EP=2), CUDA graphs (full+piecewise), prefix caching (xxhash), chunked prefill, async scheduling
+  - Marlin MoE (`MarlinExperts` + `MoEPrepareAndFinalizeNoDPEPModular`), Expert Parallelism (EP=2), CUDA graphs (full+piecewise), prefix caching (**sha256** — see divergence #1 above; Genesis used xxhash), chunked prefill, async scheduling
   - ✅ Vision (images, documents) + Thinking modulation + `preserve_thinking` server-side default
   - ✅ `--override-generation-config` defaults (temp 0.6, top_p 0.95, top_k 20, min_p 0.0, rp 1.0)
   - ✅ Watchdog sidecar **v5** (dual-ping host + Docker DNS; 24-token decode probe; four failure modes covered: decode-WEDGE, hard-HANG, boot CRASH-LOOP, BOOT-STALL; post-boot warm-up grace)
