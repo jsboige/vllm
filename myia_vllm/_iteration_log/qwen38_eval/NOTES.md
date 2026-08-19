@@ -70,4 +70,32 @@ soirée, même batterie (validate.py original).
 - **Concurrent N=16 376 t/s** : dans l'estimation 200–350 (légèrement au-dessus) — le coût dense attendu, à confronter au 3.6 même-journée.
 - **KV 342 691 = 1,31× fenêtre** : UNE requête 262K à la fois. Pour le scénario « traces agentiques longues concurrentes », fp8@0.70 ne suffit pas → soit gpu-util ↑ (marge VRAM GPU0 ≈ 4,5 GiB), soit **TurboQuant** (variante B + canary obligatoire), soit les deux.
 
-*(A/B 3.6 même-journée : à remplir après le swap retour.)*
+### A/B même-journée (08-19, 3.6 restauré 11:04Z, batterie validate.py 11:08Z, 13/13 PASS)
+
+| Métrique | Qwen3.8-27B AWQ+MTP-3 fp8 | Qwen3.6-35B-A3B TQ (prod) | Référence 3.6 du 08-14 |
+|---|---|---|---|
+| Boot (chaud/vierge) | **4 min 20 s** (volume compile vierge !) | 8 min 20 s (chaud) | ~8 min |
+| Vision | 2,1 s, 4/4 | 4,3 s, 4/4 | — |
+| Tool calling | **0,6 s** | 1,9 s | 0,47 s |
+| Thinking (17×23) | **5,1 s** (effort low) | 15,1 s (défaut) | — |
+| Single-stream (no-think, 300 tok) | 43 t/s max | 47 t/s max | **~120 t/s** |
+| **Concurrent N=16 (chaud)** | **376 t/s** | 213 t/s | **956 t/s** |
+| Prefill 30K | 1 879 tok/s | 3 957 tok/s | 5 346–8 177 |
+| Prefill 253K | 1 316 tok/s | 3 375 tok/s | ~4 300 |
+| KV tokens | 342 691 (**1,31× fenêtre**) | 1 030 407 (3,93×) | idem |
+
+### ⚠️ Le biais qui domine la lecture : la machine, encore
+
+Les DEUX modèles sont aujourd'hui à ~1/3 de leurs références du 08-14 (3.6 : 47 vs ~120 single, 213 vs 956 N=16 ; 3.8 : 43 vs 84 Todd-sur-3090). suspect initial = training CoursIA sur GPU 2 (9,1 GiB, absent le 08-14)… **mais à la capture post-batterie le job est IDLE (210 MHz, 2 %, 32 W)** — contention affaiblie, pas exclue (état pendant la batterie inconnu). Nouveau point pour l'enquête machine ouverte : le 08-19 les deux stacks dégradent ENSEMBLE.
+
+Ce que l'A/B d'aujourd'hui prouve quand même (mêmes conditions pour les deux) :
+- **N=16 chaud : le dense 3.8+MTP a battu le MoE (376 vs 213)** — inimaginable à machine saine, mais c'est la mesure du jour. Le MTP aide le dense sous charge là où le MoE est étranglé par la machine.
+- **Prefill : le MoE gagne nettement (×2,3–2,6)** — 3B actifs vs 27B, structurel. Pour les charges 253K, 193 s vs 75 s.
+- **Latences fonctionnelles : le 3.8 gagne partout** (vision 2×, tools 3×, boot 2×).
+
+### Verdict de fenêtre (provisoire — A/B contaminé par l'état machine)
+
+1. **Remplacement immédiat : NON.** On ne remplace pas le MoE sur la base d'un jour où il est à 22 % de sa mesure de la semaine dernière ; ses chiffres sains (956 N=16, 120 single) restent la référence de capacité.
+2. **Le 3.8 est un excellent candidat** — fonctionnellement supérieur (reasoning_effort, vidéo, latences), MTP validé (0,82), stable 17/17. À re-mesurer à machine saine (GPU 2 libre) pour des chiffres propres : single-stream vrai, N=16 vrai, et l'hypothèse group_size 32 vs 128 (43 vs 84 t/s Todd) mérite un quant GS-128.
+3. **Le chemin qualité**: GSM8K/IFEval/MMStar sur le harness local — non exécutés ce jour (fenêtre), à programmer au prochain run.
+4. **KV 1,31× est le vrai goulot structurel** pour « traces agentiques longues » : gpu-util ↑ (≈4,5 GiB libres/GPU) et/ou variante TQ (canary obligatoire).
