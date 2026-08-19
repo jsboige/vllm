@@ -171,9 +171,13 @@ def t_canary():
         txt = (m.get("content") or "") + " " + (m.get("reasoning") or "")
         ratio = fourgram_repeat_ratio(txt)
         worst = max(worst, ratio)
-        sane = len(txt.strip()) > 30 and ratio < 0.5
+        # Le prompt math demande le "nombre seul" : pas d'exigence de longueur pour lui
+        # (bug v1: '132' correct de 3 car echouait le seuil >30 — faux positif).
+        sane = ratio < 0.5
         if tag == "math":
-            sane = sane and "132" in txt
+            sane = sane and "132" in txt and len(txt.strip()) > 0
+        else:
+            sane = sane and len(txt.strip()) > 30
         if not sane:
             return record("canary", False,
                           f"[{tag}] degenere? ratio4g={ratio:.2f} -> {txt.strip()[:120]!r}")
