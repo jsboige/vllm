@@ -83,6 +83,18 @@
 #     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen38-27b-awq-mtp.yml --env-file myia_vllm/.env down
 #     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml --env-file myia_vllm/.env up -d
 #
+# A/B VARIANTS (2026-08-20 grid, user GO) — the profile is PARAMETERIZED; shell
+# env overrides beat --env-file in compose, so each variant is one command:
+#   v1  fp8  + MTP-3 + GS-32  (cyankiwi, DEFAULTS — rerun of 08-19 on the overlay)
+#   v2  fp8  + MTP-8 + GS-32  : MTP_TOKENS_QWEN38=8
+#   v3  TQ   + MTP-3 + GS-32  : KV_DTYPE_QWEN38=turboquant_k8v4  (+ QUALITY CANARY)
+#   v4  fp8  + MTP-3 + GS-128 (philbert440) : VLLM_MODEL_QWEN38=philbert440/Qwen3.8-27B-W4A16-AWQ
+# e.g.: KV_DTYPE_QWEN38=turboquant_k8v4 docker compose -f <this> --env-file myia_vllm/.env up -d
+# IMAGE default = local overlay v0.27.1+#51812 (configs/docker/overlay_v0271_s51812/,
+# GDN-gates x spec-tokens correctness fix — v0.27.1 predates it; see overlay README).
+# 3.6 baseline runs on STOCK v0.27.1 (prod stack untouched) — the confound is one
+# .py file that only touches the spec-decode path, which 3.6 never executes.
+#
 # DIFF vs medium-qwen36-stock-tq.yml (everything else is parity):
 #   image               same vllm/vllm-openai:v0.27.1
 #   model               cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit -> cyankiwi/Qwen3.8-27B-AWQ-INT4
@@ -106,7 +118,7 @@
 
 services:
   vllm-medium-qwen38-27b:  # eval stack — the 3.6 prod stack must be DOWN first
-    image: vllm/vllm-openai:v0.27.1
+    image: ${VLLM_IMAGE_QWEN38:-vllm-openai-v0271-s51812:v1}
     container_name: myia_vllm-medium-qwen38-27b
     # gpu-memory-utilization stays at the hard-won 0.70 (boot-OOM history at
     # 0.82/0.78, GPU 0 shared with the Windows desktop). The dense 27B AWQ is
@@ -142,8 +154,8 @@ services:
           --no-enable-flashinfer-autotune \
           --gpu-memory-utilization 0.70 \
           --max-model-len 262144 \
-          --kv-cache-dtype fp8 \
-          --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+          --kv-cache-dtype ${KV_DTYPE_QWEN38:-fp8} \
+          --speculative-config '{"method":"mtp","num_speculative_tokens":'"${MTP_TOKENS_QWEN38:-3}"'}' \
           --dtype auto \
           --limit-mm-per-prompt '{"image":4,"video":0}' \
           --mm-processor-kwargs '{"max_pixels":774000}' \
