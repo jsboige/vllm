@@ -145,3 +145,80 @@ temp 0.7 no-think). ⚠️ noms de métriques v0.27.1 : `vllm:spec_decode_num_dr
 6. **Décision bascule : AUCUNE ce soir** — il faudra re-mesurer le 3.8 en intercalé
    avec le 3.6, ou à un moment de bruit stable. Le 3.6 reste en prod (restauré,
    watchdog relancé).
+
+## Repro stock-pur (2026-08-20 21:14 locales) — TQ×MTP-3, image officielle v0.27.1 SANS overlay
+
+**REPRODUIT** : canary code DEGENERATE r4g 0,92 (fr OK 513 ch cette fois — la dégénérescence
+est intermittente par prompt, pas totale). Échantillon temp-0 (scratchpad
+tq_mtp_degenerate_sample.txt) : `sum(range(1, 1, 1, 1, 1, ...` puis mur de « 1 ».
+Acceptance 0,34-0,38, single 59-67, N=16 95. KV 440 027.
+
+→ Le bug TQ×spec-dec est **upstream v0.27.1**, indépendant de #51812 (repro sans l'overlay).
+Datapoint prêt pour issue : config exacte, échantillon, métriques, variabilité par prompt.
+
+## A-B-A-B interleaved — B1 (3.8 fp8+MTP-3, overlay #51812) bench 2026-08-20 21:31Z
+```
+RESULT|B1-3.8|acceptance=0.787|acceptance_after_load=0.493|canary=PASS|single=27/23/25|n16=119
+canary: fr OK (r4g 0.02), code OK (r4g 0.01), math OK
+```
+- Leg B1 between A1 (3.6: single 49/54/72, N=16 683) and pending A2.
+- NB single 3.8 très bas (27 vs 43 la veille, ~90-110 attendus) → la machine fluctue encore (échantillonneur 2h actif). Seule l'intercalation compare.
+
+## Incident fenêtre A-B-A-B — A2 boot raté 2× (2026-08-20 19:35Z→20:35Z), récupéré
+- Symptôme : `up -d` 3.6 → RC=16 crash-loop, guard HF refuse (« largest blob 0 bytes »).
+- **Cause racine = MA faute d'opérateur** : le swap a omis `--env-file myia_vllm/.env`.
+  Sans lui `HF_CACHE_PATH` retombe sur le défaut `~/.cache/huggingface` (cache local
+  CoursIA — datasets gsm8k/IFEval/sudoku visibles dans le conteneur), où le modèle 3.6
+  n'existe pas. Le bind WSL n'était PAS en cause : l'UNC est resté joignable tout du long.
+- **Le guard a fait exactement son travail** : sans lui, vLLM aurait re-téléchargé 19 GB
+  dans le mauvais cache (le scénario phantom-download, déclenché par env manquant plutôt
+  que par WSL). Fail-loud en ~3 min par tentative au lieu d'une heure de faux « boot patient ».
+- Récupération : `compose down && compose up -d --env-file myia_vllm/.env` → guard PASS
+  (blob 5,37 G), poids en chargement 20:37Z. A1 (3.6, lancé avant la fenêtre avec env
+  correct) reste valide ; B1 valide ; A2 reprend à froid après ce délai.
+- **Leçon** : tout swap de profil DOIT porter `--env-file myia_vllm/.env` — l'oubli ne
+  fait pas échouer `up -d`, il substitue silencieusement le mauvais cache + efface les
+  clés API. Le guard transforme ce piège en échec bruyant.
+
+## A-B-A-B — A2 (3.6 prod) bench 2026-08-20 22:37Z (après incident récupéré)
+```
+RESULT|A2-3.6|canary=PASS|single=101/101/103|n16=872
+```
+- La machine a CHAUFFÉ entre les jambes : A1 N=16 683 (21:1xZ) → A2 872 (22:37Z), single 49-72 → 101-103.
+  Confirme la fluctuation lente dominante — seule l'intercalation compare.
+- État : A1 683 · B1 119 · A2 872 · B2 en boot.
+
+## A-B-A-B — B2 (3.8 fp8+MTP-3) + bracket 3.6-B + SYNTHÈSE (2026-08-20 soir)
+```
+RESULT|B2-3.8|acceptance=0.748|acceptance_after_load=0.484|canary=PASS|single=48/45/33|n16=138   22:44 locales
+RESULT|B-bracket-3.6|canary=PASS|single=103/102/100|n16=870                                   22:49 locales
+```
+⚠️ **Correction horodatages** : les entrées B1/A2 ci-dessus étiquetées « 21:31Z » / « 22:37Z »
+sont en fait des heures LOCALES (le script `ab_bench.py` affiche datetime.now()).
+Vrais instants : A1 ~19:14Z · B1 19:31Z · A2 20:37Z · B2 20:44Z · bracket 20:49Z (21:14→22:49 locales).
+
+### Tableau intercalé (t/s, bruit identique par paire)
+| Jambe | Pile | single (moy) | N=16 | acceptance |
+|---|---|---|---|---|
+| A1 (21:14 loc.) | 3.6 MoE TQ | 58,3 | **683** | — |
+| B1 (21:31) | 3.8 fp8+MTP-3 | 25,0 | **119** | 0,79→0,49 |
+| A2 (22:37) | 3.6 MoE TQ | 101,7 | **872** | — |
+| B2 (22:44) | 3.8 fp8+MTP-3 | 42,0 | **138** | 0,75→0,48 |
+| bracket (22:49) | 3.6 MoE TQ | 101,7 | **870** | — |
+
+**Ratios appariés (le cœur de la méthode)** : N=16 → A1/B1 = **5,7×**, A2/B2 = **6,3×**.
+Single → 2,33× / 2,42×. Le bruit a déplacé les deux modèles DANS LE MÊME SENS entre les
+jambes (+28 % 3.6, +16 % 3.8) — le ratio ~6× tient partout. Verdict ROBUSTE au bruit.
+
+### Verdict : PAS DE BASCULE
+- 3.6-35B-A3B MoE reste prod, ~6× devant à N=16, ~2,4× en single, ×2,3–2,6 en prefill (08-19).
+- 3.8-27B AWQ+MTP-3 = candidat **tier qualité** (SWE-bench Pro +8,2, Terminal Bench +9,6,
+  DeepSWE +28,9 vs 3.6) PAS un candidat débit. Son créneau : complément GPU 2 (TP=1) si un
+  jour on veut un tier qualité — mais KV TP=1 sur 24 Go serait très serré (poids ~14 Go) : non exploré.
+- MTP acceptance **divise par ~1,6 sous charge** (0,75–0,79 → 0,48–0,49) — attendu (drafts
+  rejetés en batch), à retenir pour toute projection de gain MTP multi-utilisateur.
+- Machine : A1 683 → A2 872 (+28 %) entre les jambes — l'échantillonneur hôte (96 min,
+  85 k lignes) montre GPU 2 à 0 % toute la fenêtre, et AUCUNE corrélation stable
+  util/clocks/power ↔ débit (A2 a fait 872 t/s à ~70 W là où le bracket a fait 870 à ~110 W).
+  La fluctuation n'est PAS visible dans la télémétrie GPU → côté hôte (CPU/PCIe/WDDM),
+  capturée par aucun compteur de ce sampler. L'enquête machine reste ouverte là-dessus.
