@@ -1,0 +1,383 @@
+# Docker Compose profile - Qwen3.8-27B AWQ-INT4 + MTP speculative decoding + FP8 KV
+# ============================================================================
+# EVAL PROFILE (2026-08-19) — opportunity evaluation of Qwen3.8-27B dense
+# vs the production Qwen3.6-35B-A3B MoE (medium-qwen36-stock-tq.yml).
+#
+# WHY
+#   Qwen3.8-27B (Apache-2.0, Aug 2026) is a DENSE hybrid (48 GDN + 16 full
+#   attention over 64 layers, model_type qwen3_5 — same classes our vLLM
+#   v0.27.1 already serves) with feature parity +: native image AND video
+#   input, adaptive reasoning_effort (xhigh/medium/low), preserve_thinking,
+#   and an MTP head trained in-checkpoint (mtp_num_hidden_layers=1).
+#   Upstream benchmarks vs Qwen3.6 tier: SWE-bench Pro 61.7 vs 53.5,
+#   Terminal Bench 2.1 73.0 vs 63.4, QwenSWEBench 79.0 vs 49.3, IFBench
+#   79.5 vs 69.1. The quant is cyankiwi's (our historical quantizer), with
+#   the MTP head + vision tower + lm_head + GDN in_proj_a/b kept BF16
+#   (verified in its config.json quantization_config.ignore) — exactly the
+#   recipe that keeps spec-decode acceptance alive at 4-bit.
+#
+# EXPECTED TRADE-OFF (to be measured, never assumed)
+#   Single-stream: MTP-3 measured x1.45 on 2x RTX 3090 (57.9 -> 84 t/s) on
+#   the Todd Wolven reference quant; our 4090s should land ~90-110 t/s vs
+#   the MoE's 120-124. Concurrent N=16: a dense 27B will NOT match the MoE's
+#   956 tok/s aggregate (est. 200-350). Measured prod load (2026-08-19, 5-day
+#   window): 15,977 requests, ~8 tok/s average, ZERO preemptions, ZERO
+#   capacity waits — concurrency headroom is currently a FUTURE cost, not a
+#   present one. A/B must be SAME-NIGHT on this machine (May figures are not
+#   reproducible; only same-night A/B is valid — 2026-08-11 lesson).
+#
+# KV DTYPE DECISION — fp8 here, TurboQuant as VARIANT B (do not flip blindly)
+#   Only 16/64 layers carry a KV cache -> fp8 alone covers ~2x the 262K
+#   window (Todd measured 560,900 KV tokens @0.95 util on 2x3090). fp8 + MTP
+#   is the documented-safe combo (validated by the reference quant AND the
+#   official vLLM recipe, acceptance 0.75-0.9).
+#   TurboQuant k8v4 + MTP is NOT proven on stock: the degenerate-output bugs
+#   vllm#40831 (ngram) and #40880 (MTP x CUDA-graph, hybrid) were closed by
+#   the GENESIS patch tree (P65/P66/P64/P68/P69), NOT upstream. If variant B
+#   is ever tried, a QUALITY CANARY is MANDATORY (fixed prompt, assert a sane
+#   non-degenerate answer) — the failure mode is silent and passes every
+#   health gate.
+#
+# MTP SANITY GATE (trap #3 of the reference quant writeup)
+#   An MTP head whose weights silently fail to load produces 0% acceptance
+#   and is SLOWER than no MTP at all (~33 vs 58 t/s) — it looks like a speed
+#   bug, not a load bug. Gate: read vllm:spec_decode_num_accepted_tokens_total
+#   vs vllm:spec_decode_num_drafted_tokens_total on /metrics after the first
+#   real generations; acceptance must be > 0.4, else treat the drafter as
+#   broken (check the index json covers the mtp.* tensors).
+#
+# ----------------------------------------------------------------------------
+# RUNBOOK
+# ----------------------------------------------------------------------------
+#   PRE-DOWNLOAD (prod stays up; CPU-only side container, NOT a second engine):
+#     docker run -d --name qwen38-predownload \
+#       -e HUGGING_FACE_HUB_TOKEN=<token> \
+#       -v "\\wsl.localhost\Ubuntu\home\user\vllm\.cache\huggingface\hub:/root/.cache/huggingface" \
+#       --entrypoint /bin/sh vllm/vllm-openai:v0.27.1 \
+#       -c 'huggingface-cli download cyankiwi/Qwen3.8-27B-AWQ-INT4 || hf download cyankiwi/Qwen3.8-27B-AWQ-INT4'
+#     (disk check first: 644 GB free measured 2026-08-19; quant is ~21 GB)
+#
+#   WINDOW (GPUs 0,1 — takes prod down; GPU 2 is CoursIA's, untouched):
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen38-27b-awq-mtp.yml --env-file myia_vllm/.env up -d
+#     Cold boot on the fresh compile-cache volume: expect 10-25 min to health.
+#     (start_period 1800s covers it; health=000 at T+4 min is normal.)
+#
+#   DURING BATTERY RUNS: stop the watchdog first (the 253K prefill starves its
+#   24-token decode probe -> false WEDGE, phase-2 lesson 2026-08-11):
+#     docker stop myia_vllm-watchdog-qwen38-27b   # ... run battery ... then start it again
+#
+#   GATES (adapted from stock_tq_phase2/validate.py, MODEL=qwen3.8-27b):
+#     a. Boot clean, KV tokens reported, health 200.
+#     b. MTP acceptance > 0.4 on /metrics after first generations (see above).
+#     c. CRASH TEST prefills 31K / 102K / 253K, each + survival request.
+#     d. Vision (image quadrant PNG), tool calling (qwen3_coder XML), thinking
+#        + reasoning_effort medium + preserve_thinking.
+#     e. QUALITY CANARY (mandatory for any spec-dec config): fixed prompts,
+#        assert non-degenerate French/English answers, no repetition loops.
+#     f. Concurrent N=16 aggregate + single-stream decode, same-night A/B vs
+#        the 3.6 stack re-deployed after (only same-night numbers compare).
+#
+#   END OF WINDOW (default): restore the 3.6 MoE prod — replacement is a
+#     SEPARATE explicit decision taken with the A/B data in hand:
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen38-27b-awq-mtp.yml --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml --env-file myia_vllm/.env up -d
+#
+# DIFF vs medium-qwen36-stock-tq.yml (everything else is parity):
+#   image               same vllm/vllm-openai:v0.27.1
+#   model               cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit -> cyankiwi/Qwen3.8-27B-AWQ-INT4
+#   served-model-name   qwen3.6-35b-a3b -> qwen3.8-27b
+#   --enable-expert-parallel  REMOVED (dense model, no experts)
+#   --kv-cache-dtype    turboquant_k8v4 -> fp8 (see KV DTYPE DECISION above)
+#   --speculative-config ADDED: mtp, 3 tokens (auto-drafts Qwen3_5MTP from the
+#                       checkpoint's mtp_num_hidden_layers; the old
+#                       "qwen3_5_mtp" spelling is deprecated -> "mtp")
+#   --default-chat-template-kwargs  + reasoning_effort medium (3.8 default is
+#                       xhigh; medium is the sane server-side default for a
+#                       multi-tenant endpoint)
+#   container names     *-qwen36-moe -> *-qwen38-27b (only one stack at a time)
+#   compile-cache       fresh volume (stale cache from another model segfaults)
+#   HF guard            MOUNT-SANITY variant: any >4G blob under the hub (the
+#                       3.6's 47 GB proves the bind is real) instead of a
+#                       model-specific path — the 3.8 is NOT in cache yet on
+#                       first boot, so a model-specific guard would false-fail.
+#   env                 VLLM_MOE_USE_DEEP_GEMM dropped (no MoE); rest identical
+# ============================================================================
+
+services:
+  vllm-medium-qwen38-27b:  # eval stack — the 3.6 prod stack must be DOWN first
+    image: vllm/vllm-openai:v0.27.1
+    container_name: myia_vllm-medium-qwen38-27b
+    # gpu-memory-utilization stays at the hard-won 0.70 (boot-OOM history at
+    # 0.82/0.78, GPU 0 shared with the Windows desktop). The dense 27B AWQ is
+    # LIGHTER than the MoE (~10.5 GiB weights/GPU at TP=2) so this is extra
+    # conservative on purpose: do not tune gpu-util in the same change that
+    # swaps the model. See medium-qwen36-stock-tq.yml for the full history.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # Mount-sanity guard (variant of the 2026-08-12 prod guard): the bind
+        # is proven real by ANY >4G blob already in the hub (the 3.6's 47 GB
+        # is a permanent resident). A phantom (empty) mount finds nothing and
+        # fails loud instead of re-downloading everything at 0 MiB/min.
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find /root/.cache/huggingface -type f -size +4G -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_QWEN38:-cyankiwi/Qwen3.8-27B-AWQ-INT4} \
+          --served-model-name qwen3.8-27b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype fp8 \
+          --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 4096 \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --default-chat-template-kwargs '{"preserve_thinking":true,"reasoning_effort":"medium"}' \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
+    labels:
+      - "autoheal=False"
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      # Oversize guard stays off (2026-06-24 cluster-cascade lesson) — see prod profile.
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
+      - vllm-compile-cache-qwen38-27b:/root/.cache/vllm  # fresh: stale cross-model cache segfaults
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Cold boot on the fresh compile volume (weights download aside, compile
+      # alone) exceeds 15 min on this hardware class — 1800s like prod.
+      start_period: 1800s
+    restart: unless-stopped
+
+  # Watchdog v5 — identical logic to the prod profile; renamed containers and
+  # the decode probe's model name. Stop it before battery runs (see RUNBOOK).
+  watchdog-qwen38-27b:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen38-27b
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen38-27b"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
+        PROBE_MAX_TOKENS=24
+        GEN_TIMEOUT_WARM=120
+        WARMUP_PROBES=3
+        WARMUP_LEFT=$$WARMUP_PROBES
+        WEDGE_MAX=2
+        UNHEALTHY_MAX=4
+        DOWN_MAX=24
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
+        STARTING_MAX=3
+        PREV_RC=-1
+        STARTING_CHURN=0
+        STALL_MAX=24
+        STARTING_CYCLES=0
+
+        echo "Watchdog v5 for Qwen3.8-27B eval (wedge + hard-hang + crash-loop + boot-stall)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal."
+
+        while true; do
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            if [ $$WARMUP_LEFT -gt 0 ]; then GT=$$GEN_TIMEOUT_WARM; else GT=$$GEN_TIMEOUT; fi
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1
+            STARTING_CYCLES=0
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              elif [ $$WARMUP_LEFT -gt 0 ]; then
+                echo "$$TS OK health=200 decode=200 (warm-up grace consumed — engine is warm)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
+              WARMUP_LEFT=0
+            elif [ $$WARMUP_LEFT -gt 0 ]; then
+              WARMUP_LEFT=$$((WARMUP_LEFT - 1))
+              echo "$$TS WARMUP health=200 decode=$$G — post-boot grace, $$WARMUP_LEFT probe(s) left, NOT counted as wedge"
+            else
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                WARMUP_LEFT=$$WARMUP_PROBES
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
+            fi
+          else
+            HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
+            WEDGE_FAIL=0
+            if [ "$$HS" = "starting" ]; then
+              DOWN_FAIL=0
+              STARTING_CYCLES=$$((STARTING_CYCLES + 1))
+              WARMUP_LEFT=$$WARMUP_PROBES
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                OOMHITS=$$(docker logs --since 10m $$CONTAINER 2>&1 | grep -ci "out of memory")
+                if [ "$${OOMHITS:-0}" -gt 0 ]; then
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), CUDA-OOM present in log ($$OOMHITS hits). NOT auto-restarting (futile)."
+                else
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), NO OOM in log — cause UNKNOWN. Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              elif [ $$STARTING_CYCLES -ge $$STALL_MAX ]; then
+                LOADING=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Starting to load model")
+                LOADED=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Model loading took")
+                MINS=$$((STARTING_CYCLES * INTERVAL / 60))
+                if [ "$${LOADING:-0}" -gt 0 ] && [ "$${LOADED:-0}" -eq 0 ]; then
+                  echo "$$TS BOOT-STALL $$CONTAINER stuck LOADING WEIGHTS for $${MINS} min, RestartCount FLAT (=$$RC). Prime suspect: HF-cache bind resolved EMPTY (phantom). CHECK: docker exec $$CONTAINER du -sh /root/.cache/huggingface/hub/models--cyankiwi--Qwen3.8-27B-AWQ-INT4 -> must be ~21G. If empty/missing: confirm 'wsl -l -v' shows Ubuntu Running, then compose down && up -d. NOT auto-restarting."
+                else
+                  echo "$$TS BOOT-STALL $$CONTAINER docker=starting for $${MINS} min, RestartCount FLAT (=$$RC), weights loaded — stalled AFTER load (compile / KV alloc / graph capture). Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 30-min grace; RestartCount=$$RC, cycle $$STARTING_CYCLES/$$STALL_MAX)"
+              fi
+              sleep $$INTERVAL
+              continue
+            fi
+            STARTING_CYCLES=0
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-qwen38-27b:$$PORT/health" 2>/dev/null)
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              THRESH=$$DOWN_MAX
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            elif [ "$$HS" = "unhealthy" ]; then
+              THRESH=$$UNHEALTHY_MAX
+              echo "$$TS ENGINE-HUNG host=$$H internal=$$HI docker=unhealthy (fail $$DOWN_FAIL/$$THRESH, ~2min fast-path)"
+            else
+              THRESH=$$DOWN_MAX
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            fi
+            if [ $$DOWN_FAIL -ge $$THRESH ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
+              docker restart $$CONTAINER
+              DOWN_FAIL=0
+              WARMUP_LEFT=$$WARMUP_PROBES
+              echo "$$TS Restart issued. Waiting 600s for boot..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen38-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Wedge-telemetry sidecar — same as prod, pointed at the eval service name.
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry-qwen38
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-qwen38-27b:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
+    depends_on:
+      vllm-medium-qwen38-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen38-27b:
