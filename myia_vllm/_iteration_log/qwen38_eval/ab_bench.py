@@ -27,8 +27,8 @@ def metrics():
 def mtp_acceptance():
     try:
         m = metrics()
-        acc = float(re.search(r'vllm:spec_decode_num_accepted_tokens_total (\S+)', m).group(1))
-        drf = float(re.search(r'vllm:spec_decode_num_drafted_tokens_total (\S+)', m).group(1))
+        acc = float(re.search(r'vllm:spec_decode_num_accepted_tokens_total\{[^}]*\} (\S+)', m).group(1))
+        drf = float(re.search(r'vllm:spec_decode_num_draft_tokens_total\{[^}]*\} (\S+)', m).group(1))
         return acc / drf if drf > 0 else 0.0
     except Exception:
         return None

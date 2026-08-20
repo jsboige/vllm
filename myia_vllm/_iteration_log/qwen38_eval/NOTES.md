@@ -99,3 +99,49 @@ Ce que l'A/B d'aujourd'hui prouve quand même (mêmes conditions pour les deux) 
 2. **Le 3.8 est un excellent candidat** — fonctionnellement supérieur (reasoning_effort, vidéo, latences), MTP validé (0,82), stable 17/17. À re-mesurer à machine saine (GPU 2 libre) pour des chiffres propres : single-stream vrai, N=16 vrai, et l'hypothèse group_size 32 vs 128 (43 vs 84 t/s Todd) mérite un quant GS-128.
 3. **Le chemin qualité**: GSM8K/IFEval/MMStar sur le harness local — non exécutés ce jour (fenêtre), à programmer au prochain run.
 4. **KV 1,31× est le vrai goulot structurel** pour « traces agentiques longues » : gpu-util ↑ (≈4,5 GiB libres/GPU) et/ou variante TQ (canary obligatoire).
+
+## A/B relatif 4 variantes (2026-08-20, fenêtre ~18:30Z→, image overlay v0.27.1+#51812)
+
+Méthode : verdict RELATIF sous bruit accepté (zoo/desktop/training = fond permanent,
+décision user). Baseline 3.6-A sur la prod telle quelle avant le premier swap ;
+bracket 3.6-B à la restauration pour mesurer la dérive du bruit pendant la fenêtre.
+Banc : `ab_bench.py` (canary 3 prompts + acceptance + single 3×300 + N=16×200,
+temp 0.7 no-think). ⚠️ noms de métriques v0.27.1 : `vllm:spec_decode_num_draft_tokens_total`
+(pas "drafted") — corrigé dans le script, acceptance v1 relevée post-hoc.
+
+| Variante | Image | KV dtype | MTP | Quant | single t/s | N=16 t/s | acceptance | canary |
+|---|---|---|---|---|---|---|---|---|
+| **3.6-A** (prod) | stock v0.27.1 | TQ k8v4 | — | 3.6 MoE GS-32 | 66/78/79 | **462** | — | PASS |
+| **v1** | overlay #51812 | fp8 | 3 | cyankiwi GS-32 | 43/41/41 | 151 | 0,474 (2623/5532) | PASS |
+| **v2** | overlay #51812 | fp8 | 8 | cyankiwi GS-32 | 21/24/24 | 124 | 0,22 (2970/13456) | PASS |
+- v2 : l'avertissement vLLM se vérifie (« num_speculative_tokens > 1 → multiple forwards on same MTP layer → lower acceptance ») : MTP-8 divise l'acceptance par 2 (0,47→0,22) ET le single-stream par 2 (41→22). **Perte nette, éliminé.**
+| **v3** | overlay #51812 | **turboquant_k8v4** | 3 | cyankiwi GS-32 | 30/68/36 | 93 | 0,89→0,10 | **FAIL (DEGENERATE)** |
+- **v3 = dégénérescence CONFIRMÉE** : canary fr/code r4g 0,94-0,96 (répétition quasi totale). Échantillon temp-0 : « la diffusion de la diffusion de la diffusion » puis mur de « !!!! » — exactement le mode silencieux #40831/#40880 (TQ×MTP), **qui passe tous les health checks**. KV TQ 438 154 tok (+27 % vs fp8). **Verdict : TQ+MTP sur stock v0.27.1+#51812 = CASSÉ silencieusement — même avec le fix GDN gates #51812. Le canary qualité est le SEUL détecteur.** À remonter upstream (issue avec échantillon) une fois confirmé sur config pure stock.
+| **v4** | overlay #51812 | fp8 | 3 | **philbert440 GS-128** | 33/23/38 | 138 | 0,79→0,47 | PASS |
+- v4 : GS-128 ≈ GS-32 en single (23-38 vs 41-43), N=16 légèrement inférieur (138 vs 151), acceptance 1ᵉʳ passage meilleure (0,79 vs 0,47) mais cumulée identique. **L'hypothèse group_size (43 vs 84 t/s Todd-sur-3090) est ÉLIMINÉE** — le gap single-stream n'est pas la taille de groupe Marlin.
+| **3.6-B** (prod) | stock v0.27.1 | TQ k8v4 | — | 3.6 MoE GS-32 | 98/94/91 | **844** | — | PASS |
+
+## Verdict de la fenêtre (2026-08-20 ~18:33→19:27 locales)
+
+1. **LE BRUIT DOMINE TOUT** : le bracket 3.6-A→3.6-B (même pile, même script, 1 h d'écart)
+   montre **462 → 844 t/s N=16 (+83 %)** et 66-79 → 91-98 single. Toute comparaison
+   3.8-vs-3.6 dans cette fenêtre est INVALIDE : les variantes 3.8 ont tourné dans le
+   creux, le 3.6-B dans la remontée. **Leçon de méthode : à bruit fluctuant, seul un
+   A-B-A-B intercalé (ou des moyennes longues) compare deux modèles ; un A/B
+   séquentiel mesure le bruit.**
+2. **DONNÉE MACHINE MAJEURE** : 844 t/s à 19:26 = ~88 % de la référence 08-14 (956).
+   La régression machine n'est PAS permanente — elle est **fluctuante** (creux 18:33,
+   sommet 19:26). L'enquête pivote : chercher ce qui charge l'hôte ~18:00-19:00
+   (zoo ? training burst ? desktop ?) plutôt qu'une dégradation continue.
+3. **TQ + MTP = DÉGÉNÉRÉ sur stock v0.27.1+#51812** (correct, indépendant du bruit) :
+   canary FAIL r4g 0,94-0,96, échantillon temp-0 « la diffusion de la diffusion… » + mur
+   de « ! ». Famille #40831/#40880 TOUJOURS vivante malgré le fix GDN gates. Passe
+   tous les health checks → canary obligatoire. Pour l'issue upstream : reproduire
+   d'abord sur stock PUR (sans l'overlay) pour écarter toute ambiguïté.
+4. **MTP-8 ÉLIMINÉ** : acceptance 0,22 vs 0,47, single-stream divisé par 2 (v1/v2 à
+   10 min d'écart, même conditions — cette comparaison intra-fenêtre tient).
+5. **GS-128 ≈ GS-32** (v1/v4, acceptance cumulée 0,47 tous deux) : l'hypothèse
+   group_size pour l'écart vs Todd (84 t/s sur 3090) est éliminée.
+6. **Décision bascule : AUCUNE ce soir** — il faudra re-mesurer le 3.8 en intercalé
+   avec le 3.6, ou à un moment de bruit stable. Le 3.6 reste en prod (restauré,
+   watchdog relancé).
