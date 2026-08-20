@@ -149,7 +149,7 @@ class WindowQFormerDownsampler(nn.Module):
             qformer_config,
             quant_config=quant_config,
             cache_config=cache_config,
-            prefix=f"{prefix}.qformer",
+            prefix=maybe_prefix(prefix, "qformer"),
         )
 
         self.image_side = (
@@ -316,7 +316,7 @@ class Granite4VisionLLMForCausalLM(GraniteForCausalLM):
                 prefix=maybe_prefix(prefix, "lm_head"),
             )
             if config.tie_word_embeddings:
-                self.lm_head.weight = self.model.embed_tokens.weight
+                self.lm_head = self.lm_head.tie_weights(self.model.embed_tokens)
             logit_scale = getattr(config, "logit_scale", 1.0)
             if hasattr(config, "logits_scaling"):
                 logit_scale /= config.logits_scaling
@@ -887,9 +887,10 @@ class Granite4VisionForConditionalGeneration(
             and get_pp_group().is_first_rank
             and self._ds_layer_indices
         ):
+            n = inputs_embeds.size(0)
             ds: IntermediateTensors | None = IntermediateTensors(
                 {
-                    f"ds_{llm_layer}": self._ds_buffers[lvl]
+                    f"ds_{llm_layer}": self._ds_buffers[lvl][:n]
                     for lvl, llm_layer in enumerate(self._ds_layer_indices)
                 }
             )

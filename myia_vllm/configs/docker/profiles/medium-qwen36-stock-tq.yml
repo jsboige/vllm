@@ -106,7 +106,7 @@
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
-    image: vllm/vllm-openai:v0.27.0
+    image: vllm/vllm-openai:v0.27.1
     container_name: myia_vllm-medium-qwen36-moe
     # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
     # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
@@ -123,41 +123,65 @@ services:
     # Cost: KV cache 1,736,379 → 1,238,046 tokens (−29%) — still 4.72x the 262K max-model-len while
     # prod runs at 2-7% KV occupancy, so no functional impact; decode throughput unchanged.
     # See MEMORY.md project_engine_wedge.md (3rd failure mode).
-    command: >
-      --host 0.0.0.0
-      --port ${VLLM_PORT_GLM:-5002}
-      --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit}
-      --served-model-name qwen3.6-35b-a3b
-      --api-key ${VLLM_API_KEY_MEDIUM}
-
-      --tensor-parallel-size 2
-      --enable-expert-parallel
-      --gdn-prefill-backend triton
-      --no-enable-flashinfer-autotune
-      --gpu-memory-utilization 0.70
-      --max-model-len 262144
-      --kv-cache-dtype turboquant_k8v4
-      --dtype auto
-      --limit-mm-per-prompt '{"image":4,"video":0}'
-      --mm-processor-kwargs '{"max_pixels":774000}'
-      --skip-mm-profiling
-      --max-num-batched-tokens 4096
-      --max-num-seqs 16
-      --performance-mode interactivity
-      --enable-chunked-prefill
-      --enable-prefix-caching
-      --prefix-caching-hash-algo sha256
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_coder
-      --reasoning-parser qwen3
-      --distributed-executor-backend mp
-      --disable-custom-all-reduce
-      --async-scheduling
-      --no-scheduler-reserve-full-isl
-
-      --default-chat-template-kwargs '{"preserve_thinking":true}'
-      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}'
-      --middleware error_source_capture.ErrorSourceCapture
+    # ── HF-cache phantom-mount guard (2026-08-12) ─────────────────────────────
+    # The HF bind (source \\wsl.localhost\Ubuntu\...) resolves to an EMPTY dir if
+    # WSL2's Ubuntu distro isn't up when the container starts. create_host_path:
+    # false (on the bind below) only fails LOUD at container CREATE (`up -d`); a
+    # restart-policy restart after a Windows reboot REUSES the mount spec without
+    # re-validating the source — so Docker silently substitutes an empty dir and
+    # vLLM re-downloads 19 GB at 0 MiB/min for ~1 h while every signal says
+    # "patient boot" (2026-08-06 & 2026-08-12 incidents). This guard closes that
+    # gap: it runs on EVERY start (entrypoint), waits for the real cache, then
+    # fails loud instead of downloading. A genuine phantom makes RestartCount
+    # climb -> the watchdog v4 CRASH-LOOP detector surfaces it within ~9 min.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        MODEL_DIR=/root/.cache/huggingface/hub/models--cyankiwi--Qwen3.6-35B-A3B-AWQ-4bit
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find "$$MODEL_DIR/blobs" -type f -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start — would re-download 19 GB. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit} \
+          --served-model-name qwen3.6-35b-a3b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --enable-expert-parallel \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype turboquant_k8v4 \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 4096 \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --default-chat-template-kwargs '{"preserve_thinking":true}' \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
     # ── EXCLUSION AUTOHEAL (decouvert 2026-08-11, incident de boot) ──────────
     # La machine heberge un conteneur tiers `willfarrell/autoheal` (nomme
     # `qdrant_autoheal`) lance avec AUTOHEAL_CONTAINER_LABEL=all : il redemarre

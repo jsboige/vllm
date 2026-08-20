@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple, TypeAlias
 
@@ -48,6 +50,45 @@ class LogprobsLists(NamedTuple):
         )
 
 
+class SamplingMaskLists(NamedTuple):
+    # [num_kept_tokens]
+    token_ids: np.ndarray
+    # [num_generated_tokens + 1]
+    offsets: np.ndarray
+    # [num_reqs + 1]
+    cu_num_generated_tokens: list[int] | None = None
+
+    def slice_request(self, req_idx: int, num_positions: int) -> "SamplingMaskLists":
+        if self.cu_num_generated_tokens is None:
+            start_idx = req_idx
+        else:
+            start_idx = self.cu_num_generated_tokens[req_idx]
+        end_idx = start_idx + num_positions
+        flat_start = self.offsets[start_idx]
+        flat_end = self.offsets[end_idx]
+        return SamplingMaskLists(
+            self.token_ids[flat_start:flat_end],
+            self.offsets[start_idx : end_idx + 1] - flat_start,
+            None,
+        )
+
+    def to_nested_list(self) -> list[list[int]]:
+        """Convert CSR representation to ``list[list[int]]``."""
+        return [
+            self.token_ids[int(self.offsets[i]) : int(self.offsets[i + 1])].tolist()
+            for i in range(len(self.offsets) - 1)
+        ]
+
+    @staticmethod
+    def merge(chunks: Sequence["SamplingMaskLists"]) -> "SamplingMaskLists":
+        token_ids = np.concatenate([chunk.token_ids for chunk in chunks])
+        counts = np.concatenate([np.diff(chunk.offsets) for chunk in chunks])
+        offsets = np.empty(len(counts) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(counts, dtype=np.int64, out=offsets[1:])
+        return SamplingMaskLists(token_ids, offsets)
+
+
 class LogprobsTensors(NamedTuple):
     # [num_reqs x num_generated_tokens, max_num_logprobs + 1]
     logprob_token_ids: torch.Tensor
@@ -90,6 +131,32 @@ class LogprobsTensors(NamedTuple):
         )
 
     @staticmethod
+    def cat(
+        tensors: Sequence["LogprobsTensors"],
+        cu_num_generated_tokens: list[int] | None = None,
+    ) -> "LogprobsTensors":
+        """Concatenate flattened logprob tensors."""
+        assert tensors
+        assert cu_num_generated_tokens is not None or all(
+            tensor.cu_num_generated_tokens is None for tensor in tensors
+        )
+        if len(tensors) == 1:
+            tensor = tensors[0]
+            if cu_num_generated_tokens is None:
+                return tensor
+            return tensor._replace(cu_num_generated_tokens=cu_num_generated_tokens)
+        return LogprobsTensors(
+            logprob_token_ids=torch.cat(
+                [tensor.logprob_token_ids for tensor in tensors]
+            ),
+            logprobs=torch.cat([tensor.logprobs for tensor in tensors]),
+            selected_token_ranks=torch.cat(
+                [tensor.selected_token_ranks for tensor in tensors]
+            ),
+            cu_num_generated_tokens=cu_num_generated_tokens,
+        )
+
+    @staticmethod
     def empty_cpu(
         num_positions: int, num_tokens_per_position: int
     ) -> "LogprobsTensors":
@@ -107,6 +174,73 @@ class LogprobsTensors(NamedTuple):
             logprobs=logprobs,
             selected_token_ranks=selected_token_ranks,
         )
+
+
+class RoutedExpertsTensors(NamedTuple):
+    """Device-side snapshot of routed experts data, pending async D2H.
+
+    Produced by :class:`GPUModelRunner` at the end of each async-scheduled
+    step. The copy stream waits on the default stream, then issues
+    non-blocking D2H via :meth:`to_cpu_nonblocking` into a pinned CPU
+    buffer; :class:`AsyncGPUModelRunnerOutput.get_output` synchronizes
+    the copy before the scheduler reads it.
+
+    Sliced to ``total_num_scheduled_tokens`` (step-level, across all
+    requests — NOT per-request). Both ``routing_data`` and
+    ``slot_mapping`` must be private clones when sourced from shared
+    capturer / prepare-input buffers, so the next forward pass /
+    ``_prepare_inputs`` on the default stream does not race with a
+    D2H still pending on the copy stream.
+    """
+
+    # (num_scheduled_tokens, num_layers, num_experts_per_tok)
+    routing_data: torch.Tensor
+    # (num_scheduled_tokens,)
+    slot_mapping: torch.Tensor
+
+    def to_cpu_nonblocking(self) -> "RoutedExpertsTensors":
+        """Issue non-blocking D2H on the current stream.
+
+        NOTE: ``non_blocking=True`` only delivers true overlap when the
+        CPU target is pinned. The current fallback here allocates a
+        new pageable CPU tensor per call, which silently degrades to a
+        synchronous copy; acceptable because the sync happens on the
+        dedicated copy stream, not the default stream.
+        """
+        if self.routing_data.device.type == "cpu":
+            return self
+        return RoutedExpertsTensors(
+            self.routing_data.to("cpu", non_blocking=True),
+            self.slot_mapping.to("cpu", non_blocking=True),
+        )
+
+    def tolists(self) -> "RoutedExpertsLists":
+        """Convert to the numpy-backed form consumed by the scheduler.
+
+        ``.cpu()`` is a no-op when the tensor is already on CPU, so this
+        is cheap for the post-D2H case; for raw device tensors it will
+        synchronously block, which is only reached in tests.
+        """
+        return RoutedExpertsLists(
+            self.routing_data.cpu().numpy(),
+            self.slot_mapping.cpu().numpy(),
+        )
+
+
+class RoutedExpertsLists(NamedTuple):
+    """CPU-side routed experts, the form :meth:`RoutedExpertsManager.store_batch`
+    consumes.
+
+    Batched per scheduler step: the leading dim is the number of tokens
+    scheduled across all requests in this step (``total_num_scheduled_tokens``),
+    not per-request tokens. ``slot_mapping[i]`` tells the scheduler which
+    physical KV-cache slot row ``i`` of ``routing_data`` belongs to.
+    """
+
+    # (num_scheduled_tokens, num_layers, num_experts_per_tok)
+    routing_data: np.ndarray
+    # (num_scheduled_tokens,)
+    slot_mapping: np.ndarray
 
 
 # [num_reqs, <dynamic>]
@@ -201,6 +335,33 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
+    # Per-step routed experts data captured by the worker.
+    # ``routing_data`` shape: (num_scheduled_tokens, num_layers,
+    #                         num_experts_per_tok); expert IDs as uint8/uint16.
+    # ``slot_mapping`` shape: (num_scheduled_tokens,); physical KV-cache
+    #                         slot for each row of routing_data.
+    # ``num_scheduled_tokens`` is step-level (total across all requests
+    # in this step), not per-request. The scheduler persists this into
+    # its slot buffer via ``slot_buffer[slot_mapping] = routing_data``.
+    # ``None`` when ``enable_return_routed_experts`` is off.
+    routed_experts: RoutedExpertsLists | None = None
+
+    # ``None`` when ``return_sampling_mask`` is off.
+    sampling_masks: SamplingMaskLists | None = None
+
+    @staticmethod
+    def with_kv_conn_output_only(
+        kv_connector_output: KVConnectorOutput | None,
+    ) -> "ModelRunnerOutput":
+        """Return ModelRunnerOutput containing the provided KVConnectorOutput,
+        otherwise empty. Returns None if kv_connector_output is passed as None.
+        """
+        if kv_connector_output is None or kv_connector_output.is_empty():
+            return EMPTY_MODEL_RUNNER_OUTPUT
+        output = copy(EMPTY_MODEL_RUNNER_OUTPUT)
+        output.kv_connector_output = kv_connector_output
+        return output
+
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):
@@ -239,8 +400,10 @@ def make_empty_encoder_model_runner_output(
     # Give every request its own contiguous index
     req_id_to_index: dict[str, int] = {rid: idx for idx, rid in enumerate(req_ids)}
 
-    # No tokens generated yet ⇒ one empty list per request
-    sampled_token_ids: list[list[int]] = [[0] for _ in req_ids]
+    # An encoder instance never samples, so it emits no tokens at all. The
+    # scheduler finishes these requests once their prompt is fully encoded
+    # (see `Scheduler.update_from_output`).
+    sampled_token_ids: list[list[int]] = [[] for _ in req_ids]
 
     # Pooler outputs are not available yet ⇒ use None placeholders
     pooler_output: list[torch.Tensor | None] = [None for _ in req_ids]
