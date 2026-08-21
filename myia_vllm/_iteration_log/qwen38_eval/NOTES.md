@@ -222,3 +222,6 @@ jambes (+28 % 3.6, +16 % 3.8) — le ratio ~6× tient partout. Verdict ROBUSTE a
   util/clocks/power ↔ débit (A2 a fait 872 t/s à ~70 W là où le bracket a fait 870 à ~110 W).
   La fluctuation n'est PAS visible dans la télémétrie GPU → côté hôte (CPU/PCIe/WDDM),
   capturée par aucun compteur de ce sampler. L'enquête machine reste ouverte là-dessus.
+
+## Issue upstream postée (2026-08-21)
+**[vllm#53180](https://github.com/vllm-project/vllm/issues/53180)** — « TurboQuant k8v4 + MTP silently produces degenerate output on hybrid GDN models (v0.27.1, stock) ». Repro stock-pur + discriminants (TQ seul OK / fp8+MTP OK / TQ+MTP FAIL / #51812 ne fixe pas) + échantillon tronqué. Vérifs pré-post : #40807 (open) = crash CUDA-graph, autre symptôme ; #40831/#40880 fermées SANS fix upstream — le SHA de fermeture de #40880 (`fc9a62534`) **n'existe pas dans vllm-project/vllm** (commit du repo aval Genesis), confirmant le statut « famille vivante en release ».
