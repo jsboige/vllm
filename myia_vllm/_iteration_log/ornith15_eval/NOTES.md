@@ -40,3 +40,41 @@ jambe (enquête machine : débit corrélé à l'uptime, réf 894/941 t/s à ~75 
 ## Résultats
 
 (baseline 3.6 + jambes Ornith à consigner ci-dessous)
+
+## Fenêtre 08-22 (démarrage)
+- **Leçon predownload** : le cache HF WSL est monté en HF_HOME (`\wsl...\huggingface\hub` → `/root/.cache/huggingface`), donc les modèles vivent dans `hub/hub/models--*` (imbriqué). Le predownload docker run doit monter l'UNC sur `/root/.cache/huggingface/hub` PUIS le dossier résultant doit être déplacé dans `hub/hub/` (UNC rename refusé → `wsl -d Ubuntu -u root -- mv`, fichiers détenus par root). Le guard a validé le déplacement au vol (blob 20,0 Go détecté à l'itération suivante).
+- Baseline 3.6 (machine LENTE, ~8h uptime — cf enquête) : canary 4/5 (no_think échoue aussi sur 3.6 → gate relative), single 64/47, n16 424/237.
+
+## Fenêtre 08-22 — RÉSULTATS Ornith-1.5 (ulkaa AWQ-INT4, stock v0.27.1 + TQ k8v4)
+**Boot : PARFAIT.** MarlinExperts actif, TQ hybrid détecté (couches full-attn [3,7,...,39] = pattern 3.6 exact), poids 11,52 GiB/GPU, **KV 1 009 643 tok** (3.6 : 1 030 407, −2 %), boot ~12 min. La théorie Marlin-asym confirmée au réel.
+
+| Gate | Ornith-1.5 | 3.6 baseline | Verdict |
+|---|---|---|---|
+| fr-prose | r4g 0,00, 540 ch | r4g 0,00, 641 ch | OK |
+| enable_thinking:false | reason=0 | reason=0 | OK |
+| **trivial_think_len** | **219 ch** | 683 ch | **OK — tueur 1.0 GUÉRI** |
+| /no_think | 347 ch | 932 ch | même comportement des 2 — gate relative OK |
+| tool_call (qwen3_coder) | 0,42 s | 0,57 s | OK |
+| single t/s | **83/96/93 · 69/70/71** | 64/… · 47/… | **Ornith devant** |
+| n16 t/s | 159 (warm-up) · 552 · **763** | 424 · 237 (phase lente) | paire à l'état rapide : 763 vs bracket 3.6 à venir |
+| think | 889ch@78 · 445ch@77 t/s | — | raisonnement court, débit sain |
+
+- Machine fluctuante pendant toute la fenêtre (3.6 424/237 en phase lente → Ornith 763 quand elle est remontée) : le bracket 3.6 post-restore donnera la paire à l'état courant.
+
+## Fenêtre 08-22 — BRACKET + VERDICT + dataclé enquête machine
+```
+RESULT|bracket-3.6|n16|621/652 t/s|single|88/97/97    (état machine rapide)
+```
+**Verdict Ornith-1.5 (phase 1, comportement + débit) : DÉGAGEMENT TOUT VERT.**
+- Paire à état machine comparable : Ornith n16 552/763 vs 3.6 621/652 → **ratio ~1:1** (mêmes MoE/châssis, comme prédit). Single : Ornith 83-96/69-71 vs 3.6 88-97/64-47 → parité à léger avantage Ornith.
+- Les 3 tueurs du 1.0 sont guéris : trivial_think 219 ch (vs 3-5K), enable_thinking:false reason=0, tool call 0,42 s.
+- KV 1 009 643 (−2 % vs 3.6), boot 12 min, MarlinExperts + TQ k8v4 hybrid OK.
+- Reste avant adoption : batterie qualité (IFEval/MMStar/GSM8K — les vrais motifs du rejet 1.0), audit template preserve_thinking, calibration pensée (itérations empiriques, décision user).
+
+## DATACLÉ ENQUÊTE MACHINE (collecteur hôte pendant la fenêtre)
+| Phase (locales) | Débit N=16 | CPU hôte | Note |
+|---|---|---|---|
+| 20:10-20:22 3.6 baseline | 424 / 237 | **91 % (29,1/32)** | LENTE |
+| 20:25-20:48 Ornith | 552 → 763 | **66 % (21,0/32)** | RAPIDE |
+| 20:50+ 3.6 bracket | 621 / 652 | (fin de capture) | RAPIDE |
+→ **CORRÉLATION DIRECTE CPU hôte ↔ débit**. `NCCL_P2P_DISABLE=1` ⇒ allreduce TP par mémoire hôte ⇒ CPU saturé = steps affamés = débit écroulé SANS signature GPU (toutes les mesures nvidia-smi restaient normales). La corrélation uptime s'explique : la charge de fond (docker.backend 2,3 cœurs visibles, node, desktop) s'accumule avec l'uptime jusqu'à saturation. **Fix à évaluer : ré-armer P2P (le désactiver datait de contraintes PCIe/précédents), ou borner la charge de fond, ou reboot programmé.**
