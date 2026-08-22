@@ -1,0 +1,11 @@
+{
+  "benchmark": "gsm8k_cot_zeroshot",
+  "model": "ornith-1.5-35b-a3b",
+  "total_questions": 300,
+  "completed": 300,
+  "correct": 241,
+  "errors": 0,
+  "accuracy_pct": 80.33,
+  "elapsed_s": 375.5,
+  "avg_s_per_question": 375.54
+}
