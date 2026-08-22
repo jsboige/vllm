@@ -71,6 +71,38 @@ RESULT|bracket-3.6|n16|621/652 t/s|single|88/97/97    (état machine rapide)
 - KV 1 009 643 (−2 % vs 3.6), boot 12 min, MarlinExperts + TQ k8v4 hybrid OK.
 - Reste avant adoption : batterie qualité (IFEval/MMStar/GSM8K — les vrais motifs du rejet 1.0), audit template preserve_thinking, calibration pensée (itérations empiriques, décision user).
 
+## Phase 2 (08-22 soir) — BATTERIE QUALITÉ : VERDICT REJET
+
+Méthode : harness `lmms_quality.py`, 300 premiers échantillons (déterministe, `enable_thinking:False`),
+scoring **apparié par index** contre le full-run 3.6 sur les mêmes 300 index + test exact de McNemar
+sur les paires discordantes (script scratchpad `paired_score.py`).
+
+| Bench (n=300 apparié) | Ornith-1.5 | 3.6 (mêmes index) | Δ | McNemar |
+|---|---|---|---|---|
+| GSM8K | 80,3 % | 88,0 % | **−7,7 pts** | chi2=13,1 **SIGNIF** |
+| IFEval strict | 80,7 % | 88,7 % | **−8,0 pts** | chi2=12,6 **SIGNIF** |
+| MMStar | 61,0 % | 63,7 % | −2,7 pts | chi2=1,3 ns |
+
+(Brut vs full-run 3.6 : 80,3/87,6 · 80,7/87,6 · 61,0/55,7 — le 61 vs 55,7 brut est un artefact
+de sous-ensemble ; l'apparié dit −2,7 ns, vision préservée.)
+
+**VERDICT : PAS D'ADOPTION.** GSM8K et IFEval régressent de ~8 points, significativement —
+le seuil 1.0 (« pas de régression > 1 pt ») est pulvérisé sur 2 des 3 batteries. Ornith-1.5
+répète le profil du 1.0 : un fine-tune coding/agentic (SWE/TB/NL2Repo en hausse côté vendor)
+qui paie la qualité générale math + instruction-following. Le débit ~1:1 et les tueurs guéris
+(phase 1) ne compensent pas. **Ce n'est pas le lot de consolidation.**
+
+Prod 3.6 restaurée dans la foulée (même fenêtre).
+
+## Audit template (phase 2, sans swap)
+- `preserve_thinking` : **0 occurrence** — mais **équivalent natif** : le template ré-injecte
+  `message.reasoning_content` (champ standard que vLLM remplit via le parser qwen3) dans le bloc
+  `<think>` de l'historique (lignes 91-100). Rétention multi-tours OK pour tout client qui renvoie
+  le champ. Le flag droppé du profil était la bonne décision (il aurait été ignoré).
+- `enable_thinking` : standard Qwen3 (`false` pré-remplit `<think>\n\n</think>`), validé phase 1.
+- `reasoning_effort` : absent — la calibration pensée aurait été binaire + prompt. Sans objet
+  (rejet).
+
 ## DATACLÉ ENQUÊTE MACHINE (collecteur hôte pendant la fenêtre)
 | Phase (locales) | Débit N=16 | CPU hôte | Note |
 |---|---|---|---|
