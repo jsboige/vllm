@@ -611,7 +611,10 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-08-14: **prod on stock `vllm/vllm-openai:v0.27.1` + TurboQuant k8v4** — bumped from v0.27.0 micro-patch, 13/13 re-gated, fork synced to upstream/main, entrypoint HF-cache phantom-mount guard deployed; gpu-util 0.70, KV 1,030,407, batch 4096; machine throughput recovered vs the 08-11 trough — N=16 at 956 tok/s)
+## Current State (2026-09-01: **prod on stock `vllm/vllm-openai:v0.27.1` + TurboQuant k8v4** — stable since the 08-31 recovery; container force-recreated 08-31 and now serving the NEW HF token; gpu-util 0.70, KV 1,030,407, batch 4096)
+
+**2026-08-31 incident + recovery (record for successors):** around 08:18Z a WSL/Docker Desktop degradation killed the stack twice over — first the 9p bind mounts (`runc create failed … failed to fulfil mount request`, exit 127), and after a `--force-recreate` fixed the mounts, the **GPU passthrough** turned out broken too (`RuntimeError: Failed to infer device type`, `libnvidia-ml.so` missing in-container, GPUs at 0 MiB). Root cause was the host GPU driver/WSL layer — **fixed by an NVIDIA driver update + host reboot** (user action). Recovery validated 09:36Z: health 200, decode probe OK, 33h+ clean soak since. Three lessons now encoded in the `/vllm-surveillance` command and `feedback_docker_recovery_recipes.md` (Patterns 3+4): (1) `docker logs --since` is unreliable since 08-30 (log split-brain — full-read path sees only the dead segment; use small `--tail`), (2) relaunching sidecars must use `docker start`, NEVER `docker compose up` (config-hash drift recreates the engine), (3) GPU-passthrough loss needs driver+reboot, not profile changes.
+**Token rotation status (from the 27/08 security incident):** the container was force-recreated 08-31 and **serves fingerprint `769d40e66497`** (the new fine-grained token). The old in-service token `04368a9965aea735` is still valid — **revocation pending the user**; after revocation, purge the 13 unpushed local commits on `feature/secure-configs` that contain it. **No push from d:/vllm until that revocation is done.**
 
 ### Stock v0.27.0 — what changed vs the Genesis profile
 
