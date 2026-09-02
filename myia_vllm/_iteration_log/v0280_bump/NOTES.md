@@ -170,3 +170,45 @@ Genesis fear is gone). The concurrency ceiling (3.56x) is still ample and a larg
 the multi-tenant prefill-burst pattern better than 4096, even though the flat N=16 microbench
 shows no ceiling win. KV cost (934K) immaterial. Rollback = the single `--max-num-batched-tokens`
 line back to 4096.
+
+## Experiment: DSpark speculative decoding on bf16 KV (2026-09-02, ~06:38Z) — ABORTED
+
+**Verdict: NOT VIABLE on this host (v0.28.0 / WSL2) — hard blocker found and identified.**
+
+Goal: test the DSpark drafter for our exact target
+(`RedHatAI/Qwen3.6-35B-A3B-speculator.dspark`, prefetched) under
+`--speculative-config {"model":...,"num_speculative_tokens":8,"method":"dspark"}` with
+`--kv-cache-dtype auto` (bf16) and `--attention-backend flash_attn`, as a same-window A/B vs the
+batch-8192 TQ prod.
+
+What WORKED: the drafter loads and is recognized — `Resolved architecture: Qwen3DSparkModel`,
+`speculative_config=SpeculativeConfig(method='dspark', model='RedHatAI/...', num_spec_tokens=8)`,
+and the quote handling was fixed (see below). The model/attention config is accepted.
+
+What FAILED — root cause: the engine cannot initialize because DSpark selects the **V2 model
+runner** (`gpu_worker.py:396 Using V2 Model Runner`), and V2 requires **UVA (unified virtual
+addressing)**:
+```
+vllm/v1/worker/gpu/buffer_utils.py:47  raise RuntimeError("UVA is not available")
+  at UvaBuffer.__init__ <- StagedWriteTensor <- RequestState <- GPUModelRunnerV2.init_device
+```
+Prod (TQ, batch 8192) runs the **V1** model runner, so it does not touch UVA — but it is the ONLY
+thing that is not the drafter. DSpark (or its attention config) flips the runner to V2, which needs
+UVA; UVA is unavailable under **WSL2 GPU passthrough** (the same constraint family as the
+`pin_memory=False as WSL is detected` line and the 08-31 libnvidia-ml loss — a WSL2-boundary limit,
+not a vLLM bug and not fixable from the profile).
+
+So the earlier "wait for #53929 / non-causal on turboquant_attn" concern is moot on this host:
+DSpark will not boot here in v0.28.0 regardless of KV dtype, because V2's UVA requirement is
+environmental (WSL2). A V1-runner override (if one exists) was not found; that is the only
+remaining avenue and is a further, separate investigation.
+
+Notes:
+- `--speculative-config` must be wrapped in SINGLE quotes in the profile (the command block is
+  run through `sh -c`). Without them the double-quoted JSON loses its quotes and argparse rejects
+  it ("Value {model:...} cannot be"). Same convention as the existing `--mm-processor-kwargs`.
+- Drafter footprint on disk: 1.9 GB in the shared HF cache (already present, no re-download).
+- No model or non-causal error was reached — the failure is at worker `init_device`, before model
+  load. Profile retained as `medium-qwen36-stock-dspark-bf16.yml` (documentation).
+- Follow-up (if ever pursued): find what forces V2 (likely `--attention-backend flash_attn` or
+  spec-dec itself) and whether a V1 override exists; or run on a non-WSL2 host.
