@@ -1,0 +1,625 @@
+# Docker Compose profile - Qwen3.6-35B-A3B-AWQ + TurboQuant k8v4 on STOCK upstream vLLM
+# ============================================================================
+# PHASE 2 of the "can we drop Genesis?" experiment. Created 2026-08-11.
+#
+# WHY THIS EXISTS
+#   Production runs vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3 (Sandermage
+#   downstream patch tree) for exactly ONE reason: vllm#41726 - AssertionError at
+#   turboquant_attn.py:720:_continuation_prefill - crashed the EngineCore on the
+#   first chunked-prefill continuation with --kv-cache-dtype turboquant_k8v4.
+#   Genesis P22+P38 fixed it; upstream had nothing.
+#
+#   That image is IRREPRODUCIBLE: its base nightly-01d4d1ad3 was GC'd from Docker
+#   Hub (~5-day nightly retention). Backed up as a tar, but a single point of
+#   failure for the endpoint that carries roo-state-manager condensation, Roo and
+#   OWUI for the whole fleet.
+#
+#   Upstream has since merged 4 TurboQuant bugfixes - #44053 (reserve workspace
+#   BEFORE cuda graph capture, i.e. our crash), #47609, #39988, #50533 - all four
+#   verified git ancestors of the v0.27.0 tag. v0.27.0 is a RELEASE tag: unlike
+#   nightlies it is never garbage-collected, so an image built on it stays
+#   reproducible forever. Published 2026-08-10 20:13Z.
+#
+# PHASE 1 (2026-08-10, GPU 2, proxy Qwen3.5-9B-AWQ, TP=1, 40K) already showed the
+#   crash does NOT reproduce on stock: 31,376-token prefill chunked into ~8 pieces
+#   at 0% cache + survival request, zero "Workspace is locked" /
+#   "turboquant_attn.py" / "EngineDeadError" traces, in turboquant_k8v4 as in fp8.
+#   See myia_vllm/_iteration_log/stock_tq_phase1/NOTES.md and PR jsboige/vllm#13.
+#   Phase 2 is what phase 1 could NOT answer: MoE + EP=2 + Marlin + TP=2 + 262K.
+#
+# ----------------------------------------------------------------------------
+# KNOWN RISKS carried by dropping the Genesis layer (watch these in the logs)
+# ----------------------------------------------------------------------------
+#   1. shm_broadcast PyCFunction bug (vllm#35104 family). v0.27.0 STILL contains
+#      `_memory_fence_lock = threading.Lock()` + `with _memory_fence_lock:`
+#      verbatim - the construct that produced
+#      "SystemError: PyCFunction with class but no METH_METHOD flag" and 9 crashes
+#      in 50h in April 2026. Our Genesis image patches it; this one does not.
+#      MITIGATION KEPT: the two settings that actually cured it in production are
+#      still here - `--no-enable-flashinfer-autotune` and
+#      VLLM_USE_FLASHINFER_SAMPLER=0. The working hypothesis was that FlashInfer
+#      JIT dlopen'ing a fresh .so mid-runtime corrupts the CPython _thread.lock
+#      descriptor; with both autotune paths off, the trigger is gone regardless of
+#      the lock construct. GREP FOR: "PyCFunction", "METH_METHOD", "SystemError".
+#   2. TurboQuant Triton JIT compiles DURING inference on stock (measured in
+#      phase 1: `_tq_full_dequant_kv`, first prefills 328s -> 187s -> 3.8s, i.e.
+#      ~8000 tok/s only once warm). Two consequences: the first requests after a
+#      boot are very slow, and that JIT is itself a mid-runtime dlopen (see risk 1).
+#      The watchdog v5 warm-up grace is 3 probes x 120s - it may not cover a 328s
+#      first compile. GREP FOR: "JIT compilation during inference".
+#   3. Genesis prealloc pools (P28 GDN / P37 MoE / TQ-dequant) are GONE, so the
+#      memory profile differs from prod. gpu-util stays at the conservative 0.70
+#      for the first boot; do NOT raise it in the same change.
+#   4. max-num-seqs 16 is KEPT. batch 4096 -> 8192 on 2026-09-02: the 4096
+#      ceiling was a Genesis P28 buffer artifact (stock has no such buffer;
+#      v0.28.0's own default is 16384). Gated by the FORCING test (concurrent
+#      2-3K prefills summing one forward into (4096, 8192]) + 13 gates + A/B.
+#
+# ----------------------------------------------------------------------------
+# RUNBOOK
+# ----------------------------------------------------------------------------
+#   DEPLOY (takes prod down; same container_name, so only one runs at a time):
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml   --env-file myia_vllm/.env up -d
+#
+#   ROLLBACK (instant - the Genesis image is retained locally AND tarred in
+#   D:/vllm_image_backups/):
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml   --env-file myia_vllm/.env down
+#     docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-genesis-tq.yml --env-file myia_vllm/.env up -d
+#
+#   GATE (all must pass before this replaces prod for good):
+#     a. Boot clean, KV cache size reported, health 200.
+#     b. CRASH TEST: ~30K-token prefill (the 2026-05-06 killer) - must not raise.
+#     c. Long context: ~95K prefill (the known heavy-client class) and near-262K.
+#     d. Vision, tool calling (qwen3_coder XML), thinking + preserve_thinking.
+#     e. Concurrent N=16 aggregate vs the 829 tok/s Genesis baseline.
+#     f. Soak with zero WEDGE / SystemError / EngineDeadError.
+#
+# EVERYTHING ELSE IS BYTE-FOR-BYTE the Genesis profile: same flags, same env
+# (minus GENESIS_*), same watchdog v5, same telemetry sidecar, same container
+# names, same hardened HF-cache bind. Only the image and the compile-cache volume
+# differ - so a diff between the two files IS the experiment.
+#
+# ----------------------------------------------------------------------------
+# ONE FORCED CONFIG DIVERGENCE: --prefix-caching-hash-algo sha256 (was xxhash)
+# ----------------------------------------------------------------------------
+#   The stock image does NOT ship the `xxhash` Python module (verified: `import
+#   xxhash` -> ModuleNotFoundError). Our Genesis image did. vLLM only imports it
+#   lazily, inside request_block_hasher, so the failure is INVISIBLE on short
+#   prompts and fires only once a request fills a complete KV block:
+#     ModuleNotFoundError: xxhash is required for the 'xxhash' prefix caching
+#     hash algorithms      (v1/core/kv_cache_utils.py:622 -> utils/hashing.py:63)
+#   -> HTTP 500 on every long request, engine still alive. Cost us the first
+#   30K/95K gate runs on 2026-08-11 (00:16Z) and looked, for a minute, like the
+#   TurboQuant crash we were hunting.
+#
+#   TWO possible fixes; we deliberately took the second:
+#     (1) overlay image `FROM vllm/vllm-openai:v0.27.0` + `pip install xxhash`
+#         -> keeps the flag identical, but reintroduces a BUILD ARTIFACT, which
+#            is precisely what phase 2 exists to eliminate.
+#     (2) use sha256, which is upstream's own DEFAULT
+#         (PrefixCachingHashAlgo = sha256 | sha256_cbor | xxhash | xxhash_cbor,
+#          config/cache.py:39,95) -> the image stays a pure `docker pull`.
+#   The hash algo is an internal digest choice: it changes no output, only the
+#   cost of hashing each complete block once at prefill. Measured impact is in
+#   the gate results (NOTES.md) - revert to (1) if prefill throughput regresses
+#   against the Genesis reference.
+# ============================================================================
+
+services:
+  vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
+    # DSPARK BF16 EVAL COPY (2026-09-02): NOT prod. Derived from
+    # medium-qwen36-stock-tq.yml (v0.28.0, batch 8192) + KV auto + DSpark spec-dec.
+    # v0.27.1 -> v0.28.0 (2026-09-01). Release 2026-08-26, 584 commits. Relevant to us:
+    # Transformers 5.15, prefix caching default-on for Mamba/GDN (#50991), KV-cache layout
+    # refactor touching turboquant_attn.py (#51704), Qwen3.5 GDN MTP kernels (#51674/#51812),
+    # DFlash2 + DSpark spec-dec. NOT in this tag (landed 08-22..08-27, wait for v0.28.1):
+    # fused QK-norm+MRoPE+gate for Qwen3.6 (#52676), Mamba prefill checkpoints +9-25% TTFT
+    # (#52789), CUDA-graph profiling memory released before KV alloc (#53955).
+    # Rollback = this line back to v0.27.1 + the compile-cache volume name below.
+    image: vllm/vllm-openai:v0.28.0
+    container_name: myia_vllm-medium-qwen36-moe
+    # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
+    # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
+    # CUDA-OOM crash-loops at _allocate_kv_cache_tensors hit on 2026-07-13 (0.82, RestartCount
+    # 53→59+), then AGAIN at 0.78 on 07-28 and 08-01 (686 MiB alloc failing with 2.66 GiB "free"
+    # = pool-cap, not physical exhaustion). 0.78 moved the failure point by only ~0.2 GiB.
+    # WHY: vLLM's real footprint is ~21.9 GiB/GPU, i.e. ~2.7 GiB ABOVE the nominal 0.78×24564
+    # budget — Marlin-MoE variable temp allocs (RFC #27951) and the Genesis prealloc pools
+    # (P28 GDN / P37 MoE / TQ-dequant) live OUTSIDE the gpu-util pool. So the effective margin
+    # on the desktop-shared GPU 0 was <1 GiB, which also caused WDDM paging slowdowns that mimic
+    # a decode wedge. 0.70 MEASURED after deploy (2026-08-04, no longer an estimate): GPU 0 at
+    # 21,145 MiB / GPU 1 at 19,340 MiB used, i.e. +2,600 / +2,588 MiB of headroom regained; the
+    # out-of-pool overshoot shrinks to +2,145 MiB (vs +2,768 @0.78, measured on desktop-free GPU 1).
+    # Cost: KV cache 1,736,379 → 1,238,046 tokens (−29%) — still 4.72x the 262K max-model-len while
+    # prod runs at 2-7% KV occupancy, so no functional impact; decode throughput unchanged.
+    # See MEMORY.md project_engine_wedge.md (3rd failure mode).
+    # ── DSPARK BF16 EVAL (2026-09-02, candidate, NOT prod) ───
+    # Speculative decoding via DSpark drafter for our exact target
+    # (RedHatAI/Qwen3.6-35B-A3B-speculator.dspark, prefetched). KV MUST be
+    # bf16 (auto): turboquant_attn.py has no supports_non_causal, and fp8
+    # non-causal dequant is SM100 (trtllm-gen) only, so on Ada SM89 DSpark
+    # forces bf16 KV (~394K tokens, still 1.5x the 262K window).
+    # attention-backend flash_attn implements supports_non_causal. Bring up
+    # ONLY after `compose -f medium-qwen36-stock-tq.yml down`. A/B vs prod-8192
+    # same-window. Wait for upstream #53929 (adaptive DSpark for GDN) first.
+    # ── ───
+    # ── HF-cache phantom-mount guard (2026-08-12) ─────────────────────────────
+    # The HF bind (source \\wsl.localhost\Ubuntu\...) resolves to an EMPTY dir if
+    # WSL2's Ubuntu distro isn't up when the container starts. create_host_path:
+    # false (on the bind below) only fails LOUD at container CREATE (`up -d`); a
+    # restart-policy restart after a Windows reboot REUSES the mount spec without
+    # re-validating the source — so Docker silently substitutes an empty dir and
+    # vLLM re-downloads 19 GB at 0 MiB/min for ~1 h while every signal says
+    # "patient boot" (2026-08-06 & 2026-08-12 incidents). This guard closes that
+    # gap: it runs on EVERY start (entrypoint), waits for the real cache, then
+    # fails loud instead of downloading. A genuine phantom makes RestartCount
+    # climb -> the watchdog v4 CRASH-LOOP detector surfaces it within ~9 min.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        MODEL_DIR=/root/.cache/huggingface/hub/models--cyankiwi--Qwen3.6-35B-A3B-AWQ-4bit
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find "$$MODEL_DIR/blobs" -type f -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start — would re-download 19 GB. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_QWEN36_MOE:-cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit} \
+          --served-model-name qwen3.6-35b-a3b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --enable-expert-parallel \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype auto \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 8192 \
+          --attention-backend flash_attn \
+          --speculative-config '{"model":"RedHatAI/Qwen3.6-35B-A3B-speculator.dspark","num_speculative_tokens":8,"method":"dspark"}' \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --default-chat-template-kwargs '{"preserve_thinking":true}' \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
+    # ── EXCLUSION AUTOHEAL (decouvert 2026-08-11, incident de boot) ──────────
+    # La machine heberge un conteneur tiers `willfarrell/autoheal` (nomme
+    # `qdrant_autoheal`) lance avec AUTOHEAL_CONTAINER_LABEL=all : il redemarre
+    # TOUT conteneur que Docker marque `unhealthy`, quel que soit son proprietaire.
+    # Il a tue un boot a froid de ce service le 2026-08-11 a 00:03:04Z, ~17 min
+    # apres le demarrage, en pleine phase de warm-up multi-modal — SIGTERM sur le
+    # PID 1, `KeyboardInterrupt: terminated` leve par `_interrupt_init`, ExitCode 0,
+    # RestartCount inchange (c'est un `docker restart`, pas la restart-policy), donc
+    # AUCUN des indicateurs habituels ne le trahit.
+    # Il apparait aussi dans ses propres logs le 2026-08-10 a 13:40:15 et 14:40:50
+    # sur ce meme conteneur, en pleine fenetre de l'incident de prod : deux autorites
+    # de redemarrage concurrentes (lui et notre watchdog) agissaient sur le meme
+    # moteur, ce qui explique les boots qui n'aboutissaient jamais.
+    # Son entrypoint filtre `select(.Labels["autoheal"] != "False")` — casse exacte,
+    # F majuscule. Ce label le tient donc a l'ecart et laisse le watchdog v5 seule
+    # autorite de redemarrage, ce qui est toute sa raison d'etre (il sait, lui,
+    # distinguer un boot patient d'un moteur wedge).
+    labels:
+      - "autoheal=False"
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      # ⚠️ 2026-08-11 : vLLM stock v0.27.0 log "Unknown vLLM environment variable
+      # detected" pour VLLM_USE_FLASHINFER_MOE_FP16, VLLM_USE_FLASHINFER_MOE_FP8 et
+      # VLLM_MARLIN_MOE_BLOCK_SIZE_M — v0.27.0 a remplacé ces leviers par
+      # KernelConfig.moe_backend (laissé à "auto" → sélectionne MarlinExperts, le
+      # chemin attendu pour de l'AWQ INT4). Les trois sont RETIRÉES ici.
+      #
+      # CORRECTION DE DOCUMENTATION au passage : VLLM_USE_FLASHINFER_MOE_FP16 était
+      # inscrite chez nous comme "+110 % MoE" (MEMORY.md, CLAUDE.md). Vérifié dans
+      # l'image Genesis elle-même : elle n'est lue que par
+      # model_executor/layers/fused_moe/oracle/UNQUANTIZED.py — elle ne s'applique
+      # qu'au MoE non quantifié. Notre modèle est AWQ INT4 : cette variable n'a
+      # JAMAIS eu le moindre effet sur ce déploiement, ni ici ni sous Genesis.
+      #
+      # VLLM_LOG_DIR et VLLM_MAX_REQUEST_BODY_BYTES sont lues par NOTRE middleware,
+      # pas par vLLM : leur avertissement est attendu et sans conséquence.
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
+      # Oversize-request guard DISABLED 2026-06-24 (=0). The 512 KB HTTP 413 reject
+      # turned slow z.ai->qwen fallback overflow into hard-fails -> cascade outage.
+      # Real lever is the claudish-side concurrency cap (no-fallback routing), NOT
+      # body size. Middleware stays on for logging. Set >0 to re-enable if needed.
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      # ── Genesis runtime env (from integration-awq.yml PROD-MIRROR block) ──
+      # These matter for TurboQuant memory accounting — the profiler must size
+      # the KV pool correctly around the TQ dequant/continuation transient peaks.
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0  # v2g: was =1 in v2f, suspected idle-deadlock vector (FlashInfer sampler autotune dlopens .so → CPython _thread.lock corruption)
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+      # ── NO GENESIS_ENABLE_* HERE — that is the whole point of this profile ──
+      # The Genesis profile sets P37/P38B/P40/P67/P78/P98/P101. Upstream must now
+      # cover them natively; what each one did, and who covers it here:
+      #   P38/P38B (persistent K_full/V_full continuation-prefill workspace) —
+      #     THE crash-fix family for vllm#41726. Upstream equivalent = #44053,
+      #     which reserves the workspace in __init__ via _reserve_workspace()
+      #     sized on max_model_len instead of growing it after locking.
+      #     Verified a git ancestor of the v0.27.0 tag, and empirically clean on
+      #     a 31 376-token chunked prefill in phase 1.
+      #   P67 (TQ multi-query Triton kernel), P78 (.tolist() cudagraph guard),
+      #   P98 (WorkspaceManager revert), P101 (continuation 64-token slicing) —
+      #     no 1:1 upstream mapping. Upstream shipped #47609 / #39988 / #50533 in
+      #     the same area; whether they cover the same ground is UNPROVEN. This is
+      #     the main residual risk of the profile and the reason for the gate.
+      #   P37 (shared MoE intermediate-cache pool) and the Genesis prealloc pools
+      #     are simply GONE. They lived OUTSIDE the gpu-util budget, so their
+      #     removal frees VRAM rather than costing it — see gpu-util note above.
+      # P72/P74 batch-8192 unlock was REVERTED on Genesis 2026-06-24 (runtime
+      # setStorage overflow in qwen3_next.py, GDN buffer sized 4096 vs a 5536-token
+      # forward). That overflow was a *Genesis P28 prealloc* failure mode, so it
+      # may not exist here at all — but batch stays 4096 regardless: one variable
+      # at a time. Do not raise it during this migration.
+    volumes:
+      # ./models is VESTIGIAL for this profile — --model is an HF repo id
+      # (cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit), resolved from the HF cache below, so
+      # this bind carries nothing (the host dir is empty). Left on the SHORT
+      # syntax deliberately: hardening it would make `up -d` fail on a fresh
+      # clone over a directory git cannot even track (empty). Only the bind that
+      # actually carries the 47 GB of weights is hardened.
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      # The HF cache bind uses the LONG syntax with create_host_path: false ON
+      # PURPOSE (2026-08-06 incident). With the short syntax Docker CREATES a
+      # missing source path instead of failing, so the container starts happily
+      # on an EMPTY cache. That is not hypothetical: after a `wsl --shutdown` the
+      # \\wsl.localhost\Ubuntu\... source was momentarily unreachable, Docker
+      # substituted an empty directory, and vLLM started re-downloading the 19 GB
+      # model into that phantom mount at 0 MiB/min. Symptoms were maximally
+      # misleading — container "Up", docker health "starting", watchdog printing
+      # a patient BOOTING — for ~1 h of extra downtime. create_host_path: false
+      # converts that silent phantom mount into a loud `up -d` failure. Recovery
+      # is then the documented one: make sure `wsl -l -v` shows Ubuntu Running,
+      # then retry `up -d`.
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
+      - vllm-compile-cache-qwen36-stock-tq-v0280:/root/.cache/vllm  # per-image cache (v0.28.0); the v0.27.1 volume `vllm-compile-cache-qwen36-stock-tq` is kept intact for rollback
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro  # error_source_capture diag
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # 1800s (30 min), releve de 900s le 2026-08-11 : un boot A FROID mesure sur
+      # cette image depasse 15 min — poids 262 s, torch.compile 211 s, profil +
+      # allocation KV + capture des graphes 474 s au total, PUIS le warm-up
+      # multi-modal cote API server (nouveau en v0.27.0, non couvert par
+      # --skip-mm-profiling qui ne concerne que le profilage GPU). A T+17 min le
+      # service etait encore en warm-up et Docker l'avait deja passe `unhealthy`.
+      # Les boots suivants reutilisent le volume de cache de compilation et sont
+      # bien plus courts ; 1800 s couvre le cas froid (rebuild d'image, purge du
+      # volume) sans jamais retarder un boot chaud.
+      start_period: 1800s
+    restart: unless-stopped
+
+  # Watchdog sidecar — identical to medium-qwen36-moe.yml (keepalive + port-fwd
+  # monitor + auto-restart). Pings host.docker.internal to catch Docker Desktop
+  # port-forwarding loss; falls back to internal DNS to catch engine crashes.
+  watchdog-qwen36-moe:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen36-moe
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen36-moe"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        # Watchdog v3 (2026-07-03) — FAST, boot-safe, wedge- AND hard-hang-aware.
+        # Prior design (INTERVAL 120, MAX_FAIL 5, two 60s POST probes/cycle) took
+        # ~15-20 MIN to restart a wedge -> the whole cluster's condensation died
+        # that long each time (roosync_dashboard 180s timeouts, DM fallbacks).
+        # It also could not tell "booting" (health down, must wait) from
+        # "API up but decode stuck" (the wedge, must restart NOW).
+        #
+        # v2 splits those two failure modes on a cheap GET /health FIRST:
+        #   health==200 -> API server alive (NOT booting). Run the decisive test:
+        #                  a real 24-token decode. Two consecutive timeouts while
+        #                  health is 200 = confirmed WEDGE -> restart in ~2 min.
+        #                  (A healthy engine finishes 24 tokens in ~1s even at N=16
+        #                  saturation — decode is continuously batched — so a 40s
+        #                  timeout twice is genuinely stuck, not just busy.)
+        #   health!=200 -> booting OR hung. v3 asks Docker's OWN healthcheck to tell
+        #                  them apart (start_period=1800s on stock v0.27.0, was 900s
+        #                  under Genesis — a cold boot here exceeds 15 min):
+        #                    docker=starting  -> in the 30-min boot grace -> NEVER
+        #                       restart (fixes v2's latent hole: DOWN_MAX=12min < the
+        #                       start_period could restart a slow cold boot).
+        #                    docker=unhealthy -> past grace AND 5 healthchecks failed =
+        #                       definitively broken, NOT booting -> restart in ~2 min
+        #                       (UNHEALTHY_MAX). Cuts a hard-hang outage 12min -> ~2min.
+        #                    docker=<other>   -> blind DOWN_MAX backstop (~12 min).
+        #                  The 2026-07-03 ~12:57Z hard-hang (health=000, no traceback,
+        #                  silent engine-loop freeze) is exactly the unhealthy case.
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
+        PROBE_MAX_TOKENS=24
+        # v5 (2026-08-06): post-boot WARM-UP grace on the WEDGE path. A freshly
+        # booted engine answers its first decodes slowly (measured 2026-07-28:
+        # 52s -> 16s -> 0.49s) because kernels and caches are cold. Against a flat
+        # GEN_TIMEOUT=40 that reads as two consecutive wedge timeouts, so the
+        # watchdog restarts a perfectly healthy engine. It did exactly that at
+        # 2026-08-06 00:30:12Z — five minutes after a 1-hour outage had just been
+        # repaired — costing another full boot. The first probes after the API
+        # comes up therefore get a longer timeout AND never count toward
+        # WEDGE_MAX. The grace is re-armed on every boot and after every restart
+        # this watchdog issues; it is consumed by the first successful decode.
+        GEN_TIMEOUT_WARM=120
+        WARMUP_PROBES=3
+        WARMUP_LEFT=$$WARMUP_PROBES
+        WEDGE_MAX=2       # health 200 + decode stuck: restart after ~2 min
+        UNHEALTHY_MAX=4   # v3: docker=unhealthy (post-boot, definitively broken): ~2 min fast-path
+        DOWN_MAX=24       # health down, docker status unknown: ~12 min blind backstop
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
+        # v4 (2026-07-14): boot-OOM crash-loop detection. A crash-looping container
+        # re-enters docker=starting on EVERY restart, so the 'starting' branch below
+        # (never-restart, boot-safe) hid the 2026-07-13 CUDA-OOM crash-loop entirely
+        # (RestartCount 53->59+, watchdog silent). Track RestartCount churn WHILE
+        # docker=starting: a patient cold boot keeps RestartCount flat, a crash-loop
+        # makes it climb. A docker restart is FUTILE here (it is already restarting),
+        # so we emit a loud, greppable CRASH-LOOP line instead of the misleading BOOTING.
+        STARTING_MAX=3   # 3 restart-increments while stuck in 'starting' = crash-loop (~6 min), not a boot
+        PREV_RC=-1
+        STARTING_CHURN=0
+        # v5 (2026-08-06): BOOT-STALL — the THIRD way a boot can fail, and the one
+        # v4 was structurally blind to. On 2026-08-06 a `wsl --shutdown` left the
+        # \\wsl.localhost HF-cache bind unreachable; Docker silently mounted an
+        # EMPTY directory in its place and vLLM started re-downloading the 19 GB
+        # model into that phantom mount at 0 MiB/min. Nothing ever crashed, so
+        # RestartCount stayed FLAT and v4's churn detector could not fire — the
+        # watchdog printed a patient BOOTING for the entire hour. Detect it
+        # POSITIVELY instead: 'Starting to load model' present in the log but
+        # 'Model loading took' never reached, while docker=starting persists past
+        # any legitimate cold boot (measured 3-6 min, incl. cold page cache).
+        # Detection-only, like CRASH-LOOP: a restart re-mounts the same empty dir.
+        STALL_MAX=24        # 24 cycles x 30s = 12 min in 'starting' with weights never loaded
+        STARTING_CYCLES=0
+
+        echo "Watchdog v5 (wedge + hard-hang + boot-crash-loop + boot-stall detection) for Qwen3.6-35B-A3B + stock TurboQuant v0.27.0"
+        echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
+        echo "  WARMUP  (first $$WARMUP_PROBES probes after each boot):        timeout $${GEN_TIMEOUT_WARM}s, never counted as a wedge (v5)"
+        echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
+        echo "  BOOTING (docker=starting):                            never restart (15-min grace)"
+        echo "  DOWN    (health != 200, docker status unknown):       restart after $$DOWN_MAX fails (~12 min backstop)"
+        echo "  CRASHLOOP(docker=starting + RestartCount churning):   flagged loud after $$STARTING_MAX (~6 min), NO futile restart (v4)"
+        echo "  BOOTSTALL(docker=starting + RestartCount FLAT):       flagged loud after $$STALL_MAX cycles (~12 min), NO futile restart (v5)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
+
+        while true; do
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          # 1. Cheap liveness: is the API answering on the host-forwarded port?
+          #    (/health is unauthenticated and served by the HTTP layer, which
+          #     stays up during a wedge — the wedge is in the GENERATION path.)
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            # API up (not booting). Decisive test: a REAL sustained decode.
+            # v5: while the warm-up grace is unspent, probe with the longer timeout.
+            if [ $$WARMUP_LEFT -gt 0 ]; then GT=$$GEN_TIMEOUT_WARM; else GT=$$GEN_TIMEOUT; fi
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1   # v4: serving /health => not crash-looping, clear churn state
+            STARTING_CYCLES=0              # v5: serving /health => the boot completed, clear stall state
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              elif [ $$WARMUP_LEFT -gt 0 ]; then
+                echo "$$TS OK health=200 decode=200 (warm-up grace consumed — engine is warm)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
+              WARMUP_LEFT=0   # v5: it served a decode, so it is warm — spend the grace
+            elif [ $$WARMUP_LEFT -gt 0 ]; then
+              # v5: slow decode while still warming up is EXPECTED, not a wedge.
+              WARMUP_LEFT=$$((WARMUP_LEFT - 1))
+              echo "$$TS WARMUP health=200 decode=$$G (24 tok >$${GT}s) — post-boot grace, $$WARMUP_LEFT probe(s) left, NOT counted as wedge"
+            else
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (24 tok >$${GEN_TIMEOUT}s) (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                WARMUP_LEFT=$$WARMUP_PROBES   # v5: re-arm the grace for the boot we just triggered
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
+            fi
+          else
+            # Host /health not 200. Ask Docker's OWN healthcheck to tell booting from
+            # broken (start_period=1800s makes this signal boot-safe):
+            HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
+            WEDGE_FAIL=0
+            if [ "$$HS" = "starting" ]; then
+              # Within the 30-min boot grace — a cold TQ+GDN boot legitimately fails
+              # /health here. NEVER restart (this is the fix for v2's 12min<15min hole).
+              # v4: BUT a boot-OOM crash-loop ALSO lives in 'starting' (each crash resets
+              # docker health to starting), so tell the two apart by RestartCount churn.
+              DOWN_FAIL=0
+              STARTING_CYCLES=$$((STARTING_CYCLES + 1))
+              WARMUP_LEFT=$$WARMUP_PROBES   # v5: a boot is under way — re-arm the warm-up grace
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                # Crash-loop is confirmed by the churn itself. The CAUSE is not:
+                # v4 asserted CUDA-OOM unconditionally, which would have misdirected
+                # the operator on 2026-08-06. Name it only when the log shows it.
+                OOMHITS=$$(docker logs --since 10m $$CONTAINER 2>&1 | grep -ci "out of memory")
+                if [ "$${OOMHITS:-0}" -gt 0 ]; then
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), CUDA-OOM present in log ($$OOMHITS hits) — boot-time OOM at KV alloc (project_engine_wedge 3rd mode). docker restart is FUTILE (already restarting); NOT auto-restarting. Fix externally: lower --gpu-memory-utilization."
+                else
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), NO OOM in log — cause UNKNOWN, do not assume gpu-util. Read: docker logs $$CONTAINER. docker restart is FUTILE (already restarting); NOT auto-restarting."
+                fi
+              elif [ $$STARTING_CYCLES -ge $$STALL_MAX ]; then
+                # v5: RestartCount FLAT but the boot never completes. Ask the boot log
+                # whether the weights ever finished loading — that splits the phantom
+                # -mount stall from a post-load stall (compile / KV alloc / graph capture).
+                LOADING=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Starting to load model")
+                LOADED=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Model loading took")
+                MINS=$$((STARTING_CYCLES * INTERVAL / 60))
+                if [ "$${LOADING:-0}" -gt 0 ] && [ "$${LOADED:-0}" -eq 0 ]; then
+                  echo "$$TS BOOT-STALL $$CONTAINER stuck LOADING WEIGHTS for $${MINS} min, RestartCount FLAT (=$$RC). Prime suspect: the HF-cache bind resolved to an EMPTY phantom dir, so vLLM is re-downloading the model (2026-08-06 incident). CHECK: docker exec $$CONTAINER du -sh /root/.cache/huggingface/hub/models--cyankiwi--Qwen3.6-35B-A3B-AWQ-4bit  -> must be ~47G, NOT ~300M. If empty: confirm 'wsl -l -v' shows Ubuntu Running, then compose down && up -d. NOT auto-restarting (a restart re-mounts the same empty dir)."
+                else
+                  echo "$$TS BOOT-STALL $$CONTAINER docker=starting for $${MINS} min, RestartCount FLAT (=$$RC), weights already loaded — stalled AFTER load (torch.compile / KV alloc / CUDA-graph capture). Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 15-min grace — patient; RestartCount=$$RC, cycle $$STARTING_CYCLES/$$STALL_MAX)"
+              fi
+              sleep $$INTERVAL
+              continue
+            fi
+            STARTING_CYCLES=0   # v5: left the 'starting' state — stall counter no longer applies
+            # Not booting. Distinguish port-fwd loss from a hung/down engine.
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-qwen36-moe:$$PORT/health" 2>/dev/null)
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              THRESH=$$DOWN_MAX  # engine fine internally; port-fwd hiccup may self-heal — stay patient
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            elif [ "$$HS" = "unhealthy" ]; then
+              THRESH=$$UNHEALTHY_MAX  # docker's 5 checks failed post-grace = definitively broken
+              echo "$$TS ENGINE-HUNG host=$$H internal=$$HI docker=unhealthy (fail $$DOWN_FAIL/$$THRESH, ~2min fast-path)"
+            else
+              THRESH=$$DOWN_MAX  # docker status unknown/transient — blind backstop
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            fi
+            if [ $$DOWN_FAIL -ge $$THRESH ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
+              docker restart $$CONTAINER
+              DOWN_FAIL=0
+              WARMUP_LEFT=$$WARMUP_PROBES   # v5: re-arm the grace for the boot we just triggered
+              echo "$$TS Restart issued. Waiting 600s for boot..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Wedge-telemetry sidecar (2026-07-03) — passive, READ-ONLY sampler of the
+  # engine's /metrics. Appends one JSONL line per interval (gen_rate, prompt_rate,
+  # running, waiting, kv_pct + wedge flag) to _iteration_log/wedge_telemetry.jsonl
+  # so the NEXT wedge onset (see MEMORY.md project-engine-wedge) leaves a
+  # diagnostic trace and the load-correlation hypothesis gets tested on real
+  # numbers (does `running` spike? does a big `prompt_rate` prefill land just
+  # before? is KV low as the signature predicts?). NO GPU access: the decisive
+  # signal — gen_rate<1 WHILE running>0 — comes from /metrics alone; GPU
+  # power/util (an unreliable standalone tell — it also fires on healthy prefill
+  # bursts) is captured host-side by the cron ops check. /metrics is
+  # unauthenticated (the same endpoint the watchdog already polls) → no API key
+  # is used or logged. Touches no prod config, the model, GPUs, or throughput.
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-qwen36-moe:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
+    depends_on:
+      vllm-medium-qwen36-moe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen36-stock-tq-v0280:  # per-image: v0.28.0 (2026-09-01). v0.27.1's `vllm-compile-cache-qwen36-stock-tq` left in place for rollback
+
+# =====================================================================
+# CHANGES vs medium-qwen36-moe.yml (the FP8 baseline)
+# =====================================================================
+#   image                  vllm-qwen36-shmpatched  → vllm-qwen36-genesis-tq
+#   --kv-cache-dtype        fp8                     → turboquant_k8v4
+#   --max-num-batched-tokens 32768                  → 8192   (4096 was a Genesis P28 artifact; 8192 since 2026-09-02, FORCING-tested; 32768 crashed torch.compile 2026-05-24)
+#   --max-num-seqs          64                      → 16     (STAYS 16; ramp to 64 crashed torch.compile 2026-05-24)
+#   + --enable-chunked-prefill        (Genesis requires it; the old "forces V0"
+#                                      caveat does NOT apply to vLLM 0.20.x — V1
+#                                      is default and the flag is V1-native)
+#   + --prefix-caching-hash-algo sha256   (xxhash in Genesis; module absent from
+#                                          the stock image — see header)
+#   + --disable-custom-all-reduce         (Genesis integration-awq parity)
+#   + --async-scheduling                  (Genesis integration-awq parity)
+#   + --no-scheduler-reserve-full-isl     (Genesis integration-awq parity)
+#   + Genesis runtime env block + GENESIS_ENABLE_* patch flags (see VERIFY banner)
+#   - --middleware prefix_capture.PrefixCapture  (that was the claudish diag, not this)
+#   - PYTHONPATH=/middleware, VLLM_LOG_REQUESTS_CONTENT, middleware mount (not needed here)
+#
+# Unchanged: TP=2, EP=2, gdn-prefill-backend triton, no-flashinfer-autotune,
+#   gpu-util 0.85, max-model-len 262144, dtype auto + vision, tool/reasoning
+#   parsers, preserve_thinking, sampling overrides, watchdog, GPU ids 0,1.
