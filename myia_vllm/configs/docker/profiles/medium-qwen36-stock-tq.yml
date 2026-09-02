@@ -50,8 +50,10 @@
 #   3. Genesis prealloc pools (P28 GDN / P37 MoE / TQ-dequant) are GONE, so the
 #      memory profile differs from prod. gpu-util stays at the conservative 0.70
 #      for the first boot; do NOT raise it in the same change.
-#   4. batch 4096 / max-num-seqs 16 are KEPT. The 4096 ceiling was a Genesis P28
-#      artifact and may not bind on stock - but do not test two things at once.
+#   4. max-num-seqs 16 is KEPT. batch 4096 -> 8192 on 2026-09-02: the 4096
+#      ceiling was a Genesis P28 buffer artifact (stock has no such buffer;
+#      v0.28.0's own default is 16384). Gated by the FORCING test (concurrent
+#      2-3K prefills summing one forward into (4096, 8192]) + 13 gates + A/B.
 #
 # ----------------------------------------------------------------------------
 # RUNBOOK
@@ -173,7 +175,7 @@ services:
           --limit-mm-per-prompt '{"image":4,"video":0}' \
           --mm-processor-kwargs '{"max_pixels":774000}' \
           --skip-mm-profiling \
-          --max-num-batched-tokens 4096 \
+          --max-num-batched-tokens 8192 \
           --max-num-seqs 16 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
@@ -590,7 +592,7 @@ volumes:
 # =====================================================================
 #   image                  vllm-qwen36-shmpatched  → vllm-qwen36-genesis-tq
 #   --kv-cache-dtype        fp8                     → turboquant_k8v4
-#   --max-num-batched-tokens 32768                  → 4096   (STAYS 4096; ramp to 32768 crashed torch.compile 2026-05-24)
+#   --max-num-batched-tokens 32768                  → 8192   (4096 was a Genesis P28 artifact; 8192 since 2026-09-02, FORCING-tested; 32768 crashed torch.compile 2026-05-24)
 #   --max-num-seqs          64                      → 16     (STAYS 16; ramp to 64 crashed torch.compile 2026-05-24)
 #   + --enable-chunked-prefill        (Genesis requires it; the old "forces V0"
 #                                      caveat does NOT apply to vLLM 0.20.x — V1

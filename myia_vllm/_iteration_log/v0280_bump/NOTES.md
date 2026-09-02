@@ -132,3 +132,41 @@ most of these deltas (see `project_machine_throughput_investigation.md`).
    prefills summing into one forward >4096) and a watchdog watch.
 2. **DSpark on bf16 KV** (above), gated on #53929 or a same-night A/B against TQ at N=1/4/16.
 3. **v0.28.1** when tagged: #52676 + #52789 + #53955 are all on our model / our boot-OOM problem.
+
+---
+
+## Experiment: batch 4096 -> 8192 (2026-09-02, 06:28Z)
+
+**Verdict: KEEP 8192 — correctness cleared, throughput neutral, KV cost immaterial.**
+
+Motivation: the 4096 ceiling was a Genesis P28 buffer artifact (v0.28.0's own default is 16384;
+stock has no such size-limited buffer). One variable only — batch 8192, max-num-seqs 16 unchanged.
+
+Procedure: profile `--max-num-batched-tokens 4096` -> `8192`, `compose down && up -d --env-file
+myia_vllm/.env` (06:28:12Z), healthy 06:32:05Z (~4 min).
+
+Boot: KV **934,374 tokens** (3.56x, was 1,038,194 @4096 — big cudagraphs steal ~10% of the KV
+pool, immaterial at 2-7% occupancy), graph capture 10 s / **0.76 GiB** (was 0.82 @4096 — measured
+LOWER, so no added boot-OOM surface), VRAM GPU 0 20,006 / GPU 1 19,002 after gates, no
+OOM / `Workspace is locked` / Traceback.
+
+GATES: **13/13 PASS** — prefill-30k 8,791 tok/s, prefill-95k 7,573, prefill-235k 5,617 (each
+FASTER than batch 4096's 8,316 / 7,292 / 5,448), concurrent-N16 958 tok/s, all survival PASS.
+
+FORCING test (the range (4096, 8192] the Genesis P28 crash lived in): 6 concurrent 2,702-token
+prefills, every codeword correct, engine alive after — **PASS**. The Genesis P28 overflow does
+not reproduce on stock at batch 8192.
+
+CONFOUND — do not read the A/B table as batch-driven:
+- baseline batch4096 was measured 06:26Z on an engine up ~10 h (the uptime-linked degradation
+  from `project_machine_throughput_investigation`); batch8192 was measured 06:34Z on a FRESH
+  engine (min old). The engine restart alone recovers throughput, so the large "+%" at every N
+  (N=1 45->92, N=16 749->816) is engine-freshness, NOT the batch.
+- The honest same-freshness comparison is batch8192@06:34Z (N=16 816) vs batch4096@20:19Z last
+  night on a fresh engine (N=16 828) — **neutral** (816 vs 828, within machine noise).
+
+Why KEEP: correctness is cleared (13/13 + FORCING), which is the real deliverable (the old
+Genesis fear is gone). The concurrency ceiling (3.56x) is still ample and a larger batch absorbs
+the multi-tenant prefill-burst pattern better than 4096, even though the flat N=16 microbench
+shows no ceiling win. KV cost (934K) immaterial. Rollback = the single `--max-num-batched-tokens`
+line back to 4096.
