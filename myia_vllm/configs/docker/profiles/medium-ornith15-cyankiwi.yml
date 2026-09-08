@@ -1,0 +1,315 @@
+# ============================================================================
+# medium-ornith15-cyankiwi.yml — Ornith-1.5-35B-A3B (cyankiwi AWQ-INT4) eval
+# ----------------------------------------------------------------------------
+# RE-TEST 2026-09-08 (user GO) : the 2026-08-22 rejection (-7.7 GSM8K / -8.0
+# IFEval, McNemar-signif) was measured on the ULKAA quant. cyankiwi's quant
+# (26.12 GB, compressed-tensors, STEM+Agentic calibration, card-validated with
+# qwen3_xml parser) was NEVER tested. Same chassis as prod
+# (Qwen3_5MoeForConditionalGeneration, 30 GDN + 10 attn, 256 experts, 262K,
+# vision) -> plug&play swap. Decision tree: paired battery ~1:1 vs 3.6 refs
+# -> promotion candidate; -7/-8 again -> the Ornith line is intrinsically a
+# coding/agentic specialist (same profile as 1.0), both quants dead for
+# consolidation.
+#
+# vs medium-ornith15-awq.yml (the ulkaa profile, 08-22), ONLY these change:
+# 1. --model cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4 (+ HF-guard MODEL_DIR match).
+# 2. image v0.27.1 -> v0.28.0 (prod parity — prod was bumped 09-01).
+# 3. --max-num-batched-tokens 4096 -> 8192 (prod parity — PR #24, 09-02).
+# 4. --tool-call-parser qwen3_coder -> qwen3_xml (cyankiwi card recipe).
+# 5. Fresh compile-cache volume (…-cyankiwi-v0280): model+image changed, and a
+#    stale v0.27.1/ulkaa cache is the known 10-15x slowdown trap.
+#
+# KEPT from the ulkaa profile: served-model-name keeps the qwen3.6-35b-a3b
+# ALIAS so clients AND the watchdog decode probe work unchanged during the
+# window; preserve_thinking DROPPED (Ornith template unverified for that
+# kwarg — 1.0 lesson); container/service names *-ornith15 (only one stack at a
+# time); watchdog v5 watching the ornith15 container.
+#
+# RUNBOOK: myia_vllm/_iteration_log/ornith15_eval/NOTES.md (burst_bench.py,
+# paired_score.py vs the SAME 3.6 refs, 300 samples, enable_thinking:False).
+# SWAP (from repo root — ALWAYS --env-file, see 2026-08-20 incident):
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml --env-file myia_vllm/.env down
+#   docker compose -f myia_vllm/configs/docker/profiles/medium-ornith15-cyankiwi.yml --env-file myia_vllm/.env up -d
+# ============================================================================
+services:
+  vllm-medium-ornith15:  # SAME container_name as baseline — only one runs at a time
+    image: vllm/vllm-openai:v0.28.0
+    container_name: myia_vllm-medium-ornith15
+    # gpu-memory-utilization 0.70 since 2026-08-04 (3 boot-OOM @0.82/0.78 in 19 d).
+    # GPU 0 shared with the Windows desktop; out-of-pool overshoot +2,145 MiB @0.70.
+    # See MEMORY.md project_engine_wedge.md (3rd failure mode).
+    # ── HF-cache phantom-mount guard (2026-08-12) ─────────────────────────────
+    # create_host_path: false only fails LOUD at container CREATE; a restart-policy
+    # restart reuses the mount spec unvalidated — Docker silently substitutes an
+    # empty dir and vLLM re-downloads while every signal says "patient boot"
+    # (2026-08-06 & 08-12 incidents). This guard fails loud on EVERY start.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        MODEL_DIR=/root/.cache/huggingface/hub/models--cyankiwi--Ornith-1.5-35B-A3B-AWQ-INT4
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find "$$MODEL_DIR/blobs" -type f -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start — would re-download 26 GB. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_ORNITH15_CYANKIWI:-cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4} \
+          --served-model-name ornith-1.5-35b-a3b qwen3.6-35b-a3b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --enable-expert-parallel \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype turboquant_k8v4 \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 8192 \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_xml \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
+    # ── EXCLUSION AUTOHEAL — qdrant_autoheal (AUTOHEAL_CONTAINER_LABEL=all)
+    # redémarre TOUT conteneur unhealthy ; label exact "False" (capital F) requis.
+    labels:
+      - "autoheal=False"
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware  # for error_source_capture (opt-in via --middleware flag)
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0  # v2g lesson: FlashInfer sampler idle-deadlock vector
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+      - VLLM_MOE_USE_DEEP_GEMM=0
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
+      - vllm-compile-cache-ornith15-cyankiwi-v0280:/root/.cache/vllm  # fresh: image+model changed
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1800s
+    restart: unless-stopped
+
+  # Watchdog sidecar v5 — identical to the other profiles; BOOT-STALL du line
+  # updated for the cyankiwi model dir.
+  watchdog-ornith15:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-ornith15
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-ornith15"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
+        PROBE_MAX_TOKENS=24
+        GEN_TIMEOUT_WARM=120
+        WARMUP_PROBES=3
+        WEDGE_MAX=2
+        UNHEALTHY_MAX=4
+        DOWN_MAX=24
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
+        STARTING_MAX=3
+        PREV_RC=-1
+        STARTING_CHURN=0
+        STALL_MAX=24
+        STARTING_CYCLES=0
+
+        echo "Watchdog v5 (wedge + hard-hang + boot-crash-loop + boot-stall detection) for Ornith-1.5 cyankiwi + stock TurboQuant v0.28.0"
+        echo "  WEDGE   (health 200 + 24-tok decode >$${GEN_TIMEOUT}s): restart after $$WEDGE_MAX fails (~2 min)"
+        echo "  WARMUP  (first $$WARMUP_PROBES probes after each boot):        timeout $${GEN_TIMEOUT_WARM}s, never counted as a wedge (v5)"
+        echo "  HUNG    (docker=unhealthy, post-boot):                restart after $$UNHEALTHY_MAX fails (~2 min)"
+        echo "  BOOTING (docker=starting):                            never restart (30-min grace)"
+        echo "  DOWN    (health != 200, docker status unknown):       restart after $$DOWN_MAX fails (~12 min backstop)"
+        echo "  CRASHLOOP(docker=starting + RestartCount churning):   flagged loud after $$STARTING_MAX (~6 min), NO futile restart (v4)"
+        echo "  BOOTSTALL(docker=starting + RestartCount FLAT):       flagged loud after $$STALL_MAX cycles (~12 min), NO futile restart (v5)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal (also catches port-fwd loss)."
+
+        while true; do
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            if [ $$WARMUP_LEFT -gt 0 ]; then GT=$$GEN_TIMEOUT_WARM; else GT=$$GEN_TIMEOUT; fi
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1
+            STARTING_CYCLES=0
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              elif [ $$WARMUP_LEFT -gt 0 ]; then
+                echo "$$TS OK health=200 decode=200 (warm-up grace consumed — engine is warm)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
+              WARMUP_LEFT=0
+            elif [ $$WARMUP_LEFT -gt 0 ]; then
+              WARMUP_LEFT=$$((WARMUP_LEFT - 1))
+              echo "$$TS WARMUP health=200 decode=$$G (24 tok >$${GT}s) — post-boot grace, $$WARMUP_LEFT probe(s) left, NOT counted as wedge"
+            else
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (24 tok >$${GEN_TIMEOUT}s) (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                WARMUP_LEFT=$$WARMUP_PROBES
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
+            fi
+          else
+            HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
+            WEDGE_FAIL=0
+            if [ "$$HS" = "starting" ]; then
+              DOWN_FAIL=0
+              STARTING_CYCLES=$$((STARTING_CYCLES + 1))
+              WARMUP_LEFT=$$WARMUP_PROBES
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                OOMHITS=$$(docker logs --since 10m $$CONTAINER 2>&1 | grep -ci "out of memory")
+                if [ "$${OOMHITS:-0}" -gt 0 ]; then
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), CUDA-OOM present in log ($$OOMHITS hits) — boot-time OOM at KV alloc. docker restart is FUTILE; NOT auto-restarting. Fix externally: lower --gpu-memory-utilization."
+                else
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), NO OOM in log — cause UNKNOWN, do not assume gpu-util. Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              elif [ $$STARTING_CYCLES -ge $$STALL_MAX ]; then
+                LOADING=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Starting to load model")
+                LOADED=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Model loading took")
+                MINS=$$((STARTING_CYCLES * INTERVAL / 60))
+                if [ "$${LOADING:-0}" -gt 0 ] && [ "$${LOADED:-0}" -eq 0 ]; then
+                  echo "$$TS BOOT-STALL $$CONTAINER stuck LOADING WEIGHTS for $${MINS} min, RestartCount FLAT (=$$RC). Prime suspect: HF-cache bind resolved to an EMPTY phantom dir. CHECK: docker exec $$CONTAINER du -sh /root/.cache/huggingface/hub/models--cyankiwi--Ornith-1.5-35B-A3B-AWQ-INT4 -> must be ~26G, NOT ~300M. If empty: confirm 'wsl -l -v' shows Ubuntu Running, then compose down && up -d. NOT auto-restarting."
+                else
+                  echo "$$TS BOOT-STALL $$CONTAINER docker=starting for $${MINS} min, RestartCount FLAT (=$$RC), weights already loaded — stalled AFTER load (torch.compile / KV alloc / CUDA-graph capture). Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 30-min grace — patient; RestartCount=$$RC, cycle $$STARTING_CYCLES/$$STALL_MAX)"
+              fi
+              sleep $$INTERVAL
+              continue
+            fi
+            STARTING_CYCLES=0
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-ornith15:$$PORT/health" 2>/dev/null)
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              THRESH=$$DOWN_MAX
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            elif [ "$$HS" = "unhealthy" ]; then
+              THRESH=$$UNHEALTHY_MAX
+              echo "$$TS ENGINE-HUNG host=$$H internal=$$HI docker=unhealthy (fail $$DOWN_FAIL/$$THRESH, ~2min fast-path)"
+            else
+              THRESH=$$DOWN_MAX
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            fi
+            if [ $$DOWN_FAIL -ge $$THRESH ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
+              docker restart $$CONTAINER
+              DOWN_FAIL=0
+              WARMUP_LEFT=$$WARMUP_PROBES
+              echo "$$TS Restart issued. Waiting 600s for boot..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-ornith15:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Wedge-telemetry sidecar — passive READ-ONLY /metrics sampler (see ulkaa profile).
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry-ornith15
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-ornith15:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
+    depends_on:
+      vllm-medium-ornith15:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-ornith15-cyankiwi-v0280:  # fresh: v0.28.0 image + cyankiwi model

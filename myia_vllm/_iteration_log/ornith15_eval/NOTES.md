@@ -110,3 +110,35 @@ Prod 3.6 restaurée dans la foulée (même fenêtre).
 | 20:25-20:48 Ornith | 552 → 763 | **66 % (21,0/32)** | RAPIDE |
 | 20:50+ 3.6 bracket | 621 / 652 | (fin de capture) | RAPIDE |
 → **CORRÉLATION DIRECTE CPU hôte ↔ débit**. `NCCL_P2P_DISABLE=1` ⇒ allreduce TP par mémoire hôte ⇒ CPU saturé = steps affamés = débit écroulé SANS signature GPU (toutes les mesures nvidia-smi restaient normales). La corrélation uptime s'explique : la charge de fond (docker.backend 2,3 cœurs visibles, node, desktop) s'accumule avec l'uptime jusqu'à saturation. **Fix à évaluer : ré-armer P2P (le désactiver datait de contraintes PCIe/précédents), ou borner la charge de fond, ou reboot programmé.**
+
+## Fenêtre 09-08 — RE-TEST quant cyankiwi (GO user « si le quant est bon, c'est notre nouveau modèle »)
+
+**Hypothèse à tester** : la réjection 08-22 venait-elle du quant (ulkaa) et non du modèle ? Quant
+`cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4` (26,12 Go, compressed-tensors, calib STEM+Agentic, parser
+`qwen3_xml`) sur **stock v0.28.0** + batch 8192 + compile-cache frais. Profil `medium-ornith15-cyankiwi.yml`,
+alias `qwen3.6-35b-a3b` conservé (clients + sonde watchdog inchangés). Fenêtre ~2 h, failover cloud
+attendu/nominal, GPUs 0,1, GPU 2 non touchée.
+
+**Predownload** : le docker run UNC échouait (slashes `/wsl.localhost` non reconnus → cible vide dans la
+rootfs VM, contenu perdu sur `--rm`). **La bonne méthode = download direct dans WSL** avec
+`HF_HOME=/home/user/vllm/.cache/huggingface/hub` (produit le hub imbriqué `hub/hub/models--*` que le
+bind lit) + venv PEP668 (`python3 -m venv` ; le `pip install` nu échouait silencieusement sous Ubuntu
+24.04). Vérifié : 25 G, blobs ~5,37 Go (guard >4 G OK), refs/snapshot intacts.
+
+**Phase 1** : canary **4/5** — seul `no_think` "FAIL" (205ch vs seuil 200) = gate RELATIF, en fait
+meilleur que 3.6 (932ch au 08-22) et que ulkaa (347ch). `trivial_think_len` **124ch** (tueur 1.0 guéri),
+tool_call `qwen3_xml` **0,48 s**, `enable_thinking:false` reason=0. single **102/115/113 t/s** (vs 3.6
+88-97), think r457/305ch @103/101 t/s. n16 **428** — non concluant (machine-state : 424↔763 pour le
+même moteur selon CPU hôte, cf dataclé 08-22).
+
+**Phase 2 (apparié n=300, mêmes refs 3.6, McNemar) — VERDICT REJET :**
+| Bench | cyankiwi | 3.6 | Δ | McNemar |
+|---|---|---|---|---|
+| GSM8K | 81,0 % | 88,0 % | **−7,0 pts** | chi2=13,8 **SIGNIF** |
+| IFEval | 83,3 % | 88,7 % | **−5,3 pts** | chi2=5,9 **SIGNIF** |
+| MMStar | 66,0 % | 63,7 % | +2,3 pts | ns |
+
+cyankiwi amélioré vs ulkaa (IFEval −5,3 vs −8,0 ; MMStar +2,3 vs −2,7) mais GSM8K/IFEval restent
+**significativement** régressés (~−6 pts). **L'hypothèse « mauvais quant » est REFUTÉE** : la régression
+est une propriété du MODÈLE (fine-tune coding/agentic), pas du quant. **Les deux quants morts pour la
+consolidation.** Prod 3.6 restaurée même fenêtre (close avant terme).

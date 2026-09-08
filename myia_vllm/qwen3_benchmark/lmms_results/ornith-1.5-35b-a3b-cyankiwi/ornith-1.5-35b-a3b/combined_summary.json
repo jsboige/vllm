@@ -1,0 +1,33 @@
+{
+  "gsm8k": {
+    "benchmark": "gsm8k_cot_zeroshot",
+    "model": "ornith-1.5-35b-a3b",
+    "total_questions": 300,
+    "completed": 300,
+    "correct": 243,
+    "errors": 0,
+    "accuracy_pct": 81.0,
+    "elapsed_s": 484.6,
+    "avg_s_per_question": 484.63
+  },
+  "ifeval": {
+    "benchmark": "ifeval",
+    "model": "ornith-1.5-35b-a3b",
+    "total_prompts": 300,
+    "completed": 300,
+    "strict_accuracy": 83.33,
+    "instruction_correct": 250,
+    "errors": 0,
+    "elapsed_s": 966.8
+  },
+  "mmstar": {
+    "benchmark": "mmstar",
+    "model": "ornith-1.5-35b-a3b",
+    "total_questions": 300,
+    "completed": 300,
+    "correct": 198,
+    "errors": 0,
+    "accuracy_pct": 66.0,
+    "elapsed_s": 75.4
+  }
+}
