@@ -108,13 +108,10 @@
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
-    # v0.27.1 -> v0.28.0 (2026-09-01). Release 2026-08-26, 584 commits. Relevant to us:
-    # Transformers 5.15, prefix caching default-on for Mamba/GDN (#50991), KV-cache layout
-    # refactor touching turboquant_attn.py (#51704), Qwen3.5 GDN MTP kernels (#51674/#51812),
-    # DFlash2 + DSpark spec-dec. NOT in this tag (landed 08-22..08-27, wait for v0.28.1):
-    # fused QK-norm+MRoPE+gate for Qwen3.6 (#52676), Mamba prefill checkpoints +9-25% TTFT
-    # (#52789), CUDA-graph profiling memory released before KV alloc (#53955).
-    # Rollback = this line back to v0.27.1 + the compile-cache volume name below.
+    # v0.29.0 rejected 2026-09-09: its default V2 Model Runner requires UVA, unavailable
+    # under WSL2 (`RuntimeError: UVA is not available` before model load). The supported
+    # VLLM_USE_V2_MODEL_RUNNER=0 override remains untested and needs a dedicated window.
+    # Production rolled back to v0.28.0; see _iteration_log/v0290_bump/NOTES.md.
     image: vllm/vllm-openai:v0.28.0
     container_name: myia_vllm-medium-qwen36-moe
     # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
