@@ -105,6 +105,30 @@
 #   the gate results (NOTES.md) - revert to (1) if prefill throughput regresses
 #   against the Genesis reference.
 # ============================================================================
+# 2026-09-11: PREFIX-CACHE GRANULARITY + fp16 MAMBA STATE (issue #36, windows A+B)
+# ----------------------------------------------------------------------------
+#   Paired probe proved the DEFAULT config caches nothing below the physical
+#   block: a 403-token prompt got 0 hits (0.178 s -> 0.192 s, no speedup) while a
+#   7,699-token one hit only 2 of 3 blocks (5,536 = 2 x 2768).
+#     --prefix-match-unit 16            matching granularity (was block_size)
+#     --mamba-ssm-cache-dtype float16   ssm state ONLY (conv state stays auto)
+#   AFTER, same night: short prompt hits 0 -> 400 (every 16-token boundary);
+#   long prompt 5,536 -> 7,696 hits (the whole prompt) and repeat latency
+#   0.412 s -> 0.078 s. The gates' 16 concurrent requests sharing one 3,200-token
+#   prompt went 527 -> 1,008 tok/s on the repeat run — that is syv-ai's
+#   "64 reqs sharing a system prompt: 222 s -> 17 s" case, reproduced here.
+#   Side effect: block_size itself re-derives 2768 -> 1424 (page alignment
+#   follows the match unit); KV 934,374 -> 944,267 (+1.1%), blocks 360 -> 688.
+#   fp16 state: the HF config asks float32, so vLLM logs an explicit warning
+#   that the user value wins (model_executor/models/config.py:799). Deliberate —
+#   syv-ai measured perplexity unchanged to 3 decimals and the ssm state is what
+#   bounds hybrid concurrency. 13/13 gates PASS after the change; prefill
+#   8,363 / 7,312 / 5,704 tok/s; bench N=16 766 vs 799 same-evening (within the
+#   documented machine variance, no systematic regression).
+#   NOT taken: --enable-mamba-fine-grained-prefix-cache — it only engages with
+#   EAGLE/MTP on the mamba group (config/cache.py:198) and we run no spec-decode,
+#   so it would have been inert.
+# ============================================================================
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
@@ -178,6 +202,8 @@ services:
           --enable-chunked-prefill \
           --enable-prefix-caching \
           --prefix-caching-hash-algo sha256 \
+          --prefix-match-unit 16 \
+          --mamba-ssm-cache-dtype float16 \
           --enable-auto-tool-choice \
           --tool-call-parser qwen3_coder \
           --reasoning-parser qwen3 \
