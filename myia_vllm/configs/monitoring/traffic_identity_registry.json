@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "description": "Reviewed traffic identities. This registry is evidence, not an access-control allowlist.",
+  "subjects": [
+    {
+      "id": "machine:web1",
+      "type": "machine",
+      "label": "myia-web1",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "location:paris",
+      "type": "location",
+      "label": "Paris",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "location:la-bretonniere",
+      "type": "location",
+      "label": "La Bretonnière",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "machine:ai-01",
+      "type": "machine",
+      "label": "myia-ai-01",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "machine:po-2023-hub",
+      "type": "machine",
+      "label": "Claudish hub on myia-po-2023",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "network:lan-proxy",
+      "type": "network",
+      "label": "La Bretonnière reverse proxy",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "network:heterogeneous-transit",
+      "type": "network",
+      "label": "Heterogeneous VPN/transit range",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "network:disputed-egress",
+      "type": "network",
+      "label": "Disputed po-2023/po-2025 egress",
+      "state": "DISPUTED"
+    },
+    {
+      "id": "team:safari",
+      "type": "team",
+      "label": "SAFARI business cohort (Stéphane/team unresolved)",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "service:livresagites",
+      "type": "service",
+      "label": "LivresAgités production",
+      "state": "PENDING_DEPLOYMENT"
+    },
+    {
+      "id": "network:jamin-candidate",
+      "type": "network",
+      "label": "Unattributed network; Jamin only after confirmation",
+      "state": "CONDITIONAL"
+    },
+    {
+      "id": "person:vanessa",
+      "type": "person",
+      "label": "Vanessa via Claude Desktop",
+      "state": "CONDITIONAL"
+    },
+    {
+      "id": "machine:po-2027",
+      "type": "machine",
+      "label": "myia-po-2027 roaming",
+      "state": "CONDITIONAL"
+    },
+    {
+      "id": "network:user-itinerant",
+      "type": "network",
+      "label": "Known user itinerant egress",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "team:epita",
+      "type": "team",
+      "label": "Known EPITA traffic",
+      "state": "HISTORICAL"
+    }
+  ],
+  "rules": [
+    {
+      "id": "web1-old-ovh",
+      "subject_id": "machine:web1",
+      "match": {
+        "networks": [
+          "37.187.180.135/32"
+        ]
+      },
+      "from": "2026-05-26T00:00:00Z",
+      "until": "2026-09-09T17:39:39.446269Z",
+      "evidence": "user_firsthand:2026-05-26; verify whether the documented migration target has cut over; bounded to last observed event 2026-09-09T17:39:39.446269Z",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "web1-pending-migration",
+      "subject_id": "machine:web1",
+      "match": {
+        "networks": [
+          "51.75.200.22/32"
+        ]
+      },
+      "from": "2026-09-01T00:00:00Z",
+      "until": null,
+      "requires_confirmation": true,
+      "evidence": "documented:2026-09-10; migration target, not proof of deployment",
+      "state": "PENDING_DEPLOYMENT"
+    },
+    {
+      "id": "paris-known-egress",
+      "subject_id": "location:paris",
+      "match": {
+        "networks": [
+          "82.66.89.184/32"
+        ]
+      },
+      "from": "2026-09-05T00:00:00Z",
+      "until": "2026-09-10T21:50:47.880204Z",
+      "evidence": "user_firsthand:2026-09-05; location fact only; bounded to last observed event 2026-09-10T21:50:47.880204Z",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "la-bretonniere-ai01",
+      "subject_id": "machine:ai-01",
+      "match": {
+        "networks": [
+          "192.168.0.47/32"
+        ]
+      },
+      "from": "2026-05-01T00:00:00Z",
+      "until": null,
+      "evidence": "documented:2026-09-10; current LAN inventory",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "la-bretonniere-claudish-hub",
+      "subject_id": "machine:po-2023-hub",
+      "match": {
+        "networks": [
+          "192.168.0.46/32"
+        ]
+      },
+      "from": "2026-05-01T00:00:00Z",
+      "until": null,
+      "evidence": "documented:2026-09-10; current LAN inventory",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "la-bretonniere-reverse-proxy",
+      "subject_id": "network:lan-proxy",
+      "match": {
+        "networks": [
+          "192.168.0.254/32"
+        ]
+      },
+      "from": "2026-05-01T00:00:00Z",
+      "until": null,
+      "evidence": "documented:2026-05-26; reverse-proxy trust boundary, not a person",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "heterogeneous-transit-range",
+      "subject_id": "network:heterogeneous-transit",
+      "match": {
+        "networks": [
+          "212.133.41.0/24"
+        ]
+      },
+      "from": "2026-08-01T00:00:00Z",
+      "until": null,
+      "evidence": "measured:2026-09-10; incompatible conversational signatures share this range",
+      "state": "ACTIVE"
+    },
+    {
+      "id": "disputed-machine-egress",
+      "subject_id": "network:disputed-egress",
+      "match": {
+        "networks": [
+          "90.65.170.144/32"
+        ]
+      },
+      "from": "2026-09-01T00:00:00Z",
+      "until": null,
+      "requires_confirmation": true,
+      "evidence": "disputed:2026-09-10; runtime state says po-2023 while fleet memory says po-2025",
+      "state": "DISPUTED"
+    },
+    {
+      "id": "safari-business-conversations",
+      "subject_id": "team:safari",
+      "match": {
+        "ua": "empty",
+        "conversation": "safari_business",
+        "endpoint": "chat_completions"
+      },
+      "from": "2026-08-19T00:00:00Z",
+      "until": "2026-09-01T23:59:59Z",
+      "requires_confirmation": true,
+      "evidence": "measured:2026-09-10; business cohort identified, people within cohort unresolved",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "livresagites-ai-engine",
+      "subject_id": "service:livresagites",
+      "match": {
+        "ua": "ai_engine"
+      },
+      "from": "2026-08-14T00:00:00Z",
+      "until": null,
+      "requires_confirmation": true,
+      "evidence": "measured:2026-09-10; historical signature dormant since 2026-08-22, deployment not observed",
+      "state": "PENDING_DEPLOYMENT"
+    },
+    {
+      "id": "jamin-do-not-infer",
+      "subject_id": "network:jamin-candidate",
+      "match": {
+        "networks": [
+          "77.83.247.145/32"
+        ]
+      },
+      "from": "2026-09-04T00:00:00Z",
+      "until": null,
+      "requires_confirmation": true,
+      "evidence": "user_firsthand:2026-09-10; do not attribute to Jamin unless a new connection request confirms it",
+      "state": "CONDITIONAL"
+    },
+    {
+      "id": "known-user-marseille",
+      "subject_id": "network:user-itinerant",
+      "match": {
+        "networks": [
+          "92.150.81.115/32"
+        ]
+      },
+      "from": "2026-05-26T00:00:00Z",
+      "until": "2026-09-04T04:35:37.646932Z",
+      "evidence": "user_firsthand:2026-05-26; historical roaming address, not permanent ownership; bounded to last observed event 2026-09-04T04:35:37.646932Z",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "epita-travel-planner",
+      "subject_id": "team:epita",
+      "match": {
+        "networks": [
+          "212.222.31.210/32"
+        ]
+      },
+      "from": "2026-05-26T00:00:00Z",
+      "until": "2026-05-26T23:59:59Z",
+      "evidence": "user_firsthand:2026-05-26; project egress, not an individual; no post-attestation traffic observed; bounded to attestation day",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "epita-student-home",
+      "subject_id": "team:epita",
+      "match": {
+        "networks": [
+          "86.246.3.30/32"
+        ]
+      },
+      "from": "2026-05-26T00:00:00Z",
+      "until": "2026-05-26T23:59:59Z",
+      "evidence": "user_firsthand:2026-05-26; student home egress, person intentionally unnamed; no post-attestation traffic observed; bounded to attestation day",
+      "state": "HISTORICAL"
+    },
+    {
+      "id": "epita-campus",
+      "subject_id": "team:epita",
+      "match": {
+        "networks": [
+          "163.5.3.41/32"
+        ]
+      },
+      "from": "2026-05-26T00:00:00Z",
+      "until": "2026-06-17T14:52:45.797861Z",
+      "evidence": "user_firsthand:2026-05-26; campus egress, shared network; bounded to last observed event 2026-06-17T14:52:45.797861Z",
+      "state": "HISTORICAL"
+    }
+  ]
+}

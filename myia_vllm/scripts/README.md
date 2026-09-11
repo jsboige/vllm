@@ -319,6 +319,15 @@ Les résultats des tests sont sauvegardés dans :
 
 ---
 
+### Traffic identity (shadow mode)
+
+`monitoring/traffic_identity.py` scans the privileged vLLM traffic capture and its gzip archives, applies reviewed attribution rules, and produces two outputs:
+
+- a local operator review with short redacted conversation clues for jointly qualifying unknown traffic;
+- a shareable summary with no conversation text or credentials.
+
+It is deliberately not scheduled and does not change keys, allowlists, proxies, or firewall rules. See [Traffic Identity](../docs/monitoring/TRAFFIC_IDENTITY.md).
+
 **Dernière mise à jour** : 21/10/2025 (Mission 14g)  
 **Mainteneur** : Roo Code Mode  
 **Version** : 1.0.0
