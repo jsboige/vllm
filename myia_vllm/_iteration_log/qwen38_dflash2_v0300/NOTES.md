@@ -1,4 +1,58 @@
-# Qwen3.8-27B + DFlash2 (W4A16 drafter) eval — 2026-09-22, BLOCKED UPSTREAM at boot
+# Qwen3.8-27B + DFlash2 (W4A16 drafter) eval — 2026-09-22 — window 1 BLOCKED on stock, window 2 PASS on PR-#51684 overlay
+
+## Window 2 (16:26→16:43Z, GO user): overlay image `vllm-openai-v0300-s51684:v1` — THE FIX WORKS
+
+User asked to build a dedicated image with upstream PR **vllm-project/vllm#51684**
+("Handle quantized qkv_proj in DFlash fused-KV buffers", SayHelloToWorld, @ b1b3aefa40ca).
+Overlay method (same as the August `overlay_v0271_s51812`): file-for-file replacement of
+the PR's 4 runtime files on top of stock `vllm/vllm-openai:v0.30.0`. Verified clean:
+PR base 73fb19151f4f is an ancestor of v0.30.0 (compare behind=0) and NONE of the 4
+files changed in the 291 commits in between — the overlay reverts nothing. The PR routes
+the fused-KV precompute through `quant_method` with a tiered strategy (fused quantized
+GEMM / dequant) instead of slicing raw `.weight`. Overlay: `configs/docker/overlay_v0300_s51684/`
+(Dockerfile + fetched files), import-verified before boot.
+
+- Boot: **~5.5 min to healthy** (16:26:26 → 16:32Z), RC=0, no AttributeError — past the
+  exact point where both quants crash-looped on stock (37 loops, window 1). Target this
+  time: philbert440 GS-128 (profile default; cyankiwi-on-overlay untested, the crash was
+  quant-agnostic).
+- **KV 262,504 tokens** = exactly 1.0× the 262K window (August fp8 without drafter:
+  383,696). The DFlash2 drafter (1.28 GB) + its num_spec_tokens+1 lookahead margin eat
+  the surplus. VRAM GPU 0 20,687 / GPU 1 19,884 MiB (within bounds, < 23,000 alert).
+- **Gate battery 16/17 PASS** (validate38.py): vision 4/4 (1.5 s), tools 0.7 s, thinking,
+  preserve_thinking, prefills 31K/102K/253K at **1,924 / 1,760 / 1,408 tok/s** (each with
+  survival), **quality canary PASS at ratio4g=0.00** (the TQ×spec-dec degenerate family
+  does not apply here), single-stream **46/46/41 t/s**, N=16 **155 → 180 t/s**.
+- The one FAIL is the acceptance RE-READ after the N=16 legs: 0.48 idle (410/856) →
+  **0.21 cumulative under load** (4,964/23,176) — the DSpark pattern, attenuated (DSpark:
+  0.07). DFlash2 drafts lose accuracy under batched verification.
+- Bench B1 (bench_concurrent_scaling, BENCH_MODEL=qwen3.8-27b): N=1 20 t/s (first-pass
+  JIT tax; battery measured 46), N=16 299 t/s. A-brackets on the MoE same-day:
+  A1 15:1xZ N1 86.3 / N16 815.9; **A2 16:50Z N1 70.5 / N16 750.9** (machine drifted
+  ~10-15% down over the window — evening pattern; bracket confirms no collapse).
+- **Ratios (best-B vs worst-A): single 46 vs 70.5 = 0.65×; N=16 299 vs 750.9 = 0.40×.**
+  True N16 is likely 180-300 (battery vs bench spread) → 0.22-0.40× — consistent with
+  August's 5.7× under MTP, DFlash2 buying some of it back at concurrency.
+- Upstream datapoint posted on vllm-project/vllm#51684 (validation from this host:
+  pack-quantized target, Ada SM89, WSL2, TP=2 — boot fixed, 16/17 gates, canary clean,
+  acceptance 0.48/0.21) to help the merge.
+
+## Verdict
+
+- **The FIX is validated** (that was the ask) — clean boot on a config that
+  crash-looped 37× on stock, quality canary clean. Re-test trigger for prod-grade use:
+  the PR merging (then stock image suffices).
+- **Adoption of the 27B on this host remains a pure quality trade**: single-stream
+  0.5-0.66× the MoE, N=16 0.22-0.40×, prefill ~4× slower — DFlash2 does NOT close the
+  single-stream gap here (community 134-154 t/s was 1×GPU TP=1 + fork-optimized; we are
+  TP=2 + known machine evening trough). The hoped-for inversion does not materialize.
+- **KV/context arithmetic (user question)**: 262,504 tokens = ONE full-window
+  conversation. Capping `--max-model-len` to 150K would guarantee ~1.75 concurrent
+  full-context conversations; 192K → ~1.37. Real occupancy is 2-7% so this binds only
+  for batch-agentic use — the pending claudish traffic histogram (per-client context
+  sizes, DM sent 16:43Z) is the missing input before capping anything.
+
+## Window 1 (15:22→15:59Z): BLOCKED UPSTREAM on stock v0.30.0
 
 Window 15:22→15:59Z (GO user, "lance l'eval maintenant"). Prod restored healthy 15:59:22Z
 (boot ~4 min on warm `…-v0300` compile volume), RC=0, outage ~37 min. Baseline A1 was
