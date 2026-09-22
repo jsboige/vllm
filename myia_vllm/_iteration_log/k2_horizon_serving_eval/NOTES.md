@@ -54,6 +54,42 @@ MoVA), un plafond de décodage propre à l'implémentation stock.
 Checkpoints du harnais de reprise : ~0,17 Go par couche dense, **~1,6 Go par couche MoE** (weight BF16
 fake-quantifié + scale + zp) → **~72 Go de disque** pour un run complet (WSL : 257 Go libres).
 
+### Harnais de reprise (checkpoint par couche) — VALIDÉ 22/09 nuit, critère révisé
+
+Prérequis de la règle ferme « checkpoint obligatoire avant tout job > 1-2 h » (user 15/09) pour un run complet
+(~49 couches, ≥ 10 h). Trois runs de 7 couches, 8 échantillons de calibration, GPU 2 :
+
+- **test1** : interrompu après la couche 4, **repris** par injection des couches 0-4 depuis le checkpoint
+  (`RESUME: injected packed params for 780 modules across 5 layers`, après le correctif d'adressage au module
+  feuille `95f2c1c061`), couches 5-6 recalculées ;
+- **test2** et **test3** : deux runs frais, mêmes arguments.
+
+**Le critère « bit-exact » était mal posé.** Le premier verdict (`VERIFY_RESULT=DIFFER`, test1 vs test2)
+montrait des écarts dès les couches 0-2, calculées à neuf dans les deux runs : GPTQ sur GPU n'est pas
+déterministe d'un run à l'autre. Les entiers (zero-points) sont identiques partout ; seuls les poids BF16
+fake-quantifiés diffèrent. Le bon critère est donc : **l'écart reprise-vs-frais doit rester dans le bruit
+frais-vs-frais**, en particulier sur les couches recalculées après la reprise (5-6).
+
+| Couche | frais vs frais : éléments ≠ / L1 rel. | reprise vs frais : éléments ≠ / L1 rel. |
+|---|---|---|
+| L0 (dense) | 0,149 % / 1,32e-3 | 0,154 % / 1,38e-3 |
+| L1 (dense) | 1,342 % / 6,54e-3 | 1,266 % / 6,27e-3 |
+| L2 (dense) | 1,571 % / 1,07e-2 | 1,557 % / 1,06e-2 |
+| L3 (MoE) | 9,086 % / 5,82e-2 | 9,066 % / 5,81e-2 |
+| L4 (MoE) | 7,969 % / 5,13e-2 | 7,988 % / 5,14e-2 |
+| **L5 (MoE, après reprise)** | 10,015 % / 6,42e-2 | **9,967 % / 6,39e-2** |
+| **L6 (MoE, après reprise)** | 10,286 % / 6,61e-2 | **10,279 % / 6,61e-2** |
+
+Mots entiers différents : 0 % partout, dans les deux comparaisons. **Un run repris est indiscernable d'un run
+frais** : le harnais de reprise est bon pour un run long. Ce que ce tableau montre aussi : deux quantifications
+fraîches du même modèle diffèrent de ~10 % des éléments par couche MoE (L1 rel. ~6 %) avec 8 échantillons — une
+propriété de la calibration elle-même, pas du harnais ; l'effet sur la qualité se mesure au bench, pas ici.
+Coût : ~1 h 26 pour 7 couches (couche MoE ~21 min). Checkpoints de test conservés (3 × 6,5 Go, WSL
+`~/k2-ckpt-test{1,2,3}`), GPU 2 rendue (45 MiB).
+
+Cela ferme le volet « harnais » de la question Q3 ; le volet de fond (la quant maison ne tient pas à 0.70,
+voir Voie 4) reste à l'arbitrage user.
+
 ## A/B (bench petits prompts, même soirée)
 - Baseline prod MoE (chaud) : N=1 61,7 · N=4 186,4 · N=8 390,6 · N=16 **762,4 t/s**
 - K2 fork eager : N=16 **112-123 t/s** (batterie), single 6-8. Comparaison biaisée par eager — mais l'ordre de grandeur écarte tout retournement.
