@@ -61,6 +61,9 @@ CLASSES = {
 OUT_HEAD, OUT_TAIL = 1500, 500
 # organs run on the system python, not the sk-agent venv this driver runs in
 ORGAN_PY = shutil.which("python") or "python"
+# verification scripts run in a dedicated venv (numpy, scipy, networkx, pandas, z3, matplotlib,
+# sympy, pulp) so the host python stays untouched; falls back to the organ interpreter
+VERIF_PY_DEFAULT = Path(os.environ.get("LOCALAPPDATA", "")) / "nbaudit/verif-venv/Scripts/python.exe"
 
 
 def _text(x) -> str:
@@ -235,7 +238,7 @@ def parse_verifs(text: str) -> list[dict]:
     return out
 
 
-def run_verifs(verifs: list[dict], work: Path, limit_s: int = 90) -> list[dict]:
+def run_verifs(verifs: list[dict], work: Path, py: str, limit_s: int = 90) -> list[dict]:
     """Stage B: the harness, not the model, executes every verification script."""
     work.mkdir(parents=True, exist_ok=True)
     res = []
@@ -244,7 +247,7 @@ def run_verifs(verifs: list[dict], work: Path, limit_s: int = 90) -> list[dict]:
         f.write_text(v["code"], encoding="utf-8")
         t0 = time.time()
         try:
-            p = subprocess.run([ORGAN_PY, f.name], cwd=work, capture_output=True, text=True,
+            p = subprocess.run([py, f.name], cwd=work, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=limit_s,
                                env={**os.environ, "PYTHONIOENCODING": "utf-8", "MPLBACKEND": "Agg"})
             err = "\n[stderr]\n" + p.stderr if p.stderr.strip() else ""
@@ -356,7 +359,7 @@ async def _audit_one(session: ClientSession, sem: asyncio.Semaphore, args, rel: 
         conv, answer_a = env.get("conversation_id"), env.get("response") or ""
         rec["answer_a"] = answer_a
         # stage B — the harness executes them
-        rec["verifs"] = run_verifs(parse_verifs(answer_a), work)
+        rec["verifs"] = run_verifs(parse_verifs(answer_a), work, args.verif_python)
         final = None
         if answer_a and conv:
             # stage C — judge against the evidence, same conversation (prefix-cached on vLLM)
@@ -403,6 +406,8 @@ async def main() -> int:
     ap.add_argument("--timeout", type=int, default=1500, help="call_agent budget per notebook (s)")
     ap.add_argument("--max-tokens", type=int, default=16384,
                     help="per LLM turn; sk-agent's model client times out at 300 s per turn")
+    ap.add_argument("--verif-python", default=str(VERIF_PY_DEFAULT) if VERIF_PY_DEFAULT.is_file() else ORGAN_PY,
+                    help="interpreter for the stage-B verification scripts")
     ap.add_argument("--work-root", default=str(Path(os.environ.get("TEMP", "/tmp")) / "nbaudit"),
                     help="per-notebook scratch dirs for the verification scripts")
     args = ap.parse_args()
