@@ -155,16 +155,20 @@ def _make_modifier_class():
             for li in sorted(_CKPT["done"]):
                 p = os.path.join(_CKPT["dir"], f"layer_{li:02d}.pt")
                 payloads.update(torch.load(p, map_location="cpu"))
+            # address every key to its LEAF module: update_offload_parameter only
+            # accepts a direct param/buffer name, and walking named_modules() with a
+            # prefix match also hits parents (`...self_attn` matches the layer regex)
+            # whose remainder is dotted (`q_proj.weight`) -> AttributeError
+            by_name = dict(state.model.named_modules())
+            attrs_by_module = {}
+            for key, val in payloads.items():
+                mod_name, _, attr = key.rpartition(".")
+                if mod_name not in by_name:
+                    raise RuntimeError(f"RESUME: checkpoint key {key} matches no module")
+                attrs_by_module.setdefault(mod_name, {})[attr] = val
             injected = 0
-            for _, module in state.model.named_modules():
-                name = self._name_map.get(id(module))
-                li = _layer_idx(name)
-                if li is None or li not in _CKPT["done"]:
-                    continue
-                prefix = name + "."
-                attrs = {k[len(prefix):]: v for k, v in payloads.items() if k.startswith(prefix)}
-                if not attrs:
-                    continue
+            for mod_name, attrs in attrs_by_module.items():
+                module = by_name[mod_name]
                 for attr, val in attrs.items():
                     update_offload_parameter(module, attr, val)
                 # the stale BF16 `weight` from the fresh load must go: the module
@@ -214,7 +218,8 @@ def _make_modifier_class():
 
 def verify_checkpoints(dir_a, dir_b):
     import torch
-    files_a = sorted(f for f in os.listdir(dir_a) if f.startswith("layer_"))
+    # `.pt` only: a TERM during torch.save leaves a `layer_NN.pt.tmp` behind
+    files_a = sorted(f for f in os.listdir(dir_a) if f.startswith("layer_") and f.endswith(".pt"))
     files_b = set(os.listdir(dir_b))
     all_ok = True
     for f in files_a:
