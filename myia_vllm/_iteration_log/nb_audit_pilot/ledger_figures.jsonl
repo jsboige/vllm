@@ -1,0 +1,2 @@
+{"notebook": "MyIA.AI.Notebooks/SymbolicAI/SMT/Z3-API/Z3-08-Ordonnancement-Python.ipynb", "started": "2026-09-22T22:14:09+00:00", "elapsed_s": 203.0, "error": null, "parsed": true, "verdict": "CONCERNS", "n_verifs": 1, "n_verifs_ok": 1, "n_candidates": 1, "n_findings": 1, "n_valid": 1}
+{"notebook": "MyIA.AI.Notebooks/RL/rl_11_pomdp.ipynb", "started": "2026-09-22T22:14:07+00:00", "elapsed_s": 316.9, "error": null, "parsed": true, "verdict": "CONCERNS", "n_verifs": 1, "n_verifs_ok": 1, "n_candidates": 1, "n_findings": 1, "n_valid": 1}
