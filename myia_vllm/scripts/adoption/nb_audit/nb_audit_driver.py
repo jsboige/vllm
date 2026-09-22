@@ -286,12 +286,15 @@ def build_round2(results: list[dict]) -> str:
             "Rends l'unique bloc ```json de SORTIE (format final de tes instructions).")
 
 
-async def _call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
+async def _call(session: ClientSession, args, prompt: str, conv: str | None,
+                attach: list[str] | None = None) -> tuple[dict, float]:
     spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.6}}
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
         payload["conversation_id"] = conv
+    if attach:  # sk-agent takes a JSON list of paths; prod accepts 4 images per prompt
+        payload["attachment"] = json.dumps(attach)
     t0 = time.time()
     try:
         res = await session.call_tool("call_agent", payload,
@@ -312,9 +315,9 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
               "Réfléchis plus court (quelques centaines de mots), puis rends directement ta sortie.")
 
 
-async def _call_retry(session, args, rec, stage, prompt, conv):
+async def _call_retry(session, args, rec, stage, prompt, conv, attach=None):
     for attempt in range(2):
-        env, dt = await _call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv)
+        env, dt = await _call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv, attach)
         rec["calls"].append({"stage": stage, "elapsed_s": dt, "error": env.get("error"),
                              "steps": len(env.get("steps") or [])})
         if not (env.get("error") or "").startswith("empty model response"):
@@ -351,11 +354,19 @@ async def _audit_one(session: ClientSession, sem: asyncio.Semaphore, args, rel: 
         view, cell_texts, index_to_id, profile = build_view(repo / rel, img_dir)
         organs = organ_pass(repo, rel)
         prompt = build_prompt(rel, view, series_context(repo, rel), organs, profile, work)
+        # the committed figures go to the model's vision, in notebook order, up to the prod limit
+        figs = re.findall(r"\[figure image/\w+ enregistrée : ([^\]]+)\]", view)[:args.max_figures]
+        if figs:
+            prompt += ("\n\nFigures jointes, dans l'ordre : "
+                       + ", ".join(Path(f).stem for f in figs)
+                       + " (nom = <id de cellule>_<n° de sortie>). Confronte chacune à la prose qui la commente.")
         rec = {"notebook": rel, "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-               "profile": profile, "prompt_chars": len(prompt), "organs": organs, "calls": []}
+               "profile": profile, "prompt_chars": len(prompt), "organs": organs, "calls": [],
+               "figures_attached": [Path(f).name for f in figs]}
         t_all = time.time()
         # stage A — read, list candidates, write the verification scripts
-        env = await _call_retry(session, args, rec, "A", prompt, None)
+        env = await _call_retry(session, args, rec, "A", prompt, None,
+                                [Path(f).as_posix() for f in figs])
         conv, answer_a = env.get("conversation_id"), env.get("response") or ""
         rec["answer_a"] = answer_a
         # stage B — the harness executes them
@@ -406,6 +417,8 @@ async def main() -> int:
     ap.add_argument("--timeout", type=int, default=1500, help="call_agent budget per notebook (s)")
     ap.add_argument("--max-tokens", type=int, default=16384,
                     help="per LLM turn; sk-agent's model client times out at 300 s per turn")
+    ap.add_argument("--max-figures", type=int, default=4,
+                    help="committed figures attached to stage A (prod: --limit-mm-per-prompt image=4)")
     ap.add_argument("--verif-python", default=str(VERIF_PY_DEFAULT) if VERIF_PY_DEFAULT.is_file() else ORGAN_PY,
                     help="interpreter for the stage-B verification scripts")
     ap.add_argument("--work-root", default=str(Path(os.environ.get("TEMP", "/tmp")) / "nbaudit"),

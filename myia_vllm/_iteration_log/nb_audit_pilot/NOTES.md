@@ -101,6 +101,26 @@ never run (part of bot F3). Pilot 2 had 0/5 on this notebook plus one likely FP.
 on one notebook is not a measurement of the venv's effect — the model's sampling alone
 could explain it — but the missing library is no longer a failure mode.
 
+### Figures attached to stage A (22/09 ~22:15Z, rl_11 + Z3-08, concurrency 2)
+
+The driver now sends the committed figures to the model's vision (sk-agent `attachment`
+as a JSON list, notebook order, at most 4: the prod's `--limit-mm-per-prompt`), and names
+them in the prompt as `<cell id>_<output n°>`. Both notebooks went through end to end:
+2/2 parsed, 2/2 scripts clean, 1 valid finding each.
+
+- rl_11 (2 figures): exercise 2 promises N*=1 at P=0.85, contradicted by the committed
+  baselines — the same statement as bot F3 (the bot measured N*=5; our script compared
+  N=0 and N=1). Pilot 2 had matched bot F2 on this notebook instead: two samples hit two
+  different bot findings, which argues for the union of 2 runs per notebook.
+- Z3-08 (1 figure): the "anatomy" table counts 6 domain bounds while `solve_jobshop` adds
+  two per operation (12). Not in the bot audit; checked against the code: likely true,
+  minor.
+- No figure finding. Hermes had checked the rl_11 figure visually and found it
+  consistent; the model's answer never mentions the figures, so this run does not show
+  that it looked at them.
+- **rl_11 stage A took 277.6 s** with 2 images, 22 s short of sk-agent's 300 s per-turn
+  limit. Images make that limit tighter.
+
 ## Timeouts — the chain, measured
 
 | Layer | Value | Effect |
@@ -160,8 +180,8 @@ precision sample judged by the bots or the coordinator on a few hundred notebook
   `%LOCALAPPDATA%\nbaudit\verif-venv` (numpy, scipy, networkx, pandas, z3, matplotlib,
   sympy, pulp + CBC), picked by default through `--verif-python`; organs keep the system
   Python, which stays untouched.
-- Figures: the driver extracts PNGs but does not send them yet. sk-agent `attachment`
-  and the model's vision would cover the bots' gap 3.
+- ~~Figures~~ sent since 22/09 (`--max-figures`, default 4). Whether the model actually
+  checks them against the prose is not shown yet: needs a notebook with a known figure defect.
 - Mechanical organ candidates seen in the misses: navigation "next →" pointing backwards
   (2 instances in Z3 already reported by the bots) — an organ, not an LLM finding.
 - Recall: sample 2 runs per notebook and union the validated findings. We have the
