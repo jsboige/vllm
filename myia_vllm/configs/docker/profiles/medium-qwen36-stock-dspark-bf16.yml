@@ -116,8 +116,23 @@ services:
     # DFlash2 + DSpark spec-dec. NOT in this tag (landed 08-22..08-27, wait for v0.28.1):
     # fused QK-norm+MRoPE+gate for Qwen3.6 (#52676), Mamba prefill checkpoints +9-25% TTFT
     # (#52789), CUDA-graph profiling memory released before KV alloc (#53955).
-    # Rollback = this line back to v0.27.1 + the compile-cache volume name below.
-    image: vllm/vllm-openai:v0.28.0
+    # DSPARK BF16 EVAL (rerun 2026-09-22, GO user): bumped v0.28.0 -> v0.30.0.
+    # The 09-02 attempt died at the WSL2 UVA wall because DSpark forces the V2
+    # model runner; prod now runs V2 via VLLM_WSL2_ENABLE_PIN_MEMORY=1 (set in
+    # `environment:` below) and v0.30.0 adds #55133 (Qwen3 DSpark padded-vocab
+    # d2t fix, merged 09-14). #53929 (adaptive DSpark verification for Qwen GDN)
+    # is STILL OPEN — acceptance on the 30 GDN layers is the open question this
+    # eval answers empirically.
+    # NO --enable-expert-parallel here (13:21Z attempt crashed): SpeculativeConfig
+    # validation rejects EP with the DENSE DSpark drafter — "Number of experts in
+    # the model must be greater than 0 when expert parallelism is enabled"
+    # (Qwen3DSparkModel has 0 experts). The MoE target therefore runs pure TP=2
+    # expert sharding, NOT EP — a documented confound vs the TQ prod baseline.
+    # ⚠️ Comments must NEVER sit inside the `command:` continuation chain: the
+    # backslash-newline joins the `#` line and terminates the command (13:22Z
+    # attempt booted on bare defaults — gpu-util 0.9, no parsers, no spec-dec —
+    # because everything after --tensor-parallel-size 2 was swallowed).
+    image: vllm/vllm-openai:v0.30.0
     container_name: myia_vllm-medium-qwen36-moe
     # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
     # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
@@ -177,11 +192,10 @@ services:
           --served-model-name qwen3.6-35b-a3b \
           --api-key ${VLLM_API_KEY_MEDIUM} \
           --tensor-parallel-size 2 \
-          --enable-expert-parallel \
           --gdn-prefill-backend triton \
           --no-enable-flashinfer-autotune \
           --gpu-memory-utilization 0.70 \
-          --max-model-len 262144 \
+          --max-model-len 131072 \
           --kv-cache-dtype auto \
           --dtype auto \
           --limit-mm-per-prompt '{"image":4,"video":0}' \
@@ -241,6 +255,9 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_USE_DEEP_GEMM=0
+      # DSpark requires the V2 model runner; under WSL2 that needs this gate
+      # (see _iteration_log/v0290_bump/NOTES.md — the 09-02 attempt died here).
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
       - OMP_NUM_THREADS=1
       # ⚠️ 2026-08-11 : vLLM stock v0.27.0 log "Unknown vLLM environment variable
       # detected" pour VLLM_USE_FLASHINFER_MOE_FP16, VLLM_USE_FLASHINFER_MOE_FP8 et
@@ -322,7 +339,7 @@ services:
         target: /root/.cache/huggingface
         bind:
           create_host_path: false
-      - vllm-compile-cache-qwen36-stock-tq-v0280:/root/.cache/vllm  # per-image cache (v0.28.0); the v0.27.1 volume `vllm-compile-cache-qwen36-stock-tq` is kept intact for rollback
+      - vllm-compile-cache-qwen36-dspark-v0300:/root/.cache/vllm  # dedicated: spec-dec changes the compiled graphs; do not pollute the stock volumes
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro  # error_source_capture diag
     ports:
@@ -599,7 +616,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  vllm-compile-cache-qwen36-stock-tq-v0280:  # per-image: v0.28.0 (2026-09-01). v0.27.1's `vllm-compile-cache-qwen36-stock-tq` left in place for rollback
+  vllm-compile-cache-qwen36-dspark-v0300:  # dedicated to the DSpark bf16 eval (v0.30.0, 2026-09-22)
 
 # =====================================================================
 # CHANGES vs medium-qwen36-moe.yml (the FP8 baseline)
