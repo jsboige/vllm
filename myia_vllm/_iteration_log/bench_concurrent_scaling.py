@@ -1,11 +1,13 @@
 """Concurrent scaling bench: 1, 2, 4, 8, 12, 16 users at once."""
 import concurrent.futures
 import json
+import os
 import statistics
 import time
 import urllib.request
 
 API = "http://localhost:5002/v1/chat/completions"
+MODEL = os.environ.get("BENCH_MODEL", "qwen3.6-35b-a3b")
 KEY = None
 for line in open("d:/vllm/myia_vllm/.env"):
     if line.startswith("VLLM_API_KEY_MEDIUM="):
@@ -33,7 +35,7 @@ PROMPTS = [
 
 def chat(prompt, max_tokens=256, thinking=False):
     body = {
-        "model": "qwen3.6-35b-a3b",
+        "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0,
