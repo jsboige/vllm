@@ -132,13 +132,14 @@
 
 services:
   vllm-medium-qwen36-moe:  # SAME container_name as baseline — only one runs at a time
-    # v0.29.0 rejected 2026-09-09: its default V2 Model Runner requires UVA, unavailable
-    # under WSL2 (`RuntimeError: UVA is not available` before model load). The supported
-    # VLLM_USE_V2_MODEL_RUNNER=0 override remains untested and needs a dedicated window.
-    # Production rolled back to v0.28.0; see _iteration_log/v0290_bump/NOTES.md.
-    # 2026-09-11 (issue #34 window): re-testing v0.29.0 WITH VLLM_WSL2_ENABLE_PIN_MEMORY=1
-    # set in `environment:` below - the gate that blocked the 09-09 attempt.
-    image: vllm/vllm-openai:v0.29.0
+    # 2026-09-09: v0.29.0 first rejected (V2 Model Runner "UVA is not available" under
+    # WSL2) — resolved 2026-09-11: that gate is exactly VLLM_WSL2_ENABLE_PIN_MEMORY
+    # (set in `environment:` below). Promoted 09-11, N=16 869.5 tok/s (+13.5% same-night).
+    # See _iteration_log/v0290_bump/NOTES.md.
+    # 2026-09-22 (GO user): bump to v0.30.0. Notables for us: #56908 (V2 tolerates
+    # missing pinned memory), #51700 (FULL cudagraphs under V2), #55133 (DSpark Qwen3
+    # padded-vocab fix). Record: _iteration_log/v0300_bump/NOTES.md.
+    image: vllm/vllm-openai:v0.30.0
     container_name: myia_vllm-medium-qwen36-moe
     # gpu-memory-utilization 0.82→0.78 (2026-07-14) →0.70 (2026-08-04). GPU 0 is shared with the
     # Windows desktop (explorer/VSCode/Edge, fluctuating baseline); GPU 1 is not. Boot-time
@@ -338,7 +339,7 @@ services:
         target: /root/.cache/huggingface
         bind:
           create_host_path: false
-      - vllm-compile-cache-qwen36-stock-tq-v0290:/root/.cache/vllm  # per-image cache (v0.29.0, #34 window); the v0.28.0 volume is kept intact for rollback
+      - vllm-compile-cache-qwen36-stock-tq-v0300:/root/.cache/vllm  # per-image cache (v0.30.0, 2026-09-22); v0290 + v0280 volumes kept intact for rollback
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro  # error_source_capture diag
     ports:
@@ -615,8 +616,9 @@ services:
     restart: unless-stopped
 
 volumes:
-  vllm-compile-cache-qwen36-stock-tq-v0290:  # per-image: v0.29.0 (#34 window, 2026-09-11). v0.28.0's volume left in place for rollback
-  vllm-compile-cache-qwen36-stock-tq-v0280:  # per-image: v0.28.0 (2026-09-01). Kept for instant rollback of the #34 window
+  vllm-compile-cache-qwen36-stock-tq-v0300:  # per-image: v0.30.0 (2026-09-22 bump)
+  vllm-compile-cache-qwen36-stock-tq-v0290:  # per-image: v0.29.0 (#34 window, 2026-09-11). Kept for rollback
+  vllm-compile-cache-qwen36-stock-tq-v0280:  # per-image: v0.28.0 (2026-09-01). Kept for instant rollback
 
 # =====================================================================
 # CHANGES vs medium-qwen36-moe.yml (the FP8 baseline)
