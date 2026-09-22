@@ -1,0 +1,360 @@
+# Docker Compose profile - Qwen3.8-27B W4A16 + DFlash2 drafter (W4A16) + FP8 KV
+# ============================================================================
+# EVAL PROFILE (2026-09-22, GO user) — Qwen3.8-27B dense + DFlash2 spec-dec
+# vs the production Qwen3.6-35B-A3B MoE (medium-qwen36-stock-tq.yml).
+# Reopening of the line closed 2026-08-20 (TP=2: N=16 5.7x-6.3x) — three facts
+# changed: (1) DFlash2 (#52816) merged 08-21 and ships in our prod image
+# v0.30.0; (2) a W4A16-quantized drafter exists (syvai/Qwen3.8-27B-DFlash2-
+# W4A16, ~3-4 GB instead of ~13.5 GB BF16) so the 262K window survives;
+# (3) measured prod utilization is <1% (8 tok/s avg vs 956 capacity, peak
+# N=4/16, zero preemptions) — the dense throughput cost is a FUTURE cost.
+# Study + August A/B data: memory project_qwen38_27b_evaluation.md.
+#
+# TARGET QUANT — philbert440 GS-128 (DEFAULT) vs cyankiwi GS-32 (fallback):
+#   acceptance measured identical (0.47/0.47, 08-20 window) but GS-128 gives
+#   +11% KV (383,696 vs 344,155 fp8 tokens) — KV is the scarce resource here
+#   since TurboQuant is BANNED with spec-dec (our issue vllm#53180: silent
+#   degenerate output, passes every health gate). cyankiwi's BF16 MTP head is
+#   worthless with an external DFlash2 drafter. philbert's vision tower was
+#   never gated in August — the vision gate covers it this time.
+#
+# DFLASH2 MECHANICS (verified in our fork, synced post-#52816):
+#   - serve-side method stays "dflash"; the drafter checkpoint declares the
+#     dflash2 speculator (conv_kernel_size/conv_group_size/selector_rank/
+#     selector_top_k) and auto-maps to DFlash2DraftModel (speculators/algos.py).
+#   - DFlash2 REQUIRES the V2 model runner (config/vllm.py
+#     _get_v1_model_runner_unsupported_features: "dflash2 drafts") — hence
+#     VLLM_WSL2_ENABLE_PIN_MEMORY=1, same as prod v0.30.0 and the DSpark eval.
+#   - num_speculative_tokens=8 per z-lab's card for this drafter (club-3090
+#     used 7; DFlash1 April eval preferred 7 over 15). Lookahead costs
+#     num_spec_tokens+1 KV slots per request (vllm.py num_lookahead_tokens).
+#   - On Ada (SM89) the non-causal dflash attention lands on FLASH_ATTN
+#   (backend list, cuda.py); the cutlass caveat is SM100f-only.
+#   - IF boot fails the KV check under fp8 (flash_attn x fp8 x non-causal was
+#   a v0.19-era conflict), fallback: KV_DTYPE_QWEN38=auto + cap max-model-len
+#   (KV halves ~190K < 262K) — loud failure, cheap retry, do not pre-solve.
+#
+# PREFIX CACHE: --prefix-match-unit 16 + --mamba-ssm-cache-dtype float16 added
+#   for parity with prod (PR #37, 09-11) — same hybrid GDN family. If the
+#   divisibility rule rejects this model's block size the failure is loud at
+#   config validation (before weight load): drop both flags and note it.
+#
+# A/B DISCIPLINE: same-window interleaved A-B-A-B only (08-20 lesson: the
+#   sequential A/B measured machine noise, bracket 462->844 t/s in 1h).
+#   Baseline bench runs on the LIVE prod stack before the first swap.
+#
+# ⚠ OPERATOR TRAPS (both live incidents, 2026-09-22):
+#   - EVERY compose command carries --env-file myia_vllm/.env (08-20 incident
+#     A2: silent wrong HF cache + missing API keys, guard fail-loud in 3 min).
+#   - NEVER place '#' comment lines inside the backslash-continued command
+#     block below — the continuation JOINS the comment, the command terminates
+#     early and exec silently swallows every following flag (DSpark incident:
+#     engine ran 2 min on bare defaults). Verify with `docker compose config`
+#     before every `up` after editing this file.
+#   - Stop the watchdog before the battery runs (253K prefills starve its
+#     decode probe -> false WEDGE): docker stop myia_vllm-watchdog-qwen38-27b
+#
+# RUNBOOK (window ~90-120 min):
+#   PRE-DOWNLOAD drafter while prod is up (CPU-only sidecar, not an engine):
+#     docker run -d --name qwen38-drafter-dl -e HUGGING_FACE_HUB_TOKEN=$(...) \
+#       -v "\\wsl.localhost\Ubuntu\home\user\vllm\.cache\huggingface\hub:/root/.cache/huggingface" \
+#       --entrypoint /bin/sh vllm/vllm-openai:v0.30.0 \
+#       -c 'huggingface-cli download syvai/Qwen3.8-27B-DFlash2-W4A16'
+#   BASELINE (A legs): bench on the LIVE prod stack (warm engine).
+#   SWAP:   docker compose -f <prod profile> --env-file myia_vllm/.env down && \
+#           docker compose -f <this> --env-file myia_vllm/.env up -d
+#   BOOT:   fresh compile-cache volume -> 10-25 min to health is normal
+#           (start_period 1800s; health=000 at T+4 min is normal).
+#   GATES:  13-gate battery + DFlash2 acceptance gate (spec_decode_num_accepted
+#           / num_drafted > 0.3 expected; club-3090 measured 3.35/7 = 0.48) +
+#           QUALITY CANARY (mandatory: spec-dec + hybrid GDN has produced
+#           silent degenerate output — fixed French prompt, assert sane).
+#   END:    restore prod stack (swap back), verify health+KV, then report.
+#   VARIANTS (env overrides beat --env-file):
+#     v1  fp8 + philbert GS-128 + dflash2-8  (DEFAULTS)
+#     v2  fp8 + cyankiwi GS-32              : VLLM_MODEL_QWEN38=cyankiwi/Qwen3.8-27B-AWQ-INT4
+#     v3  auto KV (if fp8 rejected at boot) : KV_DTYPE_QWEN38=auto (+ cap len)
+#
+# DIFF vs medium-qwen38-27b-awq-mtp.yml (August base):
+#   image            overlay v0271-s51812 -> STOCK vllm/vllm-openai:v0.30.0
+#   model default    cyankiwi GS-32 -> philbert440 GS-128 (see above)
+#   spec config      mtp/3 -> dflash + syvai W4A16 drafter, 8 tokens
+#   env              + VLLM_WSL2_ENABLE_PIN_MEMORY=1 (V2 runner, mandatory)
+#   flags            + --prefix-match-unit 16, + --mamba-ssm-cache-dtype float16
+#   compile cache    fresh volume vllm-compile-cache-qwen38-dflash2-v0300
+#   PYTORCH_CUDA_ALLOC_CONF expandable_segments REMOVED — it deterministically
+#   breaks the Marlin repack under WSL2 (marlin_utils.py:518, measured 09-12;
+#   the August profile predates that finding and is now known-wrong here)
+# ============================================================================
+
+services:
+  vllm-medium-qwen38-27b:  # eval stack — the 3.6 prod stack must be DOWN first
+    image: ${VLLM_IMAGE_QWEN38:-vllm/vllm-openai:v0.30.0}
+    container_name: myia_vllm-medium-qwen38-27b
+    # gpu-memory-utilization stays at the hard-won 0.70 (boot-OOM history at
+    # 0.82/0.78, GPU 0 shared with the Windows desktop). Dense 27B W4A16 is
+    # LIGHTER than the MoE (~10.5 GiB weights/GPU at TP=2); do not tune
+    # gpu-util in the same change that swaps the model.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find /root/.cache/huggingface -type f -size +4G -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_QWEN38:-philbert440/Qwen3.8-27B-W4A16-AWQ} \
+          --served-model-name qwen3.8-27b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype ${KV_DTYPE_QWEN38:-fp8} \
+          --speculative-config '{"method":"dflash","model":"syvai/Qwen3.8-27B-DFlash2-W4A16","num_speculative_tokens":8}' \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 4096 \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --prefix-match-unit 16 \
+          --mamba-ssm-cache-dtype float16 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --default-chat-template-kwargs '{"preserve_thinking":true,"reasoning_effort":"medium"}' \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
+    labels:
+      - "autoheal=False"
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
+      - vllm-compile-cache-qwen38-dflash2-v0300:/root/.cache/vllm
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1800s
+    restart: unless-stopped
+
+  # Watchdog v5 — identical logic to the prod profile; renamed containers and
+  # the decode probe's model name. Stop it before battery runs (see RUNBOOK).
+  watchdog-qwen38-27b:
+    image: docker:cli
+    container_name: myia_vllm-watchdog-qwen38-27b
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl >/dev/null 2>&1
+
+        CONTAINER="myia_vllm-medium-qwen38-27b"
+        PORT="$${VLLM_PORT_GLM:-5002}"
+        INTERVAL=30
+        HEALTH_TIMEOUT=5
+        GEN_TIMEOUT=40
+        PROBE_MAX_TOKENS=24
+        GEN_TIMEOUT_WARM=120
+        WARMUP_PROBES=3
+        WARMUP_LEFT=$$WARMUP_PROBES
+        WEDGE_MAX=2
+        UNHEALTHY_MAX=4
+        DOWN_MAX=24
+        WEDGE_FAIL=0
+        DOWN_FAIL=0
+        STARTING_MAX=3
+        PREV_RC=-1
+        STARTING_CHURN=0
+        STALL_MAX=24
+        STARTING_CYCLES=0
+
+        echo "Watchdog v5 for Qwen3.8-27B eval (wedge + hard-hang + crash-loop + boot-stall)"
+        echo "  Interval: $${INTERVAL}s. Probes host.docker.internal."
+
+        while true; do
+          TS=$$(date '+%Y-%m-%d %H:%M:%S')
+
+          H=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+            "http://host.docker.internal:$$PORT/health" 2>/dev/null)
+
+          if [ "$$H" = "200" ]; then
+            if [ $$WARMUP_LEFT -gt 0 ]; then GT=$$GEN_TIMEOUT_WARM; else GT=$$GEN_TIMEOUT; fi
+            G=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$GT \
+              -X POST "http://host.docker.internal:$$PORT/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $${VLLM_API_KEY_MEDIUM}" \
+              -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Count to twenty."}],"max_tokens":'$$PROBE_MAX_TOKENS',"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)
+            DOWN_FAIL=0
+            STARTING_CHURN=0; PREV_RC=-1
+            STARTING_CYCLES=0
+            if [ "$$G" = "200" ]; then
+              if [ $$WEDGE_FAIL -gt 0 ]; then
+                echo "$$TS RECOVERED (decode ok after $$WEDGE_FAIL wedge fails)"
+              elif [ $$WARMUP_LEFT -gt 0 ]; then
+                echo "$$TS OK health=200 decode=200 (warm-up grace consumed — engine is warm)"
+              else
+                echo "$$TS OK health=200 decode=200"
+              fi
+              WEDGE_FAIL=0
+              WARMUP_LEFT=0
+            elif [ $$WARMUP_LEFT -gt 0 ]; then
+              WARMUP_LEFT=$$((WARMUP_LEFT - 1))
+              echo "$$TS WARMUP health=200 decode=$$G — post-boot grace, $$WARMUP_LEFT probe(s) left, NOT counted as wedge"
+            else
+              WEDGE_FAIL=$$((WEDGE_FAIL + 1))
+              echo "$$TS WEDGE health=200 decode=$$G (fail $$WEDGE_FAIL/$$WEDGE_MAX)"
+              if [ $$WEDGE_FAIL -ge $$WEDGE_MAX ]; then
+                echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck)"
+                docker restart $$CONTAINER
+                WEDGE_FAIL=0
+                WARMUP_LEFT=$$WARMUP_PROBES
+                echo "$$TS Restart issued. Waiting 600s for boot..."
+                sleep 600
+                continue
+              fi
+            fi
+          else
+            HS=$$(docker inspect --format '{{.State.Health.Status}}' $$CONTAINER 2>/dev/null)
+            WEDGE_FAIL=0
+            if [ "$$HS" = "starting" ]; then
+              DOWN_FAIL=0
+              STARTING_CYCLES=$$((STARTING_CYCLES + 1))
+              WARMUP_LEFT=$$WARMUP_PROBES
+              RC=$$(docker inspect --format '{{.RestartCount}}' $$CONTAINER 2>/dev/null)
+              RC=$${RC:-0}
+              if [ "$$PREV_RC" -ge 0 ] && [ "$$RC" -gt "$$PREV_RC" ]; then
+                STARTING_CHURN=$$((STARTING_CHURN + 1))
+              fi
+              PREV_RC=$$RC
+              if [ $$STARTING_CHURN -ge $$STARTING_MAX ]; then
+                OOMHITS=$$(docker logs --since 10m $$CONTAINER 2>&1 | grep -ci "out of memory")
+                if [ "$${OOMHITS:-0}" -gt 0 ]; then
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), CUDA-OOM present in log ($$OOMHITS hits). NOT auto-restarting (futile)."
+                else
+                  echo "$$TS CRASH-LOOP $$CONTAINER docker=starting, RestartCount churning (=$$RC, +$$STARTING_CHURN), NO OOM in log — cause UNKNOWN. Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              elif [ $$STARTING_CYCLES -ge $$STALL_MAX ]; then
+                LOADING=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Starting to load model")
+                LOADED=$$(docker logs --since 20m $$CONTAINER 2>&1 | grep -c "Model loading took")
+                MINS=$$((STARTING_CYCLES * INTERVAL / 60))
+                if [ "$${LOADING:-0}" -gt 0 ] && [ "$${LOADED:-0}" -eq 0 ]; then
+                  echo "$$TS BOOT-STALL $$CONTAINER stuck LOADING WEIGHTS for $${MINS} min, RestartCount FLAT (=$$RC). Prime suspect: HF-cache bind resolved EMPTY (phantom). CHECK: docker exec $$CONTAINER du -sh /root/.cache/huggingface/hub -> must show the 21G quants. If empty/missing: confirm 'wsl -l -v' shows Ubuntu Running, then compose down && up -d. NOT auto-restarting."
+                else
+                  echo "$$TS BOOT-STALL $$CONTAINER docker=starting for $${MINS} min, RestartCount FLAT (=$$RC), weights loaded — stalled AFTER load (compile / KV alloc / graph capture). Read: docker logs $$CONTAINER. NOT auto-restarting."
+                fi
+              else
+                echo "$$TS BOOTING health=$$H (docker=starting, within 30-min grace; RestartCount=$$RC, cycle $$STARTING_CYCLES/$$STALL_MAX)"
+              fi
+              sleep $$INTERVAL
+              continue
+            fi
+            STARTING_CYCLES=0
+            HI=$$(curl -s -o /dev/null -w "%{http_code}" --max-time $$HEALTH_TIMEOUT \
+              "http://vllm-medium-qwen38-27b:$$PORT/health" 2>/dev/null)
+            DOWN_FAIL=$$((DOWN_FAIL + 1))
+            if [ "$$HI" = "200" ]; then
+              THRESH=$$DOWN_MAX
+              echo "$$TS PORT-FWD-LOSS host=$$H internal=200 docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            elif [ "$$HS" = "unhealthy" ]; then
+              THRESH=$$UNHEALTHY_MAX
+              echo "$$TS ENGINE-HUNG host=$$H internal=$$HI docker=unhealthy (fail $$DOWN_FAIL/$$THRESH, ~2min fast-path)"
+            else
+              THRESH=$$DOWN_MAX
+              echo "$$TS ENGINE-DOWN host=$$H internal=$$HI docker=$$HS (fail $$DOWN_FAIL/$$THRESH)"
+            fi
+            if [ $$DOWN_FAIL -ge $$THRESH ]; then
+              echo "$$TS RESTARTING $$CONTAINER (unresponsive $$DOWN_FAIL cycles, docker=$$HS)"
+              docker restart $$CONTAINER
+              DOWN_FAIL=0
+              WARMUP_LEFT=$$WARMUP_PROBES
+              echo "$$TS Restart issued. Waiting 600s for boot..."
+              sleep 600
+              continue
+            fi
+          fi
+
+          sleep $$INTERVAL
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VLLM_API_KEY_MEDIUM=${VLLM_API_KEY_MEDIUM}
+      - VLLM_PORT_GLM=${VLLM_PORT_GLM:-5002}
+    depends_on:
+      vllm-medium-qwen38-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Wedge-telemetry sidecar — same as prod, pointed at the eval service name.
+  wedge-telemetry:
+    image: python:3-slim
+    container_name: myia_vllm-wedge-telemetry-qwen38
+    command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    environment:
+      - WEDGE_METRICS_URL=http://vllm-medium-qwen38-27b:${VLLM_PORT_GLM:-5002}/metrics
+    volumes:
+      - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
+      - ./../../../_iteration_log:/out
+    depends_on:
+      vllm-medium-qwen38-27b:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-qwen38-dflash2-v0300:
