@@ -91,6 +91,16 @@ empty answer.
 Caveats: 11 notebooks is a small sample; the bot findings are a reference, not ground
 truth; the triage of extras is mine, from reading the cells.
 
+### Re-run of GT-16d with the verification venv (22/09 ~22:10Z, one notebook, one run)
+
+GT-16d was the notebook where pilot 2's V3 failed on the missing `pulp`. Re-run alone
+with the venv: 217 s (A 154 s, C 61 s), 3/3 scripts clean, 2 valid findings, both
+matching the bots — the chain double-counting (bot F2, confirmed by V3:
+`matchings_bruts=10, receveurs_uniques=3`) and the |V|=30/100 experiments announced but
+never run (part of bot F3). Pilot 2 had 0/5 on this notebook plus one likely FP. One run
+on one notebook is not a measurement of the venv's effect — the model's sampling alone
+could explain it — but the missing library is no longer a failure mode.
+
 ## Timeouts — the chain, measured
 
 | Layer | Value | Effect |
@@ -146,8 +156,10 @@ precision sample judged by the bots or the coordinator on a few hundred notebook
 
 ## Open items
 
-- Verification environment: a dedicated venv instead of the system Python (`pulp`
-  missing; keep the host Python untouched).
+- ~~Verification environment~~ done 22/09: dedicated venv
+  `%LOCALAPPDATA%\nbaudit\verif-venv` (numpy, scipy, networkx, pandas, z3, matplotlib,
+  sympy, pulp + CBC), picked by default through `--verif-python`; organs keep the system
+  Python, which stays untouched.
 - Figures: the driver extracts PNGs but does not send them yet. sk-agent `attachment`
   and the model's vision would cover the bots' gap 3.
 - Mechanical organ candidates seen in the misses: navigation "next →" pointing backwards
