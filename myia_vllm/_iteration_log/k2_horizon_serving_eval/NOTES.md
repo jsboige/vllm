@@ -28,6 +28,32 @@
 ### Voie 3 — plugin Siladrim (`stefanskiasan/k2-horizon-vllm`, v0.28.0) : non tentée
 CUDA/Ada prouvé (L40S : 69 t/s single, 1 020 t/s N=32, int4 KV, 314K contexte) MAIS **TP=1 seul démontré** — notre cas (2×24 GB, checkpoint 21,8 G) exige TP=2. Non tentée dans cette fenêtre.
 
+### Voie 4 — quant maison (recette `quantize_k2_horizon.py`) : dimensionnée le soir même, NE TIENT PAS à 0.70
+Seule voie servable par le vLLM **stock** : notre ignore-list garde `self_attn.v_experts` en BF16, et le stock
+v0.30.0 n'accepte que ça — `compute_mova_v_sparse` (`k2_horizon.py:812`) fait `torch.stack([expert.weight ...])`
+à chaque forward, donc exige un `.weight` non quantifié (un `ColumnParallelLinear` compressed-tensors n'a que
+`weight_packed`). Dimensionnement lu dans les en-têtes safetensors du BF16 (`de2d2efb`, 69,75 GiB, lecture seule) :
+
+| Catégorie | BF16 | W4A16 (GS128) |
+|---|---:|---:|
+| experts MoE (quantifiés) | 49,93 GiB | 12,87 GiB |
+| **attn.v_experts MoVA (ignorés, BF16)** | **14,06 GiB** | **14,06 GiB** |
+| autres proj. attention (quantifiées) | 3,06 | 0,79 |
+| lm_head + embed (ignorés) | 2,40 | 2,40 |
+| MLP denses, routers, norms | 0,29 | 0,10 |
+| **Total** | 69,75 | **~30,2 GiB → ~15,1 GiB/GPU en TP=2** |
+
+Budget à gpu-util 0.70 : ~16,8 GiB/GPU, activations + KV compris → **KV quasi nul**. (Le quant cyankiwi, 24,3 G
+avec v_experts quantifiés, plafonnait déjà à <6 GiB de KV → 65K.) Issues possibles, toutes coûteuses :
+(a) éval à gpu-util 0.85 (précédent : profil Ornith FP8, éval seule) mais une adoption prod exigerait 0.85 sur
+le GPU 0 partagé avec le bureau, à rebours du calibrage anti-boot-OOM ; (b) quantifier aussi les v_experts →
+retour au besoin d'un kernel CUDA non-stock (aujourd'hui : le fork cyankiwi, eager) — notre quant n'apporterait
+alors rien de plus que celle de cyankiwi ; (c) attendre l'upstream. SUPPOSÉ, non mesuré : le `torch.stack` par
+forward recopie ~0,16 GiB de v_experts par couche et par GPU à chaque pas (~7 GiB de trafic sur 45 couches
+MoVA), un plafond de décodage propre à l'implémentation stock.
+Checkpoints du harnais de reprise : ~0,17 Go par couche dense, **~1,6 Go par couche MoE** (weight BF16
+fake-quantifié + scale + zp) → **~72 Go de disque** pour un run complet (WSL : 257 Go libres).
+
 ## A/B (bench petits prompts, même soirée)
 - Baseline prod MoE (chaud) : N=1 61,7 · N=4 186,4 · N=8 390,6 · N=16 **762,4 t/s**
 - K2 fork eager : N=16 **112-123 t/s** (batterie), single 6-8. Comparaison biaisée par eager — mais l'ordre de grandeur écarte tout retournement.
