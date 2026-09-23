@@ -141,3 +141,31 @@ HF_CACHE_PATH backslash form via PowerShell.
   becomes runnable the day upstream lands the fix; drafter + both quants are in cache)
 - Bench parameterized: `BENCH_MODEL` env in `bench_concurrent_scaling.py`
 - Compile volume `vllm-compile-cache-qwen38-dflash2-v0300` left in place (fresh, ~empty)
+
+## Traffic histogram (2026-09-23): the missing input, now in
+
+Delivered by po-2025:claudish (hub owner) from the hub captures of 2026-09-22: 29,264
+requests paired, context size read from `input_tokens` (Anthropic-shaped responses).
+
+| client vector | n | median | P90 | P99 | >50K | >100K | >150K |
+|---|---|---|---|---|---|---|---|
+| claude-* (Claude Code + Python SDK) | 23,781 | 826 | 216,647 | 785,462 | 34.3 % | 33.0 % | 25.6 % |
+| Hermes | 3,637 | 120,770 | 225,220 | 785,462 | 63.7 % | 57.5 % | 35.9 % |
+| other (unidentified) | 746 | 130,205 | 208,829 | 242,868 | 76.5 % | 65.1 % | 35.4 % |
+| sk-agent | 545 | 423 | 1,970 | 244,368 | 5.0 % | 3.9 % | 3.1 % |
+| NanoClaw | 459 | 102,831 | 155,081 | 195,270 | 59.0 % | 52.5 % | 13.7 % |
+
+Vectors were attributed by prompt-content signature (the request envelope carries no
+user-agent); the identical 785,462 max on two rows is either two sessions at the same cap
+or a residual pairing error, and it does not move the medians or P90s. Volume over 7 days
+is dominated by cloud lanes (glm-5.3 71,937 · MiniMax-M3 46,108 · deepseek-flash 17,804 ·
+native Opus 9,487 responses); the local lane shows 4 responses through the hub because
+local traffic goes straight to :5002.
+
+**Reading.** At 262,504 tokens of KV, two Hermes or NanoClaw turns fill the 27B. Capping
+`--max-model-len` does not help the vectors that matter; only sk-agent's short turns would
+fit, and there is no hardware slot for a second service (GPUs 0,1 are prod, GPU 2 TP=1 was
+closed as infeasible in #35). Recommendation logged as registry Q6: keep the MoE; re-test
+the 27B for information only once vllm-project/vllm#51684 lands in a stock image.
+Side note for the adoption mandate: a quarter of claude-* requests exceed 150K and the P99
+exceeds even the MoE's 262K window.
