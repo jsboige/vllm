@@ -104,3 +104,12 @@ voir Voie 4) reste à l'arbitrage user.
 - Images : `vllm-openai-v0300-s56637:v1`, `vllm-openai-v0290-cyankiwi-k2:v1` (35 G)
 - Checkpoints cache jesse : urakozz 22,3 G · Siladrim 21,8 G · cyankiwi 24,3 G (~68 G total)
 - Batterie : `k2_horizon_eval/validate_k2.py` (12 gates adaptées, kwargs reasoning_effort)
+
+## Decision (2026-09-23): parked
+
+User decision on registry Q3, option (b): the in-house W4A16 quant is **not run**. With the
+MoVA `v_experts` kept in BF16 (the only form stock vLLM serves, `k2_horizon.py:812`) it needs
+~15.1 GiB/GPU at TP=2 against ~16.8 GiB of budget at gpu-util 0.70, leaving almost no KV;
+raising gpu-util to 0.85 for an eval was the rejected option (a). Re-open on the first
+upstream CUDA path for quantized `v_experts`. Everything listed under Artefacts is kept,
+plus the validated resume harness and the three test checkpoints (`~/k2-ckpt-test{1,2,3}`).
