@@ -251,14 +251,15 @@ def run_verifs(verifs: list[dict], work: Path, py: str, limit_s: int = 90) -> li
                                encoding="utf-8", errors="replace", timeout=limit_s,
                                env={**os.environ, "PYTHONIOENCODING": "utf-8", "MPLBACKEND": "Agg"})
             err = "\n[stderr]\n" + p.stderr if p.stderr.strip() else ""
-            rc, out = p.returncode, p.stdout + err
+            rc, out, so, se = p.returncode, p.stdout + err, p.stdout, p.stderr
         except subprocess.TimeoutExpired:
-            rc, out = "TIMEOUT", f"interrompu après {limit_s} s"
+            rc, out, so, se = "TIMEOUT", f"interrompu après {limit_s} s", "", ""
         # the reviewing bot reads the whole script statically: a (script, output) pair can be
-        # self-consistent and still wrong, so the verdict alone is never the evidence
+        # self-consistent and still wrong, so the verdict alone is never the evidence. stderr is
+        # kept apart: a script that dies quietly must not pass for one that ran clean
         res.append({"id": v["id"], "header": v["header"], "code": v["code"], "rc": rc,
                     "elapsed_s": round(time.time() - t0, 1), "output": out[-2500:],
-                    "output_chars": len(out)})
+                    "output_chars": len(out), "stdout_tail": so[-2000:], "stderr_tail": se[-2000:]})
     return res
 
 

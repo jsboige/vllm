@@ -229,5 +229,37 @@ notebook):
 Still gated: the 300 s per-turn timeout (roo-extensions ticket, which the user must
 approve in the roo-extensions registry), then the user's GO for a scheduled runner.
 
+## Scheduled runner (2026-09-23): built, not armed
+
+Hermes (12:05Z) chose (b) too, so all three readers agree. Hermes added two conditions,
+both now met: the record keeps each script's **exit code and stderr apart from stdout**
+(`rc`, `stdout_tail`, `stderr_tail`), because a script that dies quietly must not pass
+for one that ran clean; and the fingerprint is a prerequisite. A script can only be
+replayed against the fingerprinted HEAD.
+
+User decision, 23/09: « OK pour les 2 si c'est bien cadré avec les consommateurs de ce
+travail ». The two are the sk-agent timeout (roo-extensions #3797) and the runner.
+
+`scripts/adoption/nb_audit/nb_audit_runner.py` runs one bounded batch per call. It:
+- fast-forwards the read-only CoursIA clone (it refuses to run on a dirty clone);
+- reads the checklists of the given #17073 series issues through `gh`, read-only
+  (items with or without backticks);
+- keeps the unchecked notebooks, in checklist order;
+- skips any notebook whose current sha256 already has a published record;
+- runs the driver in a per-run out dir, so the driver's resume cannot serve a stale
+  record;
+- scans each record for credential-like patterns, and withholds it on a hit;
+- publishes the record to `<landing>/<issue>-<series>/` with an `index.json`: owner bot,
+  fingerprint, verdict, counts.
+
+A lock file (3 h staleness) prevents overlapping runs. `--dry-run` selects and prints,
+and never calls the model. A dry run on 17107 (GameTheory, NanoClaw), 17239 (Sudoku,
+Hermes) and 17357 (Lean, Hermes) picked 3 notebooks per series.
+
+Still to settle with the readers before the first real run: how each bot reads the
+landing dir, which notebooks come first (checklist order or its own queue), and how it
+reports confirmed/rejected counts and FULL READ time for the stop criterion.
+Concurrency stays at 4 until #3797 lifts the 300 s per-turn ceiling.
+
 Raw outputs (per-notebook JSON, ledgers, run logs) were kept in the session scratchpad.
 `ledger_pilot1.jsonl` and `ledger_pilot2.jsonl` are copied next to this file.
