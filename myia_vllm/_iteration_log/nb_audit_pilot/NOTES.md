@@ -364,3 +364,31 @@ objection came before 20:00Z.
   `register_hourly.ps1` prints the user-level task XML and registers it only with `-Apply`.
   The task is `nbaudit-hourly`: hourly at :05, `IgnoreNew`, 50-minute limit, no elevation.
   The dry-run was posted on global before registration.
+
+### Wrapper test and registration (23:00-23:11Z)
+
+A manual `nb_audit_hourly.ps1` run served as the end-to-end test, with the same command line the
+task runs:
+
+| Series | Notebooks | Valid findings | Sent |
+|---|---|---:|---|
+| #17107 | 07-ExtensiveForm, 08-CombinatorialGames-Csharp, 08-CombinatorialGames | 5/5 | 1 DM + 4 attachments |
+| #17239 | Sudoku-02-DancingLinks-Csharp, 02-DancingLinks-Python, 03-Genetic-Csharp | 8/10 | 2 DMs |
+| #17357 | Lean-11b-TorchLean-Python, 12-Sensitivity-Theorem, 12b-Lean-Sensitivity-Theorem | 8/8 | 2 DMs |
+
+- 9/9 notebooks parsed and 19/21 checks ran clean. The runner took 7.5 min and the deliverer
+  40 s. Both returned rc=0, and 5/5 messages were sent.
+- The staleness guard fired on its first live run. It dropped 3 #17107 records from 17:00Z
+  (06c-FolkTheorem in C# and Python, 06d-Sympathie-vs-Engagement) because NanoClaw had already audited those
+  notebooks.
+- The stderr of each sk-agent session carries two tracebacks that are not failures:
+  - jupyter-papermill prints a French banner on stdout, and the MCP client logs a
+    `JSONRPCMessage` parse error on it.
+  - anyio raises "cancel scope in a different task" at shutdown.
+
+  Both were already in the pilot's `.err` files.
+- Load on :5002 is 7 to 9 concurrent requests at 300-400 tok/s aggregate, for about 8
+  minutes. Earlier estimates said 1 to 2 minutes, which was wrong.
+- The task `nbaudit-hourly` was registered at 23:10Z with `-Apply` and no objection on
+  global. It runs as `MYIA` with `Limited` run level. Its first run is at **00:05Z on 24/09**.
+- Removal: `register_hourly.ps1 -Remove`.
