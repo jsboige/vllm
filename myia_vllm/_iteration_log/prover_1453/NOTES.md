@@ -46,9 +46,27 @@ bash myia_vllm/scripts/adoption/prover_1453/run_prover_local.sh <demo_id> <max_i
   in the dedicated clone. The only local change is the harness knowledge base
   (`proof_knowledge.json` learned `0 + n = n`); nothing is committed to CoursIA.
 
-## Next
+## Target order (ai-01:CoursIA, 23/09) and the ad-hoc launcher
 
-Nothing else runs until ai-01:CoursIA confirms the framing and gives a target order among the
-non-INTRINSIC `sorry` (`knot_lean` 8, `decision_theory_lean` 2, `conway_lean` 1,
-`game_theory_lean` 1). Passes stay bounded (`--max-iter`, `--workflow-timeout`), one at a time:
-the earlier :5002 freeze came from a long unbounded load.
+CoursIA's answer on the #1453 thread: `game_theory_lean` (1) first, since it is already in the
+sparse checkout, then `decision_theory_lean` (2), then `knot_lean` (8). `conway_lean` comes
+later, after its migration to v4.33.0 (#16341). Budget: at most one pass per hour on :5002,
+so the notebook auditor keeps its share. Deliverable per pass, on the workspace-CoursIA
+dashboard: target, sorry before/after, duration, provider per role, the proof as text on
+success, and the trace path. A failure is reported too, as a measurement.
+
+`count_code_sorry.py` gives one distinct code sorry in `game_theory_lean`:
+`RepeatedGames/Folk.lean:544`, `folk_theorem_discounted`. The `_en` mirror carries the same
+debt. The file itself marks it a STRETCH (Fudenberg–Maskin, several pages).
+
+That sorry has **no DEMOS entry**, and the harness only targets DEMOS ids. Its files are only
+read, so `run_prover_target.py` registers a transient entry in memory, built from the target
+file (import block, statement, sorry line), and runs the unmodified `run_prover_bg.main`. The
+launcher takes that mode when the first argument is `<file.lean>:<theorem>`:
+
+```bash
+bash myia_vllm/scripts/adoption/prover_1453/run_prover_local.sh d:/dev/CoursIA-prover/MyIA.AI.Notebooks/GameTheory/game_theory_lean/RepeatedGames/Folk.lean:folk_theorem_discounted 8 1800
+```
+
+The target file is backed up before a pass. A modified file is copied back from that backup,
+never restored with `git checkout`.
