@@ -7,12 +7,14 @@ One run = one bounded batch, then exit; a user-level scheduled task calls it hou
   2. read the checklists of the configured series issues (gh, read-only) and keep the
      unchecked notebooks, in checklist order;
   3. skip every notebook whose current sha256 already has a record in the landing dir,
-     so a record is only redone after a corrective push changed the file;
+     so a record is only redone after a corrective push changed the file; stop once
+     --lookahead fresh records sit ahead of the bot, so production follows reading;
   4. run nb_audit_driver.py on at most --per-series notebooks per series;
   5. scan each record for secrets, then publish it to <landing>/<series>/ with a
      per-series index.json (notebook, owner bot, fingerprint, verdict, counts).
 
-Nothing is posted anywhere: the bots read the landing dir, and their FULL READ decides.
+Nothing is posted anywhere from here: nb_audit_deliver.py sends the new records to each
+bot on the channel it reads, and the bot's FULL READ decides.
 A lock file prevents overlapping runs; a run killed mid-batch resumes at the next one.
 
     python nb_audit_runner.py --series 17107 17239 --per-series 4 --dry-run
@@ -69,17 +71,37 @@ def refresh_clone(repo: Path) -> str:
     return git(repo, "rev-parse", "HEAD").strip()
 
 
-def series_checklist(number: int) -> tuple[str, str, list[str]]:
-    p = subprocess.run(["gh", "issue", "view", str(number), "--repo", GH_REPO, "--json", "title,body"],
+AUDIT_TS = re.compile(r"audit\s+(\d\d)/(\d\d)\s+(\d\d):(\d\d)Z", re.I)
+
+
+def series_checklist(number: int) -> tuple[str, str, list[str], int]:
+    """Notebooks the owner bot has not audited yet, in the order it is expected to read them.
+
+    Done = a checked box, or a comment on the series issue whose first line announces the
+    audit of that notebook (Hermes records its audits as comments and leaves the boxes).
+    Order = checklist order, restarted just after the most recent timestamped audit line,
+    since a bot that skips a notebook (open PR) moves on and does not come back soon.
+    """
+    p = subprocess.run(["gh", "issue", "view", str(number), "--repo", GH_REPO, "--json", "title,body,comments"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode:
         raise RuntimeError(f"gh issue view {number}: {p.stderr.strip()[:300]}")
     d = json.loads(p.stdout)
     m = re.search(r"partition\s+(\w+)", d["title"], re.I)
     owner = m.group(1) if m else "?"
+    audited = set()
+    for c in d.get("comments") or []:
+        first = (c.get("body") or "").strip().splitlines()[:1]
+        if first and "audit" in first[0].lower():
+            audited.update(n.rsplit("/", 1)[-1] for n in re.findall(r"[\w./-]+\.ipynb", first[0]))
     # series issues write items with or without backticks
-    unchecked = re.findall(r"^\s*- \[ \]\s+`?([^`\s]+\.ipynb)`?", d["body"], re.M)
-    return d["title"], owner, unchecked
+    items = re.findall(r"^\s*- \[([ xX])\]\s+`?([^`\s]+\.ipynb)`?(.*)$", d["body"], re.M)
+    stamps = [(i, (int(t[1]), int(t[0]), int(t[2]), int(t[3])))  # (month, day, hour, minute)
+              for i, (_, _, rest) in enumerate(items) for t in AUDIT_TS.findall(rest)]
+    cursor = max(stamps, key=lambda s: s[1])[0] + 1 if stamps else 0
+    order = items[cursor:] + items[:cursor]
+    todo = [name for box, name, _ in order if box == " " and name.rsplit("/", 1)[-1] not in audited]
+    return d["title"], owner, todo, len(audited)
 
 
 def resolve(item: str, catalogue: list[str]) -> str | None:
@@ -105,11 +127,14 @@ def secret_hits(text: str) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--series", type=int, nargs="+", required=True, help="#17073 series issue numbers")
-    ap.add_argument("--per-series", type=int, default=4, help="max notebooks per series and run")
-    ap.add_argument("--concurrency", type=int, default=4,
-                    help="6 once sk-agent's per-turn timeout is above 300 s (roo-extensions #3797)")
+    ap.add_argument("--per-series", type=int, default=3, help="max notebooks per series and run")
+    ap.add_argument("--lookahead", type=int, default=6,
+                    help="fresh records kept ahead of the bot per series (a bot reads ~1 notebook/h)")
+    ap.add_argument("--concurrency", type=int, default=6,
+                    help="6 needs sk-agent's 600 s turn for notebook-auditor (roo-extensions #3797, in service)")
     ap.add_argument("--repo", default="d:/dev/CoursIA-skaudit")
-    ap.add_argument("--landing", required=True, help="shared dir the bots read")
+    # local on purpose: neither bot can read the GDrive share, and DriveFS is the slow link on ai-01
+    ap.add_argument("--landing", default=str(Path(os.environ.get("LOCALAPPDATA", "/tmp")) / "nbaudit" / "landing"))
     ap.add_argument("--work-dir", default=str(Path(os.environ.get("TEMP", "/tmp")) / "nbaudit-runner"))
     ap.add_argument("--dry-run", action="store_true", help="select and print; no model call, no write")
     args = ap.parse_args()
@@ -129,23 +154,25 @@ def main() -> int:
 
         plan: list[tuple[int, str, str, str, str]] = []  # (issue, series slug, owner, rel, sha)
         for n in args.series:
-            title, owner, unchecked = series_checklist(n)
+            title, owner, unchecked, n_commented = series_checklist(n)
             sdir = f"{n}-" + slug(re.sub(r"^\[Audit #17073\]\s*Série\s*|\s*—\s*partition.*$", "", title))[:60]
             index = load_index(landing / sdir)["records"]
-            picked, unresolved = 0, []
+            picked, ahead, unresolved = 0, 0, []
             for item in unchecked:
+                if ahead + picked >= args.lookahead or picked >= args.per_series:
+                    break
                 rel = resolve(item, catalogue)
                 if rel is None:
                     unresolved.append(item)
                     continue
                 digest = sha256(repo / rel)
                 if index.get(rel, {}).get("sha256") == digest:
-                    continue  # fresh record already published for this exact file
+                    ahead += 1  # fresh record already published for this exact file
+                    continue
                 plan.append((n, sdir, owner, rel, digest))
                 picked += 1
-                if picked >= args.per_series:
-                    break
-            log(f"#{n} {owner}: {len(unchecked)} unchecked, {picked} picked"
+            log(f"#{n} {owner}: {len(unchecked)} to audit ({n_commented} audited in comments), "
+                f"{ahead} fresh ahead, {picked} picked"
                 + (f", {len(unresolved)} unresolved {unresolved[:3]}" if unresolved else ""))
         if not plan:
             log("nothing to do")
