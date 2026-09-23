@@ -261,5 +261,55 @@ landing dir, which notebooks come first (checklist order or its own queue), and 
 reports confirmed/rejected counts and FULL READ time for the stop criterion.
 Concurrency stays at 4 until #3797 lifts the 300 s per-turn ceiling.
 
+## Readers' answers and delivery (2026-09-23, afternoon)
+
+Answers on the global thread (C2/C3/C5), plus roo-extensions:
+- **#3797 in service** on ai-01 since 14:07Z. `notebook-auditor` points to a dedicated
+  model entry `qwen3.6-35b-a3b-audit` with `request_timeout_s: 600`, and its `call_agent`
+  ceiling becomes 630 s. The driver spawns its own sk-agent process on every run, so it
+  picks this up. The runner default concurrency is now 6.
+- **Neither bot can read the GDrive share**: both run in containers without the
+  `.shared-state` mount. The landing dir is therefore local
+  (`%LOCALAPPDATA%\nbaudit\landing`), which also keeps the runner off DriveFS, the slow link
+  on ai-01 that day.
+- **NanoClaw reads RooSync DM attachments**: it gets one DM per series, with the series
+  `index.json` attached next to the records.
+- **Hermes cannot read attachments.** `attachments_get` copies server-side, so the content
+  never reaches its container. Its readable channel is the DM body: each file as a
+  monolithic base64 block between `---BEGIN-BASE64---` / `---END-BASE64---`, with its full
+  sha256 and byte length. The messages are numbered x/y when they grow too long.
+- **C5 measurement line**, agreed by both: `<path> · proposed N · confirmed C · rejected R ·
+  FULL READ M min`, sent by DM to `myia-ai-01:vllm`.
+
+`scripts/adoption/nb_audit/nb_audit_deliver.py` sends what the runner published.
+- **Delivery key.** A record goes out once per sha256; `delivered.json` in the landing dir
+  keeps track, and a series counts as delivered only if all its parts went out.
+- **Transport.** The DMs go through a short-lived roo-state-manager stdio process, spawned
+  with the repo as `WORKSPACE_PATH`, so the sender is `myia-ai-01:vllm`. The payload never
+  passes through an agent's context, which would otherwise have to type tens of kilobytes
+  of base64. Every DM carries an idempotency `messageId`.
+- **Checks.** Each file is checked for secret-like patterns and base64-roundtripped before
+  it leaves.
+- **Packing.** Files are packed up to `--max-body` characters (48,000). A file that does not
+  fit is cut into `chunk=c/C` segments, and the first segment uses the room left in the
+  current message.
+- **Tests.**
+  - A decoder test over dry-run payloads at 12,000 and 48,000 characters reassembled both
+    files with matching sha256 and length.
+  - A real probe DM to Hermes went out in 6 s, sender `myia-ai-01:vllm`, and awaits Hermes'
+    decode confirmation.
+
+Runner selection, corrected after reading the series issues:
+- **Hermes does not tick boxes**: it records each audit as a comment. A notebook named in
+  the first line of an "Audit" comment now counts as done.
+- **NanoClaw skips notebooks with open PRs and moves on.** The candidate order now restarts
+  just after the most recent timestamped audit line (`audit dd/mm hh:mmZ`). The GameTheory
+  plan moved from the skipped `02-*-Csharp` notebooks to `06c`/`06d`, right after NanoClaw's
+  16:05Z audit of `06b`.
+- **`--lookahead 6`** stops production once 6 fresh records sit ahead of the bot, about 6 h of
+  reading at 1 notebook/h.
+- **Hermes' order is still open.** Its comments suggest it reads by rank (#17066 carriers
+  first), not in checklist order.
+
 Raw outputs (per-notebook JSON, ledgers, run logs) were kept in the session scratchpad.
 `ledger_pilot1.jsonl` and `ledger_pilot2.jsonl` are copied next to this file.
