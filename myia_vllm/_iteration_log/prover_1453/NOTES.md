@@ -46,9 +46,84 @@ bash myia_vllm/scripts/adoption/prover_1453/run_prover_local.sh <demo_id> <max_i
   in the dedicated clone. The only local change is the harness knowledge base
   (`proof_knowledge.json` learned `0 + n = n`); nothing is committed to CoursIA.
 
-## Next
+## Target order (ai-01:CoursIA, 23/09) and the ad-hoc launcher
 
-Nothing else runs until ai-01:CoursIA confirms the framing and gives a target order among the
-non-INTRINSIC `sorry` (`knot_lean` 8, `decision_theory_lean` 2, `conway_lean` 1,
-`game_theory_lean` 1). Passes stay bounded (`--max-iter`, `--workflow-timeout`), one at a time:
-the earlier :5002 freeze came from a long unbounded load.
+CoursIA's answer on the #1453 thread: `game_theory_lean` (1) first, since it is already in the
+sparse checkout, then `decision_theory_lean` (2), then `knot_lean` (8). `conway_lean` comes
+later, after its migration to v4.33.0 (#16341). Budget: at most one pass per hour on :5002,
+so the notebook auditor keeps its share. Deliverable per pass, on the workspace-CoursIA
+dashboard: target, sorry before/after, duration, provider per role, the proof as text on
+success, and the trace path. A failure is reported too, as a measurement.
+
+`count_code_sorry.py` gives one distinct code sorry in `game_theory_lean`:
+`RepeatedGames/Folk.lean:544`, `folk_theorem_discounted`. The `_en` mirror carries the same
+debt. The file itself marks it a STRETCH (Fudenberg–Maskin, several pages).
+
+That sorry has **no DEMOS entry**, and the harness only targets DEMOS ids. Its files are only
+read, so `run_prover_target.py` registers a transient entry in memory, built from the target
+file (import block, statement, sorry line), and runs the unmodified `run_prover_bg.main`. The
+launcher takes that mode when the first argument is `<file.lean>:<theorem>`:
+
+```bash
+bash myia_vllm/scripts/adoption/prover_1453/run_prover_local.sh d:/dev/CoursIA-prover/MyIA.AI.Notebooks/GameTheory/game_theory_lean/RepeatedGames/Folk.lean:folk_theorem_discounted 8 1800
+```
+
+The target file is backed up before a pass. A modified file is copied back from that backup,
+never restored with `git checkout`.
+
+## Pass 1 — `Folk.lean:folk_theorem_discounted` (2026-09-23, 23:00-23:35Z)
+
+Every role was local and the budget was `max_iter 8, workflow_timeout 1800`.
+
+| Field | Value |
+|---|---|
+| Result | failure, sorry 1 → 1, 2 iterations, 1 attempt |
+| Duration | 2,073.6 s; stopped on the 1,800 s reasoning budget plus 219 s of build credited |
+| Trace | `agent_tests/prover/baselines/traces/multi_ADHOC_FOLK_THEOREM_DISCOUNTED_local.json` (33 entries) and a `.spans.jsonl` next to it; local to the clone |
+
+- **About 490 s were lost to an overlap.** The pass started at 23:00Z, together with the
+  wrapper test of the notebook runner (7-9 concurrent requests, 300-400 tok/s aggregate,
+  about 50 tok/s per stream). The coordinator's first thinking turn went past the harness's
+  240 s client cap, and `PROVIDER_MAX_RETRIES["local"] = 1` allows one retry, so the turn
+  ended in `APITimeoutError` after about 480 s. The engine was not stuck. From now on,
+  prover passes start at **:30**, away from the runner's :05 slot.
+- **Search ran without LeanExplore.** `LEANEXPLORE_API_KEY` is not set on ai-01; the main
+  clone's `Lean/.env` does not carry it either. `search_mathlib_lemmas` therefore used only
+  its built-in dictionary: 12 queries of 0.01 s each. It still surfaced
+  `tsum_geometric_of_lt_one`.
+- **All tactic attempts failed to build.** Five rewrites failed with 3 to 6 errors each,
+  including two 1→2 decompositions. One LOST_PROGRESS veto fired (sorry 1→0 but one error
+  outside the sorry). Every change was reverted.
+- **Clone hygiene.** The harness's revert rewrote `Folk.lean` with CRLF endings; the content
+  was identical (`diff --strip-trailing-cr` is empty), and the LF bytes were copied back from
+  the backup. A leftover `Folk.lean.*.sandbox` was moved out of the tree.
+  `proof_knowledge.json` carries one learned entry from the demo 0 smoke test (17:11Z),
+  which is the harness's own store. Nothing is committed to CoursIA.
+
+## Target triage after `game_theory_lean`
+
+| Project | Toolchain / mathlib | Sorry sites | Verdict |
+|---|---|---|---|
+| `decision_theory_lean` | v4.33.0 / `db584cd` | 2, both in `Gittins/GittinsTheorem.lean:gittins_optimality` | skip |
+| `knot_lean` | v4.33.0 / `db584cd` | `Lidman.lean:81` `unknotting_11n102_upper` (≤ 2) | **pass 2 candidate** |
+| `knot_lean` | same | `Lidman.lean:98` (= 2) | out of reach |
+| `knot_lean` | same | `Reidemeister.lean:1060` | out of reach |
+| `knot_lean` | same | `Conway.lean:3260/3290` | vacuous |
+
+Why each verdict:
+- **`gittins_optimality`, skip.** One of its sorries is the *definition* of the value
+  operator `V`. That makes the goal most likely `s ≥ s` for a single sorry term, so closing
+  it would be a vacuous delta. This is assumed, not compiled. The file itself classifies the
+  theorem as INTRINSIC, needing an MDP / optimal-stopping formalization.
+- **`unknotting_11n102_upper`, pass 2 candidate.** It is a genuine target: two crossing
+  changes plus an explicit `ReidemeisterEquiv` to the unknot, since `unknottingNumber` is
+  `sInf {n | UnknottableIn n}`, closed by #15082. It is hard but not vacuous.
+- **`Lidman.lean:98`, out of reach.** The lower bound needs Heegaard Floer theory.
+- **`Reidemeister.lean:1060`, out of reach.** It is the full Reidemeister theorem.
+- **`Conway.lean:3260/3290`, vacuous.** `IsSmoothlySlice` and `IsTopologicallySlice` are
+  defined as `Prop := sorry`.
+
+Both v4.33.0 projects share mathlib `db584cd`, so one cache serves them.
+`decision_theory_lean` and `knot_lean` were added to the clone's sparse checkout. The
+`knot_lean` prebuild (`lake exe cache get` + `lake build`) runs at BelowNormal priority so
+it does not compete with the engine for CPU.

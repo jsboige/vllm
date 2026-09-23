@@ -337,3 +337,58 @@ Runner selection, corrected after reading the series issues:
 
 Raw outputs (per-notebook JSON, ledgers, run logs) were kept in the session scratchpad.
 `ledger_pilot1.jsonl` and `ledger_pilot2.jsonl` are copied next to this file.
+
+## Going live (2026-09-23, night)
+
+All green lights were in by 20:39Z. NanoClaw had answered C2/C3/C5. Hermes answered "C3 OK":
+its decode of the probe matched the sha256. It also gave its C2 rule: ascending checklist
+position, skipping anything checked or already audited. CoursIA's C1/C6 were tacit, since no
+objection came before 20:00Z.
+
+| Series | Bot | Notebooks | Verdicts | Valid findings | Checks clean | Sent |
+|---|---|---|---|---:|---:|---|
+| #17107 | NanoClaw | 06g, 06h, 07-ExtensiveForm-Csharp | CONCERNS, RAS, CONCERNS | 3/5 | 4/5 | 22:53Z, 1 DM + 4 attachments |
+| #17239 | Hermes | Sudoku-00-Environment-Csharp, 01-Backtracking-Csharp, 01-Backtracking-Python | 3 × CONCERNS | 8/8 | 9/9 | 23:00Z, 2 DMs (b64 body) |
+| #17357 | Hermes | Lean-1-Setup, Lean-10-LeanDojo, Lean-11-TorchLean | 3 × CONCERNS | 8/8 | 7/7 | 23:00Z, 2 DMs (b64 body) |
+
+- Wall-clock: 241 s for the 3 NanoClaw notebooks and 333 s for the 6 Hermes notebooks, at
+  concurrency 6.
+- **The 17:00Z records were never sent.** NanoClaw had audited 06c/06d while they waited, so
+  the deliverer now re-reads the series checklist just before sending. It logs records for
+  notebooks already audited and leaves them out, without marking them delivered.
+- Hermes records its audits as comments under three first-line prefixes. The runner's
+  detection (a comment whose first line says "audit" and names the notebook) catches all
+  three. It also counts Sudoku-13 (position 27): that audit was relayed under the jsboige
+  account with "partition Hermes".
+- Scheduling: `nb_audit_hourly.ps1` runs the runner on the three series, then the deliverer.
+  `register_hourly.ps1` prints the user-level task XML and registers it only with `-Apply`.
+  The task is `nbaudit-hourly`: hourly at :05, `IgnoreNew`, 50-minute limit, no elevation.
+  The dry-run was posted on global before registration.
+
+### Wrapper test and registration (23:00-23:11Z)
+
+A manual `nb_audit_hourly.ps1` run served as the end-to-end test, with the same command line the
+task runs:
+
+| Series | Notebooks | Valid findings | Sent |
+|---|---|---:|---|
+| #17107 | 07-ExtensiveForm, 08-CombinatorialGames-Csharp, 08-CombinatorialGames | 5/5 | 1 DM + 4 attachments |
+| #17239 | Sudoku-02-DancingLinks-Csharp, 02-DancingLinks-Python, 03-Genetic-Csharp | 8/10 | 2 DMs |
+| #17357 | Lean-11b-TorchLean-Python, 12-Sensitivity-Theorem, 12b-Lean-Sensitivity-Theorem | 8/8 | 2 DMs |
+
+- 9/9 notebooks parsed and 19/21 checks ran clean. The runner took 7.5 min and the deliverer
+  40 s. Both returned rc=0, and 5/5 messages were sent.
+- The staleness guard fired on its first live run. It dropped 3 #17107 records from 17:00Z
+  (06c-FolkTheorem in C# and Python, 06d-Sympathie-vs-Engagement) because NanoClaw had already audited those
+  notebooks.
+- The stderr of each sk-agent session carries two tracebacks that are not failures:
+  - jupyter-papermill prints a French banner on stdout, and the MCP client logs a
+    `JSONRPCMessage` parse error on it.
+  - anyio raises "cancel scope in a different task" at shutdown.
+
+  Both were already in the pilot's `.err` files.
+- Load on :5002 is 7 to 9 concurrent requests at 300-400 tok/s aggregate, for about 8
+  minutes. Earlier estimates said 1 to 2 minutes, which was wrong.
+- The task `nbaudit-hourly` was registered at 23:10Z with `-Apply` and no objection on
+  global. It runs as `MYIA` with `Limited` run level. Its first run is at **00:05Z on 24/09**.
+- Removal: `register_hourly.ps1 -Remove`.

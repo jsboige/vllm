@@ -11,6 +11,8 @@ Each bot told us which channel it can actually read (global dashboard, 2026-09-2
 
 A record is delivered once per sha256: delivered.json in the landing dir keeps what went out,
 so a record the runner redid after a corrective push goes out again, and nothing else does.
+Just before sending, the series checklist is read again: a record for a notebook the bot has
+audited since the runner produced it is superseded and left out (logged, not marked sent).
 The DMs are sent programmatically through a short-lived roo-state-manager stdio process, so
 the payload never passes through an agent's context. Dry-run is the default.
 
@@ -33,7 +35,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from nb_audit_runner import log, secret_hits  # noqa: E402
+from nb_audit_runner import log, secret_hits, series_checklist  # noqa: E402
 
 REPO_ROOT = HERE.parents[2]  # WORKSPACE_PATH of the RSM child: the sender is myia-ai-01:vllm
 OWNERS = {  # owner as written in the series issue title -> (recipient, channel)
@@ -194,6 +196,15 @@ def main() -> int:
         for sdir, idx in load_series(landing):
             sent = state.get(sdir, {})
             new = [(rel, r) for rel, r in idx.get("records", {}).items() if sent.get(rel) != r.get("sha256")]
+            if not new:
+                continue
+            # a bot reads ~1 notebook/h and may have passed the runner: drop what it already audited
+            todo = {name.rsplit("/", 1)[-1] for name in series_checklist(new[0][1]["issue"])[2]}
+            stale = [rel for rel, _ in new if rel.rsplit("/", 1)[-1] not in todo]
+            if stale:
+                log(f"{sdir}: {len(stale)} record(s) superseded, already audited by the bot: "
+                    + ", ".join(rel.rsplit("/", 1)[-1] for rel in stale))
+                new = [(rel, r) for rel, r in new if rel not in stale]
             if not new:
                 continue
             owner = new[0][1].get("owner")
