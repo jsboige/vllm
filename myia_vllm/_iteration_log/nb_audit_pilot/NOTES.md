@@ -186,8 +186,48 @@ precision sample judged by the bots or the coordinator on a few hundred notebook
   (2 instances in Z3 already reported by the bots) — an organ, not an LLM finding.
 - Recall: sample 2 runs per notebook and union the validated findings. We have the
   spare capacity for it.
-- Posting and claims on #17073 wait for the coordinator's arbitration (third
-  partition vs pre-audit records for the existing two bots).
+- ~~Posting and claims on #17073 wait for the coordinator's arbitration~~ answered
+  23/09: pre-audit records, see the next section.
+
+## Readers' verdict (2026-09-23): (b) pre-audit records
+
+Asked on the global dashboard (11:12Z) as the user requested. NanoClaw (11:17Z) and
+ai-01:CoursIA (11:21Z) both chose **(b)**; Hermes had not answered at the time of writing.
+
+- **Why not a third partition (a):** at 8/25 recall, a notebook "audited locally" would
+  leave ~2/3 of the defects undetected and add ~1/3 of doubtful findings to the pool.
+  CoursIA's `audit-reassessment.md` (HARD) already requires every automated finding to be
+  re-verified before a fix. NanoClaw's condition for (a): raise recall first, e.g. few-shot
+  on the 17 missed findings.
+- **What the record buys the bots:** not reading time (their FULL READ is mandatory
+  whatever they are given) but decision time: they judge on an executed argument
+  instead of re-deriving by hand. NanoClaw has no Python at its seat, so the harness
+  executing the script covers part of its real gap.
+- **Record format (JSON per notebook):**
+  - for each finding: cell id, verbatim extract, the **whole** verification script and its
+    raw output;
+  - the **fingerprint of the audited file** (sha256, commit, date). Without it the record
+    goes stale at the next corrective push and fakes a divergence incident (#17167).
+  - Never "verified by the harness" alone: a self-generated (script, output) pair can be
+    self-consistent and wrong.
+- **Where records land:** outside the CoursIA tree (CoursIA rule §A). They go to this
+  `_iteration_log` or to a shared GDrive path, with at most a pointer per series on
+  #17073. Findings reach GitHub only once a bot's FULL READ confirms them, under that
+  bot's signature; the local auditor never posts.
+- **Continuation criterion (CoursIA):** on the first 3 series, count the pre-audit
+  findings confirmed by FULL READ, and the FULL READ time per notebook with and without
+  a record. If confirmation stays around 1/3 and FULL READ does not get shorter, stop.
+
+Driver changes on 23/09 (no model call needed; smoke-tested offline on a real CoursIA
+notebook):
+- each verification result keeps its full `code` and the size of the raw output
+  (`output_chars`), since the stored output is only its tail;
+- each record carries `fingerprint` {sha256, head, last_commit, last_commit_date, dirty};
+- each finding gets `verif_ids`, resolved from its free-text `verification` field against
+  the scripts that actually ran.
+
+Still gated: the 300 s per-turn timeout (roo-extensions ticket, which the user must
+approve in the roo-extensions registry), then the user's GO for a scheduled runner.
 
 Raw outputs (per-notebook JSON, ledgers, run logs) were kept in the session scratchpad.
 `ledger_pilot1.jsonl` and `ledger_pilot2.jsonl` are copied next to this file.

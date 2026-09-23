@@ -254,9 +254,38 @@ def run_verifs(verifs: list[dict], work: Path, py: str, limit_s: int = 90) -> li
             rc, out = p.returncode, p.stdout + err
         except subprocess.TimeoutExpired:
             rc, out = "TIMEOUT", f"interrompu après {limit_s} s"
-        res.append({"id": v["id"], "header": v["header"], "rc": rc,
-                    "elapsed_s": round(time.time() - t0, 1), "output": out[-2500:]})
+        # the reviewing bot reads the whole script statically: a (script, output) pair can be
+        # self-consistent and still wrong, so the verdict alone is never the evidence
+        res.append({"id": v["id"], "header": v["header"], "code": v["code"], "rc": rc,
+                    "elapsed_s": round(time.time() - t0, 1), "output": out[-2500:],
+                    "output_chars": len(out)})
     return res
+
+
+def notebook_fingerprint(repo: Path, rel: str) -> dict:
+    """sha256 + commit + date of the audited file: a dossier without them goes stale at the next push."""
+    import hashlib
+
+    def git(*a):
+        p = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        return p.stdout.strip() if p.returncode == 0 else None
+
+    last = git("log", "-1", "--format=%H %cI", "--", rel)
+    commit, date = (last.split(" ", 1) + [None])[:2] if last else (None, None)
+    return {"sha256": hashlib.sha256((repo / rel).read_bytes()).hexdigest(),
+            "head": git("rev-parse", "HEAD"), "last_commit": commit, "last_commit_date": date,
+            "dirty": bool(git("status", "--porcelain", "--", rel))}
+
+
+def link_verifs(findings: list, verifs: list) -> list:
+    """Resolve each finding's free-text "verification" to the ids of the scripts that ran."""
+    ran = {v["id"] for v in verifs}
+    for f in findings:
+        if isinstance(f, dict):
+            cited = re.findall(r"\bV\d+\b", str(f.get("verification") or ""))
+            f["verif_ids"] = [v for v in dict.fromkeys(cited) if v in ran]
+    return findings
 
 
 def build_prompt(rel: str, view: str, ctx: str, organs: dict, profile: dict, work: Path) -> str:
@@ -361,7 +390,8 @@ async def _audit_one(session: ClientSession, sem: asyncio.Semaphore, args, rel: 
                        + ", ".join(Path(f).stem for f in figs)
                        + " (nom = <id de cellule>_<n° de sortie>). Confronte chacune à la prose qui la commente.")
         rec = {"notebook": rel, "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-               "profile": profile, "prompt_chars": len(prompt), "organs": organs, "calls": [],
+               "fingerprint": notebook_fingerprint(repo, rel), "profile": profile,
+               "prompt_chars": len(prompt), "organs": organs, "calls": [],
                "figures_attached": [Path(f).name for f in figs]}
         t_all = time.time()
         # stage A — read, list candidates, write the verification scripts
@@ -390,7 +420,7 @@ async def _audit_one(session: ClientSession, sem: asyncio.Semaphore, args, rel: 
             rec["resume"] = final.get("resume")
             rec["partiel"] = final.get("partiel")
             rec["findings"] = validate(final.get("findings") or [], cell_texts, index_to_id)
-        rec["findings"] = rec.get("findings") or []
+        rec["findings"] = link_verifs(rec.get("findings") or [], rec["verifs"])
         (out / f"{slug}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         nf = rec.get("findings") or []
         vok = sum(v["rc"] == 0 for v in rec["verifs"])
