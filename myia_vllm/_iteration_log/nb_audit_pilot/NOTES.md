@@ -308,8 +308,32 @@ Runner selection, corrected after reading the series issues:
   16:05Z audit of `06b`.
 - **`--lookahead 6`** stops production once 6 fresh records sit ahead of the bot, about 6 h of
   reading at 1 notebook/h.
-- **Hermes' order is still open.** Its comments suggest it reads by rank (#17066 carriers
-  first), not in checklist order.
+- **Hermes' order is still open.** Hermes answered "checklist order", but its audit comments
+  sit at checklist positions 36, 12, 24 (#17239) and 44, 60, 57, 61, 62 (#17357). The
+  question is on the global thread (17:05Z); nothing is produced for its two series until
+  it gives the rule.
+
+### First validation run (2026-09-23 17:00Z, local only, nothing delivered)
+
+`nb_audit_runner.py --series 17107 --per-series 3`, concurrency 6, notebook-auditor on the
+600 s turn (#3797).
+
+| Notebook | Time | Verdict | Findings (valid) | Checks clean |
+|---|---:|---|---:|---:|
+| GameTheory-06d-Sympathie-vs-Engagement | 125 s | CONCERNS | 2 (2) | 1/1 |
+| GameTheory-06c-RepeatedGames-FolkTheorem | 225 s | CONCERNS | 2 (2) | 0/1 |
+| GameTheory-06c-RepeatedGames-FolkTheorem-Csharp | 276 s | RAS | 0 | 1/1 |
+
+- The batch took 284 s wall-clock; 3/3 records were parsed and published to the local landing
+  dir with their `index.json`.
+- The findings are pedagogical: a difficulty jump (logistic MLE and bootstrap introduced
+  without prerequisites), an exercise whose premise does not hold with the given payoffs
+  (the grim-trigger threshold stays at 0.5), a stale claim about a previous notebook, and a
+  2D map exercise that needs tools not shown.
+- On 06c the model's own check script failed with a `NameError`; the record keeps `rc=1`
+  and its stderr, so the bot's FULL READ sees the check did not run.
+- The run ends with the known `anyio` cancel-scope traceback from sk-agent's stdio teardown;
+  exit code 0, no effect on the records.
 
 Raw outputs (per-notebook JSON, ledgers, run logs) were kept in the session scratchpad.
 `ledger_pilot1.jsonl` and `ledger_pilot2.jsonl` are copied next to this file.
