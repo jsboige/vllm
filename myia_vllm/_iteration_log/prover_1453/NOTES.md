@@ -127,3 +127,31 @@ Both v4.33.0 projects share mathlib `db584cd`, so one cache serves them.
 `decision_theory_lean` and `knot_lean` were added to the clone's sparse checkout. The
 `knot_lean` prebuild (`lake exe cache get` + `lake build`) runs at BelowNormal priority so
 it does not compete with the engine for CPU.
+
+## The knot_lean prebuild took Docker Desktop down (2026-09-24)
+
+The prebuild worked: it built 3,023 jobs and finished rc=0 at 01:51:39Z. It also cost a machine-wide
+outage. BelowNormal priority caps CPU, not memory, and Lake has no `-j` flag, so the build ran
+at full 32-thread parallelism on the Windows host.
+
+| Time (UTC) | Host commit | Event |
+|---|---|---|
+| 23:31Z | 350.6 GB (88.8 %) | baseline |
+| 23:39:56Z | — | prebuild starts |
+| 00:11Z | 381.1 GB (96.6 %) | 0.5 GB free physical, 3,698 PageReads/s |
+| 00:26:31Z | 385.9 GB (97.8 %) | peak |
+| 00:26:10-40Z | — | `com.docker.backend.exe` and the Docker Desktop UI die with no shutdown lines, so every container stops, prod vLLM included |
+| 01:23Z → 01:32:25Z | — | `Watchdog-Docker-Desktop-Distro` (hourly) sees the engine DOWN, waits its 8 min grace, relaunches Docker Desktop |
+| 01:38:50Z | — | vLLM healthy again (watchdog v5 warm-up grace consumed) |
+
+Sources: `reclaim-wsl-memory.log` (local time), `Docker/log/host/com.docker.backend.exe.log.*`
+and `electron-2026-09-24.log` (UTC), and `watchdog-docker-desktop-20260924.log` (local time).
+The timing correlation is verified. The mechanism, an allocation failure in the Go backend near
+the commit limit, is assumed: no fatal message was captured.
+
+The hourly pre-audit run at 01:05Z fell inside the outage and left one notebook unparsed. It was
+retried and delivered at 02:05Z.
+
+Rule going forward: the host's baseline commit is already 88-91 %, so a full Windows-side build
+needs the commit checked first (below ~85 %). Prover passes are single-file `lake env lean`
+checks and stay within budget.
