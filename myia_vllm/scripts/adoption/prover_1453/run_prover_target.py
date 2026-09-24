@@ -38,7 +38,9 @@ def target_demo(path: Path, theorem: str, note: str) -> dict:
     lines = text.splitlines()
     start = next(i for i, l in enumerate(lines) if re.match(rf"\s*(theorem|lemma)\s+{re.escape(theorem)}\b", l))
     end = next(i for i in range(start, len(lines)) if ":= by" in lines[i])
-    sorry = next(i for i in range(end + 1, len(lines)) if lines[i].strip() == "sorry")
+    # The harness replaces the whole sorry line, so a line holding only `sorry` or
+    # `exact sorry` (knot_lean's style) is a valid target.
+    sorry = next(i for i in range(end + 1, len(lines)) if re.fullmatch(r"(exact\s+)?sorry", lines[i].strip()))
     header = "\n".join(lines[start:end + 1])
     goal = re.sub(r"\s*:=\s*by\s*$", "", header[statement_colon(header):]).strip()
     imports = "".join(l + "\n" for l in lines if l.startswith("import "))
