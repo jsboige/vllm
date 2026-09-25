@@ -15,7 +15,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **vLLM fork** with a custom `myia_vllm/` directory for self-hosting LLMs on **3x RTX 4090 GPUs** (72GB total VRAM). The project provides OpenAI-compatible API endpoints for LLMs, accessible via reverse proxy at `*.text-generation-webui.myia.io`.
 
-**Current deployment (2026-09-09)**: **Qwen3.6-35B-A3B MoE + TurboQuant K8V4 on STOCK vLLM `v0.28.0`** — GPUs 0,1, TP=2 + EP=2, image `vllm/vllm-openai:v0.28.0` (a plain `docker pull`, **no patch tree**), profile `medium-qwen36-stock-tq.yml`. gpu-util 0.70, batch 8192, KV **934,374 tokens** (3.56× the 262K window), 262K context, vision + thinking + `preserve_thinking`. **GPU 2 free** for CoursIA training jobs. The profile runs an **entrypoint HF-cache phantom-mount guard** (2026-08-12) that refuses to start if the WSL HF bind resolved empty, closing the gap that `create_host_path: false` leaves open across restart-policy restarts.
+**Current deployment (2026-09-25)**: **Swift-1.5-Qwen3.8-27B W4A16-AWQ + FP8 KV on STOCK vLLM `v0.30.0`** — GPUs 0,1, TP=2, image `vllm/vllm-openai:v0.30.0` (a plain `docker pull`, **no patch tree**), profile `medium-swift15-27b.yml`. gpu-util 0.70, batch 4096, KV **465,423 tokens** (1.78× the 262K window), 262K context, vision + thinking + `preserve_thinking`, **dual served names `qwen3.6-35b-a3b` (legacy alias, consumers unchanged) + `swift-1.5-27b` (honest name)**. **GPU 2 free** for CoursIA training jobs. The profile runs an **entrypoint HF-cache phantom-mount guard** (2026-08-12) that refuses to start if the WSL HF bind resolved empty. **Replaced the Qwen3.6-35B-A3B MoE on 2026-09-25** (user pivot to the quality tier — the 27B line is where the ecosystem iterates: Swift-1.5 finetunes, Qwen 4 27B announced at Apsara as the permanent open-weight local tier; the 35B-A3B MoE has no announced successor; window-based access was ruled out). Known trade: prefill on the dense 27B is ~3-4× slower than the MoE (1,812 t/s @101K vs 5,448-8,316), decode ~0.5-0.6×, and **any request ≥~100K tokens starves new arrivals for 130-170 s**, which trips the watchdog's 2×40 s wedge probes into a restart (killing the giant request). 16K chunks tested and rejected (−17% KV, no wedge relief). Watchdog tolerance question open to the user (registry Q9). Full record: `myia_vllm/_iteration_log/swift15_promotion/NOTES.md`. **Rollback (armed)**: `docker compose -f medium-swift15-27b.yml down && docker compose -f medium-qwen36-stock-tq.yml --env-file myia_vllm/.env up -d` (MoE + TQ k8v4, KV 934,660, compile-cache volume kept).
+
+**MTP-3 on Swift-1.5-27B is BLOCKED by an upstream loader bug** (v0.30.0): `ValueError: There is no module or parameter named 'fc.weight' in Qwen3_5MultiTokenPredictor` — the checkpoint ships the MTP head BF16-dense but vLLM builds the draft Linears from the target's pack-quantized quant config (the ignore list omits `mtp.*`). Cousin of #51581. **TO REPORT UPSTREAM**; no spec-dec until fixed (and never TurboQuant KV with any spec-dec anyway, #53180).
 
 **Genesis was retired 2026-08-11** after phase 2 established that the crash which forced its adoption ([vllm#41726](https://github.com/vllm-project/vllm/issues/41726), `AssertionError turboquant_attn.py:720:_continuation_prefill`) no longer reproduces on stock: a **253,503-token chunked prefill** on the real MoE model passed in 58.6 s with a clean survival request, alongside 13/13 functional gates. Upstream fixes #44053/#47609/#39988/#50533 are verified git ancestors of the release. Three further reasons: the image becomes **reproducible** (a release tag is not subject to the ~5-day nightly GC that made `vllm-qwen36-genesis-tq:v7.72.5-vllm01d4d1ad3` unbuildable); a same-night A/B showed stock **faster** than Genesis (+14% at N=16, +29% single-stream); and GPU 0 gains ~1.8 GiB of headroom (Genesis prealloc pools P28/P37/TQ-dequant gone), the direct lever against the boot-OOM history. Cost accepted: −17% KV (1,238,046 → 1,030,407), immaterial at 2–7% observed occupancy. Full record: `myia_vllm/_iteration_log/stock_tq_phase2/NOTES.md`.
 
@@ -59,7 +61,15 @@ myia_vllm/                    # PRIMARY - all customizations live here
 ### Deployment
 
 ```powershell
-# Start Qwen3.6-35B-A3B MoE + FP8 KV (primary model, GPUs 0,1, current baseline)
+# Start Swift-1.5-Qwen3.8-27B + FP8 KV (primary model, GPUs 0,1, prod since 2026-09-25)
+docker compose -f myia_vllm/configs/docker/profiles/medium-swift15-27b.yml --env-file myia_vllm/.env up -d
+docker logs -f myia_vllm-medium-swift15-27b
+
+# Rollback to the MoE (armed): swap profiles, same port/keys/alias
+docker compose -f myia_vllm/configs/docker/profiles/medium-swift15-27b.yml --env-file myia_vllm/.env down
+docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-stock-tq.yml --env-file myia_vllm/.env up -d
+
+# Legacy: Qwen3.6-35B-A3B MoE + FP8 KV (pre-08-11 baseline, superseded)
 docker compose -f myia_vllm/configs/docker/profiles/medium-qwen36-moe.yml --env-file myia_vllm/.env up -d
 docker logs -f myia_vllm-medium-qwen36-moe
 
@@ -110,7 +120,9 @@ GLM-4.7-Flash (legacy) used a custom Dockerfile (`Dockerfile.glm-flash`) with `t
 
 | Service | GPUs | Port | Model | Profile |
 |---------|------|------|-------|---------|
-| **medium-qwen36-moe** | **0,1** | **5002** | **Qwen3.6-35B-A3B-AWQ + FP8 KV** | **medium-qwen36-moe.yml** |
+| **medium-swift15-27b** | **0,1** | **5002** | **Swift-1.5-Qwen3.8-27B W4A16 + FP8 KV** | **medium-swift15-27b.yml** |
+| medium-qwen36-moe | 0,1 | 5002 | Qwen3.6-35B-A3B-AWQ + FP8 KV | medium-qwen36-moe.yml (legacy baseline) |
+| medium-qwen36-stock-tq | 0,1 | 5002 | Qwen3.6-35B-A3B + TurboQuant k8v4 | medium-qwen36-stock-tq.yml (**armed rollback**) |
 | **GPU 2 — FULLY FREED 2026-05-01** | **2** | — | training jobs (CoursIA) | 78 MiB driver baseline only |
 | medium-qwen36-27b | 0,1 | 5002 | Qwen3.6-27B-AWQ-INT4 + TQ K8V4 | archives/2026/medium-qwen36-27b.yml.rejected-2026-05-06 (rejected: -50% decode) |
 | kokoro-tts (migrated to po-2023) | — | — | Kokoro TTS (67 voices) | now at `https://tts.myia.io/kokoro/v1` (po-2023, sleep mode) |
@@ -617,7 +629,7 @@ SK Agent (`sk_agent.py`) now reads sampling params from `sk_agent_config.json`:
 Passed via `OpenAIChatPromptExecutionSettings` to `ChatCompletionAgent.get_response()`.
 Non-standard params (top_k, min_p) sent via `extra_body`.
 
-## Current State (2026-09-22: **prod on stock `vllm/vllm-openai:v0.30.0` + TurboQuant k8v4 — Model Runner V2 under WSL2 via `VLLM_WSL2_ENABLE_PIN_MEMORY=1`, prefix cache granularity 16 + fp16 mamba state** — v0.30.0 promoted 09-22 on GO user, 13/13 gates + FORCING clean, warm A/B N=16 **834-847 vs 678.1** same-window (+23-25%), image ID `8a69ffad015f`, compile-cache volume `…-v0300`; KV 934,660 unchanged, VRAM 19,344/18,294 MiB, batch 8192, gpu-util 0.70; v0.29.0 promoted 09-11 before that, PR #39; windows A+B PR #37; container serving the NEW HF token since 08-31)
+## Current State (2026-09-25: **prod on Swift-1.5-Qwen3.8-27B + FP8 KV on stock `vllm/vllm-openai:v0.30.0`** — promoted on user GO after the 09-24 eval window; profile `medium-swift15-27b.yml`, dual served names (`qwen3.6-35b-a3b` alias + `swift-1.5-27b`), KV 465,423 (1.78×), VRAM ~19.9/18.8 GiB — same envelope as the MoE. 9/13 gates pass, the 4 failures all cascade from the watchdog wedge-restart during the 235K prefill gate (long-prefill starvation of new requests, engine itself healthy — see the promotion NOTES). nbaudit-hourly re-enabled. Rollback armed: `medium-qwen36-stock-tq.yml`. Previous: **prod on stock `vllm/vllm-openai:v0.30.0` + TurboQuant k8v4 (MoE)** — v0.30.0 promoted 09-22 on GO user, 13/13 gates + FORCING clean, warm A/B N=16 **834-847 vs 678.1** same-window (+23-25%), image ID `8a69ffad015f`, compile-cache volume `…-v0300`; KV 934,660, VRAM 19,344/18,294 MiB, batch 8192, gpu-util 0.70; v0.29.0 promoted 09-11 before that, PR #39; windows A+B PR #37; container serving the NEW HF token since 08-31)
 
 ### 2026-09-22 — K2-Horizon serving eval: not adoptable today; resume harness validated
 
