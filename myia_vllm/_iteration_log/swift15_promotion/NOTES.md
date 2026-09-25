@@ -135,7 +135,7 @@ protection — a true decode wedge would now cost up to 4 min before restart), o
 accept restarts on giant prefills (self-healing, but the giant request is lost).
 Deferred — prod runs 4096 with the historical watchdog thresholds meanwhile.
 
-## MTP-3 loader bug (NEW, to report upstream vllm-project/vllm)
+## MTP-3 loader bug (reported upstream: vllm-project/vllm#58807, filed 2026-09-26)
 
 Boot crash on v0.30.0 (stock image) with `--speculative-config
 '{"method":"mtp","num_speculative_tokens":3}'`:
