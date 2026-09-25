@@ -1,0 +1,140 @@
+# Docker Compose profile — Swift-1.5-Qwen3.8-27B W4A16-AWQ + MTP-3 + FP8 KV (EVAL)
+# ============================================================================
+# EVAL PROFILE (2026-09-24, GO user) — token-economy finetune of Qwen3.8-27B
+# dense (hybrid: 48 linear-attention GDN + 16 full-attention layers, class
+# Qwen3_5ForConditionalGeneration, same family as prod MoE). Purpose: prover
+# #1453 quality tier (MoE baselines: Folk 1->1 in 2073 s, Lidman 2->2 in
+# 3276 s) + fleet-impact read. Derived from medium-qwen38-27b-dflash2.yml
+# (proven TP=2 boot on this host, stock v0.30.0) — see that file for the full
+# operator-trap list (env-file on EVERY compose command, NO '#' inside the
+# backslash-continued command block, cold-boot 10-25 min is normal).
+# DELTAS vs the DFlash2 profile:
+#   model        philbert440 GS-128 -> ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ
+#                (compressed-tensors pack-quantized W4A16 group 128; vision
+#                blocks and GDN linear_attn left BF16 — same stack shape as
+#                prod; mtp_num_hidden_layers:1, mtp_use_dedicated_embeddings:
+#                false, so no fixed BF16 drafter embedding)
+#   served name  qwen3.8-27b -> ALIAS qwen3.6-35b-a3b (transparent to the
+#                prover harness / claudish / condensation: same port + model
+#                id. Consumers get SWIFT during the window — announced; the
+#                alternative was a hard outage.)
+#   spec config  dflash+syvai-8 -> MTP-3. NEVER turboquant KV with MTP
+#                (silent degeneration, our issue vllm#53180): fp8-KV ONLY.
+#   MTP fallback: if boot fails or acceptance is degenerate, DELETE the
+#                --speculative-config line and re-up (pure AWQ + fp8, ~10 min).
+#   compile cache fresh volume vllm-compile-cache-swift15-27b-v1.
+# RUNBOOK: prod stack DOWN first; then up -d THE ENGINE SERVICE ONLY (no
+#   sidecars — a watchdog WEDGE restart would kill a prover pass mid-flight;
+#   window is manually monitored). Gates: decode probe + fixed-French quality
+#   canary + spec acceptance from logs (spec_decode_num_accepted/num_drafted).
+#   Prover: run_prover_local.sh, target knot_lean/Lidman.lean:
+#   unknotting_11n102_upper (baseline 2->2), cp backup of the .lean first,
+#   passes start at :30Z only. RESTORE: this compose down && prod profile
+#   up -d --env-file myia_vllm/.env; verify health+KV+decode; re-enable
+#   nbaudit-hourly (disabled for the window); report on workspace-vllm.
+# ============================================================================
+
+services:
+  vllm-medium-swift15-27b:  # eval stack — the 3.6 prod stack must be DOWN first
+    image: ${VLLM_IMAGE_SWIFT15:-vllm/vllm-openai:v0.30.0}
+    container_name: myia_vllm-medium-swift15-27b
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ok=0; big=0
+        for i in $$(seq 1 36); do
+          big=$$(find /root/.cache/huggingface -type f -size +4G -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
+          if [ "$$big" -gt 4000000000 ]; then ok=1; break; fi
+          echo "[hf-mount-guard] largest blob $$big bytes (<4G), waiting for WSL HF bind ($$i/36)..."; sleep 5
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "HF-CACHE-PHANTOM-MOUNT: no >4G blob after 3 min (largest=$$big). Refusing to start. Fix: 'wsl -l -v' (Ubuntu must be Running), then: docker compose -f <this-profile> down && up -d"
+          exit 1
+        fi
+        exec vllm serve \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT_GLM:-5002} \
+          --model ${VLLM_MODEL_SWIFT15:-ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ} \
+          --served-model-name qwen3.6-35b-a3b \
+          --api-key ${VLLM_API_KEY_MEDIUM} \
+          --tensor-parallel-size 2 \
+          --gdn-prefill-backend triton \
+          --no-enable-flashinfer-autotune \
+          --gpu-memory-utilization 0.70 \
+          --max-model-len 262144 \
+          --kv-cache-dtype ${KV_DTYPE_SWIFT15:-fp8} \
+          --dtype auto \
+          --limit-mm-per-prompt '{"image":4,"video":0}' \
+          --mm-processor-kwargs '{"max_pixels":774000}' \
+          --skip-mm-profiling \
+          --max-num-batched-tokens 4096 \
+          --max-num-seqs 16 \
+          --performance-mode interactivity \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --prefix-caching-hash-algo sha256 \
+          --prefix-match-unit 16 \
+          --mamba-ssm-cache-dtype float16 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --distributed-executor-backend mp \
+          --disable-custom-all-reduce \
+          --async-scheduling \
+          --no-scheduler-reserve-full-isl \
+          --default-chat-template-kwargs '{"preserve_thinking":true,"reasoning_effort":"medium"}' \
+          --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"repetition_penalty":1.0}' \
+          --middleware error_source_capture.ErrorSourceCapture
+    labels:
+      - "autoheal=False"
+    ipc: host
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_DEEP_GEMM=0
+      - OMP_NUM_THREADS=1
+      - VLLM_LOG_DIR=/logs
+      - PYTHONPATH=/middleware
+      - VLLM_MAX_REQUEST_BODY_BYTES=0
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - VLLM_FLOAT32_MATMUL_PRECISION=high
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_P2P_DISABLE=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
+      - CUDA_DEVICE_MAX_CONNECTIONS=8
+    volumes:
+      - ${VLLM_MODELS_PATH:-./models}:/models:ro
+      - type: bind
+        source: ${HF_CACHE_PATH:-~/.cache/huggingface}
+        target: /root/.cache/huggingface
+        bind:
+          create_host_path: false
+      - vllm-compile-cache-swift15-27b-v1:/root/.cache/vllm
+      - ${VLLM_LOG_PATH:-./../../../logs}:/logs
+      - ./../../../middleware:/middleware:ro
+    ports:
+      - "${VLLM_PORT_GLM:-5002}:${VLLM_PORT_GLM:-5002}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT_GLM:-5002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1800s
+    restart: unless-stopped
+
+volumes:
+  vllm-compile-cache-swift15-27b-v1:
