@@ -135,6 +135,17 @@ protection — a true decode wedge would now cost up to 4 min before restart), o
 accept restarts on giant prefills (self-healing, but the giant request is lost).
 Deferred — prod runs 4096 with the historical watchdog thresholds meanwhile.
 
+**RESOLVED 2026-09-26 (GO user, PR #61)**: `GEN_TIMEOUT` 40→90 s (WEDGE_MAX 2
+unchanged, ~180 s tolerance — just above the 180.4 s measured worst case).
+Applied sidecar-only (engine untouched). Validated by the discriminating gate
+01:00:36→01:03:36Z: a 253,502-token prefill (180.4 s wall) completed with ZERO
+wedge fail events from the watchdog (probes stayed `OK health=200 decode=200`
+throughout; previously 2 consecutive 40 s fails → restart). Third occurrence
+that motivated it was organic: a real 262,144-token request tripped the restart
+at 19:58:28Z on 25/09. New-arrival starvation of short requests during giant
+prefills persists by design (3× 25 s probe timeouts during the validation gate).
+One week of surveillance confirms no missed real wedges.
+
 ## MTP-3 loader bug (reported upstream: vllm-project/vllm#58807, filed 2026-09-26)
 
 Boot crash on v0.30.0 (stock image) with `--speculative-config
