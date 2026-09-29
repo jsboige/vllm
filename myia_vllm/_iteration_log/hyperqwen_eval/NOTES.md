@@ -179,3 +179,52 @@ volume `vllm-compile-cache-swift15-hyperqwen-eval` (now warm for this mode).
 eviction test · 10:40 back-to-back cache pair (202 s → 4.7 s) · 10:33→10:35:34Z eval
 down + prod restore (warm ~2 min) · 10:36 prod quote baseline **49.8 tok/s** → final A/B
 **270.7 / 49.8 = 5.4×**. Prod verified: KV 465,423, health 200, 3 containers.
+
+## Overnight soak (2026-09-29 12:12Z→, GO user "lance le soak, j'aime autant être là")
+
+Same image/mode as window 2 (digest-pinned `65f399a1…`, CTX-long, commit `6382136e01`),
+running IN PLACE of prod on :5002 (rollback = prod profile, untouched).
+
+### Entry gates (12:12→12:40Z)
+QA-at-depth battery (10 facts at graded depths in a 180,118-token doc) **10/10 identical
+to the prod control run** · vision probe (4-quadrant PNG) exact · tool-call probe
+(get_weather Paris) correct · 3 containers up, watchdog v5 armed.
+
+### Real-workload generation (adoption mandate)
+Coordination post asking Claude agents/bots to use sk-agent conversations + Lean proving ·
+prover pass on :5002 (`unknotting_11n102_upper` Lidman.lean, 63 min) · sk-agent agentic
+conversations ×2 · ambient traffic. Total ~3.2M prompt tokens over ~4.5 h. **Zero
+watchdog events, 0 error signatures, nbaudit rc=0.** nbaudit runs at 13:05Z/14:05Z were
+EMPTY (checklist queue empty since 11:05Z — do not forecast load from the schedule).
+
+### Finding 1 — VRAM grows ~+4 GiB under sustained load (the soak doing its job)
+Boot envelope ~19.9/18.8 → under load GPU 0 reached **23.88 GiB (~685 MiB free, over the
+23,000 MiB alert threshold)**, GPU 1 22.4 GiB. Suspected mechanism: the drafter n-gram
+search index grows with served context — outside the gpu-util budget (same class as our
+known +2.1-2.8 GiB out-of-pool overshoot, but load-dependent instead of fixed).
+One transient quote degradation to 60.6 t/s **recovered on the second sample (274.4)** —
+WDDM paging pattern (GPU 0 shared with the active desktop), not a wedge.
+
+### Mitigation — gpu-util 0.70→0.68 (17:05Z, user "récupérer un peu de marge sur le KVCache")
+Rationale: trade KV-pool slack for VRAM headroom. Result at 17:24Z boot: **KV pool
+297,748 → 272,316 tokens (guard >262,144 PASSES, slack 10,172; max concurrency 1.04×
+the full window)**, quote probe 215.1 t/s exact copy (nominal post-boot sample),
+3 containers healthy. Guard going forward: pool must stay >262,144 — any further VRAM
+pressure means 0.69, not lower. Weights load took 367 s (9p bind under desktop load —
+slow but clean). Go/no-go criteria: >2 non-recovering degradations or VRAM >24.2 GiB =
+red; consolidation at the 04:17Z cycle or user's return.
+
+### Soak correction (user, 29/09)
+The claudish 121K/103K medians (used to argue the 64K rejection in window 1) are
+GLM-routed PROXY traffic, not local :5002 consumption — Hermes/NanoClaw run under GLM.
+Actual local consumers: sk-agent, RSM condensation, nbaudit, prover, OWUI, external
+friend + organic full-window events (a real len=262144 request flew on 25/09). Capacity
+criteria for go/no-go are judged on those. Capacity argument FOR promotion weakens
+correspondingly (the full-window organic events are rare, not median).
+
+### Follow-up spun off (user, 29/09) → roo-extensions#3944
+Proper context-condensation mechanism for agent harnesses (sk-agent first), design
+inspired by RooCodeInc/Roo-Code#8743 (provider-based, Smart multi-pass differentiating
+messages vs tools). The local model powers its own compaction (quote workload = its
+winning regime). Issue created with acceptance criteria.
+

@@ -59,7 +59,7 @@ services:
           --speculative-config '{"method":"dflash","model":"syvai/Qwen3.8-27B-DFlash2-W4A16","num_speculative_tokens":15,"draft_sample_method":"probabilistic"}' \
           --gdn-prefill-backend triton \
           --no-enable-flashinfer-autotune \
-          --gpu-memory-utilization 0.70 \
+          --gpu-memory-utilization 0.68 \
           --max-model-len 262144 \
           --kv-cache-dtype int8_per_token_head \
           --attention-backend TRITON_ATTN \
