@@ -116,5 +116,66 @@ Artifacts kept: eval profile (final state = mode C+), compile-cache volume, imag
 **7.4× on quote/copy workloads** (condensation, nbaudit, prover). Blocked from prod only
 by the 64K window; the dflash2-CTX=long variant (int8 KV, 150k) is the follow-up candidate.
 
-### INT8 extras
-(pending)
+## Window 2 — CTX=long variant (2026-09-29 10:07→10:45Z, GO user "OK go pour la 2è expériementation")
+
+Goal: lift the 64K blocker (Q10). Exact flags from their launcher's `SPEC=dflash2 CTX=long`
+branch: `--kv-cache-dtype int8_per_token_head --attention-backend TRITON_ATTN`
+(`spec-decode-int8-kv.patch` lets the split-KV verify kernel read the quantized cache;
+`hybrid-sw-block-promote.patch` stops the drafter's 5 SW layers from wasting blocks).
+Their defaults for this branch: MAX_LEN=150000, k=3. We ran **max-model-len 262144, k=15**
+(kept the quote-mode drafter), INT8 extras retained. Their own warnings: int8 tier costs
+~16% of KV pool, "decays hard past 25k (-34% dec / -44% prefill @60k)" (measured on the
+mtp escape; TP=1).
+
+### Boot
+HEALTHY in ~15 min (cold compile for the new backend: GDN triton warmup, rejection-sampler
+k=15 warmup, 76 piecewise graphs). **GPU KV cache: 297,748 tokens @ 262,144 window = 1.14×
+— the full window boots with spec-dec ON.** (vs 129,593 @64K in window 1; prod fp8 no-spec
+= 465,423). DFlash2 lookup engaged: "7 tokens per step... remaining 8 of 15 verify
+positions filled from context", n-gram search 1 GiB. Warning: `max_num_scheduled_tokens
+set to 4096 based on speculative decoding settings` (same as window 1). 0
+Traceback/ValueError/OOM. Thinking + dual served names OK.
+
+### Ladder (vs prod same-evening baseline 40.6 / 61.8 / 101.9 / 194.6 / 310.6 / 444.4)
+
+| N | 1 | 2 | 4 | 8 | 12 | 16 |
+|---|---|---|---|---|---|---|
+| CTX-long agg | 47.2 | 93.3 | 163.5 | 224.2 | 257.2 | 241.1 |
+| vs prod | +16% | **+51%** | **+60%** | +15% | −17% | **−46%** |
+
+Same shape as mode C+: wins below ~8 concurrent (our regime), documented collapse above.
+
+### Quote test (same harness as window 1)
+**270.7 tok/s, copy byte-exact** — 5.4× prod (50.3), −28% vs the 64K variant (374.3):
+the int8-KV verify tax, visible and acceptable for the capability gained.
+
+### Long-context (the point of the window)
+- **189,081-token prompt ACCEPTED, coherent answer** (generator overshot the 120K target —
+  better). Cold prefill **~921-935 tok/s** (205 s) vs prod fp8 ~1,412-1,812 → the giant-
+  prompt prefill tax is ~2×, matching their warning.
+- **Boundary validated at exactly 262,144**: a 262,097-tok prompt + 48 output gets the
+  standard boundary 400 — arithmetic, not a capacity refusal.
+- **Prefix cache works on int8 KV**: identical replay back-to-back **202.3 s → 4.7 s**
+  (~40K tok/s effective). An earlier apparent miss was LRU eviction (189K cached leaves
+  ~108K headroom; the ladder evicted it). Multi-turn long conversations are near-instant
+  from turn 2 — the profile Hermes/NanoClaw actually run.
+- **Watchdog: zero wedge fails during the 205 s prefill** — the 24-token probes interleaved
+  fine (contrast: prod fp8 starves new arrivals 130-170 s on ≥100K prefills and used to
+  trip the watchdog). Single observation, but the interleave behavior is visibly better.
+
+### Verdict (window 2)
+**The 64K blocker is lifted.** Full 262K window + spec-dec works, prefix cache survives,
+gains in our regime preserved (N=2-4 +51-60%, quote 5.4×, single +16%). Remaining costs:
+KV pool −36% (297,748 vs 465,423 → 1.14× vs 1.78× at full window; 2.46× vs 3.85× at the
+121K Hermes median — occupancy observed at 2-7%, not binding), cold giant-prompt prefill
+~2× slower, N≥12 collapse (not our regime), third-party wheel (not stock; reproducible
+ghcr tag). Promotion is a separate user decision requiring a soak window; nothing was
+promoted. Artifacts: profile final state = CTX-long mode (committed), compile-cache
+volume `vllm-compile-cache-swift15-hyperqwen-eval` (now warm for this mode).
+
+### Window-2 timeline
+10:03Z announce · 10:07 eval up · 10:07→10:22 cold boot (KV 297,748) · 10:23 gates ·
+10:24 longctx 189K (205 s) · 10:28-33 ladder · 10:34 quote (270.7) · 10:37 boundary 400 +
+eviction test · 10:40 back-to-back cache pair (202 s → 4.7 s) · 10:33→10:35:34Z eval
+down + prod restore (warm ~2 min) · 10:36 prod quote baseline **49.8 tok/s** → final A/B
+**270.7 / 49.8 = 5.4×**. Prod verified: KV 465,423, health 200, 3 containers.

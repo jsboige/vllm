@@ -18,6 +18,10 @@
 #           --attention-backend TRITON_ATTN (triton-spec-attn-fp8-kv patch, sm89).
 #   INT8 extras (boot-time fail-loud, drop if refused): VLLM_MARLIN_INPUT_DTYPE=int8,
 #           VLLM_MARLIN_INT8_INCLUDE_RE=mlp|linear_attn|self_attn, VLLM_PREFILL_ATTN=int8.
+#   CTX-LONG (window 2, 29/09): DFLASH k=15 + INT8 extras + --kv-cache-dtype
+#           int8_per_token_head --attention-backend TRITON_ATTN --max-model-len 262144.
+#           Their launcher default for dflash2 CTX=long: MAX_LEN=150000 k=3 (~x1.95 KV
+#           density vs bf16; deep-context decay documented -34% dec/-44% prefill @60k).
 # ROLLBACK (armed): docker compose -f medium-swift15-hyperqwen-eval.yml --env-file
 #   myia_vllm/.env down && docker compose -f medium-swift15-27b.yml --env-file
 #   myia_vllm/.env up -d   (prod profile byte-untouched).
@@ -56,9 +60,9 @@ services:
           --gdn-prefill-backend triton \
           --no-enable-flashinfer-autotune \
           --gpu-memory-utilization 0.70 \
-          --max-model-len 65536 \
-          --kv-cache-dtype bfloat16 \
-          --attention-backend FLASH_ATTN \
+          --max-model-len 262144 \
+          --kv-cache-dtype int8_per_token_head \
+          --attention-backend TRITON_ATTN \
           --dtype auto \
           --limit-mm-per-prompt '{"image":4,"video":0}' \
           --mm-processor-kwargs '{"max_pixels":774000}' \
