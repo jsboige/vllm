@@ -31,7 +31,7 @@
 
 services:
   vllm-medium-swift15-27b:
-    image: ghcr.io/syv-ai/hyperqwen:latest
+    image: ghcr.io/syv-ai/hyperqwen@sha256:65f399a18b42af0b72fd9f69c50aab1464979a9730d65e1909f83059c9ab2d47
     container_name: myia_vllm-medium-swift15-27b
     entrypoint: ["/bin/sh", "-c"]
     command:
