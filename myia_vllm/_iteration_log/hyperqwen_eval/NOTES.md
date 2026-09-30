@@ -228,3 +228,23 @@ inspired by RooCodeInc/Roo-Code#8743 (provider-based, Smart multi-pass different
 messages vs tools). The local model powers its own compaction (quote workload = its
 winning regime). Issue created with acceptance criteria.
 
+### Soak verdict (2026-09-30 04:50Z, end of window — PASS WITH CAVEATS, prod restored)
+**16.5 h total (12:12Z boot 0.70 → 17:07Z boot 0.68 → 04:50Z).** Structural criteria
+all green: **0 crash / 0 restart / 0 error signature across both boots**, 1,316/1,316
+watchdog probes OK on the 0.68 boot, nbaudit rc=0 every hourly run overnight (real
+work: NanoClaw/Hermes checklist sweeps), QA-at-depth 10/10 at entry, prefix cache
+intact. Caveats: (1) **VRAM GPU 0 never truly plateaus** — 21.5 GiB at boot →
+23.04 (22:24Z) → 23.08 (22:47Z) → **23.34 GiB (04:47Z)**, ~+260 MiB over the last
+6 h; monotone creep consistent with the drafter n-gram index growing with served
+context, outside the gpu-util budget. (2) Two transient quote degradations, both
+recovering: 60.6→274.4 (29/09 evening) and 75.5→76.2→167.3 t/s (30/09 04:45Z, at
+desktop wake — WDDM paging pattern); **0 non-recovering**, copy exact on every probe.
+Red thresholds never hit (VRAM ≤ 23.34 vs 24.2; degradations 0/2 non-recovering).
+**Prod restored at 04:50Z** (planned window end, morning traffic, creep ongoing).
+Promotion remains a separate user decision; the dossier: gains (quote 5.4×, N=2-4
++51-60 %, single +16 %, full 262K window + prefix cache on int8 KV) vs costs
+(KV pool −36 % vs prod fp8, cold prefill ~2× slower, N≥12 collapse, dynamic VRAM
+growth, third-party wheel). Recommendation posture: viable for the citation-heavy
+local workloads if the VRAM creep is acceptable — the engine ran clean, but the
+memory model is load-dependent, which our boot-time budgeting cannot express.
+
