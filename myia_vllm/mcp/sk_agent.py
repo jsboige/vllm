@@ -39,7 +39,9 @@ import logging
 import mimetypes
 import os
 import sys
+import time
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -335,6 +337,37 @@ mcp_server = FastMCP(
 
 _sk_agent: SKAgent | None = None
 
+# ---------------------------------------------------------------------------
+# Usage telemetry
+# ---------------------------------------------------------------------------
+# One JSONL line per tool call -- tool name, outcome, duration, pid.  No prompt
+# or response content is written.  Purpose: answer "is sk-agent usage growing?"
+# with a counter instead of an impression.  Best-effort by design -- a
+# telemetry failure must never break an agent call.
+USAGE_LOG = Path(
+    os.environ.get("SK_AGENT_USAGE_LOG")
+    or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "sk-agent" / "usage.jsonl"
+)
+
+
+def log_usage(tool: str, ok: bool, started: float, error: str = "") -> None:
+    """Append one usage record.  Swallows every error on purpose."""
+    try:
+        USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": tool,
+            "ok": ok,
+            "dur_s": round(time.monotonic() - started, 2),
+            "pid": os.getpid(),
+        }
+        if error:
+            record["error"] = error[:200]
+        with USAGE_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 
 async def _get_agent() -> SKAgent:
     global _sk_agent
@@ -356,8 +389,15 @@ async def ask(prompt: str, system_prompt: str = "") -> str:
         prompt: The user question or instruction.
         system_prompt: Optional override for the system prompt.
     """
-    agent = await _get_agent()
-    return await agent.ask(prompt, system_prompt)
+    started = time.monotonic()
+    try:
+        agent = await _get_agent()
+        result = await agent.ask(prompt, system_prompt)
+    except Exception as exc:
+        log_usage("ask", False, started, repr(exc))
+        raise
+    log_usage("ask", True, started)
+    return result
 
 
 @mcp_server.tool()
@@ -371,8 +411,15 @@ async def analyze_image(image_source: str, prompt: str = "Describe this image in
         image_source: Path to a local image file or an HTTP(S) URL.
         prompt: Question or instruction about the image.
     """
-    agent = await _get_agent()
-    return await agent.ask_with_image(image_source, prompt)
+    started = time.monotonic()
+    try:
+        agent = await _get_agent()
+        result = await agent.ask_with_image(image_source, prompt)
+    except Exception as exc:
+        log_usage("analyze_image", False, started, repr(exc))
+        raise
+    log_usage("analyze_image", True, started)
+    return result
 
 
 @mcp_server.tool()
@@ -381,8 +428,15 @@ async def list_tools() -> str:
 
     Useful for debugging and understanding what tools the model can use.
     """
-    agent = await _get_agent()
-    return agent.list_loaded_tools()
+    started = time.monotonic()
+    try:
+        agent = await _get_agent()
+        result = agent.list_loaded_tools()
+    except Exception as exc:
+        log_usage("list_tools", False, started, repr(exc))
+        raise
+    log_usage("list_tools", True, started)
+    return result
 
 
 # ---------------------------------------------------------------------------
