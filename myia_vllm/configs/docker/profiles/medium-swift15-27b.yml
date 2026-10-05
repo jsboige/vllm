@@ -26,23 +26,33 @@
 # ROLLBACK (armed): medium-qwen36-stock-tq.yml (MoE + TQ k8v4, KV 936,660,
 # compile-cache volume vllm-compile-cache-qwen36-stock-tq-v0300 kept).
 # ---------------------------------------------------------------------------
-# KV OFFLOAD TIER -- TRIED 2026-10-05 AND REVERTED (issue #65, PR #68).
-# DO NOT RE-ENABLE WITHOUT A FIX.  `--kv-offloading-size 12
-# --kv-offloading-backend native` (OffloadingConnector) booted, created the
-# CPU tier (mmap 12.87 GB in /dev/shm, 63 GB total -> no ENOSPC risk), and
-# served /health 200 -- then the engine died on the FIRST FORWARD:
-#   model_runner.py:1283  is_padding[:num_tokens].fill_(False)
-#   -> torch.AcceleratorError: CUDA error: an illegal memory access
-# Both TP workers.  The subsequent gpu_worker.py:722 "Failed to synchronize
-# transfer end event" lines are SECONDARY -- that is the offload worker's
-# shutdown() on an already-poisoned CUDA context, not the cause.
-# Docker's restart policy relaunched the engine; the flags were removed and
-# the engine restored (see issue #65 for the full log + analysis).
+# KV OFFLOAD TIER -- ACTIVE (unpinned) since 2026-10-05 EXP#2 (issue #65).
+# ⚠ CRITICAL COUPLING: on v0.30.0 the offload REQUIRES
+# VLLM_WSL2_ENABLE_PIN_MEMORY=0.  With pin=1, v0.30.0's pin_mmap_region()
+# registers the WHOLE 12.87 GB /dev/shm offload region with ONE
+# cudaHostRegister, and the first transfer dies with
+#   model_runner.py:1283 is_padding.fill_() ->
+#   CUDA error: an illegal memory access (both TP workers, ~7 s after
+#   "Application startup complete", bogus-error-at-unrelated-call -- the
+#   exact pattern documented by upstream fix #51081, merged 2026-09-17,
+#   shipped in v0.31.0: chunked registration + DMA-for-pageable selector).
+# With pin=0, PIN_MEMORY=False -> pin_mmap_region is never called -> the
+# tier stays pageable -> transfers go through unpinned cuMemcpyBatchAsync,
+# which v0.30.0 explicitly supports ("slower but works").  pin=0 is
+# boot-safe on v0.30.0: buffer_utils.py:80 falls back to NonUvaBuffer (the
+# v0.29 UvaBuffer hard-crash no longer applies).
+# MEASURED (EXP#2, 08:30Z): boots, survives warmup + real generations,
+# stores active (vllm:kv_offload_total_bytes GPU_to_CPU grows per request),
+# 3.3 GB/s unpinned DMA, KV 461,499 tokens (-0.8% vs 465,423: transfer
+# buffers), canary correct, watchdog decode OK, 0 CUDA errors.  Loads stay
+# 0 until the GPU tier first evicts -- the hit-rate bench (evict + replay,
+# #57160 test plan) is the follow-up measurement in #65.
+# ON A v0.31.0 BUMP: #51081 makes pin=1 safe again (chunked registration);
+# re-measure pin=1 vs pin=0 with the offload on before keeping either.
 # NOTE: KV_OFFLOAD_GB_SWIFT15=0 does NOT disable offload -- config/vllm.py:1039
-# tests `is None`, so 0 still creates the connector with a 0-byte tier.
-# OffloadingConnector DOES implement SupportsHMA (offloading_connector.py:52),
-# so the HMA/hybrid-GDN gate was NOT the problem; the fault is in the
-# CUDA-side offload path on this hybrid model.  Re-test only on a newer image.
+# tests `is None`.  ROLLBACK = remove the two --kv-offloading flags AND
+# restore VLLM_WSL2_ENABLE_PIN_MEMORY=1 (pin=0 alone, without the offload,
+# trades away pinned h2d staging for nothing).
 # ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
@@ -88,6 +98,8 @@ services:
           --max-num-seqs 16 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
+          --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-12} \
+          --kv-offloading-backend ${KV_OFFLOAD_BACKEND_SWIFT15:-native} \
           --enable-prefix-caching \
           --prefix-caching-hash-algo sha256 \
           --prefix-match-unit 16 \
@@ -130,7 +142,7 @@ services:
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
       - NCCL_P2P_DISABLE=1
       - VLLM_USE_FLASHINFER_SAMPLER=0
-      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=0 # EXP #65: pin=0 keeps the offload tier pageable (no monolithic cudaHostRegister of the 12.87 GB shm -- the suspected cause of the 08:00:52Z illegal memory access). v0.30 buffer_utils falls back to NonUvaBuffer, so pin=0 no longer breaks boot.
       - CUDA_DEVICE_MAX_CONNECTIONS=8
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
