@@ -26,21 +26,23 @@
 # ROLLBACK (armed): medium-qwen36-stock-tq.yml (MoE + TQ k8v4, KV 936,660,
 # compile-cache volume vllm-compile-cache-qwen36-stock-tq-v0300 kept).
 # ---------------------------------------------------------------------------
-# KV OFFLOAD TIER (added 2026-10-05, issue #65, user GO "RAM et SSD bornés").
-# STEP 1 = RAM tier only, bounded, env-gated (set KV_OFFLOAD_GB_SWIFT15=0 to
-# disable without editing this file).  Why: a 100K-token session costs ~55 s
-# of re-prefill once evicted (1,812 t/s measured); reloading the same KV from
-# RAM is ~0.2-0.3 s (~x100-500 on a repeated session).  Sized at 12 GiB on
-# purpose: the host commit charge was 334/400 GB (84%) on 05/10 and the RAM
-# tier is PINNED memory (VLLM_WSL2_ENABLE_PIN_MEMORY=1), so it counts against
-# vmmem.  Raise it via env only after measuring -- do NOT raise it in-place.
-# OffloadingConnector implements SupportsHMA (v1/offloading_connector.py:52),
-# so NO --disable-hybrid-kv-cache-manager is needed and the hybrid GDN KV
-# manager + the hard-won --prefix-match-unit 16 coupling stay untouched.
-# STEP 2 (SSD tier, NOT enabled): the tiering 'fs' secondary tier has NO size
-# parameter -- the bound must come from a fixed-size filesystem, and ENOSPC
-# degradation must be tested first.  See issue #65.
-# Does NOT fix the >100K starvation/wedge (that is compute, not memory).
+# KV OFFLOAD TIER -- TRIED 2026-10-05 AND REVERTED (issue #65, PR #68).
+# DO NOT RE-ENABLE WITHOUT A FIX.  `--kv-offloading-size 12
+# --kv-offloading-backend native` (OffloadingConnector) booted, created the
+# CPU tier (mmap 12.87 GB in /dev/shm, 63 GB total -> no ENOSPC risk), and
+# served /health 200 -- then the engine died on the FIRST FORWARD:
+#   model_runner.py:1283  is_padding[:num_tokens].fill_(False)
+#   -> torch.AcceleratorError: CUDA error: an illegal memory access
+# Both TP workers.  The subsequent gpu_worker.py:722 "Failed to synchronize
+# transfer end event" lines are SECONDARY -- that is the offload worker's
+# shutdown() on an already-poisoned CUDA context, not the cause.
+# Docker's restart policy relaunched the engine; the flags were removed and
+# the engine restored (see issue #65 for the full log + analysis).
+# NOTE: KV_OFFLOAD_GB_SWIFT15=0 does NOT disable offload -- config/vllm.py:1039
+# tests `is None`, so 0 still creates the connector with a 0-byte tier.
+# OffloadingConnector DOES implement SupportsHMA (offloading_connector.py:52),
+# so the HMA/hybrid-GDN gate was NOT the problem; the fault is in the
+# CUDA-side offload path on this hybrid model.  Re-test only on a newer image.
 # ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
@@ -86,8 +88,6 @@ services:
           --max-num-seqs 16 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
-          --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-12} \
-          --kv-offloading-backend ${KV_OFFLOAD_BACKEND_SWIFT15:-native} \
           --enable-prefix-caching \
           --prefix-caching-hash-algo sha256 \
           --prefix-match-unit 16 \
