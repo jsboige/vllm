@@ -25,6 +25,25 @@
 # references it (grep claudish routing tables + sk-agent configs first).
 # ROLLBACK (armed): medium-qwen36-stock-tq.yml (MoE + TQ k8v4, KV 936,660,
 # compile-cache volume vllm-compile-cache-qwen36-stock-tq-v0300 kept).
+# ---------------------------------------------------------------------------
+# KV OFFLOAD TIER -- TRIED 2026-10-05 AND REVERTED (issue #65, PR #68).
+# DO NOT RE-ENABLE WITHOUT A FIX.  `--kv-offloading-size 12
+# --kv-offloading-backend native` (OffloadingConnector) booted, created the
+# CPU tier (mmap 12.87 GB in /dev/shm, 63 GB total -> no ENOSPC risk), and
+# served /health 200 -- then the engine died on the FIRST FORWARD:
+#   model_runner.py:1283  is_padding[:num_tokens].fill_(False)
+#   -> torch.AcceleratorError: CUDA error: an illegal memory access
+# Both TP workers.  The subsequent gpu_worker.py:722 "Failed to synchronize
+# transfer end event" lines are SECONDARY -- that is the offload worker's
+# shutdown() on an already-poisoned CUDA context, not the cause.
+# Docker's restart policy relaunched the engine; the flags were removed and
+# the engine restored (see issue #65 for the full log + analysis).
+# NOTE: KV_OFFLOAD_GB_SWIFT15=0 does NOT disable offload -- config/vllm.py:1039
+# tests `is None`, so 0 still creates the connector with a 0-byte tier.
+# OffloadingConnector DOES implement SupportsHMA (offloading_connector.py:52),
+# so the HMA/hybrid-GDN gate was NOT the problem; the fault is in the
+# CUDA-side offload path on this hybrid model.  Re-test only on a newer image.
+# ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
 # cold compile-cache boot 10-25 min is normal (health=000 at T+4 min too) ·
