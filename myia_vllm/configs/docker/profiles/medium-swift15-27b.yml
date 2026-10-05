@@ -26,21 +26,20 @@
 # ROLLBACK (armed): medium-qwen36-stock-tq.yml (MoE + TQ k8v4, KV 936,660,
 # compile-cache volume vllm-compile-cache-qwen36-stock-tq-v0300 kept).
 # ---------------------------------------------------------------------------
-# KV OFFLOAD TIER -- ACTIVE (unpinned) since 2026-10-05 EXP#2 (issue #65).
-# ⚠ CRITICAL COUPLING: on v0.30.0 the offload REQUIRES
-# VLLM_WSL2_ENABLE_PIN_MEMORY=0.  With pin=1, v0.30.0's pin_mmap_region()
-# registers the WHOLE 12.87 GB /dev/shm offload region with ONE
-# cudaHostRegister, and the first transfer dies with
-#   model_runner.py:1283 is_padding.fill_() ->
-#   CUDA error: an illegal memory access (both TP workers, ~7 s after
-#   "Application startup complete", bogus-error-at-unrelated-call -- the
-#   exact pattern documented by upstream fix #51081, merged 2026-09-17,
-#   shipped in v0.31.0: chunked registration + DMA-for-pageable selector).
-# With pin=0, PIN_MEMORY=False -> pin_mmap_region is never called -> the
-# tier stays pageable -> transfers go through unpinned cuMemcpyBatchAsync,
-# which v0.30.0 explicitly supports ("slower but works").  pin=0 is
-# boot-safe on v0.30.0: buffer_utils.py:80 falls back to NonUvaBuffer (the
-# v0.29 UvaBuffer hard-crash no longer applies).
+# KV OFFLOAD TIER -- ACTIVE since 2026-10-05 (issue #65), ALWAYS UNPINNED.
+# VERDICT of the 2026-10-05 window (tested live, both configs):
+#   - v0.30.0 + pin=1: monolithic cudaHostRegister -> crash ~7 s after
+#     startup (bogus illegal-access at is_padding.fill_).
+#   - v0.31.0 + pin=1 (#51081 chunked registration, PR tested live):
+#     SAME crash, ~14 s after startup (async_utils.py:174
+#     copy_event.synchronize) -- engine becomes a walking-dead (health 200
+#     but workers dead).  CONCLUSION: cudaHostRegister of the /dev/shm
+#     offload region is BROKEN under WSL2, chunked or not.
+#   - v0.30.0 + pin=0 (PR #69) and v0.31.0 + pin=0: WORK.  pin=0 => PIN_
+#     MEMORY=False => pin_mmap_region never called => tier pageable =>
+#     unpinned cuMemcpyBatchAsync (measured 3.3 GB/s, stores active,
+#     0 errors, replay bench 43x on the GPU-prefix path).
+# Do NOT set pin=1 while the offload flags are present on this host.
 # MEASURED (EXP#2, 08:30Z): boots, survives warmup + real generations,
 # stores active (vllm:kv_offload_total_bytes GPU_to_CPU grows per request),
 # 3.3 GB/s unpinned DMA, KV 461,499 tokens (-0.8% vs 465,423: transfer
@@ -50,9 +49,8 @@
 # ON A v0.31.0 BUMP: #51081 makes pin=1 safe again (chunked registration);
 # re-measure pin=1 vs pin=0 with the offload on before keeping either.
 # NOTE: KV_OFFLOAD_GB_SWIFT15=0 does NOT disable offload -- config/vllm.py:1039
-# tests `is None`.  ROLLBACK = remove the two --kv-offloading flags AND
-# restore VLLM_WSL2_ENABLE_PIN_MEMORY=1 (pin=0 alone, without the offload,
-# trades away pinned h2d staging for nothing).
+# tests `is None`.  ROLLBACK of the offload = remove the two --kv-offloading
+# flags (pin=1 stays; on v0.30.0 pin=0 existed only to serve the offload).
 # ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
@@ -62,7 +60,7 @@
 
 services:
   vllm-medium-swift15-27b:
-    image: ${VLLM_IMAGE_SWIFT15:-vllm/vllm-openai:v0.30.0}
+    image: ${VLLM_IMAGE_SWIFT15:-vllm/vllm-openai:v0.31.0}
     container_name: myia_vllm-medium-swift15-27b
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -142,7 +140,7 @@ services:
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
       - NCCL_P2P_DISABLE=1
       - VLLM_USE_FLASHINFER_SAMPLER=0
-      - VLLM_WSL2_ENABLE_PIN_MEMORY=0 # EXP #65: pin=0 keeps the offload tier pageable (no monolithic cudaHostRegister of the 12.87 GB shm -- the suspected cause of the 08:00:52Z illegal memory access). v0.30 buffer_utils falls back to NonUvaBuffer, so pin=0 no longer breaks boot.
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=0 # VERDICT (fenetre 05/10): cudaHostRegister of the shm offload region is BROKEN under WSL2, chunked or not -- v0.30.0 (monolithic) crashed at is_padding.fill_, v0.31.0+#51081 (chunked, PR tested live) crashed at async_utils copy_event.synchronize. pin=0 = the only working offload config on this host.
       - CUDA_DEVICE_MAX_CONNECTIONS=8
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
@@ -151,7 +149,7 @@ services:
         target: /root/.cache/huggingface
         bind:
           create_host_path: false
-      - vllm-compile-cache-swift15-27b-v1:/root/.cache/vllm
+      - vllm-compile-cache-swift15-27b-v0310:/root/.cache/vllm
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro
     ports:
@@ -324,4 +322,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  vllm-compile-cache-swift15-27b-v1:
+  vllm-compile-cache-swift15-27b-v0310:
+  vllm-compile-cache-swift15-27b-v1: # kept: rollback volume for v0.30.0
