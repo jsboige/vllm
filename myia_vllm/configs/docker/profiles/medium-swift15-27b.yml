@@ -25,6 +25,23 @@
 # references it (grep claudish routing tables + sk-agent configs first).
 # ROLLBACK (armed): medium-qwen36-stock-tq.yml (MoE + TQ k8v4, KV 936,660,
 # compile-cache volume vllm-compile-cache-qwen36-stock-tq-v0300 kept).
+# ---------------------------------------------------------------------------
+# KV OFFLOAD TIER (added 2026-10-05, issue #65, user GO "RAM et SSD bornés").
+# STEP 1 = RAM tier only, bounded, env-gated (set KV_OFFLOAD_GB_SWIFT15=0 to
+# disable without editing this file).  Why: a 100K-token session costs ~55 s
+# of re-prefill once evicted (1,812 t/s measured); reloading the same KV from
+# RAM is ~0.2-0.3 s (~x100-500 on a repeated session).  Sized at 12 GiB on
+# purpose: the host commit charge was 334/400 GB (84%) on 05/10 and the RAM
+# tier is PINNED memory (VLLM_WSL2_ENABLE_PIN_MEMORY=1), so it counts against
+# vmmem.  Raise it via env only after measuring -- do NOT raise it in-place.
+# OffloadingConnector implements SupportsHMA (v1/offloading_connector.py:52),
+# so NO --disable-hybrid-kv-cache-manager is needed and the hybrid GDN KV
+# manager + the hard-won --prefix-match-unit 16 coupling stay untouched.
+# STEP 2 (SSD tier, NOT enabled): the tiering 'fs' secondary tier has NO size
+# parameter -- the bound must come from a fixed-size filesystem, and ENOSPC
+# degradation must be tested first.  See issue #65.
+# Does NOT fix the >100K starvation/wedge (that is compute, not memory).
+# ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
 # cold compile-cache boot 10-25 min is normal (health=000 at T+4 min too) ·
@@ -69,6 +86,8 @@ services:
           --max-num-seqs 16 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
+          --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-12} \
+          --kv-offloading-backend ${KV_OFFLOAD_BACKEND_SWIFT15:-native} \
           --enable-prefix-caching \
           --prefix-caching-hash-algo sha256 \
           --prefix-match-unit 16 \
