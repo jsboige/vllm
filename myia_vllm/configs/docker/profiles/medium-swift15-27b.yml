@@ -40,17 +40,23 @@
 #     unpinned cuMemcpyBatchAsync (measured 3.3 GB/s, stores active,
 #     0 errors, replay bench 43x on the GPU-prefix path).
 # Do NOT set pin=1 while the offload flags are present on this host.
-# MEASURED (EXP#2, 08:30Z): boots, survives warmup + real generations,
-# stores active (vllm:kv_offload_total_bytes GPU_to_CPU grows per request),
-# 3.3 GB/s unpinned DMA, KV 461,499 tokens (-0.8% vs 465,423: transfer
-# buffers), canary correct, watchdog decode OK, 0 CUDA errors.  Loads stay
-# 0 until the GPU tier first evicts -- the hit-rate bench (evict + replay,
-# #57160 test plan) is the follow-up measurement in #65.
-# ON A v0.31.0 BUMP: #51081 makes pin=1 safe again (chunked registration);
-# re-measure pin=1 vs pin=0 with the offload on before keeping either.
+# MEASURED (bench v3, 05/10 10:22Z, tier 24 GiB): LOAD PATH CONFIRMED.
+#   Gold 17,407 tok cold 16.3 s -> 26 fillers (491K tok) evict it from GPU
+#   -> replay 0.32 s (51x) with CPU_to_GPU +655 MB, GPU prefix cache cold
+#   (hits flat), answer correct = hybrid GDN load correctness end-to-end.
+# SIZING RULE (the v2 lesson): a tier SMALLER than the GPU cache is a
+#   write-only sink.  12 GiB (~440K tok) < GPU KV 461K -> capacity LRU
+#   evicted every stored prefix before any replay could hit (bench v2:
+#   26.5 GB stored, 0 loads).  24 GiB = ~685K tok at the measured
+#   37.6 KB/tok effective (padding + TP copies) = 1.48x GPU KV -- keep the
+#   tier >= 1.5x GPU KV; raising gpu-util or KV dtype changes re-derive this.
+# RAM cost: 25.77 GB tmpfs address space, pages committed on touch
+#   (traffic-bound; worst-case bench touched ~19 GB), 63 GB /dev/shm cap.
+# METRIC TRAP: kv_offload_cpu_cache_usage_perc = pinned-by-in-flight-transfers
+#   gauge, NOT a fill gauge (reads 2% while full).  Do not use it for occupancy.
 # NOTE: KV_OFFLOAD_GB_SWIFT15=0 does NOT disable offload -- config/vllm.py:1039
 # tests `is None`.  ROLLBACK of the offload = remove the two --kv-offloading
-# flags (pin=1 stays; on v0.30.0 pin=0 existed only to serve the offload).
+# flags (pin=0 stays: it is the only working offload config on this host).
 # ---------------------------------------------------------------------------
 # ⚠ Operator traps (all live incidents): --env-file myia_vllm/.env on EVERY
 # compose command · NO '#' inside the backslash-continued command block ·
@@ -96,7 +102,7 @@ services:
           --max-num-seqs 16 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
-          --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-12} \
+          --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-24} \
           --kv-offloading-backend ${KV_OFFLOAD_BACKEND_SWIFT15:-native} \
           --enable-prefix-caching \
           --prefix-caching-hash-algo sha256 \
