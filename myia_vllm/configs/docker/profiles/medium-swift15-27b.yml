@@ -99,7 +99,7 @@ services:
           --mm-processor-kwargs '{"max_pixels":774000}' \
           --skip-mm-profiling \
           --max-num-batched-tokens 4096 \
-          --max-num-seqs 16 \
+          --max-num-seqs 32 \
           --performance-mode interactivity \
           --enable-chunked-prefill \
           --kv-offloading-size ${KV_OFFLOAD_GB_SWIFT15:-24} \
