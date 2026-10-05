@@ -1,4 +1,4 @@
-"""Concurrent scaling bench: 1, 2, 4, 8, 12, 16 users at once."""
+"""Concurrent scaling bench: 1..32 users at once (distinct prompts -- no prefix-cache inflation)."""
 import concurrent.futures
 import json
 import os
@@ -30,6 +30,22 @@ PROMPTS = [
     "What is rope scaling?",
     "Explain flash attention v3.",
     "What's tensor parallelism vs pipeline parallelism?",
+    "Summarize the attention mechanism in 3 bullet points.",
+    "What does temperature do in sampling?",
+    "Give 2 pros and 2 cons of quantization.",
+    "Explain what a tokenizer does.",
+    "What is an embedding space?",
+    "Define batch inference in one sentence.",
+    "Why do LLMs hallucinate? 2 reasons.",
+    "What is KV cache eviction?",
+    "Explain chunked prefill briefly.",
+    "What is a CUDA graph, 1 sentence?",
+    "Name 2 LLM serving frameworks other than vLLM.",
+    "What does context length mean?",
+    "Explain speculative decoding acceptance rate.",
+    "What is continuous batching?",
+    "Define TTFT vs TPOT.",
+    "Why is memory bandwidth the decode bottleneck?",
 ]
 
 
@@ -60,7 +76,7 @@ def chat(prompt, max_tokens=256, thinking=False):
 chat(PROMPTS[0], max_tokens=32)
 
 print(f"{'N':>3} {'wall':>7} {'tot_tok':>8} {'agg_tps':>9} {'per_min':>8} {'per_med':>8} {'per_max':>8}")
-for n_users in [1, 2, 4, 8, 12, 16]:
+for n_users in [1, 2, 4, 8, 16, 24, 32]:
     prompts = PROMPTS[:n_users]
     t0 = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_users) as ex:
