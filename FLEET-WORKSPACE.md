@@ -57,7 +57,11 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
 
 - 2026-10-06 — workspace créé sur po-2025 (clone du fork `72e2dfcc95`, `upstream` ajouté,
   140 Mo) par la lane `po-2025:claudish`, sur demande user relayée par `ai-01:vllm`.
-- 2026-10-06 — workspace créé sur po-2026 (`C:\Production\vllm`, clone depth-5 du fork
-  `b2cc30bbce`, `upstream` ajouté par gh) par la lane `po-2026:Embeddings`, sur
-  instruction user directe. Apport : profil compose embeddings + sidecar capture +
-  gouverneur thermique + runbook v0.23 (PR vers main, refs #71).
+- 2026-10-06 — workspace créé sur po-2026 (`D:\Dev\vllm`, clone depth-5 du fork
+  `b2cc30bbce`, `upstream` ajouté par gh ; initialement posé sous `C:\Production\vllm`
+  puis déplacé sur D: le même jour — équilibre disque, D: 1 To libres vs C: 341 Go)
+  par la lane `po-2026:Embeddings`, sur instruction user directe. Apport : profil
+  compose embeddings + sidecar capture + gouverneur thermique + runbook v0.23
+  (PR #78 vers main, refs #71). **Siège de passation** : la vigie embeddings
+  (surveillance 12h) migre vers `myia_vllm/` (CLAUDE.md + skill + mémoire lane) —
+  le runtime de service reste au dépôt prod `C:\Production\Embeddings`.
