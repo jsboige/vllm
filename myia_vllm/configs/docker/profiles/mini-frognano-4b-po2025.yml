@@ -82,9 +82,10 @@ services:
       --max-num-batched-tokens 8192
       --mamba-ssm-cache-dtype float16
       --skip-mm-profiling
-      --limit-mm-per-prompt {"image":0,"video":0}
+      --limit-mm-per-prompt '{"image":0,"video":0}'
       --enable-prefix-caching
       --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
       --reasoning-parser qwen3
       --api-key ${VLLM_API_KEY_MINI}
 
