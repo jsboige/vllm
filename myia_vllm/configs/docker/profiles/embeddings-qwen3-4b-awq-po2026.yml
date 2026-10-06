@@ -1,0 +1,116 @@
+# Docker Compose profile — Qwen3-Embedding-4B W4A16-AWQ (service d'embeddings flotte, po-2026, PROD)
+# ============================================================================
+# Siège : po-2026 (RTX 3080 Ti Laptop 16 Go VRAM, 64 Go RAM, cap vmmem WSL 16 Go
+# depuis 2026-10-05). Ce service est l'embedder de TOUTE la flotte : Roo Code
+# (indexation sémantique multi-machines) + Open WebUI 7 tenants (RAG).
+# Chaîne publique : https://embeddings.myia.io (IIS ARR po-2023) → sidecar
+# capture :8004 (embedding-proxy-logger) → vLLM :8005 (ce profil).
+#
+# CONTRAT STABLE (non-négociable, issue #71) : served-model-name
+# qwen3-4b-awq-embedding + dims 2560 + URL publique inchangés — tout changement
+# = réindexation flotte (6,2M+ points Qdrant). Ce service ne touche PAS Qdrant :
+# inférence seule, les clients écrivent les vecteurs.
+#
+# Modèle : boboliu/Qwen3-Embedding-4B-W4A16-G128 (MTEB 69.45 multilingual).
+# Perf mesurée v0.23.0 (2026-09-30, GO user) : warm single 15-17 ms (~x10 vs
+# v0.21), batch 32 = 183 ms (175 emb/s), VRAM 12,2 → 6,7 Go. Flush flotte réel
+# 01-02/10 : 86-87 °C ×2 h SANS cap gouverneur. Cohérence cos v0.21↔v0.23 =
+# 0.999998. Pièges v0.23 (2 crash-loops d'apprentissage) : pooling ne supporte
+# PAS cudagraph_mode FULL (override→PIECEWISE→assert) ; PIECEWISE exige la
+# compilation (mode NONE + PIECEWISE = crash au boot). Défauts v0.23 = compile
+# AOT (cache 3,9 s) + 51 CUDA graphs PIECEWISE — ne PAS remettre --enforce-eager.
+# Détail : myia_vllm/docs/embeddings-po2026-runbook.md.
+#
+# Thermique host : undervolt persistant `nvidia-smi -lgc 210,1800` (schtask boot
+# GPU-Undervolt-Cap) + gouverneur gpu-thermal-governor.ps1 (schtask /5 min :
+# ≥88 °C ×2 → cap 210,1600 ; ≤78 °C ×3 → restore). Derating -12,5 % depuis
+# 2026-08-31 (demi-tour après undervolt) : gpu-mem 0.75, seqs 672, batched 86016.
+#
+# Rollback image v0.21.0 PURGÉE 2026-10-06 (48,4 Go, mandat disque
+# jsboige/Maintenance#70) : re-pull via skopeo (keyring Docker Hub HS, procédure
+# au runbook) si retour arrière un jour nécessaire. Image courante : 29,8 Go.
+# Backups compose par version : dépôt local po-2026 C:\Production\Embeddings
+# (docker-archives/).
+#
+# Secrets : ${VLLM_API_KEY} / ${HUGGING_FACE_HUB_TOKEN} via .env LOCAL au siège
+# (gitignored) — jamais dans un commit (incident rotation clé 09/2026).
+#
+# Sidecar :8004 (re-création, siège local uniquement, Git Bash avec
+# MSYS_NO_PATHCONV=1) :
+#   docker run -d --name embedding-proxy-logger -p 8004:8004 \
+#     -v "C:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
+#     -v "C:\Production\Embeddings\logs\capture-20260906:/app/logs" -w /app/logs \
+#     -e LISTEN_PORT=8004 -e TARGET_URL=http://host.docker.internal:8005 \
+#     -e MAX_LOG=100000 --restart unless-stopped \
+#     --entrypoint python3 vllm/vllm-openai:v0.23.0 /app/proxy.py
+# TOUJOURS en container (python host direct = firewall bloque LAN + ARR 503
+# collant ~19 min — leçon 2026-08-14).
+# ----------------------------------------------------------------------------
+
+services:
+  qwen3_4b_awq_embedding_server:
+    image: vllm/vllm-openai:v0.23.0
+    container_name: qwen3_4b_awq_embedding_server
+    runtime: nvidia
+
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_API_KEY=${VLLM_API_KEY}
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - CUDA_VISIBLE_DEVICES=0
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+
+    ports:
+      # 8005 (sidecar capture sur 8004 depuis 2026-09-06, attribution trafic)
+      - "8005:8000"
+
+    ipc: host
+
+    command: >
+      boboliu/Qwen3-Embedding-4B-W4A16-G128
+      --quantization compressed-tensors
+      --trust-remote-code
+      --dtype half
+      --served-model-name qwen3-4b-awq-embedding
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization 0.75
+      --kv-cache-dtype auto
+      --max-model-len 2048
+      --max-num-seqs 672
+      --max-num-batched-tokens 86016
+      --runner pooling
+      --api-key ${VLLM_API_KEY}
+      --disable-log-stats
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+# Notes dimensionnement (mesuré, siège po-2026) :
+# - max-model-len 2048 : chunks Qdrant ≤800 chars ≈ 200-300 tokens (marge 7x)
+# - Bottleneck = bande passante mémoire GPU (448 GB/s), pas le compute —
+#   monter max-num-seqs ne sert à rien (testé 02-11 : 768→1024 = perf /5)
+# - Capacité démontrée : rattrapage post-incident ~3 570 req/h (04-05/10) digéré
+#   en ~3 h à 87 °C sans cap ; régime nominal flotte ~250-2 000 req/h batchées ×32
