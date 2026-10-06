@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -24,6 +25,20 @@ TARGET = os.environ.get("TARGET_URL") or f"http://localhost:{os.environ.get('TAR
 MAX_LOG = int(os.environ.get("MAX_LOG", "200"))
 LOG_FILE = Path("embedding_requests.jsonl")
 TARGET_TIMEOUT = ClientTimeout(total=120)
+
+# WEDGE FIX (2026-10-06, épisode #4) : l'écriture du log est synchrone vers un volume
+# monté Windows (gRPC-FUSE). Quand la couche de partage de fichiers stall (pression
+# mémoire host), open()/write() gèle l'event loop entier -> le proxy meurt y compris
+# /_proxy_stats (signature : process vivant, logs gelés, connexions refusées).
+# L'écriture part dans un pool dédié de 2 threads : si le volume re-stall, seuls les
+# threads de log pendent, le service continue. Les entrées s'accumulent alors dans la
+# file du pool (petites, tolérable pour un sidecar) au lieu de tuer la chaîne publique.
+LOG_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="log")
+
+
+def _write_log(entry):
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 class RequestTracker:
@@ -88,8 +103,7 @@ async def handle(request: web.Request):
             if extra_keys:
                 entry["extra_params"] = {k: payload[k] for k in extra_keys}
 
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            LOG_POOL.submit(_write_log, entry)
 
             print(
                 f"[{tracker.logged}/{MAX_LOG}] {entry['input_count']} input(s), "
