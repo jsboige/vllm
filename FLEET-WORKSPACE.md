@@ -8,7 +8,7 @@ coordonnent sur le **dashboard workspace-vllm**.
 
 | Volet | Issue | Machine | État |
 |---|---|---|---|
-| FrogNano-4B | `myia-ai-01/vllm#70` | po-2025 (ce workspace) | P0 inventaire GPU livré 05/10 |
+| FrogNano-4B | `myia-ai-01/vllm#70` | po-2025 (ce workspace) | P1 en cours — siège vllm inauguré 06/10 (profil + garde thermique posés, 1er serve en préparation) |
 | Embeddings | `myia-ai-01/vllm#71` | po-2026 | sibling #2 |
 
 **Matériel (mesuré 05/10, ne pas réétablir)**
@@ -19,6 +19,8 @@ coordonnent sur le **dashboard workspace-vllm**.
   la coexistence se joue sur CPU / RAM / thermique, pas sur la VRAM.
 - Échantillonneur thermique mort depuis le 31/08 ; max constaté 83 °C en banc d'essai,
   ≤ 57 °C sinon. Croiser température × charge, jamais l'un seul.
+  **Revivé 06/10** par le siège vllm : logger user-level /5 min (45 °C à vide au 1er
+  heartbeat) ; gouverneur SYSTEM (recette twin po-2026) en attente de fenêtre UAC.
 
 **Dépôts**
 
@@ -43,3 +45,8 @@ coordonnent sur le **dashboard workspace-vllm**.
 
 - 2026-10-06 — workspace créé sur po-2025 (clone du fork `72e2dfcc95`, `upstream` ajouté,
   140 Mo) par la lane `po-2025:claudish`, sur demande user relayée par `ai-01:vllm`.
+- 2026-10-06 — **siège `po-2025:vllm` inauguré** (session user) : onboarding + P1 engagée —
+  profil `mini-frognano-4b-po2025.yml`, logger thermique posé (sans UAC), gouverneur prêt
+  (fenêtre UAC en attente), config modèle décodée, cron vigie 4 h. Faits marquants : aucun
+  quant communautaire exploitable vLLM/GPU (17 = GGUF/MLX/ONNX/EXL3/NVFP4) → AWQ W4A16
+  maison planifié ; BF16 primaire (9,3 Go). Détail : #70 + dashboard workspace-vllm.
