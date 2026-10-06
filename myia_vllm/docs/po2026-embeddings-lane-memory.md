@@ -65,3 +65,13 @@ en production. Détail technique : `embeddings-po2026-runbook.md` (même dossier
   warm ~x10, VRAM 12,2→6,7 Go ; image v0.21 purgée 06/10 (re-pull skopeo si besoin).
 - 10/2026 : SPOF n°5 (freeze 13,5 h) → cap vmmem ; wedges → LOG_POOL ; siège vllm
   posé 06/10 (PR #78), passation vigie de la session historique Embeddings.
+- 06/10 PM : **PASSATION VALIDÉE** — 1er cycle du nouveau siège `D:\Dev\vllm`
+  (rapport 13:35 locale sur workspace-Embeddings, JAUNE borné ; erratum titre :
+  « 15:35 » → 13:35). La vague ~150 k pts/h = indexation du clone du siège
+  (`ws-fc1a37694049b210`, 65e partition, one-shot) — **le démarrage d'un siège
+  du fork génère sa propre vague d'indexation** (valable pour po-2025). LOG_POOL
+  test dur passé (484 req/30 min sous charge, zéro gel). 2e restart daemon
+  11:03:28Z (ExitCode 0, auto-start propre — croiser si récidive, cf. 09:01:59Z).
+  Cron vigie : nouveau siège `f10b0717` (**5 h à :17**, mandat user — coordination
+  siblings incluse) ; historique `7f3d5392` retiré par embeddings-99 (clôture
+  postée sur workspace-Embeddings).

@@ -65,3 +65,11 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
   (PR #78 vers main, refs #71). **Siège de passation** : la vigie embeddings
   (surveillance 12h) migre vers `myia_vllm/` (CLAUDE.md + skill + mémoire lane) —
   le runtime de service reste au dépôt prod `C:\Production\Embeddings`.
+- 2026-10-06 PM — **siège po-2026 OPÉRATIONNEL (worker sibling #2)** : session
+  démarrée par le user dans `D:\Dev\vllm` ; validation passation passée (1er cycle
+  `/surveillance-embeddings`, rapport workspace-Embeddings 13:35 locale) ;
+  embeddings-99 a retiré son cron 12h (clôture postée). Cron siège : **5 h à :17**
+  (`f10b0717`, surveillance + coordination siblings, mandat user). Heads-up posé
+  sur workspace-vllm : **le démarrage d'un siège génère une vague d'indexation
+  one-shot de son clone** (~150 k pts/h mesuré, latence co-tenants dégradée
+  temporairement) — valable pour le siège po-2025 à venir.
