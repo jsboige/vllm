@@ -46,11 +46,15 @@ $os = Get-CimInstance Win32_OperatingSystem
 $freeMB = [math]::Round($os.FreePhysicalMemory / 1KB)
 
 # --- sonde moteur (silence = moteur éteint, normal hors service) ---
+# 06/10 fix (diagnostic mini-coder-fix/FrogNano via sk-agent, validé) : un TCP ouvert
+# apres timeout HTTP (-TimeoutSec 3) N'EST PAS une preuve d'engin malade — sous charge
+# /health repond lentement alors que le moteur sert. Le fallback Test-NetConnection
+# fabriquait des 'unhealthy' faux (RestartCount=0, curl manuel 200). Silence = off.
 $engineState = 'off'
 try {
-    $r = Invoke-WebRequest -Uri $engine -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+    $r = Invoke-WebRequest -Uri $engine -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
     if ($r.StatusCode -eq 200) { $engineState = 'up' }
-} catch { if (Test-NetConnection -ComputerName localhost -Port 5003 -InformationLevel Quiet -WarningAction SilentlyContinue) { $engineState = 'unhealthy' } }
+} catch { $engineState = 'off' }
 
 # --- heartbeat horaire ---
 if ($st.hb -ne $hour) {
@@ -68,9 +72,6 @@ if ($temp -ge 85) {
 }
 if ($freeMB -lt 4000) {
     Log "WARN RAM free=${freeMB}MB temp=${temp}C engine=${engineState} - marge hôte aminee (hub claudish prioritaire)"
-}
-if ($engineState -eq 'unhealthy') {
-    Log "WARN ENGINE port 5003 ouvert mais /health != 200"
 }
 
 [System.IO.File]::WriteAllText($stateF, ($st | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
