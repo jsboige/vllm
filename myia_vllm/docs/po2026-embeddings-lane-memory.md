@@ -82,3 +82,14 @@ en production. Détail technique : `embeddings-po2026-runbook.md` (même dossier
   Cron vigie : nouveau siège `f10b0717` (**5 h à :17**, mandat user — coordination
   siblings incluse) ; historique `7f3d5392` retiré par embeddings-99 (clôture
   postée sur workspace-Embeddings).
+- 07/10 : **boucle Zoo chiffrée + série restarts VM = 6 le 06/10** (dernier
+  23:41:27Z, StartedAt identiques ×5 conteneurs). Démonstration par les nombres :
+  restart 23:41Z → vague ré-indexation 6 195 req / 407 k inputs en 2 h, puis 2e
+  vidage ~07Z (démarrage matinal machines) → net ws −286 k. Le couple
+  restarts↔vidages s'auto-alimente ; levier structurel = mémoire VM (option (b),
+  portée par Maintenance vers l'arbitrage user). Scan (d) livré : profil SANS
+  réservation hôte — leviers `mem_limit` (à étalonner sous vague, risque
+  OOM-kill moteur), batched/seqs, swap VM. **Mandat adoption user 07/10**
+  (lead po-2025) : compteurs chaque cycle + recrutement consommateurs externes
+  (baseline postée : externe hors flotte = 0). 7 erreurs sidecar transitoires
+  (0,1 % trafic) — candidat : logger le type d'exception.
