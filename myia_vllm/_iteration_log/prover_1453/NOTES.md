@@ -155,3 +155,34 @@ retried and delivered at 02:05Z.
 Rule going forward: the host's baseline commit is already 88-91 %, so a full Windows-side build
 needs the commit checked first (below ~85 %). Prover passes are single-file `lake env lean`
 checks and stay within budget.
+
+## Passe 23 — armée le 07/10 (non lancée : marge hôte 88,4 % ≥ 85 %)
+
+**Déclencheur** : fin de passe 22 = le candidat témoin `exact ⟨[0, 1], rfl, by decide⟩` a été
+**invalidé** à la re-vérification offline (1500 s, `LEAN_EXIT=124`) : `failed to synthesize
+Decidable (ReidemeisterEquiv …)` — **il n'existe pas d'instance `Decidable` sur ce Prop**, donc
+un `by decide` nu ne peut pas clore le 3ᵉ composant. Note de cible corrigée par le coordinateur
+le 07/10 12:25Z.
+
+**Deux corrections portées dans le lanceur** (`scripts/adoption/prover_1453/run_pass23_unknotting_upper.sh`) :
+
+1. **Forme de fermeture** : passer par l'**organe** — fournir le témoin à `verifyMoves`, clore
+   l'équation **Bool** par `decide`/`rfl` (là c'est décidable), convertir par `verifyMoves_sound`
+   (`ReidemeisterCombinatorial.lean:235`, contrat :264-268). Le `decide` ne porte QUE sur le
+   calcul Bool, **jamais** sur le Prop.
+2. **Budget de vérification relevé pour cette cible seule** : `LEAN_LAKE_BUILD_TIMEOUT_S=1800`
+   — variable relue à **chaque** appel (`agent_tests/lean_server.py:106-124`, défaut 600),
+   donc aucun changement global. Le harnais écrit lui-même la valeur retenue dans la trace
+   (`timeout_s = budget`, propagation #18432). Justification de 1800 : en passe 22 l'élaboration
+   du fichier courait **encore** > 1500 s (kill externe, LEAN_EXIT=124) **même** avec l'erreur de
+   synthèse précoce à :112 — le coût dominant est l'évaluation kernel des littéraux concrets
+   (`List.foldl Knot.changeCrossingAt knot_11n102 …` déplie le PD-code 11 croisements) : c'est
+   **structurel**, pas un bug harnais. Tout verdict wall-clock à 600 s était donc perdu par
+   construction sur cette cible.
+
+**Gate de lancement** (consigne coordinateur 07/10 15:17Z) : marge commit hôte **< 85 %**
+(lue à l'instant du lancement, **valeur écrite dans le post de lancement**), fenêtre **:30Z**
+(claire du runner nbaudit :05Z). Mesurée à 88,4 % au 07/10 16:47Z → **gel**, pas de lancement.
+
+**Workflow-timeout porté 4200 → 5400 s** : +1200 s de budget de vérification peuvent être
+consommés 1 à 2 fois par passe, la passe 22 a déjà couru 6 334 s de mur.
