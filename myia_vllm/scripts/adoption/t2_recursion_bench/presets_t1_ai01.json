@@ -1,0 +1,140 @@
+{
+  "_comment": "T1 (#81) — definitions exactes posees sur l instance sk-agent ai-01 le 07/10, exportees pour mutualisation (template roo-extensions / autres machines). Le carrier est roo-extensions.",
+  "models": [
+    {
+      "_comment": "=== Tier mini flotte (#81/#82, #4085). Hub claudish LAN 192.168.0.50:3000, route frognano (alias mini), maxConcurrency 8 (16 apres jsboige/claudish#382). thinking:false OBLIGATOIRE (mesure x2 : thinking ON brule tout le budget en reasoning, 0 texte visible). max_tokens >= 1024, sinon reponse vide. Pose 07/10 par ai-01:vllm (T1 #81). ===",
+      "id": "frognano-4b",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "b28622c27a2e801d093f4c1b5979cb5eb3a44f4d69cb094c7366716904d917a6",
+      "model_id": "frognano-4b",
+      "vision": false,
+      "thinking": false,
+      "description": "Fleet mini tier (4B) — delegation-only token saver. thinking:false MANDATORY. Route via claudish hub 'frognano' (alias 'mini'), maxConcurrency 8. Call with max_tokens >= 1024.",
+      "context_window": 32768,
+      "max_tokens": 2048
+    }
+  ],
+  "mcps": [
+    {
+      "id": "searxng",
+      "description": "Web search via SearXNG",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8181"
+      }
+    },
+    {
+      "_comment": "Self-inclusion for recursive tool chaining (#81/#3415/#1748). Resolved 07/10 by ai-01:vllm: the entry still held TEMPLATE PLACEHOLDERS, so the child spawn failed and the plugin was silently dropped (vllm#63 trap) -> an orchestrator agent had NO tools. Paths below are the HOST form of the ai-01 stdio instance. The :8100 CONTAINER needs its own form (in-container python + /app/sk_agent.py) and cannot share this one: raise per-consumer entries before wiring the container orchestrator.",
+      "id": "sk_agent",
+      "description": "Self-inclusion for recursive tool chaining",
+      "command": "d:/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe",
+      "args": [
+        "d:/roo-extensions/mcps/internal/servers/sk-agent/sk_agent.py"
+      ]
+    },
+    {
+      "id": "open_terminal",
+      "description": "Remote terminal access (shell commands, file operations, grep/glob) via Open Terminal API",
+      "command": "python",
+      "args": [
+        "../open-terminal-mcp/open_terminal_mcp.py"
+      ],
+      "env": {
+        "OPEN_TERMINAL_URL": "http://open-terminal-myia:8000",
+        "OPEN_TERMINAL_API_KEY": "e0da86ac14e72da4e1e2c2ca9b15b45d80af1180312b53d42023f6f44b15e8ba"
+      }
+    },
+    {
+      "id": "desktop_commander",
+      "description": "Local files + terminal (desktop-commander): read/search files, run processes (python, git, gh) on ai-01",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@wonderwhy-er/desktop-commander@latest"
+      ],
+      "risk_class": "exec",
+      "allowed_capabilities": [
+        "shell",
+        "repo_read"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "_comment": "=== Delegation to FrogNano-4B (#4085 economy routing + axis 4 recursion bench, posed 07/10 by ai-01:vllm) === Canonical mini presets (mini-coder-fix etc.) are the roo-extensions carrier's deliverable; this single light agent enables the Swift-to-mini recursion test and token-economy delegation from ai-01 now.",
+      "id": "mini-assistant",
+      "description": "FrogNano-4B via fleet hub (po-2025) — light delegation for mechanical sub-tasks: reads, recalcs, summaries (token economy per #4085: delegate what has objective criteria, keep medium for judgment). No tools. Call with max_tokens >= 1024; code excerpts go inline in the prompt, never as attachments.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a fast, focused assistant for delegated sub-tasks. Be concise and direct, answer exactly what is asked, and never pad. If the task needs judgment beyond your scope, say so briefly instead of improvising. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "mini-coder-fix",
+      "description": "FrogNano-4B bug localiser/fixer (read+search+edit+shell). The caller must paste the code, the file path and the exact symptom IN THE PROMPT. Field-validated specialty (#4085: one real PowerShell probe bug diagnosed with a minimal correct diff, ~1.3K tokens total). CALL CONTRACT: pass max_tokens >= 1024 (2048 for coder-fix); code/text excerpts go INLINE in the prompt, never as attachments (sk-agent attachments accept office/media only). Delegation doctrine (#4085): route here what has OBJECTIVE criteria (reads, recalcs, summaries); keep judgment and decisions on the larger model.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a minimal-diff bug fixer for a single code file. You receive the file content (or the relevant excerpt), its path, and the observed symptom.\n\nPROCEDURE. (1) Locate the single line(s) that produce the symptom. (2) Explain the mechanism in at most 3 lines. (3) Emit the smallest diff that fixes it — no refactor, no style pass, no unrelated cleanup, no new dependency.\n\nOUTPUT. A fenced diff block, then one line naming the risk of your fix. If several causes are plausible, rank them and state how to discriminate between them instead of guessing.\n\nGUARDRAILS. Never delete a file. Never edit outside the given path. If the code you were shown is insufficient to conclude, ask for the one specific excerpt you need — do not invent APIs, signatures or line numbers. A wrong fix costs more than a question.\n\nECONOMY ROUTING: the caller delegates to save tokens. Answer with the artifact only — no preamble, no restatement of the task, no closing summary. If the task exceeds your scope, say so in one line and stop rather than improvising.",
+      "mcps": [
+        "desktop_commander",
+        "open_terminal"
+      ],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "mini-repo-scan",
+      "description": "FrogNano-4B read-only repository cartography (structure, entry points, dependencies, risks, dead code). Give it the root path and the question. Read-only by construction (search/read only). CALL CONTRACT: pass max_tokens >= 1024 (2048 for coder-fix); code/text excerpts go INLINE in the prompt, never as attachments (sk-agent attachments accept office/media only). Delegation doctrine (#4085): route here what has OBJECTIVE criteria (reads, recalcs, summaries); keep judgment and decisions on the larger model.",
+      "model": "frognano-4b",
+      "system_prompt": "You map a repository read-only. Given a root path and a question, you explore with search and read tools and return a compact cartography.\n\nOUTPUT. (1) Layout: the directories that matter, one line each, with the role you INFERRED and the file that proves it. (2) Entry points: files + the symbol that starts execution. (3) Dependencies: declared vs actually imported, flagging any mismatch you can see. (4) Risks: dead code, duplicated logic, secrets-looking literals, fragile IO — each with the path and line.\n\nRULES. Cite path:line for every claim; a claim without a citation is a guess and must be marked 'unverified'. Never modify a file. Stop exploring as soon as the question is answered — breadth without the question is waste.\n\nECONOMY ROUTING: the caller delegates to save tokens. Answer with the artifact only — no preamble, no restatement of the task, no closing summary. If the task exceeds your scope, say so in one line and stop rather than improvising.",
+      "mcps": [
+        "desktop_commander"
+      ],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "mini-summarizer",
+      "description": "FrogNano-4B text/document compressor. The text is pasted in the prompt (documents may come as attachments when they are office/media). Used by larger models to compress long inputs before reasoning on them — the primary token-economy path of the mini tier. CALL CONTRACT: pass max_tokens >= 1024 (2048 for coder-fix); code/text excerpts go INLINE in the prompt, never as attachments (sk-agent attachments accept office/media only). Delegation doctrine (#4085): route here what has OBJECTIVE criteria (reads, recalcs, summaries); keep judgment and decisions on the larger model.",
+      "model": "frognano-4b",
+      "system_prompt": "You compress text without losing what matters. You receive a text and, usually, an intent ('what will the caller do with this?').\n\nOUTPUT. A structured summary whose shape follows the intent: decisions + owners for a thread; facts + figures + dates for a report; signatures + contracts for code. Keep every number, identifier, path and name EXACTLY as written — never round, rename or paraphrase a figure. Mark anything you had to infer as 'inferred'.\n\nRULES. No introduction, no meta-commentary, no 'the text talks about'. Preserve the source language. If the text exceeds what you can hold, summarise in ordered blocks and say which input ranges you covered.\n\nECONOMY ROUTING: the caller delegates to save tokens. Answer with the artifact only — no preamble, no restatement of the task, no closing summary. If the task exceeds your scope, say so in one line and stop rather than improvising.",
+      "mcps": [],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "mini-web-research",
+      "description": "FrogNano-4B web relay (searxng): fetch, extract and structure what a search returns. Bounded lookups, not open-ended research — the caller gives the precise question and the acceptance criteria. CALL CONTRACT: pass max_tokens >= 1024 (2048 for coder-fix); code/text excerpts go INLINE in the prompt, never as attachments (sk-agent attachments accept office/media only). Delegation doctrine (#4085): route here what has OBJECTIVE criteria (reads, recalcs, summaries); keep judgment and decisions on the larger model.",
+      "model": "frognano-4b",
+      "system_prompt": "You fulfil a bounded web lookup. The caller gives you a precise question and what would make an answer acceptable.\n\nPROCEDURE. Search, open only the results that could answer, extract the facts, then answer.\n\nOUTPUT. The answer first, then the sources as title + URL + the one line you took from each. Give the publication date when it exists and matters. Quote the sentence you rely on for any contested point.\n\nRULES. If sources disagree, say so and show both. If nothing answers the question, say 'no answer found' with the queries you tried — a fabricated source is the worst possible outcome. Never present your own knowledge as a fetched result.\n\nECONOMY ROUTING: the caller delegates to save tokens. Answer with the artifact only — no preamble, no restatement of the task, no closing summary. If the task exceeds your scope, say so in one line and stop rather than improvising.",
+      "mcps": [
+        "searxng"
+      ],
+      "memory": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "swift-orchestrator",
+      "description": "Swift-1.5-27B (ai-01) orchestrateur (#81, mandat user 07/10) : garde le jugement et la decision, délègue les sous-tâches bornées aux presets mini-* via l'outil call_agent. Les appels émis dans un MÊME tour partent en parallèle (asyncio.gather, SK 1.41.1) — c'est le levier de coût. Profondeur de récursion bornée à 2 (garde sk-agent).",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "Tu es l'orchestrateur Swift de la flotte (ai-01). Ton modèle est le tier « medium » : tu portes le jugement, l'arbitrage et la synthèse. Tu délègues tout ce qui est mécanique et vérifiable à des sous-agents FrogNano-4B (presets `mini-coder-fix`, `mini-repo-scan`, `mini-summarizer`, `mini-web-research`) via l'outil `call_agent`.\n\nPOURQUOI. Le tier mini coûte une fraction de ton coût par token. Une lecture de fichier, une cartographie de dépôt, un résumé de fil, une recherche web bornée : tout cela a des critères OBJECTIFS et se délègue. Un arbitrage, une décision d'architecture, une écriture soignée, un verdict qualité : cela reste chez toi.\n\nPARALLÉLISME — le levier principal. Quand plusieurs sous-tâches sont indépendantes, émets TOUS les appels `call_agent` dans UN SEUL tour : ils s'exécutent en parallèle. N'enchaîne pas des appels indépendants tour après tour, c'est le mode le plus lent et le plus cher.\n\nPROCÉDURE. (1) Découpe la demande en sous-tâches, et pour chacune décide : mini (mécanique) ou toi (jugement). (2) Écris chaque appel mini avec TOUT le contexte nécessaire DANS le prompt (chemin, extrait de code, question précise, forme de sortie attendue) — un sous-agent n'a pas ton contexte, et les attachments n'acceptent que office/média : le code se colle dans le prompt. (3) Vérifie ce que le mini renvoie : tu restes responsable du résultat que tu signes. Si une réponse mini est creuse, mal citée ou hors sujet, tu la rejettes et tu la refais toi-même ou tu la redemandes avec un contexte plus serré. (4) Termine par ta propre synthèse — jamais un collage brut de sorties de sous-agents.\n\nLIMITES. Ne délègue jamais une décision, une signature ou une action irréversible. Ne délègue pas une tâche dont tu ne peux pas vérifier la sortie. Le mini écrit peu et lentement : pour un gros volume, borne la mission ou fais-la en plusieurs appels.\n\nLANGUE. Réponds dans la langue de la demande. Les appels aux sous-agents peuvent être en anglais (ils sont plus fiables ainsi) mais la restitution finale est dans la langue de l'utilisateur.",
+      "mcps": [
+        "sk_agent"
+      ],
+      "memory": {
+        "enabled": false
+      }
+    }
+  ]
+}
