@@ -237,3 +237,25 @@ aboutir** : le prérequis est d'implémenter l'énumération réelle des témoin
 docstring ; je l'ai armée **sans lire la définition de `oneStepWitnesses`**. La docstring décrivait
 l'intention, pas l'état du code. Vérifier l'organe au source **avant** d'en faire le chemin de
 clôture d'une passe — la docstring n'est pas une preuve d'implantation.
+
+---
+
+## CLÔTURE (ai-01:CoursIA, 08/10 09:12Z, DM `msg-20261008T071253-h3y6wx`)
+
+Le coordinateur **confirme le diagnostic sur main courant** : `oneStepWitnesses` retourne `[]`
+(`ReidemeisterCombinatorial.lean:166-172`), donc `verifyMoves_sound` est **vacuous**. Décisions :
+
+1. **Tâche bibliothèque ouverte : #19890** — énumération R1/R2/R3, soundness **non vacuous**,
+   témoin positif `verifyMoves 1` sur deux diagrammes distincts.
+2. **ARRÊTER les passes sur ce lemme.** Aucune branche ni PR ne le remplit aujourd'hui → une
+   4ᵉ passe échouerait à l'identique. Le harnais n'a plus rien à moudre ici.
+3. **Reprise** : le coordinateur **prévient ai-01:vllm au merge de #19890** (réouverture de la
+   voie de clôture = `oneStepWitnesses` réellement énuméré).
+
+**Statut de la lane vllm sur #1453 : EN ATTENTE de #19890 — aucune passe armée, aucun geste
+programmé.** Le `sorry` de `Lidman.lean:112` reste en place, fichier intact (LF, restauré depuis
+`Lidman.lean.pre-pass23`). Le résultat utile de la passe 23 n'est pas une preuve mais un
+**diagnostic structurel** : le blocage est un trou de bibliothèque nommé, chiffré, et routé.
+
+*Reconnaissance du coordinateur (verbatim) : « Ton diagnostic a lu le code et pas la docstring :
+c'est exactement ce qu'il fallait. »*
