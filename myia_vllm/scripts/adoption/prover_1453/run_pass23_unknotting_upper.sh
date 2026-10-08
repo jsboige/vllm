@@ -23,7 +23,7 @@
 set -uo pipefail
 KL=/d/dev/CoursIA-prover/MyIA.AI.Notebooks/SymbolicAI/Lean/knot_lean
 SCRATCH=$(dirname "$(realpath "$0")")
-LOG="$SCRATCH/pass23.log"
+LOG="${PASS23_LOG:-/c/Users/MYIA/AppData/Local/Temp/claude/d--vllm/472266df-9a87-486d-b5d1-3895ee96846b/scratchpad/pass23.log}"
 PY=/c/Users/MYIA/miniconda3/envs/coursia-ml-training/python.exe
 TARGET="$SCRATCH/run_prover_target.py"
 
@@ -31,9 +31,15 @@ echo "=== $(date -u +%FT%TZ) pass23 start: prebuild (LAKE_JOBS=8 lake build +Kno
 ( cd "$KL" && LAKE_JOBS=8 LEAN_NUM_THREADS=4 lake build +Knots.Lidman +Knots.Slice ) >> "$LOG" 2>&1
 echo "=== $(date -u +%FT%TZ) prebuild rc=$?" >> "$LOG"
 
-# Window :30Z, clear of the nbaudit runner (:05Z). 10# = decimal parse (a bare "08"
-# would be read as an invalid OCTAL constant by bash arithmetic).
-while [ "$((10#$(date -u +%M)))" -lt 30 ]; do sleep 30; done
+# Window :30Z, clear of the nbaudit runner (:05Z, actif ~:05-:13). On vise la PROCHAINE borne
+# :30 strictement future : lancer a :47 et demarrer aussitot remettrait le pass dans la fenetre
+# du runner a :05 (lecon pass 22 : chevauchement = ~50 tok/s par flux et le cap client 240 s
+# qui tue le tour de reflexion du coordinateur). Si la borne est a moins de 2 min, on prend la suivante.
+now_s=$(date -u +%s); cur=$((now_s % 3600)); wait_s=$(( (1800 - cur + 3600) % 3600 ))
+[ "$wait_s" -lt 120 ] && wait_s=$((wait_s + 3600))
+echo "=== $(date -u +%FT%TZ) attente fenetre :30Z -> ${wait_s}s" >> "$LOG"
+sleep "$wait_s"
+echo "=== $(date -u +%FT%TZ) fenetre :30Z atteinte" >> "$LOG"
 echo "=== $(date -u +%FT%TZ) window reached — backup + pass" >> "$LOG"
 
 cp "$KL/Knots/Lidman.lean" "$KL/Knots/Lidman.lean.pre-pass23"

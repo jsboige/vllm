@@ -186,3 +186,54 @@ le 07/10 12:25Z.
 
 **Workflow-timeout porté 4200 → 5400 s** : +1200 s de budget de vérification peuvent être
 consommés 1 à 2 fois par passe, la passe 22 a déjà couru 6 334 s de mur.
+
+## Passe 23 — EXÉCUTÉE le 08/10 (00:30Z → 03:19:54Z) : ÉCHEC, mais le blocage est NOMMÉ
+
+**Résultat brut** (`pass23.log`, harnais `run_prover_target.py` → `run_prover_bg`) :
+
+| Mesure | Valeur |
+|---|---|
+| Prébuild `+Knots.Lidman +Knots.Slice` | rc=0, 22:48:06Z → 23:39:33Z (~51 min) |
+| Fenêtre :30Z | atteinte 00:30:00Z (attente 3027 s) |
+| `RESULT` | **FAILED** — `Sorry: 2 -> 2`, `Total time: 8385.8s` (2 h 20) |
+| `DELTA` / `ATTEMPTS` / `ITERATIONS` | 0 / 0 / 3 |
+| `FREEZE_LOOP` / `CALIBRATION` / `SUCCESS` | False / False / False |
+| `TRUE_PLACEHOLDER` avant/après | **0 / 0** (fichier et log) |
+| Cible restaurée | **byte-identique** au backup `Lidman.lean.pre-pass23` (seul écart : LF→CRLF, corrigé) |
+
+**Cause de l'abandon** : `Workflow reasoning-budget timeout (5400s reasoning; 0s build credited)`
+— l'agent a consommé **tout** le budget de raisonnement sans émettre une seule tactique qui
+compile (`ATTEMPTS 0`). Le garde-fou de régression a ensuite joué : build-aware sorry **3 > 2**
+(1 `sorry` implicite via `apply?`/`exact?`/`solve_by_elim`) → `REGRESSED` → **retour à l'état
+d'entrée** (#1453 iter-3 guard), puis `SAME_COUNT_ZERO_VERIFIED`. Le harnais n'a donc **rien
+persisté**, ce qui est le comportement voulu.
+
+### ⚠️ Le vrai livrable : le chemin de clôture désigné est INIMPLÉMENTABLE (vérifié au source)
+
+L'agent a conclu de lui-même « **Blocage confirmé : le chemin `verifyMoves_sound` est mort** »
+(~+2938 s). J'ai vérifié ce claim **au source**, et il est **exact sur le fond** :
+
+- `ReidemeisterCombinatorial.lean:166-172` — `oneStepWitnesses` **retourne `[]`** (squelette
+  assumé : « la liste exhaustive des successeurs à 1 mouvement n'est pas énumérée ici (PR2+) »).
+- D'où `verifyMoves n d₁ d₂ ≡ decide (d₁ = d₂) || [].any …` = **`decide (d₁ = d₂)`**.
+  L'organe ne certifie donc **que l'égalité réflexive** (n=0). Pour n=2 sur un diagramme
+  distinct de `unknotDiagram`, il rend **`false` par construction**.
+- `verifyMoves_sound` (:235) est **prouvé** — mais **vacuous** : son induction consomme
+  `oneStepWitnesses_sound` (:231), elle-même triviale par `List.not_mem_nil` sur une liste vide.
+  Les deux théorèmes sont vrais et sans contenu.
+
+**Conséquence** : la forme de fermeture de la note corrigée (« fournir le témoin à `verifyMoves`,
+clore l'équation Bool par `decide` ») est **inimplémentable** — le `decide` porterait sur
+`false = true`. La prémisse du docstring de `Lidman.lean` (« ce `sorry` est résoluble en condition
+par l'organe natif ») est **fausse pour le cas 2 changements** tant que `oneStepWitnesses = []`.
+
+**Ce n'est donc pas un mur de recherche, c'est un trou de bibliothèque** : la passe 22 avait buté
+sur l'absence d'instance `Decidable` sur le Prop ; la passe 23 montre que le repli sur l'organe
+ne mène nulle part, l'organe étant incomplet. **Une 4ᵉ passe avec une meilleure note ne peut pas
+aboutir** : le prérequis est d'implémenter l'énumération réelle des témoins à 1 mouvement
+(le « mur PR2+ » documenté l.221-222), travail de bibliothèque distinct d'un run de harnais.
+
+**Leçon (à mon endroit)** : la note corrigée venait du coordinateur et s'appuyait sur la
+docstring ; je l'ai armée **sans lire la définition de `oneStepWitnesses`**. La docstring décrivait
+l'intention, pas l'état du code. Vérifier l'organe au source **avant** d'en faire le chemin de
+clôture d'une passe — la docstring n'est pas une preuve d'implantation.
