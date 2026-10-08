@@ -24,6 +24,7 @@ Cycle court ~3-5 min. Porté par cron session-only `33 */4 * * *` dont le prompt
 - Compteurs moteur (`request_success_total`, finish reasons, erreurs) : delta depuis le cycle précédent.
 - Qualifier chaque requête : **interne flotte** (sondes, gates, autres sièges, ai-01 T2/T3) vs **EXTERNE** (hors sièges vllm). Identifier l'origine via `claudish_traffic` le cas échéant.
 - Nouveau consommateur externe détecté → ACK sur workspace-vllm (qui consomme, volume, régularité).
+- **Un appel de délégation RÉEL par cycle** (mandat user 08/10 : « faire tourner le modèle de délégation en schedule »). Un `mcp__sk-agent__call_agent` sur un preset `mini-*` (`mini-summarizer`, `mini-repo-scan`, `mini-coder-fix`, `mini-web-research` → FrogNano) avec une micro-mission **utile au cycle** — p.ex. résumer les derniers messages du dashboard, ou pré-trier un fichier sous `_logs/`. Consigner le résultat dans la ligne adoption ; un échec se rend en **WARN** (c'est un signal de chaîne cassée, pas un détail). Raison : ça fait bouger `request_success_total` par un **usage réel** au lieu d'une sonde, et ça prouve la chaîne sk-agent × sous-agents à chaque cycle. Coût : quelques centaines de tokens, aucune fenêtre de charge à annoncer.
 
 ## 4. Rendu
 
