@@ -64,11 +64,55 @@ def git(repo: Path, *a: str) -> str:
     return p.stdout
 
 
+def gh_api(*path: str) -> str:
+    """A REST call. Deliberately `gh api` and never `gh issue view` -- see series_checklist."""
+    p = subprocess.run(["gh", "api", *path], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if p.returncode:
+        raise RuntimeError(f"gh api {' '.join(path)}: {p.stderr.strip()[:300]}")
+    return p.stdout
+
+
 def refresh_clone(repo: Path) -> str:
-    if git(repo, "status", "--porcelain").strip():
-        raise RuntimeError(f"{repo} has local changes; the audit clone must stay pristine")
-    git(repo, "pull", "--ff-only", "--quiet")
-    return git(repo, "rev-parse", "HEAD").strip()
+    """Refuse to audit on a clone carrying real local work.
+
+    Line-ending-only differences are NOT real work. This repo ships `*.py text eol=lf`
+    in .gitattributes, yet some blobs were committed carrying CRLF, so a handful of files
+    read as permanently modified whatever the worktree does (HEAD blob and index both
+    hold the CRs; the clone cannot be cleaned without committing upstream, which we must
+    not do). Treating that as dirt took the hourly runner down for 37 h -- 07/10 00:05Z to
+    08/10 13:05Z, rc=1 on every pass, and silently, because the deliverer still exits 0
+    with nothing to send. Compare content, not bytes.
+    """
+    dirty = git(repo, "status", "--porcelain").strip()
+    if dirty:
+        untracked = [l[3:] for l in dirty.splitlines() if l.startswith("??")]
+        # Read the TEXTUAL diff, never `--name-only`: name-only reports a file whenever its
+        # blob differs, even when git's own text diff (with the CR ignored) is empty -- which
+        # is exactly our case, since the repo's blobs carry CRLF against a `text eol=lf`
+        # attribute. Verified on the live clone: identical content, `diff` of both files
+        # stripped of CR is empty, yet `--name-only` lists both.
+        tracked = git(repo, "diff", "--ignore-cr-at-eol").strip()
+        tracked += git(repo, "diff", "--cached", "--ignore-cr-at-eol").strip()
+        if tracked or untracked:
+            raise RuntimeError(
+                f"{repo} has local changes; the audit clone must stay pristine "
+                f"(untracked={untracked[:5]})\n{tracked[:600]}")
+        log(f"{repo}: ignoring {len(dirty.splitlines())} line-ending-only modification(s)")
+
+    # A fast-forward can still be refused while that dirt is present: git's merge safety
+    # check does not honour the CR ignore, only the textual diff does (measured: the guard
+    # passes, then `git pull --ff-only` dies with "local changes would be overwritten").
+    # A refused refresh must not take the workload down a second time -- log it and audit
+    # whatever commit we already have.
+    head = git(repo, "rev-parse", "HEAD").strip()
+    try:
+        git(repo, "pull", "--ff-only", "--quiet")
+        head = git(repo, "rev-parse", "HEAD").strip()
+    except RuntimeError as exc:
+        log(f"{repo}: fast-forward refused ({str(exc)[:180]}); auditing at {head[:8]} "
+            f"-- the clone is NOT refreshed on this pass")
+    return head
 
 
 AUDIT_TS = re.compile(r"audit\s+(\d\d)/(\d\d)\s+(\d\d):(\d\d)Z", re.I)
@@ -82,11 +126,15 @@ def series_checklist(number: int) -> tuple[str, str, list[str], int]:
     Order = checklist order, restarted just after the most recent timestamped audit line,
     since a bot that skips a notebook (open PR) moves on and does not come back soon.
     """
-    p = subprocess.run(["gh", "issue", "view", str(number), "--repo", GH_REPO, "--json", "title,body,comments"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if p.returncode:
-        raise RuntimeError(f"gh issue view {number}: {p.stderr.strip()[:300]}")
-    d = json.loads(p.stdout)
+    # REST, never `gh issue view`. GraphQL's budget is spent per USER, so every lane on every machine
+    # shares one 5,000/h bucket and exhausts it -- measured 08/10: every GraphQL call, down to
+    # `{viewer{login}}`, was refused with "API rate limit already exceeded", while REST still had
+    # 5,000/5,000 free. `gh api rate_limit` reported .resources.graphql = 4967/5000 at that same
+    # moment, so that field cannot be used to detect it. Two REST calls cost nothing here.
+    issue = json.loads(gh_api(f"repos/{GH_REPO}/issues/{number}"))
+    raw = gh_api(f"repos/{GH_REPO}/issues/{number}/comments", "--paginate", "--jq", ".[]")
+    d = {"title": issue.get("title") or "", "body": issue.get("body") or "",
+         "comments": [json.loads(l) for l in raw.splitlines() if l.strip()]}
     m = re.search(r"partition\s+(\w+)", d["title"], re.I)
     owner = m.group(1) if m else "?"
     audited = set()
@@ -153,8 +201,18 @@ def main() -> int:
         log(f"clone {repo} @ {head[:10]}, {len(catalogue)} notebooks")
 
         plan: list[tuple[int, str, str, str, str]] = []  # (issue, series slug, owner, rel, sha)
+        # A series whose checklist cannot be read (GitHub unreadable -- the 5,000/h GraphQL quota is
+        # shared fleet-wide and fails transiently, measured 08/10 14:05Z) is skipped rather than
+        # aborting the whole pass: the other series are still worth reading. But the pass is then NOT
+        # clean and must not report success, hence `errors` in the returns below.
+        errors = 0
         for n in args.series:
-            title, owner, unchecked, n_commented = series_checklist(n)
+            try:
+                title, owner, unchecked, n_commented = series_checklist(n)
+            except RuntimeError as exc:
+                log(f"#{n}: checklist unreadable ({str(exc)[:160]}) -- series skipped this pass")
+                errors += 1
+                continue
             sdir = f"{n}-" + slug(re.sub(r"^\[Audit #17073\]\s*Série\s*|\s*—\s*partition.*$", "", title))[:60]
             index = load_index(landing / sdir)["records"]
             picked, ahead, unresolved = 0, 0, []
@@ -175,8 +233,9 @@ def main() -> int:
                 f"{ahead} fresh ahead, {picked} picked"
                 + (f", {len(unresolved)} unresolved {unresolved[:3]}" if unresolved else ""))
         if not plan:
-            log("nothing to do")
-            return 0
+            log("nothing to do" if not errors
+                else f"nothing to do, but {errors} series were unreadable")
+            return 1 if errors else 0
         for n, sdir, owner, rel, digest in plan:
             log(f"  plan #{n} {owner} {rel} sha256:{digest[:12]}")
         if args.dry_run:
@@ -222,7 +281,7 @@ def main() -> int:
             (dest / "index.json").write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
             published += 1
         log(f"published {published}/{len(plan)} records under {landing}")
-        return 0 if published or rc == 0 else 1
+        return 0 if (published or rc == 0) and not errors else 1
     finally:
         lock.unlink(missing_ok=True)
 
