@@ -17,14 +17,20 @@
   (modelopt 0.47.0 MIXED_PRECISION — MLP en NVFP4, projections attention/GDN en
   FP8, reste BF16), servi en **W4A16 via les noyaux Marlin** parce que notre
   SM 8.6 n'a **pas** de tensor cores FP4 (le producteur a mesuré la même chose
-  sur SM 8.9). Promu après essai, mêmes script et machine que la référence :
-  **KV 208 992 tok contre 91 853 (×2,28)** à encombrement VRAM égal, N=16
-  915,2 t/s (×1,63), N=32 1 416,5 t/s (×1,51), 69 °C max, tool-calling OK,
-  0 erreur, capture CUDA graph OK. **Leçon** : la décision du 06/10
+  sur SM 8.9). **+ FP8 KV depuis l'après-midi du 08/10** (`--kv-cache-dtype
+  fp8`, backend FLASHINFER — validé sur SM 8.6 par essai). Cumulé mesuré sur la
+  journée, mêmes script et machine que la référence BF16 : **KV 91 853 →
+  391 748 tok (×4,26, 11,96× pleine longueur)**, N=16 561,6 → **1 073,4 t/s
+  (×1,91)**, N=32 938,0 → **1 642,4 t/s (×1,75)**, 68 °C max, tool-calling OK,
+  0 erreur, capture CUDA graph OK. **Tier RAM offload : évalué et REFUSÉ**
+  (libre hôte 7,2 Go mesuré < garde 4 Go + besoin ~9 Go ; un tier abordable
+  serait < KV GPU = puits write-only). **Leçons** : (1) la décision du 06/10
   « NVFP4 = Blackwell, donc inexploitable » reposait sur une hypothèse trop
-  large — la garde réelle de vLLM est `has_device_capability(75)`.
-  Rollback armé : `mini-frognano-4b-po2025-bf16-rollback.yml`.
-  Détail et limites : `_iteration_log/nvfp4_trial_po2025/NOTES.md`.
+  large — la garde réelle de vLLM est `has_device_capability(75)` ; (2) le
+  fp8 KV « à tester » sur SM 8.6 passe proprement. Rollbacks armés :
+  **1 pas** `mini-frognano-4b-po2025-kvauto-rollback.yml` (NVFP4, KV auto) ·
+  **2 pas** `…-bf16-rollback.yml`. Détail et limites :
+  `_iteration_log/nvfp4_trial_po2025/NOTES.md` + `_iteration_log/fp8kv_trial_po2025/NOTES.md`.
 
 ## Surveillance
 

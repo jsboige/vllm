@@ -1,54 +1,40 @@
-# Docker Compose profile — PRODUCTION : FrogNano-4B-2609 NVFP4 (tier mini, po-2025) — refs jsboige/vllm#70
+# Docker Compose profile — PRODUCTION : FrogNano-4B-2609 NVFP4 + FP8 KV (tier mini, po-2025) — refs jsboige/vllm#70
 # ============================================================================
-# STATUT : profil CANONIQUE de production depuis le 2026-10-08, promu après
-# essai (mandat user « Go pour le quant dès maintenant »). Rollback armé =
-# `mini-frognano-4b-po2025-bf16-rollback.yml` — même container_name et même
-# volume de cache, donc le retour est chaud.
+# STATUT : profil CANONIQUE de production depuis le 2026-10-08 après-midi,
+# promu après essai (GO user « Go pour les tests immédiats »). Un seul
+# drapeau de différence avec la config précédente : `--kv-cache-dtype fp8`.
+# Rollback armé (un pas en arrière, retour chaud) :
+# `mini-frognano-4b-po2025-kvauto-rollback.yml` (NVFP4, KV auto/BF16).
+# Rollback profond : `…-bf16-rollback.yml` (BF16 intégral).
 #
-# MESURÉ À L'ESSAI — même script et même machine que la référence BF16 :
-#   boot 244 s, 0 erreur · `MarlinNvFp4LinearKernel` + `MarlinFP8ScaledMMLinearKernel`
-#   · capture CUDA graph OK (le piège SGLang SM 8.9 NE se reproduit PAS sous vLLM)
-#   · poids 4,2 GiB · **KV 208 992 tok contre 91 853 (×2,28)** à encombrement
-#   VRAM égal · N=16 915,2 t/s (×1,63) / N=32 1 416,5 t/s (×1,51), 69 °C max
-#   · tool-calling OK (`finish=tool_calls`) · A/B 5/5 corrects des deux côtés.
-#   Détail, méthode et limites : `_iteration_log/nvfp4_trial_po2025/NOTES.md`.
+# MESURÉ À L'ESSAI (08/10 après-midi, même script/machine que la référence
+# NVFP4-KV-auto du matin) — TOUT passe, et c'est PLUS RAPIDE :
+#   boot sain, 0 erreur · backend attention FLASHINFER (retenu parmi
+#   [FLASHINFER, TRITON_ATTN]) · capture CUDA graph OK (5 s + 3 s)
+#   · **KV 391 748 tok contre 208 992 (×1,87) — 11,96× pleine longueur 32K**
+#   · warm-up 74,9 t/s (×1,23) · **N=16 1 073,4 t/s (×1,17)** ·
+#   **N=32 1 642,4 t/s (×1,16)** · 0 erreur HTTP · 68 °C max · VRAM 12,4/16,4
+#   · tool-calling OK (`finish=tool_calls`, {"city":"Paris"}) · décode
+#   qualité OK (2 noms). Le gain de débit n'était pas l'hypothèse de départ :
+#   des KV deux fois plus petites à lire par token accélèrent un decode
+#   limité par la bande passante.
 #
-# POURQUOI CE CHECKPOINT plutôt que notre AWQ W4A16 maison : les prérequis de
-# ce dernier manquent sur cette machine (pas d'environnement llmcompressor, pas
-# de script de calibration FrogNano).
+# L'INCONNU QUI VENAIT D'ÊTRE LEVÉ : le fp8 KV était qualifié « à tester en
+# fenêtre » sur SM 8.6 (prod ai-01 = SM 8.9, même famille hybride GDN, même
+# v0.31.0). VERDICT : passe proprement sur SM 8.6, y compris prefix caching
+# et mamba fp16 inchangés.
 #
-# LE CHECKPOINT : capyctl/FrogNano-4B-2609-NVFP4 — base_model = microsoft/
-# FrogNano-4B-2609 (vérifié via l'API HF), licence MIT, produit par modelopt
-# 0.47.0 en MIXED_PRECISION : MLP (gate/up/down_proj) en NVFP4 group_size 16,
-# projections attention + GatedDeltaNet en FP8, reste BF16. model.safetensors
-# = 5,12 Go contre 8,7 Go en BF16 en cache → ~4 Go de VRAM rendus sur 16 Go.
+# TIER RAM OFFLOAD : ÉVALUÉ ET REFUSÉ sur cet hôte (08/10) — la garde
+# anti-starvation (≥4 Go RAM hôte libres) ne le permet pas : libre mesuré
+# 7,2 Go pendant l'essai, et un tier « abordable » (~3 Go) serait < au KV
+# GPU (6 Go) = puits write-only (critère ai-01 : tier ≥ cache GPU). À
+# réévaluer seulement si le socle RAM hôte change. Détail :
+# `_iteration_log/fp8kv_trial_po2025/NOTES.md`.
 #
-# POURQUOI LA DÉCISION 06/10 « NVFP4 (Blackwell) = inexploitable » EST
-# ROUVERTE : elle reposait sur l'hypothèse « NVFP4 ⇒ tensor cores Blackwell ».
-# VÉRIFIÉ dans notre propre image vllm/vllm-openai:v0.31.0 le 08/10 —
-# `marlin_utils_fp4.py:34 is_fp4_marlin_supported()` = `has_device_capability(75)`
-# et `marlin_utils_fp8.py:31` = idem : le chemin W4A16 Marlin est ouvert dès
-# SM 7.5, donc sur notre SM 8.6. L'image porte 49 cubins sm_86. Le producteur du
-# checkpoint a mesuré sur SM 8.9 (RTX 4090 Laptop) et écrit lui-même « that GPU
-# has no FP4 tensor cores, so every engine ran the NVFP4 layers as FP4 weights
-# with BF16 activations (W4A16) » — même classe de situation, une génération
-# au-dessus. NON PROUVÉ sur 8.6 : c'est ce que l'essai tranche.
-#
-# DISCIPLINE A/B : TOUT est identique au profil de production (mêmes noms
-# servis, mêmes drapeaux, même gpu-util, même max-model-len) — SEUL l'identifiant
-# de modèle change. La référence BF16 (5 prompts greedy, thinking off) a été
-# capturée sur le moteur de production le 08/10 avant l'arrêt.
-#
-# RISQUE ÉCARTÉ : le producteur signalait que sur SM 8.9 SGLang exigeait
-# SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1 (noyau fusionné SiLU+FP4-quantize sans
-# build SM 8.9 → capture CUDA graph en échec). Sous vLLM 0.31.0 la capture
-# réussit du premier coup, sans variable d'environnement. Repli si elle
-# échouait un jour : `--enforce-eager` (coût de perf).
-#
-# ROLLBACK armé : docker compose -f mini-frognano-4b-po2025.yml --env-file
-# myia_vllm/.env down && docker compose -f
-# mini-frognano-4b-po2025-bf16-rollback.yml --env-file myia_vllm/.env up -d
-# (même container_name : un seul stack tourne à la fois sur ce siège)
+# ROLLBACK (un pas) : docker compose -f mini-frognano-4b-po2025.yml
+# --env-file myia_vllm/.env down && docker compose -f
+# mini-frognano-4b-po2025-kvauto-rollback.yml --env-file myia_vllm/.env up -d
+# (même container_name, même volume de cache — retour chaud).
 # ----------------------------------------------------------------------------
 services:
   mini_frognano_4b:
@@ -82,6 +68,7 @@ services:
       --max-model-len 32768
       --max-num-seqs 32
       --max-num-batched-tokens 8192
+      --kv-cache-dtype fp8
       --mamba-ssm-cache-dtype float16
       --skip-mm-profiling
       --limit-mm-per-prompt '{"image":0,"video":0}'
