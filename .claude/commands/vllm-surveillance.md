@@ -8,9 +8,9 @@ description: Cycle surveillance vllm 6h (prod read-only + G: + sécurité IP + c
 
 Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/vllm-surveillance.md`) et l'exécuter tel quel. **Fin de cycle : re- armer le cron** (`CronCreate`, cadence 6 h à :17, session-only) et vérifier par `CronList`.
 
-## Prod concernée (état 2026-10-08)
+## Prod concernée (état 2026-10-09)
 
-**Swift-1.5-Qwen3.8-27B W4A16-AWQ + FP8 KV sur stock `vllm/vllm-openai:v0.31.0` + offload KV RAM 24 GiB (TOUJOURS non pinné)** — localhost:5002, GPUs 0/1 TP=2, profil `medium-swift15-27b.yml`, gpu-util 0.70, batch 4096, 262K, KV 456 004 tok, `max-num-seqs 32`, noms duaux `swift-1.5-27b` + `qwen3.6-35b-a3b` (alias). Rollback armé : `medium-qwen36-stock-tq.yml`. Conteneurs : `myia_vllm-medium-swift15-27b` · `myia_vllm-watchdog-swift15-27b` (v5, **GEN_TIMEOUT 90 s**) · `myia_vllm-wedge-telemetry-swift15`. **GPU 2 = CoursIA** (training quand occupé, 78-300 MiB quand libre — un GPU 2 chargé n'est PAS une anomalie vllm).
+**Swift-1.5-Qwen3.8-27B W4A16-AWQ + FP8 KV sur stock `vllm/vllm-openai:v0.31.0` + offload KV RAM 24 GiB (TOUJOURS non pinné)** — localhost:5002, GPUs 0/1 TP=2, profil `medium-swift15-27b.yml`, gpu-util 0.70, **batch 8192 + `max-num-seqs 48` (adoptés 08/10 soir, PR #104 — frais-vs-frais : N=32 +35 %, N=48 907 t/s, prefill +21 % ; avant : 4096/32)**, 262K, **KV 424 610**, noms duaux `swift-1.5-27b` + `qwen3.6-35b-a3b` (alias). Rollback armé : `medium-qwen36-stock-tq.yml`. Conteneurs : `myia_vllm-medium-swift15-27b` · `myia_vllm-watchdog-swift15-27b` (v5, **GEN_TIMEOUT 90 s**) · `myia_vllm-wedge-telemetry-swift15`. **GPU 2 = CoursIA** (training quand occupé, 78-300 MiB quand libre — un GPU 2 chargé n'est PAS une anomalie vllm).
 
 **NE JAMAIS modifier/redémarrer sans GO user.** Jamais `pin=1` avec l'offload (`cudaHostRegister` WSL2 falsifié ×2). Si un boot-OOM récidive malgré 0.70 : fait nouveau majeur — diagnostiquer GPU 0 au moment du boot, ne pas rebaisser mécaniquement.
 
@@ -37,9 +37,9 @@ docker logs --tail 4000 myia_vllm-watchdog-swift15-27b 2>&1 | grep -E "WEDGE hea
 docker logs --tail 4000 myia_vllm-watchdog-swift15-27b 2>&1 | grep -c 'OK health=200 decode=200'
 ```
 
-Attendu : health 200 (<10 ms), RC stable, OOM 0, 3 conteneurs Up, sondes OK. **VRAM référence @0.70/N=32** : GPU 0 ≈ 20 700-21 400 MiB (21 388 mesuré), GPU 1 ≈ 19 700-19 900. **GPU 0 > 23 000 MiB → alerter** (marge < 1,5 GiB = boot-OOM au prochain restart + pagination WDDM qui imite un wedge). `StartedAt` stable vs cycle précédent ; un déplacement avec RC=0 = restart externe → identifier la cause (penser à `autoheal` : `docker ps | grep -i heal`, redémarreur concurrent INVISIBLE, RestartCount flat).
+Attendu : health 200 (<10 ms), RC stable, OOM 0, 3 conteneurs Up, sondes OK. **VRAM référence @0.70/N=48 (nouvelle base 09/10)** : à froid après boot GPU 0 19 937 / GPU 1 18 930 MiB, **en charge réelle GPU 0 ≈ 21 400 / GPU 1 ≈ 20 400** (21 408/20 382 mesurés le 08/10 22:5xZ, ~30 min après le boot — la config 48 flux élargit les graphs sous trafic, ~1,5 GiB de plus que la mesure à froid). **GPU 0 > 23 000 MiB → alerter** (marge < 1,5 GiB = boot-OOM au prochain restart + pagination WDDM qui imite un wedge) ; à 21 400 la marge est de ~1,6 GiB — **surveiller la dérive, ne pas remonter gpu-util**. `StartedAt` stable vs cycle précédent ; un déplacement avec RC=0 = restart externe → identifier la cause (penser à `autoheal` : `docker ps | grep -i heal`, redémarreur concurrent INVISIBLE, RestartCount flat).
 
-Comportement documenté, PAS une panne : toute requête ≥ ~100K tokens **affame les nouvelles arrivées 130-170 s** (dense 27B) — le watchdog tolère 90 s et le 235K mesuré passe en ~179 s. Un WEDGE pendant un gros prefill = attendre le post-mortem avant d'agir ; le moteur est sain.
+Comportement documenté, PAS une panne : toute requête ≥ ~100K tokens **affame les nouvelles arrivées** (dense 27B) — le watchdog tolère 90 s. Depuis le batch 8192 la fenêtre recule (prefill +21 %), mais un WEDGE `fail 1/2` (jamais 2/2) pendant une sonde prefill ou un gros prompt est le comportement attendu, **y compris déclenché par nos propres sondes de banc** (vécu 08/10 21:38 et 21:46, deux `fail 1/2` pendant les sondes 157K, zéro restart). Un WEDGE pendant un gros prefill = attendre le post-mortem avant d'agir ; le moteur est sain.
 
 ## (2) Condensation (logs roosync)
 
