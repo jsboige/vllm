@@ -64,6 +64,15 @@ def git(repo: Path, *a: str) -> str:
     return p.stdout
 
 
+def gh_api(*path: str) -> str:
+    """A REST call. Deliberately `gh api` and never `gh issue view` -- see series_checklist."""
+    p = subprocess.run(["gh", "api", *path], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if p.returncode:
+        raise RuntimeError(f"gh api {' '.join(path)}: {p.stderr.strip()[:300]}")
+    return p.stdout
+
+
 def refresh_clone(repo: Path) -> str:
     """Refuse to audit on a clone carrying real local work.
 
@@ -117,11 +126,15 @@ def series_checklist(number: int) -> tuple[str, str, list[str], int]:
     Order = checklist order, restarted just after the most recent timestamped audit line,
     since a bot that skips a notebook (open PR) moves on and does not come back soon.
     """
-    p = subprocess.run(["gh", "issue", "view", str(number), "--repo", GH_REPO, "--json", "title,body,comments"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if p.returncode:
-        raise RuntimeError(f"gh issue view {number}: {p.stderr.strip()[:300]}")
-    d = json.loads(p.stdout)
+    # REST, never `gh issue view`. GraphQL's budget is spent per USER, so every lane on every machine
+    # shares one 5,000/h bucket and exhausts it -- measured 08/10: every GraphQL call, down to
+    # `{viewer{login}}`, was refused with "API rate limit already exceeded", while REST still had
+    # 5,000/5,000 free. `gh api rate_limit` reported .resources.graphql = 4967/5000 at that same
+    # moment, so that field cannot be used to detect it. Two REST calls cost nothing here.
+    issue = json.loads(gh_api(f"repos/{GH_REPO}/issues/{number}"))
+    raw = gh_api(f"repos/{GH_REPO}/issues/{number}/comments", "--paginate", "--jq", ".[]")
+    d = {"title": issue.get("title") or "", "body": issue.get("body") or "",
+         "comments": [json.loads(l) for l in raw.splitlines() if l.strip()]}
     m = re.search(r"partition\s+(\w+)", d["title"], re.I)
     owner = m.group(1) if m else "?"
     audited = set()
