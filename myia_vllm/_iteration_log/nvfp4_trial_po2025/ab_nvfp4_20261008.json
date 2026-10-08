@@ -1,0 +1,32 @@
+[
+  {
+    "prompt": "Ecris une fonction Python qui retourne le n-ieme nombre de Fibonacci en iteratif, avec une seule ligne de commentaire.",
+    "completion": "```python\ndef fib(n):\n    # Calcul itératif du n-ième nombre de Fibonacci en utilisant deux variables pour stocker les deux derniers termes\n    if n < 0: raise ValueError(\"n doit être un entier non négatif\")\n    a, b = 0, 1\n    for _ in range(n): a, b = b, a + b\n    return a\n```",
+    "completion_tokens": 87,
+    "seconds": 1.38
+  },
+  {
+    "prompt": "What is the output of this Python code? d = {i: i*i for i in range(5)}; print(sum(d.values()))  Explain in one sentence.",
+    "completion": "The code creates a dictionary mapping integers 0 through 4 to their squares (0, 1, 4, 9, 16) and then sums these values to produce **30**.",
+    "completion_tokens": 43,
+    "seconds": 0.6
+  },
+  {
+    "prompt": "Une voiture roule 240 km en 3 h, puis 150 km en 2 h. Quelle est sa vitesse moyenne sur le trajet complet ? Reponds avec le calcul.",
+    "completion": "Pour calculer la vitesse moyenne sur le trajet complet, il faut diviser la distance totale parcourue par le temps total écoulé. La vitesse moyenne ne dépend pas de la vitesse instantanée à chaque segment, mais uniquement du rapport global distance/temps.\n\n**1. Calculer la distance totale :**\n$$240 \\text{ km} + 150 \\text{ km} = 390 \\text{ km}$$\n\n**2. Calculer le temps total :**\n$$3 \\text{ h} + 2 \\text{ h} = 5 \\text{ h}$$\n\n**3. Calculer la vitesse moyenne :**\n$$V_{moy} = \\frac{\\text{Distance totale}}{\\text{Temps total}} = \\frac{390}{5}$$\n\n$$390 \\div 5 = 78$$\n\nLa vitesse moyenne sur le trajet complet est de **78 km/h**.",
+    "completion_tokens": 205,
+    "seconds": 2.45
+  },
+  {
+    "prompt": "Write a SQL query returning the second highest salary from a table employees(id, salary), handling ties.",
+    "completion": "To return the second highest salary while handling ties correctly, we need to clarify what \"handling ties\" means in this context. Usually, there are two interpretations:\n\n1.  **Strictly Second Highest Value**: If the top salary is 1000 and the next distinct salary is 800, return 800. If multiple people have 1000, ignore them all and return 800.\n2.  **Second Highest Row**: Return the salary of the person ranked 2nd, even if they share the same salary as the 1st person (e.g., if salaries are 1000, 1000, 800, return 1000).\n\nMost standard SQL interview questions asking for the \"second highest salary\" imply **Interpretation #1** (the second distinct value). Below is the solution for that case using a window function, which is the most robust and readable approach.\n\n### Solution: Second Distinct Salary\n\nThis query filters out the maximum salary and then finds the maximum of the remaining values.\n\n```sql\nSELECT MAX(salary) AS second_highest_salary\nFROM employees\nWHERE salary < (SELECT MAX(salary) FROM employees);\n```\n\n**How it works:**\n1.  The subquery `(SELECT MAX(salary) FROM employees)` finds the highest salary in the table.\n2.  The `WHERE` clause filters out any row matching that highest salary.\n3.  The outer `MAX()` function finds the highest value among the remaining rows, which is effectively the second highest distinct salary.\n4.  If no second highest salary exists (i.e., all salaries are identical), this query returns `NULL`.\n\n### Alternative: Using Window Functions (More Explicit)\n\nIf you prefer a window function approach or need to verify the ranking logic:\n\n```sql\nSELECT DISTINCT salary\nFROM (\n    SELECT salary,\n           DENSE_RANK() OVER (ORDER BY salary DESC) AS rank\n    FROM employees\n) ranked\nWHERE rank = 2;\n```\n\n**Why `DENSE_RANK`?**\n- `DENSE_RANK()` ensures that if there are ties for the first place, the next rank is 2, not 3.\n- This guarantees we only get the second *distinct* salary value.\n- If you used `ROW_NUMBER()`, you might get multiple rows if the second rank also has ties, so `DISTINCT` would be required anyway. `DENSE_RANK` combined with `WHERE rank = 2` is cleaner for the \"second highest value\" logic.\n\n### Edge Case Handling\nIf the table contains only one unique salary, both queries above will return `NULL`, which is the correct behavior for \"no second highest value.\"",
+    "completion_tokens": 582,
+    "seconds": 7.04
+  },
+  {
+    "prompt": "Rends ce texte plus concis en gardant le sens : \"Il est important de noter que, dans la plupart des cas, les utilisateurs ont tendance a preferer les interfaces qui sont simples.\"",
+    "completion": "Il est généralement préférable aux utilisateurs des interfaces simples.",
+    "completion_tokens": 12,
+    "seconds": 0.26
+  }
+]

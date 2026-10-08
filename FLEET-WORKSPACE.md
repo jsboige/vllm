@@ -8,7 +8,7 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
 
 | Volet | Issue | Machine | État |
 |---|---|---|---|
-| FrogNano-4B | `myia-ai-01/vllm#70` | po-2025 | P0 inventaire GPU livré 05/10 ; workspace créé 06/10 |
+| FrogNano-4B | `myia-ai-01/vllm#70` | po-2025 | siège vllm inauguré 06/10 ; **en service** — NVFP4 + FP8 KV promus 08/10 (KV 391 748 tok, N=16 1 073 t/s), thinking off par défaut ; P5 adoption en cours |
 | Embeddings | `myia-ai-01/vllm#71` | po-2026 | instruction livrée 05/10 ; workspace créé 06/10 (PR profil + scripts + runbook) |
 
 **Matériel (mesuré 05/10, ne pas réétablir)**
@@ -19,6 +19,12 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
   la coexistence se joue sur CPU / RAM / thermique, pas sur la VRAM.
 - Échantillonneur thermique mort depuis le 31/08 ; max constaté 83 °C en banc d'essai,
   ≤ 57 °C sinon. Croiser température × charge, jamais l'un seul.
+  **Revivé 06/10** par le siège vllm : logger user-level (cible /5 min, **horaire en
+  pratique** — à réconcilier) ; **gouverneur SYSTEM VIVANT depuis le 06/10 15:53 locale**
+  (cap 210 W / 1800 MHz, hystérésis 88/78 °C, `hot=0`). Se prononcer sur lui **uniquement
+  via ses artefacts** (`myia_vllm/_logs/gpu-governor.log`, `gpu-governor-state.json`) —
+  `Get-ScheduledTask` **non élevé** est aveugle aux tâches SYSTEM et a fait propager
+  « gouverneur absent » (faux) le 08/10.
 
 **Dépôts**
 
@@ -57,6 +63,17 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
 
 - 2026-10-06 — workspace créé sur po-2025 (clone du fork `72e2dfcc95`, `upstream` ajouté,
   140 Mo) par la lane `po-2025:claudish`, sur demande user relayée par `ai-01:vllm`.
+- 2026-10-06 — **siège `po-2025:vllm` inauguré** (session user) : onboarding + P1 engagée —
+  profil `mini-frognano-4b-po2025.yml`, logger thermique posé (sans UAC), gouverneur posé
+  (fenêtre UAC consommée le 06/10), config modèle décodée, cron vigie 4 h. Détail : #70 +
+  dashboard workspace-vllm.
+  **Correction du 08/10** : l'hypothèse inscrite ici le 06/10 — « aucun quant communautaire
+  exploitable vLLM/GPU (17 = GGUF/MLX/ONNX/EXL3/NVFP4) → AWQ W4A16 maison » — est **fausse**,
+  et elle a coûté deux jours de plan. Le **NVFP4 s'exécute sur SM 8.6** : la garde réelle de
+  vLLM est `has_device_capability(75)` (W4A16 Marlin dès SM 7.5), pas « NVFP4 ⇒ Blackwell ».
+  Ce checkpoint est **en production depuis le 08/10**, avec FP8 KV — KV ×4,26 et N=16 ×1,91
+  vs la référence BF16, mêmes script et machine. Leçon transposable : un quant écarté sur un
+  critère de génération matérielle se réexamine **en lisant la garde dans l'image**.
 - 2026-10-06 — workspace créé sur po-2026 (`D:\Dev\vllm`, clone depth-5 du fork
   `b2cc30bbce`, `upstream` ajouté par gh ; initialement posé sous `C:\Production\vllm`
   puis déplacé sur D: le même jour — équilibre disque, D: 1 To libres vs C: 341 Go)
