@@ -33,6 +33,45 @@ Issue de rattachement : jsboige/vllm#71. Tout chiffre ci-dessous est **mesuré**
 | Sidecar lent/wedge (« SLOW-not-dead », `/health` 200 mais inférence lente) | `docker restart embedding-proxy-logger` | Angle mort n°9 : un health 200 ne prouve rien, toujours tester un POST réel |
 | Pull Docker Hub 401/403 | Workaround **skopeo en conteneur détaché** via socket Docker (`MSYS_NO_PATHCONV=1`), image injectée au store local | Keyring Docker Desktop HS (non touché) ; procédure éprouvée 30/09 (image 29,8 Go) |
 | Surchauffe | Gouverneur `gpu-thermal-governor.ps1` (schtask /5 min) : cap 1600 MHz à 88 °C×2, restore à 78 °C×3 | Validé en charge réelle (2 caps productifs 28-29/09 + flush 01/10 sans cap) |
+| **Installation du pilote NVIDIA → moteur mort, redémarrage impossible** | **Reboot Windows** (reco) ou `wsl --shutdown` + relance Docker | **Pont CDI stale** : `no driver store paths found` — voir section dédiée (incident 07-08/10, 11 h+) |
+
+## Installation du pilote NVIDIA → pont CDI stale (incident 07-08/10/2026, 11 h+)
+
+**Ne JAMAIS toucher au système pendant une installation de pilote** (ni restart de conteneur,
+ni kill — le GPU disparaît du device tree en cours d'install, toute action est futile et peut
+perturber l'installeur). Le gouverneur gère RAM/thermique indépendamment.
+
+**Déroulé mesuré** : NVIDIA App 18:50:36 → GPU retiré du device tree (`nvlddmkm` STOPPED exit 31,
+`nvidia-smi` absent) → EngineCore vLLM crash `EngineDeadError` à 18:56 → l'APIServer parent
+s'arrête PROPREMENT ensuite (`Application shutdown complete` — c'est une **conséquence**, pas
+un arrêt volontaire) → conteneur `exited`.
+
+**Piège d'interprétation** : `RestartPolicy=unless-stopped` + `RestartCount=0` + logs d'arrêt
+propres font croire à un **arrêt explicite** (lu ainsi par au moins deux lanes pendant l'incident).
+Faux : chaque tentative de relance échoue sur le pont CDI **avant** toute incrémentation du
+compteur. `RestartCount=0` ne prouve pas un arrêt volontaire.
+
+**Blocage** : le pilote revient, le GPU est sain, mais le redémarrage du conteneur échoue de
+façon **déterministe** :
+
+```text
+failed to create automatic CDI modifier: failed to generate CDI spec for mode "auto":
+failed to create discoverer for WSL driver: no driver store paths found
+```
+
+Le CDI Docker/WSL référence l'ancien pilote ; il ne se reconstruit qu'au **restart de la VM WSL**.
+
+**Reprise** : reboot Windows (le conteneur `unless-stopped` remonte seul), OU GO user explicite
+pour `wsl --shutdown` + relance Docker (~160 s — **coupe les co-locataires** du parc :
+claudish-proxy, myia-mcp-proxy, qdrant_local, hermes… d'où le GO et non le geste unilatéral).
+
+**Validation obligatoire** (angle mort n°9) : warm <0,5 s ×2 **ET** POST réel public avec
+**dims 2560** — jamais un `/health` seul (le sidecar rend 500 en 7 ms pendant tout l'incident,
+ce qui est fidèle mais ne dit rien de la reprise).
+
+**Effet flotte** : `roosync_search` (semantic) et `codebase_search` tombent en text-fallback
+(`embedding_api_error` / `embedding_unreachable`) — la recherche sémantique de TOUTE la flotte
+dépend de ce moteur, pas seulement l'indexation Zoo.
 
 ## Gouverneur thermique (mutualisable laptop GPU)
 
