@@ -1,0 +1,112 @@
+# Docker Compose profile — ESSAI quant NVFP4 tiers (tier mini, siège po-2025) — refs jsboige/vllm#70
+# ============================================================================
+# STATUT : profil d'ESSAI, séparé de la production. Le profil canonique
+# `mini-frognano-4b-po2025.yml` (BF16) n'est PAS modifié — le rollback est un
+# swap de fichier, pas une réécriture.
+#
+# OBJET (mandat user 08/10 « Go pour le quant dès maintenant ») : tester un
+# checkpoint DÉJÀ quantifié par un tiers au lieu de fabriquer notre AWQ W4A16
+# (dont les prérequis manquent : pas d'environnement llmcompressor, pas de
+# script de calibration FrogNano).
+#
+# LE CHECKPOINT : capyctl/FrogNano-4B-2609-NVFP4 — base_model = microsoft/
+# FrogNano-4B-2609 (vérifié via l'API HF), licence MIT, produit par modelopt
+# 0.47.0 en MIXED_PRECISION : MLP (gate/up/down_proj) en NVFP4 group_size 16,
+# projections attention + GatedDeltaNet en FP8, reste BF16. model.safetensors
+# = 5,12 Go contre 8,7 Go en BF16 en cache → ~4 Go de VRAM rendus sur 16 Go.
+#
+# POURQUOI LA DÉCISION 06/10 « NVFP4 (Blackwell) = inexploitable » EST
+# ROUVERTE : elle reposait sur l'hypothèse « NVFP4 ⇒ tensor cores Blackwell ».
+# VÉRIFIÉ dans notre propre image vllm/vllm-openai:v0.31.0 le 08/10 —
+# `marlin_utils_fp4.py:34 is_fp4_marlin_supported()` = `has_device_capability(75)`
+# et `marlin_utils_fp8.py:31` = idem : le chemin W4A16 Marlin est ouvert dès
+# SM 7.5, donc sur notre SM 8.6. L'image porte 49 cubins sm_86. Le producteur du
+# checkpoint a mesuré sur SM 8.9 (RTX 4090 Laptop) et écrit lui-même « that GPU
+# has no FP4 tensor cores, so every engine ran the NVFP4 layers as FP4 weights
+# with BF16 activations (W4A16) » — même classe de situation, une génération
+# au-dessus. NON PROUVÉ sur 8.6 : c'est ce que l'essai tranche.
+#
+# DISCIPLINE A/B : TOUT est identique au profil de production (mêmes noms
+# servis, mêmes drapeaux, même gpu-util, même max-model-len) — SEUL l'identifiant
+# de modèle change. La référence BF16 (5 prompts greedy, thinking off) a été
+# capturée sur le moteur de production le 08/10 avant l'arrêt.
+#
+# RISQUE CONNU : le producteur signale que sur SM 8.9 SGLang exigeait
+# SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1 (noyau fusionné SiLU+FP4-quantize sans
+# build SM 8.9, capture CUDA graph en échec). C'est du SGLang, pas vLLM, et il
+# rapporte que vLLM fonctionne tel quel — mais la classe de risque existe. Repli
+# si la capture de graphes échoue : ajouter `--enforce-eager` (coût de perf).
+#
+# ROLLBACK : docker compose -f mini-frognano-4b-po2025-nvfp4.yml --env-file
+# myia_vllm/.env down && docker compose -f mini-frognano-4b-po2025.yml
+# --env-file myia_vllm/.env up -d
+# (même container_name : un seul stack tourne à la fois sur ce siège)
+# ----------------------------------------------------------------------------
+services:
+  mini_frognano_4b:
+    image: vllm/vllm-openai:v0.31.0
+    container_name: myia_vllm-mini-frognano-4b
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-frognano-v0310:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      capyctl/FrogNano-4B-2609-NVFP4
+      --served-model-name frognano-4b mini
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --gpu-memory-utilization 0.78
+      --max-model-len 32768
+      --max-num-seqs 32
+      --max-num-batched-tokens 8192
+      --mamba-ssm-cache-dtype float16
+      --skip-mm-profiling
+      --limit-mm-per-prompt '{"image":0,"video":0}'
+      --enable-prefix-caching
+      --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
+      --reasoning-parser qwen3
+      --api-key ${VLLM_API_KEY_MINI}
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  vllm-compile-cache-frognano-v0310:
