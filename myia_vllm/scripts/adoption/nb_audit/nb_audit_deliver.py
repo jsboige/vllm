@@ -29,13 +29,14 @@ import gzip
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from nb_audit_runner import log, secret_hits, series_checklist  # noqa: E402
+from nb_audit_runner import GH_REPO, log, secret_hits, series_checklist  # noqa: E402
 
 REPO_ROOT = HERE.parents[2]  # WORKSPACE_PATH of the RSM child: the sender is myia-ai-01:vllm
 OWNERS = {  # owner as written in the series issue title -> (recipient, channel)
@@ -136,6 +137,33 @@ def build_messages(sdir: str, idx: dict, new: list[tuple[str, dict]], landing: P
              "body": header(sdir, issue, new, f"({i + 1}/{len(parts)})", how) + "\n" + p,
              "attachments": [], "messageId": f"nbpre-{issue}-{batch}-{i + 1}of{len(parts)}"}
             for i, p in enumerate(parts)]
+
+
+def issue_notice(issue, new: list[tuple[str, dict]]) -> bool:
+    """One short comment on the series issue per delivering pass (Hermes request, 08/10 17:54Z).
+
+    Records travel by DM, but the fleet watches the issue comment stream and read
+    "nothing runs" while three records were already out (bulletins 17:16Z and 17:36Z).
+    The first line must avoid the substring "audit" AND any `.ipynb` name: the runner's
+    checklist parser treats a comment whose first line matches as a recorded audit and
+    would strike the named notebooks from the todo list. Double-guarded on purpose.
+    """
+    if not issue or issue == "?":
+        log("issue notice skipped: no issue number on record")
+        return True
+    names = ", ".join(rel.rsplit("/", 1)[-1][: -len(".ipynb")] for rel, _ in new)
+    body = (f"[vllm] {len(new)} dossier(s) livrés à "
+            f"{datetime.now(timezone.utc).strftime('%H:%MZ')} ({names}) par DM RSM")
+    assert "audit" not in body.lower() and ".ipynb" not in body  # parser safety, see docstring
+    p = subprocess.run(["gh", "api", f"repos/{GH_REPO}/issues/{issue}/comments",
+                        "-f", f"body={body}"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if p.returncode:
+        log(f"WARN issue notice #{issue} failed ({p.stderr.strip()[:160]}) -- DMs are out, "
+            f"only the public trace is missing")
+        return False
+    log(f"issue notice #{issue}: {len(new)} dossier(s) announced")
+    return True
 
 
 def rsm_params():
@@ -253,6 +281,7 @@ def main() -> int:
     for sdir, new, n in commit:  # a series counts as delivered only if all its parts went out
         if all(ok[i:i + n]):
             state.setdefault(sdir, {}).update({rel: r["sha256"] for rel, r in new})
+            issue_notice(new[0][1].get("issue"), new)
         i += n
     state_f.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     log(f"sent {sum(ok)}/{len(ok)} message(s); state in {state_f}")
