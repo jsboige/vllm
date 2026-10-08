@@ -180,6 +180,10 @@ def main() -> int:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     jobs: list[tuple[str, dict]] = []
     commit: list[tuple[str, list[tuple[str, dict]], int]] = []  # (series, records, number of jobs)
+    # Series we could not evaluate this pass (GitHub unreadable, e.g. the shared quota). A pass with
+    # any of these is NOT a success: those records are produced and waiting, and reporting "nothing
+    # to deliver" would read as healthy while a series silently went nowhere.
+    errors = 0
 
     if args.probe:
         to, channel = OWNERS[args.probe]
@@ -199,7 +203,19 @@ def main() -> int:
             if not new:
                 continue
             # a bot reads ~1 notebook/h and may have passed the runner: drop what it already audited
-            todo = {name.rsplit("/", 1)[-1] for name in series_checklist(new[0][1]["issue"])[2]}
+            # Reading the checklist costs a GitHub call, and GitHub fails transiently (the 5,000/h
+            # quota is shared fleet-wide). This runs only when there ARE records to deliver, so an
+            # unguarded raise aborts the pass at the exact moment it has work -- measured 08/10
+            # 14:05Z, both the runner and this loop died on `gh issue view: rate limit exceeded`
+            # and the records waiting in the landing dir went nowhere for an hour. Skip this series
+            # only, and count the pass as failed.
+            try:
+                todo = {name.rsplit("/", 1)[-1] for name in series_checklist(new[0][1]["issue"])[2]}
+            except RuntimeError as exc:
+                log(f"{sdir}: checklist unreadable ({str(exc)[:160]}) -- "
+                    f"{len(new)} record(s) NOT delivered this pass")
+                errors += 1
+                continue
             stale = [rel for rel, _ in new if rel.rsplit("/", 1)[-1] not in todo]
             if stale:
                 log(f"{sdir}: {len(stale)} record(s) superseded, already audited by the bot: "
@@ -219,8 +235,9 @@ def main() -> int:
             commit.append((sdir, new, len(msgs)))
 
     if not jobs:
-        log("nothing to deliver")
-        return 0
+        log("nothing to deliver" if not errors
+            else f"nothing to deliver, but {errors} series could not be evaluated")
+        return 1 if errors else 0
     for to, m in jobs:
         (work / f"{m['messageId']}.txt").write_text(f"To: {to}\nSubject: {m['subject']}\n"
                                                     f"Attachments: {[a['path'] for a in m['attachments']]}\n\n{m['body']}",
@@ -239,7 +256,7 @@ def main() -> int:
         i += n
     state_f.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     log(f"sent {sum(ok)}/{len(ok)} message(s); state in {state_f}")
-    return 0 if all(ok) else 1
+    return 0 if all(ok) and not errors else 1
 
 
 if __name__ == "__main__":

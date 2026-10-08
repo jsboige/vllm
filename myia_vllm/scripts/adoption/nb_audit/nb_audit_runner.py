@@ -188,8 +188,18 @@ def main() -> int:
         log(f"clone {repo} @ {head[:10]}, {len(catalogue)} notebooks")
 
         plan: list[tuple[int, str, str, str, str]] = []  # (issue, series slug, owner, rel, sha)
+        # A series whose checklist cannot be read (GitHub unreadable -- the 5,000/h GraphQL quota is
+        # shared fleet-wide and fails transiently, measured 08/10 14:05Z) is skipped rather than
+        # aborting the whole pass: the other series are still worth reading. But the pass is then NOT
+        # clean and must not report success, hence `errors` in the returns below.
+        errors = 0
         for n in args.series:
-            title, owner, unchecked, n_commented = series_checklist(n)
+            try:
+                title, owner, unchecked, n_commented = series_checklist(n)
+            except RuntimeError as exc:
+                log(f"#{n}: checklist unreadable ({str(exc)[:160]}) -- series skipped this pass")
+                errors += 1
+                continue
             sdir = f"{n}-" + slug(re.sub(r"^\[Audit #17073\]\s*Série\s*|\s*—\s*partition.*$", "", title))[:60]
             index = load_index(landing / sdir)["records"]
             picked, ahead, unresolved = 0, 0, []
@@ -210,8 +220,9 @@ def main() -> int:
                 f"{ahead} fresh ahead, {picked} picked"
                 + (f", {len(unresolved)} unresolved {unresolved[:3]}" if unresolved else ""))
         if not plan:
-            log("nothing to do")
-            return 0
+            log("nothing to do" if not errors
+                else f"nothing to do, but {errors} series were unreadable")
+            return 1 if errors else 0
         for n, sdir, owner, rel, digest in plan:
             log(f"  plan #{n} {owner} {rel} sha256:{digest[:12]}")
         if args.dry_run:
@@ -257,7 +268,7 @@ def main() -> int:
             (dest / "index.json").write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
             published += 1
         log(f"published {published}/{len(plan)} records under {landing}")
-        return 0 if published or rc == 0 else 1
+        return 0 if (published or rc == 0) and not errors else 1
     finally:
         lock.unlink(missing_ok=True)
 
