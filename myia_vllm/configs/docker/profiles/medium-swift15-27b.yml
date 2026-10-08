@@ -86,6 +86,7 @@ services:
           --host 0.0.0.0 \
           --port ${VLLM_PORT_GLM:-5002} \
           --model ${VLLM_MODEL_SWIFT15:-ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ} \
+          --revision ${VLLM_REVISION_SWIFT15:-9dba8a05877150d587215a519ce6befec3c9978a} \
           --served-model-name qwen3.6-35b-a3b swift-1.5-27b \
           --api-key ${VLLM_API_KEY_MEDIUM} \
           --tensor-parallel-size 2 \
