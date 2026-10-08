@@ -1,13 +1,21 @@
-# Docker Compose profile — ESSAI quant NVFP4 tiers (tier mini, siège po-2025) — refs jsboige/vllm#70
+# Docker Compose profile — PRODUCTION : FrogNano-4B-2609 NVFP4 (tier mini, po-2025) — refs jsboige/vllm#70
 # ============================================================================
-# STATUT : profil d'ESSAI, séparé de la production. Le profil canonique
-# `mini-frognano-4b-po2025.yml` (BF16) n'est PAS modifié — le rollback est un
-# swap de fichier, pas une réécriture.
+# STATUT : profil CANONIQUE de production depuis le 2026-10-08, promu après
+# essai (mandat user « Go pour le quant dès maintenant »). Rollback armé =
+# `mini-frognano-4b-po2025-bf16-rollback.yml` — même container_name et même
+# volume de cache, donc le retour est chaud.
 #
-# OBJET (mandat user 08/10 « Go pour le quant dès maintenant ») : tester un
-# checkpoint DÉJÀ quantifié par un tiers au lieu de fabriquer notre AWQ W4A16
-# (dont les prérequis manquent : pas d'environnement llmcompressor, pas de
-# script de calibration FrogNano).
+# MESURÉ À L'ESSAI — même script et même machine que la référence BF16 :
+#   boot 244 s, 0 erreur · `MarlinNvFp4LinearKernel` + `MarlinFP8ScaledMMLinearKernel`
+#   · capture CUDA graph OK (le piège SGLang SM 8.9 NE se reproduit PAS sous vLLM)
+#   · poids 4,2 GiB · **KV 208 992 tok contre 91 853 (×2,28)** à encombrement
+#   VRAM égal · N=16 915,2 t/s (×1,63) / N=32 1 416,5 t/s (×1,51), 69 °C max
+#   · tool-calling OK (`finish=tool_calls`) · A/B 5/5 corrects des deux côtés.
+#   Détail, méthode et limites : `_iteration_log/nvfp4_trial_po2025/NOTES.md`.
+#
+# POURQUOI CE CHECKPOINT plutôt que notre AWQ W4A16 maison : les prérequis de
+# ce dernier manquent sur cette machine (pas d'environnement llmcompressor, pas
+# de script de calibration FrogNano).
 #
 # LE CHECKPOINT : capyctl/FrogNano-4B-2609-NVFP4 — base_model = microsoft/
 # FrogNano-4B-2609 (vérifié via l'API HF), licence MIT, produit par modelopt
@@ -31,15 +39,15 @@
 # de modèle change. La référence BF16 (5 prompts greedy, thinking off) a été
 # capturée sur le moteur de production le 08/10 avant l'arrêt.
 #
-# RISQUE CONNU : le producteur signale que sur SM 8.9 SGLang exigeait
+# RISQUE ÉCARTÉ : le producteur signalait que sur SM 8.9 SGLang exigeait
 # SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1 (noyau fusionné SiLU+FP4-quantize sans
-# build SM 8.9, capture CUDA graph en échec). C'est du SGLang, pas vLLM, et il
-# rapporte que vLLM fonctionne tel quel — mais la classe de risque existe. Repli
-# si la capture de graphes échoue : ajouter `--enforce-eager` (coût de perf).
+# build SM 8.9 → capture CUDA graph en échec). Sous vLLM 0.31.0 la capture
+# réussit du premier coup, sans variable d'environnement. Repli si elle
+# échouait un jour : `--enforce-eager` (coût de perf).
 #
-# ROLLBACK : docker compose -f mini-frognano-4b-po2025-nvfp4.yml --env-file
-# myia_vllm/.env down && docker compose -f mini-frognano-4b-po2025.yml
-# --env-file myia_vllm/.env up -d
+# ROLLBACK armé : docker compose -f mini-frognano-4b-po2025.yml --env-file
+# myia_vllm/.env down && docker compose -f
+# mini-frognano-4b-po2025-bf16-rollback.yml --env-file myia_vllm/.env up -d
 # (même container_name : un seul stack tourne à la fois sur ce siège)
 # ----------------------------------------------------------------------------
 services:

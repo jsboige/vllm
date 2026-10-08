@@ -1,5 +1,23 @@
-# Docker Compose profile — FrogNano-4B-2609 BF16 (tier mini flotte, siège po-2025) — refs jsboige/vllm#70
+# Docker Compose profile — ROLLBACK ARMÉ : FrogNano-4B-2609 BF16 (tier mini, po-2025) — refs jsboige/vllm#70
 # ============================================================================
+# ⚠ STATUT : ce profil était la PRODUCTION jusqu'au 2026-10-08 ; il est
+# désormais le ROLLBACK ARMÉ du profil canonique `mini-frognano-4b-po2025.yml`
+# (NVFP4 promu après essai — cf. `_iteration_log/nvfp4_trial_po2025/NOTES.md`).
+#
+# Il reste intégralement fonctionnel : mêmes noms servis, mêmes drapeaux, même
+# volume de cache de compilation, et les deux profils partagent le
+# `container_name` (un seul stack tourne à la fois). Le retour est donc chaud.
+#
+# QUAND S'EN SERVIR : perte de qualité constatée sur le tier mini, comportement
+# anormal du checkpoint tiers, ou disparition du checkpoint NVFP4 en amont.
+#
+# COMMANDE : docker compose -f mini-frognano-4b-po2025.yml --env-file
+# myia_vllm/.env down && docker compose -f mini-frognano-4b-po2025-bf16-rollback.yml
+# --env-file myia_vllm/.env up -d
+#
+# RÉFÉRENCE MESURÉE BF16 (07/10, pour comparaison) : KV 91 853 tok ; warm-up
+# 38,6 t/s ; N=16 561,6 t/s ; N=32 938,0 t/s ; poids ~8,7 Gio en cache.
+# ----------------------------------------------------------------------------
 # Siège : po-2025 (RTX 3080 Ti Laptop 16 Go VRAM SM86, i9-12900HK, 64 Go RAM).
 # Co-locataires même machine : hub claudish (conteneur :3000, SANS GPU, priorité
 # CPU/RAM absolue) + desktop Windows (dGPU laptop — incident avril : 85 °C à VIDE

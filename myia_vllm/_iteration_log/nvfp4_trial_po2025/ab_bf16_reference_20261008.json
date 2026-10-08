@@ -1,0 +1,32 @@
+[
+  {
+    "prompt": "Ecris une fonction Python qui retourne le n-ieme nombre de Fibonacci en iteratif, avec une seule ligne de commentaire.",
+    "completion": "```python\ndef fibonacci(n):\n    # Calcul itératif du n-ième nombre de Fibonacci\n    if n <= 0: return 0\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n```",
+    "completion_tokens": 75,
+    "seconds": 2.15
+  },
+  {
+    "prompt": "What is the output of this Python code? d = {i: i*i for i in range(5)}; print(sum(d.values()))  Explain in one sentence.",
+    "completion": "The code creates a dictionary containing the squares of numbers 0 through 4, then sums those squared values (0 + 1 + 4 + 9 + 16) to print the result **30**.",
+    "completion_tokens": 46,
+    "seconds": 1.23
+  },
+  {
+    "prompt": "Une voiture roule 240 km en 3 h, puis 150 km en 2 h. Quelle est sa vitesse moyenne sur le trajet complet ? Reponds avec le calcul.",
+    "completion": "Pour calculer la vitesse moyenne sur le trajet complet, il faut diviser la distance totale parcourue par le temps total écoulé. La vitesse moyenne ne se calcule pas en additionnant les vitesses horaires.\n\nVoici les étapes du calcul :\n\n1.  **Calculer la distance totale :**\n    $$240 \\text{ km} + 150 \\text{ km} = 390 \\text{ km}$$\n\n2.  **Calculer le temps total :**\n    $$3 \\text{ h} + 2 \\text{ h} = 5 \\text{ h}$$\n\n3.  **Calculer la vitesse moyenne :**\n    $$V_{moy} = \\frac{\\text{Distance totale}}{\\text{Temps total}} = \\frac{390}{5}$$\n\n$$390 \\div 5 = 78$$\n\nLa vitesse moyenne sur le trajet complet est de **78 km/h**.",
+    "completion_tokens": 210,
+    "seconds": 4.87
+  },
+  {
+    "prompt": "Write a SQL query returning the second highest salary from a table employees(id, salary), handling ties.",
+    "completion": "To return the **second highest salary** while correctly handling ties (i.e., returning the actual salary value if multiple employees share that rank, not just one row), the most robust approach depends on your specific SQL dialect.\n\nHere are the two most common and reliable methods:\n\n### Method 1: Using a Subquery with `DISTINCT` (Most Compatible)\nThis method filters out the maximum salary, then finds the maximum of the remaining values. It naturally handles ties because we are looking for the *value* of the second highest salary, not the count of rows.\n\n```sql\nSELECT MAX(salary) AS second_highest_salary\nFROM employees\nWHERE salary < (SELECT MAX(salary) FROM employees);\n```\n\n**How it handles ties:**\nIf salaries are `[100, 90, 90, 80]`:\n1. The subquery finds `MAX(salary)` = 100.\n2. The outer query filters out 100, leaving `[90, 90, 80]`.\n3. `MAX()` on the remaining set returns `90`.\n4. Result: `90` (correctly identifying the second highest value despite the tie).\n\n---\n\n### Method 2: Using Window Functions (Modern Dialects)\nIf you are using PostgreSQL, SQL Server, Oracle, or modern MySQL, window functions provide a cleaner way to rank distinct values.\n\n```sql\nSELECT DISTINCT salary AS second_highest_salary\nFROM (\n    SELECT salary,\n           DENSE_RANK() OVER (ORDER BY salary DESC) AS rank\n    FROM employees\n) ranked_salaries\nWHERE rank = 2;\n```\n\n**Why `DENSE_RANK`?**\n- `DENSE_RANK` assigns the same rank to tied values but does not skip the next rank number.\n- If salaries are `[100, 90, 90, 80]`:\n  - 100 gets Rank 1.\n  - 90 gets Rank 2 (both rows).\n  - 80 gets Rank 3.\n- Filtering `WHERE rank = 2` returns the salary `90`.\n\n### Recommendation\n- Use **Method 1** if you need maximum compatibility with older databases (like older MySQL versions) or if you cannot use window functions.\n- Use **Method 2** if you are on a modern database system and prefer readability.\n\nBoth queries will return the single column value representing the second highest salary, regardless of how many employees share that salary.",
+    "completion_tokens": 543,
+    "seconds": 13.57
+  },
+  {
+    "prompt": "Rends ce texte plus concis en gardant le sens : \"Il est important de noter que, dans la plupart des cas, les utilisateurs ont tendance a preferer les interfaces qui sont simples.\"",
+    "completion": "Il est préférable de privilégier des interfaces simples, car les utilisateurs les préfèrent généralement.",
+    "completion_tokens": 21,
+    "seconds": 0.78
+  }
+]

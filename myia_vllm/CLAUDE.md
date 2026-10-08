@@ -13,6 +13,18 @@
 - Inauguré le 2026-10-06 (mandat user). Phases : P0 inventaire (faite) · P1
   workspace+profil+garde · P2 déploiement+gates · P3 bench capacités · P4
   exposition flotte (claudish + domaine Mini + sk-agent dédié) · P5 adoption.
+- **Modèle servi depuis le 2026-10-08** : `capyctl/FrogNano-4B-2609-NVFP4`
+  (modelopt 0.47.0 MIXED_PRECISION — MLP en NVFP4, projections attention/GDN en
+  FP8, reste BF16), servi en **W4A16 via les noyaux Marlin** parce que notre
+  SM 8.6 n'a **pas** de tensor cores FP4 (le producteur a mesuré la même chose
+  sur SM 8.9). Promu après essai, mêmes script et machine que la référence :
+  **KV 208 992 tok contre 91 853 (×2,28)** à encombrement VRAM égal, N=16
+  915,2 t/s (×1,63), N=32 1 416,5 t/s (×1,51), 69 °C max, tool-calling OK,
+  0 erreur, capture CUDA graph OK. **Leçon** : la décision du 06/10
+  « NVFP4 = Blackwell, donc inexploitable » reposait sur une hypothèse trop
+  large — la garde réelle de vLLM est `has_device_capability(75)`.
+  Rollback armé : `mini-frognano-4b-po2025-bf16-rollback.yml`.
+  Détail et limites : `_iteration_log/nvfp4_trial_po2025/NOTES.md`.
 
 ## Surveillance
 
@@ -44,10 +56,18 @@
 ## Documents & chemins du siège
 
 - Profil canonique : `configs/docker/profiles/mini-frognano-4b-po2025.yml`
-  (contrat + dimensionnement + rollback en en-tête — le lire avant tout geste).
+  (= le modèle **NVFP4** en production ; contrat + mesures + rollback en
+  en-tête — le lire avant tout geste). Rollback armé :
+  `…-bf16-rollback.yml` (même `container_name`, même volume de cache).
+- Essai qui a mené à la promotion : `_iteration_log/nvfp4_trial_po2025/`
+  (NOTES.md + rapports de porte + réponses A/B versionnés).
 - Faits modèle : config décodée + paysage quants dans la mémoire du siège
-  (`~/.claude/projects/d--dev-vllm/memory/`).
-- Logs runtime : `myia_vllm/_logs/` (gitignored).
+  (`~/.claude/projects/d--dev-vllm/memory/`) — ⚠ la ligne « NVFP4 (Blackwell) »
+  du paysage des 17 quants est **corrigée** : le NVFP4 se sert en W4A16 Marlin
+  dès SM 7.5 (cf. la promotion du 08/10 ci-dessus).
+- Logs runtime : `myia_vllm/_logs/` (gitignored — **gitignoré veut dire non
+  versionné** : toute preuve qu'on veut garder se recopie dans
+  `_iteration_log/<essai>/`).
 - Modèle : cache HF Windows `C:\Users\jsboi\.cache\huggingface` (pattern twin
   po-2026) ; image `vllm/vllm-openai:v0.31.0`.
 - Registre questions user : mémoire siège `user-question-registry.md`
