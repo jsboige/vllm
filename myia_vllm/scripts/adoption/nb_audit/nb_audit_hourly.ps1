@@ -9,21 +9,58 @@ $env:PYTHONIOENCODING = 'utf-8'
 $py = 'C:\Python314\python.exe'
 Set-Location $here
 function Stamp($m) { Add-Content $log ('=== {0:yyyy-MM-ddTHH:mm:ss}Z {1}' -f (Get-Date).ToUniversalTime(), $m) }
-Stamp 'runner'
-& $py nb_audit_runner.py --series @Series --per-series $PerSeries *>> $log
-$rcRunner = $LASTEXITCODE
-Stamp "runner rc=$rcRunner; deliver"
-& $py nb_audit_deliver.py --send *>> $log
-$rcDeliver = $LASTEXITCODE
-Stamp "deliver rc=$rcDeliver"
 
-# A runner failure leaves the deliverer with nothing to send, and the deliverer exits 0
-# ("nothing to deliver") -- so the pass reads as healthy while the workload is dead. It
-# stayed dead 37 h that way (07/10 00:05Z -> 08/10 13:05Z, rc=1 on every pass). The log
-# line alone was not enough: fail loudly, so LastTaskResult turns non-zero and
-# Get-ScheduledTaskInfo shows it without reading the log at all.
-if ($rcRunner -ne 0) {
-    Stamp "FAILED: runner rc=$rcRunner — NO records produced this pass"
-    exit $rcRunner
+# The pass publishes a durable result. It CANNOT rely on its exit code: the scheduled task
+# launches wscript.exe on nb_audit_hourly.launcher.vbs, whose `Run(..., 0, False)` does not wait
+# and hands back nothing, so wscript itself always exits 0. Measured 08/10/2026: a VBS with that
+# exact tail running a child that exits 7 returned 0. A 37 h outage (07/10 00:05Z -> 08/10 13:05Z,
+# 32 consecutive rc=1 passes) therefore left `LastTaskResult` at 0 the whole time -- the log line
+# was the only trace, and nothing read the log. The state file below is the signal that survives:
+# one line, machine-readable, written on every pass including the failing ones, with a failure
+# counter that makes a multi-day silence impossible to miss.
+$stateFile = Join-Path (Split-Path -Parent $logDir) 'last-result.json'
+function Write-State($runnerRc, $deliverRc) {
+    # deliver_rc != 0 means a real send failed (nb_audit_deliver.py returns 1 only when some
+    # message did not go out; "nothing to deliver" is 0), so both codes count as a failure.
+    $ok = ($runnerRc -eq 0) -and ($deliverRc -eq 0)
+    $prev = 0
+    if (Test-Path $stateFile) {
+        try { $prev = [int](Get-Content $stateFile -Raw | ConvertFrom-Json).consecutive_failures } catch { $prev = 0 }
+    }
+    $fails = 0
+    if (-not $ok) { $fails = $prev + 1 }
+    $state = [ordered]@{
+        ts                   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        runner_rc            = $runnerRc
+        deliver_rc           = $deliverRc
+        ok                   = $ok
+        consecutive_failures = $fails
+        series               = @($Series)
+        per_series           = $PerSeries
+    }
+    # UTF-8 no BOM: Add-Content/Out-File would prepend one and break the parser (global rule).
+    [System.IO.File]::WriteAllText($stateFile, ($state | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
 }
+
+$rcRunner = -1
+$rcDeliver = -1
+try {
+    Stamp 'runner'
+    & $py nb_audit_runner.py --series @Series --per-series $PerSeries *>> $log
+    $rcRunner = $LASTEXITCODE
+    Stamp "runner rc=$rcRunner; deliver"
+    & $py nb_audit_deliver.py --send *>> $log
+    $rcDeliver = $LASTEXITCODE
+    Stamp "deliver rc=$rcDeliver"
+} finally {
+    Write-State $rcRunner $rcDeliver
+}
+
+if ($rcRunner -ne 0) {
+    Stamp "FAILED: runner rc=$rcRunner - NO records produced this pass"
+}
+# Still propagate the code for the day the task is re-pointed at pwsh directly; today the
+# launcher discards it, which is exactly why the state file above carries the signal.
+if ($rcRunner -ne 0) { exit $rcRunner }
+if ($rcDeliver -ne 0) { exit $rcDeliver }
 exit 0

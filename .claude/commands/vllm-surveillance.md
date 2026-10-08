@@ -18,6 +18,8 @@ Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/
 
 Hôte = UTC+2 ; conteneurs, `StartedAt`, logs RSM = UTC ; `docker logs --since/--until` prend l'heure LOCALE. Ancrer sur l'epoch, suffixer les heures citées (`12:32Z`).
 
+**Le piège qui a fabriqué un faux signalement (08/10).** `Get-Date -Format u` rend l'heure **LOCALE** avec un suffixe **`Z`** : on obtient un horodatage qui *ressemble* à de l'UTC et ne l'est pas — décalage de +2 h, du mauvais côté. Un WARN « `:5003` injoignable depuis ~13:2xZ » était en réalité **11:2xZ**, et tombait dans une fenêtre de recréation du siège voisin : signalement faux, coût réel pour le voisin qui a dû le réfuter par la mesure. Même erreur commise sur ce siège le même jour (`Get-Date -Format "…HH:mm:ss 'Z'"`). **Toujours** `(Get-Date).ToUniversalTime()` (PowerShell) ou `datetime.now(timezone.utc)` (Python), et vérifier la conversion **avant** de poster une heure : sur cette machine, **l'heure locale est l'heure Z + 2**. Un signalement horodaté faux est un signalement faux.
+
 ## ⚠️ `docker logs --since` INFIBLE depuis le 30/08 → `--tail` uniquement
 
 Le chemin lecture-complète (`--since`, `--tail` géant) voit le segment MORT du journal ; le petit `--tail N` (≈2 500-4 000 lignes watchdog, 20 000 moteur) atteint le segment vivant. Symptôme : `--since 12h | grep -c` = 0 alors que `--tail 2` est frais → c'est CE bug, pas un service arrêté. Borner chaque segment lu et raisonner en comptes absolus.
@@ -42,6 +44,18 @@ Comportement documenté, PAS une panne : toute requête ≥ ~100K tokens **affam
 ## (2) Condensation (logs roosync)
 
 Fichier `roosync-<date>.log` nommé d'après le DÉMARRAGE du process (pas rotaté à minuit — lire jour + veille). Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai échec prod = minute isolée à 1-2 évts. `cloud fallback condensation succeeded` isolé pendant une indispo vLLM = nominal (dégradation gracieuse). Le banner « Condensation LLM config » n'est jamais dans le log (stderr) — check invalide, ne pas rapporter.
+
+## (2bis) Producteur de pré-audit (nbaudit) — une ligne, à lire chaque cycle
+
+```bash
+cat "$LOCALAPPDATA/nbaudit/last-result.json"
+```
+
+`{"ts":…,"runner_rc":…,"deliver_rc":…,"ok":…,"consecutive_failures":…}` — état du **dernier** passage horaire. `ok:false` ou `consecutive_failures > 0` = **le producteur de dossiers preaudit est mort** (les consommateurs Hermes/NanoClaw retombent alors en audit *full-read*, plus coûteux pour eux). Un `consecutive_failures` qui monte = panne installée, pas un incident d'une heure.
+
+**Couverture : le runner ne sert que les 3 séries configurées** (`17107`, `17239`, `17357`). Un carnet **hors de ces séries** n'aura jamais de dossier preaudit, panne ou pas — vérifié 08/10 : `2.8b-Theorie-PAC-Lean.ipynb` (02-ML-Cours), réclamé par Hermes, est **absent des 3 checklists**, donc son « aucun dossier preaudit » n'était **pas** l'outage. Avant d'expliquer une absence par la panne, vérifier que le carnet est **dans le périmètre** (`gh issue view <serie> --json body`).
+
+**Pourquoi ce fichier existe et pourquoi il faut le lire ici.** Le passage a été mort **37 h** (07/10 00:05Z → 08/10 13:05Z, 32 échecs) sans que rien ne le dise : la tâche planifiée se lisait `Ready` / `LastTaskResult 0` / 0 passage manqué. **Le code de sortie ne peut pas remonter** — la tâche passe par `wscript.exe` sur `nb_audit_hourly.launcher.vbs`, dont le `Run(…, 0, False)` n'attend pas et ne rend rien (mesuré 08/10 : un VBS de cette forme lançant un enfant qui sort 7 rend **0**). Seule une trace **écrite** survit. Corollaire général : **un livrable qui sort 0 après l'échec de son producteur cache la panne** — vérifier la santé du producteur, jamais le statut du livrable.
 
 ## (3) Santé G:/ DriveFS (fail-closed RSM si pathologique)
 
@@ -81,7 +95,9 @@ for line in open('/logs/error_sources.jsonl',errors='ignore'):
 
 ### (5bis) Consommateurs externes — clé scopée `external-vllm` (Jamin / Candy)
 
-**Active depuis 08/10 13:03Z** (empreinte `45BDC569E1E3`), remise aux deux externes par le user le 08/10. Noms autorisés : `frognano-4b`, `mini`, `swift-1.5-27b`, `qwen3.6-35b-a3b` — les deux derniers sont **le même moteur** (vérifié 08/10 : les deux rendent `200` en OpenAI **et** en Anthropic, `served_by=qwen3.6-35b-a3b`). Tout cloud (`glm-5.3`…) = **403**, sans clé = **401**. Cap **2 requêtes concurrentes** par clé.
+**Empreinte `45BDC569E1E3`.** Noms autorisés : `frognano-4b`, `mini`, `swift-1.5-27b`, `qwen3.6-35b-a3b` — les deux derniers sont **le même moteur** (vérifié 08/10 : les deux rendent `200` en OpenAI **et** en Anthropic, `served_by=qwen3.6-35b-a3b`). Tout cloud (`glm-5.3`…) = **403**, sans clé = **401**. Cap **2 requêtes concurrentes** par clé.
+
+⚠️ **Son activation est CONTREDITE entre deux sources (constaté 08/10 13:4xZ) — ne pas l'affirmer.** Le status du dashboard workspace porte la clé **INERTE** (`inboundKeys` jeté par le loader, claudish#410 : « aucune clé externe active tant que #410 non déployé »). po-2025:vllm, lui, mesure un **401 sans credential** sur `/v1/chat/completions` du hub et en conclut #410 effectif. **Un 401 sans clé ne prouve pas que `inboundKeys` est chargé** — une garde d'auth générique suffit à le produire. La seule preuve serait que la clé scopée **authentifie** *et* **refuse un 4ᵉ modèle** ; personne ne l'a produite. **Ne rien dire à Jamin/Candy sur sa validité avant cette preuve** (question posée à po-2025:claudish le 08/10). Leçon : deux sièges qui lisent le même hub par deux chemins différents peuvent en tirer deux états opposés — croiser, ne pas trancher au plus optimiste.
 
 À relever chaque cycle (mandat user 08/10 : « tu relèveras régulièrement les traces ») :
 
