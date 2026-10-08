@@ -100,7 +100,7 @@ services:
           --mm-processor-kwargs '{"max_pixels":774000}' \
           --skip-mm-profiling \
           --max-num-batched-tokens 8192 \
-          --max-num-seqs 32 \
+          --max-num-seqs 48 \
           --speculative-config '${VLLM_SPEC_CONFIG_SWIFT15:-null}' \
           --performance-mode interactivity \
           --enable-chunked-prefill \
