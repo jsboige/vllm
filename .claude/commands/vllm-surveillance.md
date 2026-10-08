@@ -77,7 +77,7 @@ for line in open('/logs/error_sources.jsonl',errors='ignore'):
 "
 ```
 
-**Carte connue** : Jamin `88.183.141.187` · Candy SUPPOSÉE `176.172.94.128` (RGAA, Q12) · site (hairpin) `90.65.170.144` · po-2027 `92.150.81.115` · web1/web2 `37.187.180.135`/`51.75.200.22` · familles mobiles Free `92.184.x`/`88.183.x` · ouverte Q13 `82.66.89.184` (hub, 25/09→01/10). **Nouvelle IP non réclamée avec des 200 = alerte user immédiate dans le cycle + entrée registre.** Jamais d'attribution par géoloc registre seule (leçon : l'IP « allemande » était le site lui-même). Le census complet vit en mémoire : `project_vllm_external_ip_census_20261007.md`.
+**Carte connue (mise à jour 08/10)** : **Jamin** = `88.183.141.187` + `176.172.94.128` (RGAA, confirmé user 08/10 — PAS Candy) + IPv6 déclarée `2001:861:8ac2:e3f0:8602:b5b8:31ab:6424` (jamais observée au 08/10 ; toute apparition = Jamin, ne pas alerter) · **Candy : PAS encore observée** (annoncée plus mesurée ; attribution future par clé scopée, plus par IP) · site (hairpin) `90.65.170.144` · poste user Paris `82.66.89.184` (Q13 répondue 08/10 : « sans doute mon IP parisienne », SUPPOSÉ, Free, trafic arrêté depuis le 01/10) · po-2027 `92.150.81.115` · web1/web2 `37.187.180.135`/`51.75.200.22` · familles mobiles Free `92.184.x`/`88.183.x`. **Nouvelle IP non réclamée avec des 200 = alerte user immédiate dans le cycle + entrée registre.** Jamais d'attribution par géoloc registre seule (leçon : l'IP « allemande » était le site lui-même). Le census complet vit en mémoire : `project_vllm_external_ip_census_20261007.md`.
 
 ## (6) Triage coordination
 
