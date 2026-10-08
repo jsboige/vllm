@@ -1,0 +1,95 @@
+# Preuve moteur avant recreation - 2026-10-08 (conteneur myia_vllm-mini-frognano-4b)
+# Source: docker logs -t, capture AVANT recreation (les logs meurent avec le conteneur)
+# But: repondre au WARN myia-ai-01:vllm 'vllm-sibling-5003-down-20261008'
+
+## Fenetre de vie du conteneur
+Created=11:43:12Z  StartedAt=11:43:12Z  RestartCount=0  premiere ligne de log=11:43:36Z  derniere=12:50:24Z
+
+## Compteurs
+POST /v1/chat/completions RECUES = 71, TOUTES 200 OK (0 echec).
+Les 73 lignes captees par le motif se decomposent en 71 requetes + 2 declarations de route au demarrage (launcher.py:69) - ce ne sont PAS des echecs.
+
+## Conclusion
+Aucune requete recue avant 11:43:36Z : le conteneur n'existait pas.
+Les echecs constates par ai-01 a '~13:2xZ' (heure LOCALE etiquetee Z) = 11:2xZ UTC
+tombent donc dans la fenetre de recreation de la promotion FP8 KV.
+Le lot de 11 requetes a 11:47:47Z est la reprise apres le WARN : toutes 200.
+
+## Lignes non-200 (brutes)
+2026-10-08T11:46:44.132130200Z (APIServer pid=1) INFO 10-08 11:46:44 [launcher.py:69] Route: /v1/chat/completions, Methods: POST
+2026-10-08T11:46:44.132244890Z (APIServer pid=1) INFO 10-08 11:46:44 [launcher.py:69] Route: /v1/chat/completions/batch, Methods: POST
+
+## Toutes les lignes chat/completions (brutes)
+2026-10-08T11:46:44.132130200Z (APIServer pid=1) INFO 10-08 11:46:44 [launcher.py:69] Route: /v1/chat/completions, Methods: POST
+2026-10-08T11:46:44.132244890Z (APIServer pid=1) INFO 10-08 11:46:44 [launcher.py:69] Route: /v1/chat/completions/batch, Methods: POST
+2026-10-08T11:47:29.052702087Z INFO:     172.19.0.1:35474 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:31.258127842Z INFO:     172.19.0.1:35490 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:31.620351874Z INFO:     172.19.0.1:35494 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:43.645906553Z INFO:     172.19.0.1:39486 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.464729930Z INFO:     172.19.0.1:39502 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.481357611Z INFO:     172.19.0.1:39518 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.481621404Z INFO:     172.19.0.1:39526 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.481897703Z INFO:     172.19.0.1:39536 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.482244948Z INFO:     172.19.0.1:39546 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.482851768Z INFO:     172.19.0.1:39550 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.483318521Z INFO:     172.19.0.1:39552 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.483712824Z INFO:     172.19.0.1:39564 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.484317596Z INFO:     172.19.0.1:39576 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.484702595Z INFO:     172.19.0.1:39586 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.485121733Z INFO:     172.19.0.1:39588 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.485433985Z INFO:     172.19.0.1:39598 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.485847799Z INFO:     172.19.0.1:39608 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.486618053Z INFO:     172.19.0.1:39616 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.486960631Z INFO:     172.19.0.1:39624 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:45.487425314Z INFO:     172.19.0.1:39640 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.875053426Z INFO:     172.19.0.1:39646 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.895817953Z INFO:     172.19.0.1:39660 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.896213388Z INFO:     172.19.0.1:39668 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.896415692Z INFO:     172.19.0.1:39674 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.896531257Z INFO:     172.19.0.1:39686 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.896982061Z INFO:     172.19.0.1:39698 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.896994645Z INFO:     172.19.0.1:39708 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.897217852Z INFO:     172.19.0.1:39724 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.897695653Z INFO:     172.19.0.1:39730 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.897974553Z INFO:     172.19.0.1:39746 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.898273331Z INFO:     172.19.0.1:39760 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.913138115Z INFO:     172.19.0.1:39768 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.913402359Z INFO:     172.19.0.1:39778 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.913583274Z INFO:     172.19.0.1:39780 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.913874468Z INFO:     172.19.0.1:39794 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.913995965Z INFO:     172.19.0.1:39806 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.914286367Z INFO:     172.19.0.1:39814 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.914515600Z INFO:     172.19.0.1:39830 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.914751031Z INFO:     172.19.0.1:39846 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.915409038Z INFO:     172.19.0.1:39858 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.915838432Z INFO:     172.19.0.1:39864 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.916082803Z INFO:     172.19.0.1:39872 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.916383724Z INFO:     172.19.0.1:39880 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.916701524Z INFO:     172.19.0.1:39894 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.916952931Z INFO:     172.19.0.1:39906 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.917304628Z INFO:     172.19.0.1:39916 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.917329639Z INFO:     172.19.0.1:39926 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.917536465Z INFO:     172.19.0.1:39938 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.917913192Z INFO:     172.19.0.1:39940 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.918190135Z INFO:     172.19.0.1:39944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.918353604Z INFO:     172.19.0.1:39950 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:47:47.918641215Z INFO:     172.19.0.1:39956 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:49:02.047061958Z INFO:     172.19.0.1:49092 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:49:03.829303482Z INFO:     172.19.0.1:49092 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:58:22.229761326Z INFO:     172.19.0.1:55492 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T11:58:25.648299320Z INFO:     172.19.0.1:55492 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:04:00.447249614Z INFO:     172.19.0.1:46660 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:04:09.782862063Z INFO:     172.19.0.1:47712 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:08:27.845749777Z INFO:     172.19.0.1:49988 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:08:30.197070652Z INFO:     172.19.0.1:49988 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:08:45.789401097Z INFO:     172.19.0.1:36060 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:26:50.983273527Z INFO:     172.19.0.1:52404 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:47:17.576340974Z INFO:     172.19.0.1:45892 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:47:38.202400927Z INFO:     172.19.0.1:39772 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:47:57.887843902Z INFO:     172.19.0.1:47918 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:47:58.013313287Z INFO:     172.19.0.1:47930 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:47:59.005720803Z INFO:     172.19.0.1:47940 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:48:17.670562072Z INFO:     172.19.0.1:59922 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:48:17.840100124Z INFO:     172.19.0.1:45958 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:48:20.143324110Z INFO:     172.19.0.1:45968 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-10-08T12:48:20.225318934Z INFO:     172.19.0.1:45972 - "POST /v1/chat/completions HTTP/1.1" 200 OK

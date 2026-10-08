@@ -31,6 +31,9 @@
   **1 pas** `mini-frognano-4b-po2025-kvauto-rollback.yml` (NVFP4, KV auto) ·
   **2 pas** `…-bf16-rollback.yml`. Détail et limites :
   `_iteration_log/nvfp4_trial_po2025/NOTES.md` + `_iteration_log/fp8kv_trial_po2025/NOTES.md`.
+  **+ thinking désactivé par défaut** le 08/10 après-midi (KV re-mesurée
+  **421 582** tok, 12,87×) — voir la section Surveillance ; dossier
+  `_iteration_log/thinking_default_fix_po2025/NOTES.md`.
 
 ## Surveillance
 
@@ -56,14 +59,28 @@
   Le logger user-level est **gardé volontairement** : il logue
   `engine=up`/`max24h`/util%, que le gouverneur ne logue pas. Scripts :
   `scripts/gpu-thermal-{logger,governor}-po2025.ps1`.
-- **Sonde de vivacité : ne JAMAIS conclure sur `content` seul.** Le thinking est
-  actif par défaut ; un `max_tokens` court le consomme entièrement et renvoie
-  `content: null` avec `reasoning_tokens = completion_tokens` et
-  `finish_reason: length` — **moteur sain, sonde qui crie au loup** (mesuré le
-  08/10 : 8 tokens → `content` nul ; thinking off → réponse correcte). Toute
-  sonde (vigie, watchdog) passe `chat_template_kwargs.enable_thinking = false`
-  **ou** alloue un budget qui couvre la réflexion, et lit `reasoning` autant que
-  `content`.
+- **Thinking DÉSACTIVÉ PAR DÉFAUT depuis le 08/10 après-midi**
+  (`--default-chat-template-kwargs '{"enable_thinking": false}'`) — correction
+  d'**utilité**, pas de performance : le tier mini sert du travail mécanique, le
+  raisonnement y est un coût pur. **Mesuré AVANT correctif**, même question et
+  même moteur : thinking ON → **2,78 s / 200 tok** ; OFF → **0,08 s / 2 tok**
+  (×34 en latence, ×100 en tokens pour la même réponse) ; et **`content` VIDE**
+  sous un plafond client courant (`finish_reason=length`,
+  `reasoning_tokens = completion_tokens`). C'est le pire cas de promotion : le
+  tier « bon marché » se présentait 30× plus lent, 100× plus cher et **muet**.
+  Un consommateur qui veut délibérer l'active **par requête**
+  (`chat_template_kwargs: {"enable_thinking": true}` — champ de **PREMIER**
+  niveau du corps, jamais dans `extra_body`). **Vérifié après correctif** :
+  sans kwarg `Paris` en 2 tokens / 0,43 s ; `max_tokens=16` ne vide plus la
+  réponse ; `enable_thinking:true` fait bien revenir la réflexion (200 tok) ;
+  tool-calling `qwen3_coder` intact (`get_weather {"city":"Paris"}`) ; KV
+  **421 582** (12,87×). Dossier :
+  `_iteration_log/thinking_default_fix_po2025/NOTES.md`.
+- **Doctrine qui RESTE (un défaut serveur ne dispense pas de lire juste).** Une
+  sonde (vigie, watchdog) lit `reasoning` **autant que** `content` : un `content`
+  vide avec `reasoning_tokens = completion_tokens` et `finish_reason=length`
+  reste un signal à interpréter, pas une panne — et il redeviendra courant dès
+  qu'un appelant active le thinking.
 
 ## Non-négociables
 

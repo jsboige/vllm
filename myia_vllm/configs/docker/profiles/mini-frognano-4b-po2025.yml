@@ -24,6 +24,21 @@
 # v0.31.0). VERDICT : passe proprement sur SM 8.6, y compris prefix caching
 # et mamba fp16 inchangés.
 #
+# THINKING DÉSACTIVÉ PAR DÉFAUT (08/10 après-midi, mandat user « optimiser
+# l'utilité de vos modèles »). FrogNano est un raisonneur : THINKING ACTIF PAR
+# DÉFAUT. Un consommateur qui ne passe pas `enable_thinking:false` paie 30× la
+# latence et 100× les tokens pour LA MÊME réponse — et reçoit un `content`
+# VIDE sous un plafond client courant. Mesuré ce jour, même question, même
+# moteur : thinking ON → 2,78 s / 200 tok / content='\n\nParis' ; thinking OFF
+# → 0,08 s / 2 tok / content='Paris' ; thinking ON avec max_tokens ≤ 64 →
+# `finish_reason=length`, content VIDE (reasoning_tokens = completion_tokens).
+# C'est le pire cas pour la promotion : le tier « bon marché » paraît 30× plus
+# lent et muet. D'où `--default-chat-template-kwargs '{"enable_thinking":
+# false}'` — le tier mini sert du travail mécanique, le raisonnement y est un
+# coût pur. Un consommateur qui veut réfléchir l'active PAR REQUÊTE
+# (`chat_template_kwargs: {"enable_thinking": true}` — champ de PREMIER NIVEAU
+# du corps, jamais dans `extra_body`).
+#
 # TIER RAM OFFLOAD : ÉVALUÉ ET REFUSÉ sur cet hôte (08/10) — la garde
 # anti-starvation (≥4 Go RAM hôte libres) ne le permet pas : libre mesuré
 # 7,2 Go pendant l'essai, et un tier « abordable » (~3 Go) serait < au KV
@@ -76,6 +91,7 @@ services:
       --tool-call-parser qwen3_coder
       --enable-auto-tool-choice
       --reasoning-parser qwen3
+      --default-chat-template-kwargs '{"enable_thinking": false}'
       --api-key ${VLLM_API_KEY_MINI}
 
     deploy:
