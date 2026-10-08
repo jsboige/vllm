@@ -65,10 +65,45 @@ def git(repo: Path, *a: str) -> str:
 
 
 def refresh_clone(repo: Path) -> str:
-    if git(repo, "status", "--porcelain").strip():
-        raise RuntimeError(f"{repo} has local changes; the audit clone must stay pristine")
-    git(repo, "pull", "--ff-only", "--quiet")
-    return git(repo, "rev-parse", "HEAD").strip()
+    """Refuse to audit on a clone carrying real local work.
+
+    Line-ending-only differences are NOT real work. This repo ships `*.py text eol=lf`
+    in .gitattributes, yet some blobs were committed carrying CRLF, so a handful of files
+    read as permanently modified whatever the worktree does (HEAD blob and index both
+    hold the CRs; the clone cannot be cleaned without committing upstream, which we must
+    not do). Treating that as dirt took the hourly runner down for 37 h -- 07/10 00:05Z to
+    08/10 13:05Z, rc=1 on every pass, and silently, because the deliverer still exits 0
+    with nothing to send. Compare content, not bytes.
+    """
+    dirty = git(repo, "status", "--porcelain").strip()
+    if dirty:
+        untracked = [l[3:] for l in dirty.splitlines() if l.startswith("??")]
+        # Read the TEXTUAL diff, never `--name-only`: name-only reports a file whenever its
+        # blob differs, even when git's own text diff (with the CR ignored) is empty -- which
+        # is exactly our case, since the repo's blobs carry CRLF against a `text eol=lf`
+        # attribute. Verified on the live clone: identical content, `diff` of both files
+        # stripped of CR is empty, yet `--name-only` lists both.
+        tracked = git(repo, "diff", "--ignore-cr-at-eol").strip()
+        tracked += git(repo, "diff", "--cached", "--ignore-cr-at-eol").strip()
+        if tracked or untracked:
+            raise RuntimeError(
+                f"{repo} has local changes; the audit clone must stay pristine "
+                f"(untracked={untracked[:5]})\n{tracked[:600]}")
+        log(f"{repo}: ignoring {len(dirty.splitlines())} line-ending-only modification(s)")
+
+    # A fast-forward can still be refused while that dirt is present: git's merge safety
+    # check does not honour the CR ignore, only the textual diff does (measured: the guard
+    # passes, then `git pull --ff-only` dies with "local changes would be overwritten").
+    # A refused refresh must not take the workload down a second time -- log it and audit
+    # whatever commit we already have.
+    head = git(repo, "rev-parse", "HEAD").strip()
+    try:
+        git(repo, "pull", "--ff-only", "--quiet")
+        head = git(repo, "rev-parse", "HEAD").strip()
+    except RuntimeError as exc:
+        log(f"{repo}: fast-forward refused ({str(exc)[:180]}); auditing at {head[:8]} "
+            f"-- the clone is NOT refreshed on this pass")
+    return head
 
 
 AUDIT_TS = re.compile(r"audit\s+(\d\d)/(\d\d)\s+(\d\d):(\d\d)Z", re.I)

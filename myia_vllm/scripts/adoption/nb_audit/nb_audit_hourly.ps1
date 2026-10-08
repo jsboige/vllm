@@ -11,6 +11,19 @@ Set-Location $here
 function Stamp($m) { Add-Content $log ('=== {0:yyyy-MM-ddTHH:mm:ss}Z {1}' -f (Get-Date).ToUniversalTime(), $m) }
 Stamp 'runner'
 & $py nb_audit_runner.py --series @Series --per-series $PerSeries *>> $log
-Stamp "runner rc=$LASTEXITCODE; deliver"
+$rcRunner = $LASTEXITCODE
+Stamp "runner rc=$rcRunner; deliver"
 & $py nb_audit_deliver.py --send *>> $log
-Stamp "deliver rc=$LASTEXITCODE"
+$rcDeliver = $LASTEXITCODE
+Stamp "deliver rc=$rcDeliver"
+
+# A runner failure leaves the deliverer with nothing to send, and the deliverer exits 0
+# ("nothing to deliver") -- so the pass reads as healthy while the workload is dead. It
+# stayed dead 37 h that way (07/10 00:05Z -> 08/10 13:05Z, rc=1 on every pass). The log
+# line alone was not enough: fail loudly, so LastTaskResult turns non-zero and
+# Get-ScheduledTaskInfo shows it without reading the log at all.
+if ($rcRunner -ne 0) {
+    Stamp "FAILED: runner rc=$rcRunner — NO records produced this pass"
+    exit $rcRunner
+}
+exit 0
