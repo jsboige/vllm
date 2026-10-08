@@ -33,9 +33,23 @@
 - Rapports → **dashboard `workspace-vllm`** (RDV des 3 sièges vllm). DM
   toujours adressés `machine:workspace` (bug RooSync #3960). Escalade
   cross-workspace → dashboard `global` + crossPost.
-- Télémétrie thermique : task user-level `vllm-po2025-thermal-logger` (/5 min,
-  log `myia_vllm/_logs/gpu-thermal.log`). Gouverneur SYSTEM en attente UAC
-  (registre Q2) — scripts : `scripts/gpu-thermal-{logger,governor}-po2025.ps1`.
+- Télémétrie thermique : task user-level `vllm-po2025-thermal-logger`
+  (log `myia_vllm/_logs/gpu-thermal.log` ; battements à :03, **horaires en
+  pratique** alors que la doc d'origine dit /5 min — à réconcilier).
+  **Gouverneur SYSTEM VIVANT depuis le 06/10 15:53 locale** (VÉRIFIÉ le 08/10
+  13:04 via **ses propres artefacts** : 69 heartbeats continus dans
+  `_logs/gpu-governor.log`, `cap_applied=OK (210,1800)`,
+  `governor-install-result.txt` Running/Ready, `hot=0` — il a observé la porte
+  NVFP4 à 68 °C en restant `mode=normal`). **Se prononcer sur le gouverneur
+  UNIQUEMENT via ses artefacts** (`gpu-governor.log`, `gpu-governor-state.json`,
+  `governor-install-result.txt`), **JAMAIS via `Get-ScheduledTask` non élevé** :
+  l'énumération est aveugle aux tâches SYSTEM — le 08/10 ce piège a fait
+  propager « gouverneur absent » (faux) du matin au soir. Discriminant si
+  besoin : `schtasks /query /tn GPU-Thermal-Governor-po2025` → **« Accès
+  refusé » = la tâche existe** (protégée) ; « fichier introuvable » = absente.
+  Le logger user-level est **gardé volontairement** : il logue
+  `engine=up`/`max24h`/util%, que le gouverneur ne logue pas. Scripts :
+  `scripts/gpu-thermal-{logger,governor}-po2025.ps1`.
 - **Sonde de vivacité : ne JAMAIS conclure sur `content` seul.** Le thinking est
   actif par défaut ; un `max_tokens` court le consomme entièrement et renvoie
   `content: null` avec `reasoning_tokens = completion_tokens` et

@@ -137,10 +137,21 @@ de compilation — le rollback reste chaud.
    monte en charge externe.
 2. **Checkpoint tiers** : dépôt de 4 jours, un seul auteur, aucune reproduction indépendante. Le
    rollback armé est la contre-mesure.
-3. **Garde thermale SYSTEM toujours absente** : la tâche `GPU-Thermal-Governor-po2025` **n'existe
-   pas** (vérifié 08/10) — le registre Q2 reste ouvert, il attend la fenêtre UAC unique du user. La
-   porte a culminé à 69 °C, loin du cap de 88 °C, donc rien de bloquant ; mais toute charge
-   **soutenue** reste conditionnée à ce garde-fou (non-négociable #1 du siège).
+3. **Garde thermale SYSTEM — CORRECTION (08/10 13:04, preuve au reboot 13:17) : le gouverneur est
+   VIVANT.** La version initiale de ce point (« la tâche n'existe pas, vérifié 08/10 ») était un
+   **faux négatif** : la vérification du matin passait par `Get-ScheduledTask` **non élevé**, aveugle
+   aux tâches SYSTEM — exactement le piège que la spec vigie documente. Prononcé via les artefacts
+   du gouverneur : `gpu-governor.log` porte **69 heartbeats continus du 06/10 15:53:50 au 08/10
+   13:02:03** (`mode=normal`, `hot=0`, un `WARN RAM basse` à 08:32), `governor-install-result.txt`
+   dit `governor_task=OK · cap_applied=OK (210,1800) · Running/Ready`, et
+   `schtasks /query /tn GPU-Thermal-Governor-po2025` rend **« Accès refusé »** (= la tâche existe,
+   protégée SYSTEM) là où une tâche absente rend « fichier introuvable ». **Preuve au reboot de
+   13:17** : le gouverneur a loggé `boot change -> state reset (mode=normal, boot task applique
+   210,1800)` — sa tâche de boot a réappliqué le cap, ce qu'un gouverneur absent ne fait pas. Il a
+   observé la charge de la porte (68 °C au beat 10:02) sans jamais quitter `mode=normal`. Le registre
+   **Q2 est RÉSOLU** ; le logger user-level est **gardé volontairement** (il logue
+   `engine=up`/`max24h`/util% que le gouverneur ne logue pas — écart assumé avec le plan de retrait
+   initial, consigné au registre).
 4. **Hygiène** : le secret du siège passe par `--api-key` en ligne de commande, donc lisible via
    `docker inspect`/`ps`. À basculer sur `VLLM_API_KEY` (variable d'environnement) au prochain
    redémarrage planifié.

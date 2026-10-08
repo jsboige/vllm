@@ -38,11 +38,13 @@
 #   communautaires n'est exploitable vLLM/GPU : GGUF/MLX/ONNX/EXL3/NVFP4) est
 #   le levier ×3-4 du plafond — job fenêtré, cf. scripts/quantization/.
 #
-# GARDE THERMALE (non négociable, issue #70) : logger user-level /5 min posé
-# 06/10 (task vllm-po2025-thermal-logger, temp×charge) + gouverneur SYSTEM
-# en attente de la fenêtre UAC unique (gpu-thermal-governor-po2025.ps1,
-# recette twin po-2026 : cap 210,1600 MHz à ≥88 °C×2, restore ≤78 °C×3).
-# AUCUNE charge GPU soutenue tant que le gouverneur n'est pas posé.
+# GARDE THERMALE (non négociable, issue #70) : logger user-level posé 06/10
+# (task vllm-po2025-thermal-logger, log gpu-thermal.log) + gouverneur SYSTEM
+# VIVANT depuis le 06/10 15:53 locale (gpu-thermal-governor-po2025.ps1, cap
+# appliqué 210 W / 1800 MHz, hystérésis 88/78 °C — VÉRIFIÉ via ses artefacts
+# le 08/10 ; ne JAMAIS prononcer son état via Get-ScheduledTask non élevé,
+# aveugle aux tâches SYSTEM — cf. _iteration_log/nvfp4_trial_po2025/NOTES.md
+# point 8.3 : le « gouverneur absent » du 08/10 matin était un faux négatif).
 #
 # PORT 5003 (hub claudish = 3000, plage 4990-5030 vérifiée libre 06/10).
 # EXPOSITION : domaine « Mini » demandé à IISManagement (mini.myia.io, ARR →
