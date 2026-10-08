@@ -1,6 +1,10 @@
 # Hourly pre-audit pass (CoursIA #17073, mode (b)): produce fresh records, then deliver them.
 # Run by the user-level scheduled task that register_hourly.ps1 creates. Record: _iteration_log/nb_audit_pilot/NOTES.md
-param([int[]]$Series = @(17107, 17239, 17357), [int]$PerSeries = 3)
+# Series: 17107/17239/17357 = the original pilot (all at 0 remaining, kept: they cost 3 REST reads and
+# pick up anything new). 17692 = 02-ML-Cours, wave 1 of the converged Hermes+NanoClaw order (08/10
+# evening): one wave at a time, prod first, pass size at our call, joint re-evaluation after wave 1.
+# The rest of wave 1 (GenAI/Audio inside #19451) needs a path filter + the PR #19868 skip list first.
+param([int[]]$Series = @(17107, 17239, 17357, 17692), [int]$PerSeries = 3)
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $env:LOCALAPPDATA 'nbaudit\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
