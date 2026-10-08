@@ -36,6 +36,14 @@
 - Télémétrie thermique : task user-level `vllm-po2025-thermal-logger` (/5 min,
   log `myia_vllm/_logs/gpu-thermal.log`). Gouverneur SYSTEM en attente UAC
   (registre Q2) — scripts : `scripts/gpu-thermal-{logger,governor}-po2025.ps1`.
+- **Sonde de vivacité : ne JAMAIS conclure sur `content` seul.** Le thinking est
+  actif par défaut ; un `max_tokens` court le consomme entièrement et renvoie
+  `content: null` avec `reasoning_tokens = completion_tokens` et
+  `finish_reason: length` — **moteur sain, sonde qui crie au loup** (mesuré le
+  08/10 : 8 tokens → `content` nul ; thinking off → réponse correcte). Toute
+  sonde (vigie, watchdog) passe `chat_template_kwargs.enable_thinking = false`
+  **ou** alloue un budget qui couvre la réflexion, et lit `reasoning` autant que
+  `content`.
 
 ## Non-négociables
 
