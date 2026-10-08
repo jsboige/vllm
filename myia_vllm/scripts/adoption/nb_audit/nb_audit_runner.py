@@ -73,6 +73,32 @@ def gh_api(*path: str) -> str:
     return p.stdout
 
 
+def open_pr_notebooks(limit: int = 50) -> tuple[dict[str, list[int]], int]:
+    """Notebooks touched by recently-updated open PRs: {repo-relative path: [PR numbers]}.
+
+    A pre-audit of a file an open PR is about to change is work thrown away: the merge
+    changes the sha and the sha-keyed record goes stale (never wrong -- just wasted).
+    The bots apply the same rule when they read. Wave 1 was ordered 08/10 against a
+    static 5-name list derived from PR #19868; that list was stale within hours (the PR
+    closed superseded, the fix landed via #19854 instead) -- derive per pass, never
+    hardcode. Only the `limit` most-recently-updated open PRs are scanned (a PR quiet
+    for weeks is not about to collide, and a later merge is absorbed by the sha check);
+    the caller logs the cap so the cut is never silent.
+    """
+    prs = json.loads(gh_api(
+        f"repos/{GH_REPO}/pulls?state=open&sort=updated&direction=desc&per_page={limit}"))
+    touched: dict[str, list[int]] = {}
+    for pr in prs:
+        files = json.loads(gh_api(f"repos/{GH_REPO}/pulls/{pr['number']}/files?per_page=100"))
+        if len(files) == 100:
+            log(f"  PR #{pr['number']}: 100+ files, collision scan truncated at 100")
+        for f in files:
+            fn = f.get("filename") or ""
+            if fn.startswith(NB_ROOT) and fn.endswith(".ipynb"):
+                touched.setdefault(fn, []).append(pr["number"])
+    return touched, len(prs)
+
+
 def refresh_clone(repo: Path) -> str:
     """Refuse to audit on a clone carrying real local work.
 
@@ -176,6 +202,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--series", type=int, nargs="+", required=True, help="#17073 series issue numbers")
     ap.add_argument("--per-series", type=int, default=3, help="max notebooks per series and run")
+    ap.add_argument("--subpath", action="append", default=[], metavar="ISSUE:PREFIX[,PREFIX...]",
+                    help="per series, keep only items resolving under one of these path prefixes "
+                         "-- wave scoping inside a wide series (e.g. 19451:Audio/ for GenAI/Audio)")
     ap.add_argument("--lookahead", type=int, default=6,
                     help="fresh records kept ahead of the bot per series (a bot reads ~1 notebook/h)")
     ap.add_argument("--concurrency", type=int, default=6,
@@ -206,6 +235,20 @@ def main() -> int:
         # aborting the whole pass: the other series are still worth reading. But the pass is then NOT
         # clean and must not report success, hence `errors` in the returns below.
         errors = 0
+        # per-series wave scoping: keep only items resolving under one of the prefixes
+        sub = {int(k): [p.strip() for p in v.split(",") if p.strip()]
+               for k, v in (s.split(":", 1) for s in args.subpath)}
+        # notebooks an open PR is about to change: auditing them now is thrown-away work.
+        # A failed scan fails OPEN (no skipping): a stale record is harmless, a stalled
+        # workload is not -- same isolation philosophy as the per-series guard below.
+        try:
+            pr_notebooks, n_prs = open_pr_notebooks()
+            log(f"open-PR collision scan: {len(pr_notebooks)} notebook(s) touched by the "
+                f"{n_prs} most-recently-updated open PRs")
+        except RuntimeError as exc:
+            pr_notebooks, n_prs = {}, 0
+            log(f"open-PR collision scan unreadable ({str(exc)[:160]}) -- NOT skipping on "
+                f"collisions this pass")
         for n in args.series:
             try:
                 title, owner, unchecked, n_commented = series_checklist(n)
@@ -215,13 +258,20 @@ def main() -> int:
                 continue
             sdir = f"{n}-" + slug(re.sub(r"^\[Audit #17073\]\s*Série\s*|\s*—\s*partition.*$", "", title))[:60]
             index = load_index(landing / sdir)["records"]
-            picked, ahead, unresolved = 0, 0, []
+            picked, ahead, unresolved, waved, pr_skip = 0, 0, [], 0, []
             for item in unchecked:
                 if ahead + picked >= args.lookahead or picked >= args.per_series:
                     break
                 rel = resolve(item, catalogue)
                 if rel is None:
                     unresolved.append(item)
+                    continue
+                prefixes = sub.get(n)
+                if prefixes and not any(f"/{p}" in rel for p in prefixes):
+                    waved += 1  # inside the series, outside the armed wave
+                    continue
+                if pr_notebooks.get(rel):
+                    pr_skip.append((rel, pr_notebooks[rel]))
                     continue
                 digest = sha256(repo / rel)
                 if index.get(rel, {}).get("sha256") == digest:
@@ -231,7 +281,10 @@ def main() -> int:
                 picked += 1
             log(f"#{n} {owner}: {len(unchecked)} to audit ({n_commented} audited in comments), "
                 f"{ahead} fresh ahead, {picked} picked"
-                + (f", {len(unresolved)} unresolved {unresolved[:3]}" if unresolved else ""))
+                + (f", {waved} outside subpath" if waved else "")
+                + (f", {len(unresolved)} unresolved {unresolved[:3]}" if unresolved else "")
+                + (f", {len(pr_skip)} open-PR skip "
+                   f"{[(r.rsplit('/', 1)[-1], p) for r, p in pr_skip[:3]]}" if pr_skip else ""))
         if not plan:
             log("nothing to do" if not errors
                 else f"nothing to do, but {errors} series were unreadable")
