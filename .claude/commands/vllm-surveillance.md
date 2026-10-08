@@ -79,6 +79,17 @@ for line in open('/logs/error_sources.jsonl',errors='ignore'):
 
 **Carte connue (mise à jour 08/10)** : **Jamin** = `88.183.141.187` + `176.172.94.128` (RGAA, confirmé user 08/10 — PAS Candy) + IPv6 déclarée `2001:861:8ac2:e3f0:8602:b5b8:31ab:6424` (jamais observée au 08/10 ; toute apparition = Jamin, ne pas alerter) · **Candy : PAS encore observée** (annoncée plus mesurée ; attribution future par clé scopée, plus par IP) · site (hairpin) `90.65.170.144` · poste user Paris `82.66.89.184` (Q13 répondue 08/10 : « sans doute mon IP parisienne », SUPPOSÉ, Free, trafic arrêté depuis le 01/10) · po-2027 `92.150.81.115` · web1/web2 `37.187.180.135`/`51.75.200.22` · familles mobiles Free `92.184.x`/`88.183.x`. **Nouvelle IP non réclamée avec des 200 = alerte user immédiate dans le cycle + entrée registre.** Jamais d'attribution par géoloc registre seule (leçon : l'IP « allemande » était le site lui-même). Le census complet vit en mémoire : `project_vllm_external_ip_census_20261007.md`.
 
+### (5bis) Consommateurs externes — clé scopée `external-vllm` (Jamin / Candy)
+
+**Active depuis 08/10 13:03Z** (empreinte `45BDC569E1E3`), remise aux deux externes par le user le 08/10. Noms autorisés : `frognano-4b`, `mini`, `swift-1.5-27b`, `qwen3.6-35b-a3b` — les deux derniers sont **le même moteur** (vérifié 08/10 : les deux rendent `200` en OpenAI **et** en Anthropic, `served_by=qwen3.6-35b-a3b`). Tout cloud (`glm-5.3`…) = **403**, sans clé = **401**. Cap **2 requêtes concurrentes** par clé.
+
+À relever chaque cycle (mandat user 08/10 : « tu relèveras régulièrement les traces ») :
+
+- **Delta d'IP avec 200** (script §5) — Jamin a ≥2 IPv4 mesurées + 1 IPv6 déclarée ; **Candy n'a jamais été observée**, sa première attribution se fera **par clé**, pas par IP. Toute IP hors carte avec des 200 reste une **alerte user immédiate**.
+- **Volumétrie** : le census **par clé** (`inbound_key`) vit côté hub → à demander à po-2025:claudish (campagne 30 j en cours, non bloquante). Côté moteur, on ne voit que l'IP.
+- **Piège de lecture** : `max_tokens < 256` ⇒ **réponse vide** (`content` null, budget entièrement consommé par le thinking) alors que le moteur est sain — ne pas le lire comme une panne de lane (leçon partagée 08/10, claudish s'y est fait prendre aussi). Idem sur `/v1/messages` : le premier bloc est `type=thinking`.
+- **Levier si dérapage** : la clé se **révoque seule**, sans toucher `VLLM_API_KEY_MEDIUM` — c'est le contrôle prévu (le user soupçonne Jamin de chercher à « maxer »).
+
 ## (6) Triage coordination
 
 Inbox `roosync_messages` : lire l'adressé `myia-ai-01:vllm`, répondre/ack, `mark_read` ciblé (**`bulk_mark_read` exige un filtre `from`/`subject` — sans filtre il marque TOUT l'inbox**). Adressage machine-only = bug #3960 : ignorer les dispatchs d'autres workspaces. Dashboards : lire global + workspace-vllm ; rendre les lignes demandées (split-brain, matrices, etc.) ; relayer à l'user les réponses aux issues ouvertes par la lane.
