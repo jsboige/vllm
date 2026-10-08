@@ -1,0 +1,118 @@
+# Docker Compose profile — FrogNano-4B-2609 BF16 (tier mini flotte, siège po-2025) — refs jsboige/vllm#70
+# ============================================================================
+# Siège : po-2025 (RTX 3080 Ti Laptop 16 Go VRAM SM86, i9-12900HK, 64 Go RAM).
+# Co-locataires même machine : hub claudish (conteneur :3000, SANS GPU, priorité
+# CPU/RAM absolue) + desktop Windows (dGPU laptop — incident avril : 85 °C à VIDE
+# par apps desktop). GPU sinon 100 % libre (0 MiB mesuré 06/10).
+#
+# MODÈLE (VÉRIFIÉ config.json + carte HF le 06/10) : microsoft/FrogNano-4B-2609 —
+# Qwen3_5ForConditionalGeneration, 32 couches = 24 GDN + 8 full-attention
+# (interval 4), hidden 2560, 16 Q / 4 KV heads, head_dim 256 → KV ≈ 32 Ko/tok
+# BF16 ; vocab 248 320 (embeddings 1,27 Go, tied) ; ViT ~0,8 Go héritée NON
+# entraînée ; mtp_num_hidden_layers 1 IGNORÉ (verdict flotte spec-dec 0/4) ;
+# 9,3 Go BF16. Contexte évalué ~131K ; on sert 32K initialement (plafond KV).
+#
+# DIMENSIONNEMENT (à MESURER au boot — v0.31.0 imprime num_gpu_blocks) :
+#   gpu-util 0.78 → ~12,8 Go budget − 9,3 poids − ~1,2 activations/graphs
+#   ≈ 2,3 Go KV ≈ ~70K tokens BF16 au total. max-model-len 32768 = ~2 agents
+#   pleine longueur OU beaucoup de tours courts. Le quant maison AWQ W4A16
+#   (ViT exclue, ~4 Go total — mandat user 06/10 ; AUCUN des 17 quants
+#   communautaires n'est exploitable vLLM/GPU : GGUF/MLX/ONNX/EXL3/NVFP4) est
+#   le levier ×3-4 du plafond — job fenêtré, cf. scripts/quantization/.
+#
+# GARDE THERMALE (non négociable, issue #70) : logger user-level /5 min posé
+# 06/10 (task vllm-po2025-thermal-logger, temp×charge) + gouverneur SYSTEM
+# en attente de la fenêtre UAC unique (gpu-thermal-governor-po2025.ps1,
+# recette twin po-2026 : cap 210,1600 MHz à ≥88 °C×2, restore ≤78 °C×3).
+# AUCUNE charge GPU soutenue tant que le gouverneur n'est pas posé.
+#
+# PORT 5003 (hub claudish = 3000, plage 4990-5030 vérifiée libre 06/10).
+# EXPOSITION : domaine « Mini » demandé à IISManagement (mini.myia.io, ARR →
+# 192.168.0.50:5003, bearer) — consommation flotte standard VIA CLAUDISH
+# x-proxy-key (le hub est sur la même machine = latence minimale).
+#
+# SECRETS : ${VLLM_API_KEY_MINI} via myia_vllm/.env (gitignored, local au
+# siège, clé générée localement). Distribution par DM privé autodestructif
+# uniquement. HUGGING_FACE_HUB_TOKEN inutile (modèle public).
+#
+# ROLLBACK : docker compose -f mini-frognano-4b-po2025.yml --env-file
+# myia_vllm/.env down — rien d'autre sur cet hôte ne dépend du moteur.
+#
+# À VALIDER AUX GATES (P2, drapeaux « TBC ») : parser qwen3_coder vs format
+# Leaf de FrogNano ; reasoning-parser qwen3 (inoffensif si pas de <think>) ;
+# divisibilité prefix-match-unit pour CETTE config (hidden 2560 / interval 4 —
+# la règle 27B « 2768=16×173 » NE transpose PAS, à recalculer avec ai-01) ;
+# alias servi « mini » (réponse ai-01 en attente) ; gpu-util 0.78 départ
+# (GPU partagé desktop — leçons boot-OOM ai-01 GPU-0). Pas de watchdog sidecar
+# encore (vigie cron interim). Image = v0.31.0 identique à la prod ai-01 :
+# durcissement famille transposé (mamba fp16, skip-mm-profiling, prefix
+# caching). OMP_NUM_THREADS=4 : bon voisin CPU du hub.
+# ----------------------------------------------------------------------------
+services:
+  mini_frognano_4b:
+    image: vllm/vllm-openai:v0.31.0
+    container_name: myia_vllm-mini-frognano-4b
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-frognano-v0310:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      microsoft/FrogNano-4B-2609
+      --served-model-name frognano-4b mini
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --gpu-memory-utilization 0.78
+      --max-model-len 32768
+      --max-num-seqs 32
+      --max-num-batched-tokens 8192
+      --mamba-ssm-cache-dtype float16
+      --skip-mm-profiling
+      --limit-mm-per-prompt '{"image":0,"video":0}'
+      --enable-prefix-caching
+      --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
+      --reasoning-parser qwen3
+      --api-key ${VLLM_API_KEY_MINI}
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  vllm-compile-cache-frognano-v0310:

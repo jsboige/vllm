@@ -1,52 +1,46 @@
-# Docker Compose profile — FrogNano-4B-2609 BF16 (tier mini flotte, siège po-2025) — refs jsboige/vllm#70
+# Docker Compose profile — ESSAI quant NVFP4 tiers (tier mini, siège po-2025) — refs jsboige/vllm#70
 # ============================================================================
-# Siège : po-2025 (RTX 3080 Ti Laptop 16 Go VRAM SM86, i9-12900HK, 64 Go RAM).
-# Co-locataires même machine : hub claudish (conteneur :3000, SANS GPU, priorité
-# CPU/RAM absolue) + desktop Windows (dGPU laptop — incident avril : 85 °C à VIDE
-# par apps desktop). GPU sinon 100 % libre (0 MiB mesuré 06/10).
+# STATUT : profil d'ESSAI, séparé de la production. Le profil canonique
+# `mini-frognano-4b-po2025.yml` (BF16) n'est PAS modifié — le rollback est un
+# swap de fichier, pas une réécriture.
 #
-# MODÈLE (VÉRIFIÉ config.json + carte HF le 06/10) : microsoft/FrogNano-4B-2609 —
-# Qwen3_5ForConditionalGeneration, 32 couches = 24 GDN + 8 full-attention
-# (interval 4), hidden 2560, 16 Q / 4 KV heads, head_dim 256 → KV ≈ 32 Ko/tok
-# BF16 ; vocab 248 320 (embeddings 1,27 Go, tied) ; ViT ~0,8 Go héritée NON
-# entraînée ; mtp_num_hidden_layers 1 IGNORÉ (verdict flotte spec-dec 0/4) ;
-# 9,3 Go BF16. Contexte évalué ~131K ; on sert 32K initialement (plafond KV).
+# OBJET (mandat user 08/10 « Go pour le quant dès maintenant ») : tester un
+# checkpoint DÉJÀ quantifié par un tiers au lieu de fabriquer notre AWQ W4A16
+# (dont les prérequis manquent : pas d'environnement llmcompressor, pas de
+# script de calibration FrogNano).
 #
-# DIMENSIONNEMENT (à MESURER au boot — v0.31.0 imprime num_gpu_blocks) :
-#   gpu-util 0.78 → ~12,8 Go budget − 9,3 poids − ~1,2 activations/graphs
-#   ≈ 2,3 Go KV ≈ ~70K tokens BF16 au total. max-model-len 32768 = ~2 agents
-#   pleine longueur OU beaucoup de tours courts. Le quant maison AWQ W4A16
-#   (ViT exclue, ~4 Go total — mandat user 06/10 ; AUCUN des 17 quants
-#   communautaires n'est exploitable vLLM/GPU : GGUF/MLX/ONNX/EXL3/NVFP4) est
-#   le levier ×3-4 du plafond — job fenêtré, cf. scripts/quantization/.
+# LE CHECKPOINT : capyctl/FrogNano-4B-2609-NVFP4 — base_model = microsoft/
+# FrogNano-4B-2609 (vérifié via l'API HF), licence MIT, produit par modelopt
+# 0.47.0 en MIXED_PRECISION : MLP (gate/up/down_proj) en NVFP4 group_size 16,
+# projections attention + GatedDeltaNet en FP8, reste BF16. model.safetensors
+# = 5,12 Go contre 8,7 Go en BF16 en cache → ~4 Go de VRAM rendus sur 16 Go.
 #
-# GARDE THERMALE (non négociable, issue #70) : logger user-level /5 min posé
-# 06/10 (task vllm-po2025-thermal-logger, temp×charge) + gouverneur SYSTEM
-# en attente de la fenêtre UAC unique (gpu-thermal-governor-po2025.ps1,
-# recette twin po-2026 : cap 210,1600 MHz à ≥88 °C×2, restore ≤78 °C×3).
-# AUCUNE charge GPU soutenue tant que le gouverneur n'est pas posé.
+# POURQUOI LA DÉCISION 06/10 « NVFP4 (Blackwell) = inexploitable » EST
+# ROUVERTE : elle reposait sur l'hypothèse « NVFP4 ⇒ tensor cores Blackwell ».
+# VÉRIFIÉ dans notre propre image vllm/vllm-openai:v0.31.0 le 08/10 —
+# `marlin_utils_fp4.py:34 is_fp4_marlin_supported()` = `has_device_capability(75)`
+# et `marlin_utils_fp8.py:31` = idem : le chemin W4A16 Marlin est ouvert dès
+# SM 7.5, donc sur notre SM 8.6. L'image porte 49 cubins sm_86. Le producteur du
+# checkpoint a mesuré sur SM 8.9 (RTX 4090 Laptop) et écrit lui-même « that GPU
+# has no FP4 tensor cores, so every engine ran the NVFP4 layers as FP4 weights
+# with BF16 activations (W4A16) » — même classe de situation, une génération
+# au-dessus. NON PROUVÉ sur 8.6 : c'est ce que l'essai tranche.
 #
-# PORT 5003 (hub claudish = 3000, plage 4990-5030 vérifiée libre 06/10).
-# EXPOSITION : domaine « Mini » demandé à IISManagement (mini.myia.io, ARR →
-# 192.168.0.50:5003, bearer) — consommation flotte standard VIA CLAUDISH
-# x-proxy-key (le hub est sur la même machine = latence minimale).
+# DISCIPLINE A/B : TOUT est identique au profil de production (mêmes noms
+# servis, mêmes drapeaux, même gpu-util, même max-model-len) — SEUL l'identifiant
+# de modèle change. La référence BF16 (5 prompts greedy, thinking off) a été
+# capturée sur le moteur de production le 08/10 avant l'arrêt.
 #
-# SECRETS : ${VLLM_API_KEY_MINI} via myia_vllm/.env (gitignored, local au
-# siège, clé générée localement). Distribution par DM privé autodestructif
-# uniquement. HUGGING_FACE_HUB_TOKEN inutile (modèle public).
+# RISQUE CONNU : le producteur signale que sur SM 8.9 SGLang exigeait
+# SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1 (noyau fusionné SiLU+FP4-quantize sans
+# build SM 8.9, capture CUDA graph en échec). C'est du SGLang, pas vLLM, et il
+# rapporte que vLLM fonctionne tel quel — mais la classe de risque existe. Repli
+# si la capture de graphes échoue : ajouter `--enforce-eager` (coût de perf).
 #
-# ROLLBACK : docker compose -f mini-frognano-4b-po2025.yml --env-file
-# myia_vllm/.env down — rien d'autre sur cet hôte ne dépend du moteur.
-#
-# À VALIDER AUX GATES (P2, drapeaux « TBC ») : parser qwen3_coder vs format
-# Leaf de FrogNano ; reasoning-parser qwen3 (inoffensif si pas de <think>) ;
-# divisibilité prefix-match-unit pour CETTE config (hidden 2560 / interval 4 —
-# la règle 27B « 2768=16×173 » NE transpose PAS, à recalculer avec ai-01) ;
-# alias servi « mini » (réponse ai-01 en attente) ; gpu-util 0.78 départ
-# (GPU partagé desktop — leçons boot-OOM ai-01 GPU-0). Pas de watchdog sidecar
-# encore (vigie cron interim). Image = v0.31.0 identique à la prod ai-01 :
-# durcissement famille transposé (mamba fp16, skip-mm-profiling, prefix
-# caching). OMP_NUM_THREADS=4 : bon voisin CPU du hub.
+# ROLLBACK : docker compose -f mini-frognano-4b-po2025-nvfp4.yml --env-file
+# myia_vllm/.env down && docker compose -f mini-frognano-4b-po2025.yml
+# --env-file myia_vllm/.env up -d
+# (même container_name : un seul stack tourne à la fois sur ce siège)
 # ----------------------------------------------------------------------------
 services:
   mini_frognano_4b:
@@ -71,7 +65,7 @@ services:
     ipc: host
 
     command: >
-      microsoft/FrogNano-4B-2609
+      capyctl/FrogNano-4B-2609-NVFP4
       --served-model-name frognano-4b mini
       --host 0.0.0.0
       --port 8000
