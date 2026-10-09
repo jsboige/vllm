@@ -175,7 +175,8 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
       if 'KEY' in k.upper() and v: print('%-28s fp=%s match=%s'%(k,hashlib.sha256(v.encode()).hexdigest()[:12],v.startswith(tok)))
   "
   ```
-- **Clé hors des 4 connues (`MEDIUM`, `MEDIUM_VL`, `MINI`, `MICRO`, `external-vllm`) = anomalie** → §5 (alerte) + registre.
+- **Clé hors des connues (`MEDIUM`, `MEDIUM_VL`, `MINI`, `MICRO`, `external-vllm`) = anomalie** → §5 (alerte) + registre.
+- **⚠️ MAIS une clé connue ne dit RIEN sur le client (arbitrage po-2025, 09/10).** Le hub claudish appelle `:5002` **sous MEDIUM pour *tous* ses clients** : la clé est un **seuil de sécurité**, pas un **discriminateur d'identité**. Pour attribuer une charge, le discriminant est la **TAILLE DES CORPS** — un client à contexte long (~57 K) se distingue par `body_bytes > 100 Ko`, jamais par la clé. Ne pas conclure « c'est interne, donc c'est bénin » : un client interne qui boucle (cf. latch Zoo #4025, ~20 h) pèse autant qu'un externe.
 - **`body_bytes` > 100 Ko = requêtes long-contexte** : ce sont elles qui pilotent le high-water VRAM. Un client qui boucle là-dessus (cf. latch Zoo #4025) se voit ici **avant** de se voir en VRAM.
 
 ## (6) Triage coordination
