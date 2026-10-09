@@ -37,13 +37,27 @@ docker logs --tail 4000 myia_vllm-watchdog-swift15-27b 2>&1 | grep -E "WEDGE hea
 docker logs --tail 4000 myia_vllm-watchdog-swift15-27b 2>&1 | grep -c 'OK health=200 decode=200'
 ```
 
-Attendu : health 200 (<10 ms), RC stable, OOM 0, 3 conteneurs Up, sondes OK. **VRAM référence @0.70/N=48 (nouvelle base 09/10)** : à froid après boot GPU 0 19 937 / GPU 1 18 930 MiB, **en charge réelle GPU 0 ≈ 21 400 / GPU 1 ≈ 20 400** (21 408/20 382 mesurés le 08/10 22:5xZ, ~30 min après le boot — la config 48 flux élargit les graphs sous trafic, ~1,5 GiB de plus que la mesure à froid). **GPU 0 > 23 000 MiB → alerter** (marge < 1,5 GiB = boot-OOM au prochain restart + pagination WDDM qui imite un wedge) ; à 21 400 la marge est de ~1,6 GiB — **surveiller la dérive, ne pas remonter gpu-util**. `StartedAt` stable vs cycle précédent ; un déplacement avec RC=0 = restart externe → identifier la cause (penser à `autoheal` : `docker ps | grep -i heal`, redémarreur concurrent INVISIBLE, RestartCount flat).
+Attendu : health 200 (<10 ms), RC stable, OOM 0, 3 conteneurs Up, sondes OK. **VRAM référence @0.70/N=48** : à froid après boot GPU 0 19 937 / GPU 1 18 930 MiB, **en charge 21 400-21 600 / 20 400-20 700** (la config 48 flux élargit les graphs sous trafic, ~1,5 GiB de plus qu'à froid). **GPU 0 > 23 000 MiB → alerter** (marge < 1,5 GiB = boot-OOM au prochain restart + pagination WDDM qui imite un wedge) — **ne pas remonter gpu-util**.
+
+**Dérive VRAM — mesurée puis INFIRMÉE comme tendance (09/10)** : 21 408 (08/10 22:5xZ) → **21 594** (09/10 04:47Z, +186) → **21 435** (09/10 10:47Z, **−159**). Le cycle de 04:47Z avait lu une pente de +30 MiB/h et annoncé une alerte ; **la pente n'a pas tenu** — c'est un **high-water d'allocateur** (charge soutenue qui garde les graphs à leur forme max), **pas une fuite**. Leçon : **deux points ne font pas une pente** ; ne pas annoncer une extrapolation (« J+2 ») sur 6 h de données. La charge qui produit ce high-water est mesurée en §5ter. `StartedAt` stable vs cycle précédent ; un déplacement avec RC=0 = restart externe → identifier la cause (penser à `autoheal` : `docker ps | grep -i heal`, redémarreur concurrent INVISIBLE, RestartCount flat).
 
 Comportement documenté, PAS une panne : toute requête ≥ ~100K tokens **affame les nouvelles arrivées** (dense 27B) — le watchdog tolère 90 s. Depuis le batch 8192 la fenêtre recule (prefill +21 %), mais un WEDGE `fail 1/2` (jamais 2/2) pendant une sonde prefill ou un gros prompt est le comportement attendu, **y compris déclenché par nos propres sondes de banc** (vécu 08/10 21:38 et 21:46, deux `fail 1/2` pendant les sondes 157K, zéro restart). Un WEDGE pendant un gros prefill = attendre le post-mortem avant d'agir ; le moteur est sain.
 
 ## (2) Condensation (logs roosync)
 
-Fichier `roosync-<date>.log` nommé d'après le DÉMARRAGE du process (pas rotaté à minuit — lire jour + veille). Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai échec prod = minute isolée à 1-2 évts. `cloud fallback condensation succeeded` isolé pendant une indispo vLLM = nominal (dégradation gracieuse). Le banner « Condensation LLM config » n'est jamais dans le log (stderr) — check invalide, ne pas rapporter.
+**Emplacement (trouvé le 09/10, il manquait depuis deux cycles)** : `%TEMP%\roo-state-manager-logs\roosync-<YYYYMMDD>.log` (le nom suit le DÉMARRAGE du process, pas minuit — lire jour + veille ; des rotations `…-96.log`…`…-99.log` coexistent, prendre le nom exact du jour).
+
+```bash
+L="$LOCALAPPDATA/Temp/roo-state-manager-logs"
+grep -aiE 'condensat' "$L/roosync-$(date -u +%Y%m%d).log" | grep -avE 'LLM config:'
+grep -aE '\[(ERROR|WARN)\]' "$L/roosync-$(date -u +%Y%m%d).log" | grep -avE 'LLM config' | tail -20
+```
+
+Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai échec prod = minute isolée à 1-2 évts. `cloud fallback condensation succeeded` isolé pendant une indispo vLLM = nominal (dégradation gracieuse).
+
+**CORRECTION (09/10) — le banner « Condensation LLM config » EST dans le log**, à `[INFO]` toutes les 5 min (`primary=qwen3.6-35b-a3b @ http://localhost:5002/v1 | cloud-fallback=… key=OK`). La spec affirmait le contraire (« jamais dans le log, stderr ») : **faux**, et cela faisait passer un battement de santé pour une absence de signal. Le banner **est le battement qui prouve que la condensation est configurée sur notre moteur** — le lire, ne pas l'exclure. Ce qu'on **filtre** (`grep -v 'LLM config:'`), ce sont les 200+ battements pour ne garder que les **événements** réels (aucun le 09/10 : condensation nominale).
+
+**Ce que le log contient aussi (et qui n'est PAS vllm)** : `[MessageManager] Error reading message file during parallel cache build: G:\…msg-…json` (messages du 02/10 illisibles) + `[MessageManager] Inbox cache rebuild hit its budget after 6200/6281 files (#3205)` + `[#3292] Explicit-id population approaching starvation threshold: 100/100`. **Périmètre RSM, pas vllm** — les relayer au propriétaire, ne pas les traiter ici.
 
 ## (2bis) Producteur de pré-audit (nbaudit) — une ligne, à lire chaque cycle
 
@@ -66,7 +80,15 @@ df -h /g | tail -1
 timeout 30 sh -c "echo probe > '/g/Mon Drive/Synchronisation/RooSync/.vllm-probe.tmp'" && rm -f '/g/Mon Drive/Synchronisation/RooSync/.vllm-probe.tmp' && echo OK || echo KO
 ```
 
-Écriture KO/timeout > 30 s = DriveFS hang → le noter au rapport, ne pas boucler sur les posts dashboard (ils échoueront), et le signaler à roo-extensions (le dossier #4131 suit la bascule PG). Marge commit hôte au passage (seuil 85 % pour tout travail lourd : `Get-CimInstance Win32_PerfRawData_PerfOS_Memory` → CommittedBytes/CommitLimit).
+Écriture KO/timeout > 30 s = DriveFS hang → le noter au rapport, ne pas boucler sur les posts dashboard (ils échoueront), et le signaler à roo-extensions (le dossier #4131 suit la bascule PG).
+
+**Marge commit hôte — seuil 85 %** pour tout travail lourd (prouveur, `lake build`) :
+
+```bash
+powershell -NoProfile -Command "\$m=Get-CimInstance Win32_PerfRawData_PerfOS_Memory; \$c=\$m.CommittedBytes/1GB; \$l=\$m.CommitLimit/1GB; 'Committed {0:N1}/{1:N1} GB = {2:N1}% (marge libre {3:N1} GB)' -f \$c,\$l,(100*\$c/\$l),(\$l-\$c)"
+```
+
+**⚠️ Seuil FRANCHI le 09/10 (90,1 % : 352,9/391,8 Go)** — il était à 78,1 % six heures plus tôt. **Premier consommateur : `vmmemWSL` (~93 GiB)**, pas `Code.exe` (le levier « fermer des fenêtres VS Code » ne pèse plus le premier poids — même constat que po-2025, fait converger par deux machines). Cause probable : la VM WSL2 (Docker Desktop + `tmpfs` du tier KV 24 GiB + le training CoursIA de GPU 2) qui monte par bouffées. La panne du 24/09 était à **97,8 %** ⇒ à 90,1 % **on ne lance AUCUN travail lourd** et on **signale**, on ne bricole pas (`.wslconfig`/`wsl --shutdown` = hors périmètre vllm, et `wsl --shutdown` tuerait moteur **et** hub).
 
 ## (4) Prouveur Lean (#1453) — état : AUCUNE passe armée
 
@@ -107,6 +129,54 @@ for line in open('/logs/error_sources.jsonl',errors='ignore'):
 - **Volumétrie** : le census **par clé** (`inbound_key`) vit côté hub → à demander à po-2025:claudish (campagne 30 j en cours, non bloquante). Côté moteur, on ne voit que l'IP.
 - **Piège de lecture** : `max_tokens < 256` ⇒ **réponse vide** (`content` null, budget entièrement consommé par le thinking) alors que le moteur est sain — ne pas le lire comme une panne de lane (leçon partagée 08/10, claudish s'y est fait prendre aussi). Idem sur `/v1/messages` : le premier bloc est `type=thinking`.
 - **Levier si dérapage** : la clé se **révoque seule**, sans toucher `VLLM_API_KEY_MEDIUM` — c'est le contrôle prévu (le user soupçonne Jamin de chercher à « maxer »).
+
+### (5ter) Census de trafic moteur — qui charge `:5002` (ajouté 09/10)
+
+**Pourquoi.** Le 09/10, ce census a révélé **~60 req/min soutenues (≈3 600/h)** sur la prod — dont la composition n'était documentée nulle part (la baseline d'adoption était ~550 appels/**jour**). C'est aussi lui qui **explique le high-water VRAM** du §1. Le middleware `error_source_capture` journalise `user_agent`, `auth_prefix`, `body_bytes`, `model`, `path`, `status` — **tout est déjà là**, il suffit de l'agréger.
+
+**⚠️ Le log TOURNE vite** (4 395 lignes ≈ **1,2 h** au débit mesuré) : une fenêtre demandée il y a 6 h **n'existe plus**. Toute question sur une fenêtre passée doit être posée **avant** rotation, ou couverte par une agrégation persistante.
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec myia_vllm-medium-swift15-27b python3 -c "
+import json,time,collections,hashlib
+now=time.time()
+rows=[json.loads(l) for l in open('/logs/error_sources.jsonl',errors='ignore') if l.strip()]
+rec=[r for r in rows if now-(r.get('ts') or 0)<=12*3600]
+span=max(1,(rec[-1]['ts']-rec[0]['ts'])/60) if rec else 1
+print('lignes %d  fenetre %.1f min  ~%.1f req/min'%(len(rec),span,len(rec)/span))
+print('--- UA ---')
+for u,c in collections.Counter((r.get('user_agent') or '?')[:34] for r in rec).most_common(8): print('%6d %5.1f/min %s'%(c,c/span,u))
+print('--- cle (empreinte SEULE, jamais de prefixe publie) ---')
+for a,c in collections.Counter(r.get('auth_prefix') or 'NONE' for r in rec).most_common(4):
+    print('%6d %s'%(c,'NONE' if a=='NONE' else 'fp='+hashlib.sha256(a.encode()).hexdigest()[:12]))
+print('--- taille de corps ---')
+b=collections.Counter()
+for r in rec:
+    n=r.get('body_bytes') or 0
+    b['<1K' if n<1000 else '1-10K' if n<10000 else '10-100K' if n<100000 else '100K-1M' if n<1000000 else '>1M']+=1
+for k in ['<1K','1-10K','10-100K','100K-1M','>1M']: print('%6d %s'%(b[k],k))
+print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec).most_common(4))
+"
+```
+
+**Attendu / à interpréter** :
+- **Sondes watchdog** `ua=curl` ~2/min, `"Count to twenty."` : normal.
+- **Condensation** `ua=Python-*` « expert en synthèse … 15 Ko » : normal, horaire.
+- **Clé unique `fp=<MEDIUM>`** en tête : c'est la clé partagée des consommateurs internes (hub claudish, sk-agent, Roo, sondes). **Vérifier l'identité de la clé AVANT toute conclusion de sécurité** — comparaison côté hôte (`.env`), en n'imprimant que des `sha256[:12]` :
+  ```bash
+  cd /d/vllm && python -c "
+  import hashlib
+  vals={}
+  for l in open('myia_vllm/.env',encoding='utf-8',errors='replace'):
+      if '=' in l and not l.strip().startswith('#'):
+          k,v=l.strip().split('=',1); vals[k.strip()]=v.strip().strip('\"').strip(chr(39))
+  tok='<les 16 premiers car. du auth_prefix, SANS le Bearer>'
+  for k,v in vals.items():
+      if 'KEY' in k.upper() and v: print('%-28s fp=%s match=%s'%(k,hashlib.sha256(v.encode()).hexdigest()[:12],v.startswith(tok)))
+  "
+  ```
+- **Clé hors des 4 connues (`MEDIUM`, `MEDIUM_VL`, `MINI`, `MICRO`, `external-vllm`) = anomalie** → §5 (alerte) + registre.
+- **`body_bytes` > 100 Ko = requêtes long-contexte** : ce sont elles qui pilotent le high-water VRAM. Un client qui boucle là-dessus (cf. latch Zoo #4025) se voit ici **avant** de se voir en VRAM.
 
 ## (6) Triage coordination
 
