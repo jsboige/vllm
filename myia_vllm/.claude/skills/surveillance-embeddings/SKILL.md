@@ -66,12 +66,27 @@ curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" http://localhost:8004
 # vLLM direct (discriminant wedge : 8005 OK + 8004 mort = sidecar, cf. runbook)
 curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" http://localhost:8005/health
 # warm ×2 (cible <250 ms ; >300 ms = JAUNE) — 2e requête obligatoire (cold ~600 ms)
-curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" -X POST http://localhost:8004/v1/embeddings \
+# ⚠️ ENTRÉE UNIQUE OBLIGATOIRE — c'est un biais d'instrument, pas une coquetterie.
+#    Une chaîne littérale fixe est servie depuis le cache de préfixe et rend ~37 ms :
+#    un chiffre FAUX qui se lit comme « excellent ». Mesuré le 09/10/2026 :
+#      « veille » répétée          → 0,037 s   (hit de cache)
+#      entrée neuve au même instant → 4,0 / 4,3 s
+#    Un `$(date +%s%N)` par requête neutralise le biais. Ne jamais réutiliser un littéral.
+for i in 1 2; do
+  curl -s -o /dev/null -w "warm$i: %{time_total}s HTTP %{http_code}\n" -X POST http://localhost:8004/v1/embeddings \
+    -H "Authorization: Bearer $(grep VLLM_API_KEY /c/Production/Embeddings/.env | cut -d= -f2)" \
+    -H "Content-Type: application/json" \
+    -d "{\"input\":\"surveillance $(date +%s%N) $i\",\"model\":\"qwen3-4b-awq-embedding\"}"
+done
+# proxy public /health — ⚠️ un --max-time court rend 000 sur un backend saturé, et 000 se lit
+# à tort comme « site éteint ». Timeout LONG, et croiser avec la latence locale du même instant.
+curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" https://embeddings.myia.io/health --max-time 70
+# POST public RÉEL — le seul usage qui compte. Un /health 200 ne prouve PAS que le site sert :
+# mesuré le 09/10, /health 200 pendant que le POST rendait 503 (app-pool en rapid-fail).
+curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" --max-time 90 -X POST https://embeddings.myia.io/v1/embeddings \
   -H "Authorization: Bearer $(grep VLLM_API_KEY /c/Production/Embeddings/.env | cut -d= -f2)" \
   -H "Content-Type: application/json" \
-  -d '{"input":"surveillance cron test","model":"qwen3-4b-awq-embedding"}'
-# proxy public (000 = po-2023 down)
-curl -s -o /dev/null -w "%{time_total}s HTTP %{http_code}" https://embeddings.myia.io/health --max-time 30
+  -d "{\"input\":\"public $(date +%s%N)\",\"model\":\"qwen3-4b-awq-embedding\"}"
 # GPU + gouverneur (heartbeat logs/gpu-governor.log — silence = tâche morte)
 nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader
 ```
