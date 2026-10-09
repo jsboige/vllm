@@ -59,6 +59,8 @@ Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai 
 
 **Ce que le log contient aussi (et qui n'est PAS vllm)** : `[MessageManager] Error reading message file during parallel cache build: G:\…msg-…json` (messages du 02/10 illisibles) + `[MessageManager] Inbox cache rebuild hit its budget after 6200/6281 files (#3205)` + `[#3292] Explicit-id population approaching starvation threshold: 100/100`. **Périmètre RSM, pas vllm** — les relayer au propriétaire, ne pas les traiter ici.
 
+**⚠️ Seuil de condensation 266k > contexte moteur (alerte user 09/10 soir — À SURVEILLER).** Le seuil officiel de condensation RSM = 95 % de 280k = **266 000 tokens**, au-dessus du contexte max du moteur (**262 144**) — et v0.31 **rejette en 400** tout `prompt + max_tokens > 262 144` **sans jamais rogner** (mesuré 09/10 au matin, 3 sondes frontière, PR #110). Un dashboard qui croît jusqu'au déclenchement produit un prompt ~266k → 400 systématique → fallback cloud ou condensation bloquée. **Signature à chercher dans le census §5ter : `status 400` + `body_bytes > 100 000` + UA condensation (Python)** — première occurrence mesurée = à rendre au user ET à roo-extensions immédiatement. Escalade posée 09/10 (ASK global, crossPost roo-extensions) : descendre le seuil RSM à ≤ 254k ou clamp côté client.
+
 ## (2bis) Producteur de pré-audit (nbaudit) — une ligne, à lire chaque cycle
 
 ```bash
