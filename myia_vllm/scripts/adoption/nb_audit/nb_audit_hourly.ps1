@@ -1,14 +1,16 @@
 # Hourly pre-audit pass (CoursIA #17073, mode (b)): produce fresh records, then deliver them.
 # Run by the user-level scheduled task that register_hourly.ps1 creates. Record: _iteration_log/nb_audit_pilot/NOTES.md
 # Series: 17107/17239/17357 = the original pilot (all at 0 remaining, kept: they cost 3 REST reads and
-# pick up anything new). 17692 (02-ML-Cours) + 19451:Audio/ (GenAI/Audio) = wave 1 complete of the
-# converged Hermes+NanoClaw order (08/10 evening, user green light same day): one wave at a time, prod
-# first, pass size at our call, joint re-evaluation after wave 1. #19451 is a wide series (14 sections,
-# 226 unchecked) -- --subpath scopes it to Audio/; later waves switch the prefix. The skip list the
-# order named (PR #19868) was stale within hours (closed-superseded by #19854); the runner now derives
-# per pass which notebooks an open PR is about to change and skips those by itself.
+# pick up anything new). 17692 (02-ML-Cours) + 19451 = wave 1 of the converged Hermes+NanoClaw order
+# (08/10 evening, user green light same day): one wave at a time, prod first, pass size at our call,
+# joint re-evaluation after each wave. #19451 is a wide series (14 sections, 226 unchecked) --
+# --subpath scopes it; the prefix switched Audio/ -> Image/ on 10/10 11:20Z when Audio/ hit 38/38
+# checked with zero remaining (trigger recorded in the surveillance spec, PR #113). Audio/ notebooks
+# stay covered: already-audited ones need nothing, PR-open ones are skipped by the runner itself.
+# The skip list the order named (PR #19868) was stale within hours (closed-superseded by #19854);
+# the runner now derives per pass which notebooks an open PR is about to change and skips those by itself.
 param([int[]]$Series = @(17107, 17239, 17357, 17692, 19451), [int]$PerSeries = 3,
-      [string[]]$Subpath = @('19451:Audio/'))
+      [string[]]$Subpath = @('19451:Image/'))
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $env:LOCALAPPDATA 'nbaudit\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null

@@ -88,6 +88,16 @@ print(json.dumps(out))
     $agg = $raw | ConvertFrom-Json
 
     # --- merge (SUM) into existing persistent buckets ---
+    # A deserialized hour record may LACK a size/status/key class (sparse hour ->
+    # 0 requests in that class -> key never written). Direct property assignment
+    # on a PSCustomObject THROWS on a missing name ("propriété introuvable",
+    # lived 10/10: 3 consecutive task failures once traffic dropped to ~60 req/h),
+    # so every merge goes through read-or-zero + Add-Member (10/10 fix).
+    function Add-ToObj($obj, [string]$name, [long]$delta) {
+        $p = $obj.PSObject.Properties[$name]
+        if ($p) { $p.Value = [long]$p.Value + $delta }
+        else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $delta | Out-Null }
+    }
     $store = @{}
     if (Test-Path $OutFile) {
         foreach ($l in Get-Content $OutFile) {
@@ -99,11 +109,11 @@ print(json.dumps(out))
     foreach ($h in $agg.hours) {
         if ($store.ContainsKey($h.hour)) {
             $o = $store[$h.hour]
-            $o.n += $h.n
-            foreach ($p in $h.sizes.PSObject.Properties) { $o.sizes.($p.Name) = [int]($o.sizes.($p.Name)) + [int]$p.Value }
-            foreach ($p in $h.status.PSObject.Properties) { $o.status.($p.Name) = [int]($o.status.($p.Name)) + [int]$p.Value }
+            $o.n = [long]$o.n + [long]$h.n
+            foreach ($p in $h.sizes.PSObject.Properties) { Add-ToObj $o.sizes $p.Name ([long]$p.Value) }
+            foreach ($p in $h.status.PSObject.Properties) { Add-ToObj $o.status $p.Name ([long]$p.Value) }
             # ua_top / keys: re-merge approximately by addition on same keys
-            foreach ($p in $h.keys.PSObject.Properties) { $o.keys.($p.Name) = [int]($o.keys.($p.Name)) + [int]$p.Value }
+            foreach ($p in $h.keys.PSObject.Properties) { Add-ToObj $o.keys $p.Name ([long]$p.Value) }
         } else {
             $store[$h.hour] = $h
         }
