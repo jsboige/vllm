@@ -295,6 +295,12 @@ def build_prompt(rel: str, view: str, ctx: str, organs: dict, profile: dict, wor
             f"Chemin local (lecture seule) : d:/dev/CoursIA-skaudit/{rel}\n"
             f"Dossier de travail (le seul où écrire) : {work.as_posix()}\n"
             f"Profil : {json.dumps(profile, ensure_ascii=False)}\n\n"
+            "## Règle de lecture (HARD)\n"
+            "La vue intégrée ci-dessous est la source de vérité de l'audit. Ne lis JAMAIS le fichier "
+            ".ipynb brut avec read_notebook/read_file sans argument de plage : les notebooks Image/ "
+            "embarquent leurs sorties en base64 (jusqu'à des dizaines de Mo) et le résultat de l'outil "
+            "dépasse la fenêtre de contexte (400, vécu 10/10). Si tu dois relire une cellule précise, "
+            "utilise une lecture par plage bornée (offset/length) sur la cellule ciblée.\n\n"
             f"## Contexte de série (titres des notebooks précédents)\n{ctx}\n\n"
             f"## Passe d'organes (déjà faite — ce qu'elle signale n'est PAS un finding)\n{org}\n\n"
             f"## Notebook complet\n{view}\n\n"
@@ -306,7 +312,7 @@ def build_round2(results: list[dict]) -> str:
     if not results:
         body = "(aucune vérification fournie au tour 1)"
     else:
-        body = "\n\n".join(f"### {r['id']} — {r['header']}\nrc={r['rc']} ({r['elapsed_s']} s)\n{r['output']}"
+        body = "\n\n".join(f"### {r['id']} — {r['header']}\nrc={r['rc']} ({r['elapsed_s']} s)\n{_clip(str(r['output']))[0]}"
                            for r in results)
     return ("TOUR 2. Le harnais a exécuté tes vérifications ; voici les résultats bruts.\n\n"
             f"{body}\n\n"
