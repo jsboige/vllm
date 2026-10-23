@@ -1,0 +1,128 @@
+# Docker Compose profile — TEST PONCTUEL : Gemma-4-E4B-it QAT W4A16-ct (fenêtre 23/10)
+# ============================================================================
+# GO user 23/10 : « bascule sur l'image latest pour faire des tests avec le
+# nouveau modèle 4B ».
+#
+# ENQUÊTE D'IDENTIFICATION (23/10, tout VERIFIÉ) :
+#   - `vllm/vllm-openai:latest` == v0.32.0 (digest manifest befccf0e…, poussé 18/10,
+#     comparé au tag v0.32.0 : identique) — l'image FrogNano en prod EST déjà
+#     « latest ». Aucune release vLLM plus récente n'existe.
+#   - Aucun FrogNano nouveau : microsoft/FrogNano-4B-2609 inchangé (commits =
+#     README seul, poids du 17/09) ; aucun « 2610 » nulle part.
+#   - Lignée « heretic » (richardyoung/saidutta69, mi-oct) = ABLITERATION
+#     (décensurage Heretic v1.4/v2.0, KL 0.0046-0.0395, refus 99→12/100) — ÉCARTÉE :
+#     zéro éval coding post-ablation, aucune utilité pour un tier lecture flotte.
+#   - Candidat retenu : google/gemma-4-E4B-it (famille gemma4 native dans le
+#     registry v0.32.0 : Gemma4ForConditionalGeneration). Variante w4a16-ct =
+#     compressed-tensors pack-quantized W4A16 (même famille de kernels Marlin que
+#     la prod flotte), 278 k downloads, publique (gated=false), Apache-2.0.
+#   - ⚠ E4B = 4B EFFECTIFS mais 8,6 Md params réels (embeddings per-layer + tour
+#     vision 16c + tour audio 12c BF16 non quantifiés) → 11,5 Go disque, ~10 Go
+#     résidents. SEULE variante E4B viable sur 16 Go (BF16 intégral > 16 Go).
+#
+# ⚠ PÉRIMÈTRE : profil de TEST, pas de promotion. Served name `gemma-4-e4b`
+# UNIQUEMENT — volontairement SANS les alias `frognano-4b`/`mini` : la cascade
+# RSM (deepseek→sonnet→frognano) échoue proprement son dernier étage pendant la
+# fenêtre et retombe sur le cloud (comportement prouvé 08:20Z), au lieu de
+# router du trafic flotte sur un moteur de test non validé.
+#
+# DIFFÉRENCES vs mini-frognano-4b-po2025.yml :
+#   - modèle + served-model-name (voir ⚠ ci-dessus)
+#   - drapeaux Qwen retirés : --tool-call-parser qwen3_coder,
+#     --enable-auto-tool-choice, --reasoning-parser qwen3,
+#     --mamba-ssm-cache-dtype float16, --default-chat-template-kwargs
+#     (fenêtre 1 = boot + débit + qualité brute ; tool-calling gemma-4 et
+#     thinking en passe 2 uniquement si GO)
+#   - --kv-cache-dtype ABSENT (= auto/BF16) : fp8 KV sur attention gemma-4
+#     non validé sur SM86 — passe 2 le cas échéant
+#   - gpu-memory-utilization 0.92 + --enforce-eager + batch 1024 + 16K :
+#     CONFIG FINALE après 3 essais — 1) 0.80/batch 8192 → 0 bloc KV ;
+#     2) 0.85/batch 4096 + ESTIMATE_CUDAGRAPHS=0 → KV dispo −2,3 Gio (poids
+#     10,17 Gio + socle ~6 Gio) ; 3) 0.92 + eager → ✅ KV +4,28 Gio =
+#     201 136 tok. LE FAIT CLÉ : la capture de graphs CUDA de ce modèle mm
+#     consomme ~5 Gio — seule la config eager tient en 16 Go.
+#   - volume compile dédié vierge, restart "no" (test piloté : un crash-loop ne
+#     doit pas s'auto-relancer contre nous)
+#   - audio:0 dans limit-mm (checkpoint any-to-any, tour audio inutile ici)
+#
+# FENÊTRE EXÉCUTÉE 23/10 13:25→13:43 locale (après le banc 24h ai-01 + vigie
+# 13:03 + promo 13:23, tous mesurés sur FrogNano). GATES (EAGER, non
+# comparable graphs) : qualité ✅ (Paris, JSON exact, FR cohérent) ;
+# single 15,5 t/s ; N=16 73,8 t/s agrégé (vs FrogNano 1 073 = 14,5× plus
+# lent) ; KV 201 136 tok (12,28× à 16K) ; VRAM 15 358/16 384 MiB ; 41 °C.
+# VERDICT : fonctionnellement sain (compat gemma-4 + W4A16-ct PROUVÉE sur
+# v0.32.0), structurellement inadapté au tier mini 16 Go — 10,12 Gio de poids
+# (62 % de la carte) pour un « 4B effectif » = checkpoint 8,61 Md (tours
+# vision+audio BF16). ROLLBACK FrogNano exécuté 13:42:43, boot chaud.
+# Détail complet : _iteration_log/gemma4_e4b_test_po2025/NOTES.md.
+# ----------------------------------------------------------------------------
+services:
+  mini_gemma4_e4b_test:
+    image: vllm/vllm-openai:v0.32.0 # == tag `latest` au 23/10 (digest identique befccf0e…)
+    container_name: myia_vllm-mini-gemma4-e4b-test
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+      # Retry 1 (13:33 locale) : boot 1 a échoué sur "No available memory for
+      # the cache blocks" à gpu-util 0.80 — les poids ~10 Gio (BF16 tours
+      # vision/audio + embeddings + I32 packed) + profiling d'activations
+      # laissaient 0 bloc KV. Le levier est cité par le log de boot lui-même.
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-gemma4e4b-v0320:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      google/gemma-4-E4B-it-qat-w4a16-ct
+      --served-model-name gemma-4-e4b
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --gpu-memory-utilization 0.92
+      --enforce-eager
+      --max-model-len 16384
+      --max-num-seqs 32
+      --max-num-batched-tokens 1024
+      --skip-mm-profiling
+      --limit-mm-per-prompt '{"image":0,"video":0,"audio":0}'
+      --enable-prefix-caching
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: "no"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  vllm-compile-cache-gemma4e4b-v0320:
