@@ -1,0 +1,103 @@
+{
+  "offre": "po2025-offre-3-sidecar-stdout — livrable 3 (timeline horaire), variante horodatee",
+  "recu_via": "DM msg-20261024T190029-yx5mij (po-2023:vllm), piece jointe 22adee6a-1b1c-416e-8962-c5517bee7da7",
+  "recu_utc": "2026-10-24T19:00:30Z",
+  "traite_utc": "2026-10-24T20:35:00Z",
+  "source": {
+    "fichier": "sidecar-stdout-ts-3000-20261024.txt",
+    "octets": 397793,
+    "lignes": 3000,
+    "sha256_16": "F471D1727505C697",
+    "scan_secret_hits": 0,
+    "patterns_scannes": ["Bearer", "sk-<alnum>", "api_key", "password", "input_preview", "authorization"],
+    "ordre_fichier_monotone": false,
+    "note_ordre": "confirme l'avertissement de po-2023 : stdout+stderr entrelaces, le tri par timestamp est obligatoire"
+  },
+  "composition": {
+    "forward": 2785,
+    "autres_tracebacks": 200,
+    "error_handling_request": 9,
+    "retry": 6
+  },
+  "span": {
+    "debut_utc": "2026-10-23T16:06:24Z",
+    "fin_utc": "2026-10-24T18:47:57Z",
+    "duree_h": 26.7
+  },
+  "livrable_3_timeline": {
+    "derivable": false,
+    "raison": "les horodatages de `docker logs --timestamps` datent le VIDAGE DU TAMPON stdout, pas la requete",
+    "preuve": {
+      "forwards": 2785,
+      "secondes_distinctes_portant_toutes_les_lignes": 36,
+      "horodatages_100ns_distincts": 2593,
+      "medianes_lignes_par_seconde": 78,
+      "max_lignes_par_seconde": 96,
+      "secondes_avec_au_moins_50_lignes": 35,
+      "bunches_mono_instant": [
+        {"utc": "2026-10-23T16:06:24Z", "lignes": 17, "etendue_us": 17},
+        {"utc": "2026-10-23T23:29:58Z", "lignes": 96},
+        {"utc": "2026-10-24T18:47:57Z", "lignes": 78}
+      ],
+      "argument": "96 requetes HTTP ne peuvent pas aboutir dans le meme instant ; ~78 lignes x ~130 octets = ~10 KB = un vidage de tampon par blocs de Python"
+    },
+    "consequence": "toute cadence par minute tiree de ce fichier est une cadence de vidage. Les volumes par fenetre restent lisibles comme 'quand le tampon a ete draine'."
+  },
+  "volumes_observes_par_vidage": {
+    "avertissement": "les bornes ci-dessous sont des instants de vidage ; elles encadrent l'activite, elles ne la datent pas a la minute",
+    "bursts": [
+      {"n": 17, "utc": "2026-10-23T16:06:24Z"},
+      {"n": 96, "utc": "2026-10-23T23:29:58Z"},
+      {"n": 2594, "utc_debut": "2026-10-24T14:37:19Z", "utc_fin": "2026-10-24T15:14:44Z", "duree_min": 37.4, "secondes_distinctes": 33},
+      {"n": 78, "utc": "2026-10-24T18:47:57Z"}
+    ],
+    "part_du_burst_principal": "2594 / 2785 = 93 % des forwards sur un seul intervalle de vidage"
+  },
+  "trous_observes": {
+    "seuil_min": 10,
+    "nombre": 3,
+    "plus_longs": [
+      {"de": "2026-10-23T23:29:58Z", "a": "2026-10-24T14:37:19Z", "minutes": 907.4},
+      {"de": "2026-10-23T16:06:24Z", "a": "2026-10-23T23:29:58Z", "minutes": 443.6},
+      {"de": "2026-10-24T15:14:44Z", "a": "2026-10-24T18:47:57Z", "minutes": 213.2}
+    ],
+    "lecture": "aucun forward n'apparait entre 23:30Z et 14:37Z ; ce sont des trous dans l'ECHANTILLON de 3000 dernieres lignes, pas une preuve d'inactivite"
+  },
+  "erreurs_et_retries": {
+    "error_handling_request": 9,
+    "instants": [
+      "2026-10-23T22:01:40Z", "2026-10-23T22:02:06Z",
+      "2026-10-24T09:11:23Z", "2026-10-24T09:25:02Z", "2026-10-24T09:25:03Z",
+      "2026-10-24T10:10:02Z", "2026-10-24T10:10:03Z",
+      "2026-10-24T10:47:26Z", "2026-10-24T10:47:43Z"
+    ],
+    "retry": 6,
+    "retry_instants": ["2026-10-23T23:29:58Z", "2026-10-24T10:45:52Z", "2026-10-24T14:37:19Z"],
+    "retry_toujours_par_paires": true,
+    "observation": "les 3 evenements RETRY tombent aux frontieres de vidage (dernier avant un trou, pendant la fenetre d'erreurs, premier apres un trou)",
+    "limite": "horodatages = vidages : 'erreurs pendant les fenetres creuses' N'EST PAS prouve, seulement compatible. Les erreurs sont sur des vidages separes de 13 s a 12 h."
+  },
+  "dedup": {
+    "signatures_distinctes": 2465,
+    "signatures_dupliquees": 57,
+    "lignes_couvertes": 377,
+    "part_lignes": "13.5 %",
+    "top": [
+      {"signature": "60 inputs, sizes=[66 x5]", "occurrences": 147, "secondes_porteuses": 1},
+      {"signature": "1 input, size 17", "occurrences": 62, "secondes_porteuses": 1},
+      {"signature": "1 input, size 43", "occurrences": 11}
+    ],
+    "comparaison_extrait_precedent": {
+      "precedent": "997 signatures dupliquees / 2654 lignes (33.4 %)",
+      "maintenant": "57 / 377 (13.5 %)",
+      "lecture": "le taux de duplication depend de la fenetre : l'ancien extrait tombait dans un burst de rejeux, celui-ci couvre aussi des periodes creuses. Le chiffre '997 / 2654' ne doit pas etre cite comme un taux structurel."
+    }
+  },
+  "recommandation_a_po2023": {
+    "correctif": "lancer le sidecar avec PYTHONUNBUFFERED=1 (ou `python -u`) pour que chaque ligne soit ecrite a l'instant de la requete",
+    "effet": "les horodatages de docker deviennent des horodatages de requete, et le livrable 3 devient derivable sans changer le format de log",
+    "alternative": "ecrire l'horodatage dans la ligne de log applicative (le format reste `[N/100000] ... total=... bytes`, on prefixe)"
+  },
+  "verdict": "livrable 3 NON rendu, et cette fois la cause est mesuree et corrigeable en un mot (tampon non vide). Les volumes et le taux de rejeu, eux, sont rendus.",
+  "frontiere_mini_inchangee": "tally categoriel <=16 lignes fiable ; comparaison numerique non fiable des 16 lignes ; agregation arithmetique non fiable"
+}
