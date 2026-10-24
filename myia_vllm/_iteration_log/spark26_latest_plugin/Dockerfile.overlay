@@ -1,0 +1,7 @@
+# Base = digest IDENTIQUE au tag distant vllm/vllm-openai:latest (verifie 24/10 :
+# sha256:befccf0e7e40...). Le tag local `latest` etait vieux de 14 mois — ne jamais
+# s'y fier, d'ou l'epinglage par version ici.
+FROM vllm/vllm-openai:v0.32.0
+COPY repo /opt/spark-plugin
+RUN python3 -m pip install --no-deps /opt/spark-plugin 2>&1 | tail -3
+RUN python3 -c "import vllm; assert vllm.__version__.startswith('0.32'), vllm.__version__; import vllm.tool_parsers; print('base OK', vllm.__version__)"

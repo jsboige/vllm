@@ -1,0 +1,156 @@
+{
+  "label": "spark26_base",
+  "model": "spark-2.6-4b",
+  "base_url": "http://localhost:5003",
+  "axes": {
+    "A0_control_kv": {
+      "verdict": "PASS",
+      "latency_s": 1.02,
+      "completion_tokens": 16,
+      "raw": "temp=41.5C free=22107MB",
+      "detail": {
+        "expects": [
+          "41.5C",
+          "22107MB"
+        ]
+      }
+    },
+    "A1_count_homog_60": {
+      "verdict": "PASS",
+      "latency_s": 0.45,
+      "completion_tokens": 3,
+      "raw": "60",
+      "detail": {
+        "count": 60,
+        "truth": 60
+      }
+    },
+    "A2_count_heterog": {
+      "verdict": "PASS",
+      "latency_s": 1.28,
+      "completion_tokens": 33,
+      "raw": "{\"FRUIT\": 6, \"LEGUME\": 6, \"LAITIER\": 6, \"VIANDE\": 6}",
+      "detail": {
+        "got": {
+          "FRUIT": 6,
+          "LEGUME": 6,
+          "LAITIER": 6,
+          "VIANDE": 6
+        },
+        "truth": {
+          "FRUIT": 6,
+          "LEGUME": 6,
+          "LAITIER": 6,
+          "VIANDE": 6
+        }
+      }
+    },
+    "A3_derived_mean": {
+      "verdict": "FAIL",
+      "latency_s": 0.3,
+      "completion_tokens": 6,
+      "raw": "10.30",
+      "detail": {
+        "got": 10.3,
+        "truth": 11.37
+      }
+    },
+    "A4_absence_log": {
+      "verdict": "PARTIAL",
+      "latency_s": 0.84,
+      "completion_tokens": 14,
+      "raw": "{\"ERROR\": 8, \"WARN\": 6}",
+      "detail": {
+        "got": {
+          "ERROR": 8,
+          "WARN": 6
+        },
+        "truth": {
+          "ERROR": 7,
+          "WARN": 5
+        },
+        "fabricated_absence": false
+      }
+    },
+    "A5_condense_verbatim": {
+      "verdict": "PASS",
+      "latency_s": 4.08,
+      "completion_tokens": 112,
+      "raw": "L1: Incident de rétablissement du lecteur G entre 15:05Z et 17:18 locale.\nL2: Le moteur 5003 est resté UP avec « health 200 en continu » et 35 degres.\nL3: La « Garde anti-crash-loop posee » a eu lieu à « 17:41 locale », après que le « Miroir PG intact » a été mesuré.",
+      "detail": {
+        "quotes_present": {
+          "health 200 en continu": true,
+          "Miroir PG intact": true,
+          "17:41 locale": true
+        }
+      }
+    },
+    "A6_tag_attribution": {
+      "verdict": "FAIL",
+      "latency_s": 4.89,
+      "completion_tokens": 137,
+      "raw": "```json\n[\n  {\"tag\": \"[DONE]\", \"author\": \"myia-po-2025\"},\n  {\"tag\": \"[ACK]\", \"author\": \"myia-po-2028\"},\n  {\"tag\": \"[INFO]\", \"author\": \"myia-ai-01\"},\n  {\"tag\": \"[DONE]\", \"author\": \"myia-po-2023\"},\n  {\"tag\": \"[ASK]\", \"author\": \"myia-po-2028\"},\n  {\"tag\": \"[WARN]\", \"author\": \"myia-po-2025\"}\n]\n```",
+      "detail": {
+        "tag_ok": "0/6",
+        "author_ok": "0/6",
+        "got": [
+          {
+            "tag": "[DONE]",
+            "author": "myia-po-2025"
+          },
+          {
+            "tag": "[ACK]",
+            "author": "myia-po-2028"
+          },
+          {
+            "tag": "[INFO]",
+            "author": "myia-ai-01"
+          },
+          {
+            "tag": "[DONE]",
+            "author": "myia-po-2023"
+          },
+          {
+            "tag": "[ASK]",
+            "author": "myia-po-2028"
+          },
+          {
+            "tag": "[WARN]",
+            "author": "myia-po-2025"
+          }
+        ],
+        "truth": [
+          {
+            "tag": "DONE",
+            "author": "myia-po-2025|vllm"
+          },
+          {
+            "tag": "ACK",
+            "author": "myia-po-2028|Maintenance"
+          },
+          {
+            "tag": "INFO",
+            "author": "myia-ai-01|vllm"
+          },
+          {
+            "tag": "DONE",
+            "author": "myia-po-2023|CoursIA"
+          },
+          {
+            "tag": "ASK",
+            "author": "myia-po-2028|CoursIA-3"
+          },
+          {
+            "tag": "WARN",
+            "author": "myia-po-2025|claudish"
+          }
+        ]
+      }
+    }
+  },
+  "score": {
+    "PASS": 4,
+    "PARTIAL": 1,
+    "FAIL": 2
+  }
+}

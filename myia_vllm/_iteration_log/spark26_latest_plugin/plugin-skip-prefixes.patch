@@ -1,0 +1,24 @@
+diff --git a/src/vllm_spark2_5_plugin/spark2_5.py b/src/vllm_spark2_5_plugin/spark2_5.py
+index 71d6073..34924d1 100644
+--- a/src/vllm_spark2_5_plugin/spark2_5.py
++++ b/src/vllm_spark2_5_plugin/spark2_5.py
+@@ -384,8 +384,14 @@ class Spark2_5ForCausalLM(nn.Module, SupportsPP):
+         return logits
+ 
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+-        loader = AutoWeightsLoader(
+-            self,
+-            skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
+-        )
+-        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
++        # LOCAL FIX (po-2025, 24/10) : l'amont appelait
++        # `AutoWeightsLoader(self, skip_prefixes=[...])`, un parametre qui n'existe
++        # dans AUCUNE version publiee de vLLM (verifie v0.30.0/v0.31.0/v0.32.0/main) :
++        # TypeError au chargement des poids. Le motif documente en amont pour ignorer
++        # des prefixes (vllm/models/step5/nvidia/model.py:2454) est un WeightsMapper
++        # qui mappe ces prefixes a None.
++        mapper = self.hf_to_vllm_mapper
++        if self.config.tie_word_embeddings:
++            mapper = mapper | WeightsMapper(orig_to_new_prefix={"lm_head.": None})
++        loader = AutoWeightsLoader(self)
++        return loader.load_weights(weights, mapper=mapper)
