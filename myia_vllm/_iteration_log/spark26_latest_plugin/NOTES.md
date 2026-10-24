@@ -126,11 +126,10 @@ v0.32.0.
 décodage, 2 axes de fiabilité en moins, et surtout perte de l'attribution par
 workspace. FrogNano reste le moteur de production.
 
-**Piste suivante, non testée** : la variante **INT4** avec le plugin `v3`. Le
-refus du 21/10 était l'arch non enregistrée — c'est exactement ce que le plugin
-résout. La quantification est le levier de vitesse qui manque ici (27,3 tok/s en
-BF16 sur une 3080 Ti), donc c'est le prochain essai qui a du sens. Fenêtre à
-armer séparément, FrogNano devant rester servi.
+**Piste suivante** : la variante **INT4** avec le plugin `v3` — **testée le même
+jour, voir §8**. Le refus du 21/10 était l'arch non enregistrée — c'est
+exactement ce que le plugin résout. Verdict §8 : plus rapide que le BF16 mais
+**toujours 0,71× FrogNano, et qualité en retrait vs BF16** — la ligne est close.
 
 **Recommandation à porter en amont** (`XHToken/Spark-plugin`) : le correctif
 `skip_prefixes` → `WeightsMapper`. Le plugin déclare `TESTED_VLLM` sur un commit
@@ -145,3 +144,76 @@ fork privé, soit la constante n'a jamais été vérifiée. À signaler avec le 
 
 Le profil Spark reste sur disque, `restart: "no"` + `autoheal=False` : il ne
 peut pas crash-looper la nuit.
+
+## 8. Fenêtre INT4 (Q8 du registre, GO user 24/10 ~09:35 locale)
+
+**Question** (user, 24/10 matin) : « si tu penses qu'on peut encore faire un
+nouveau test pourquoi pas, mais si notre modèle actuel gagne sur toutes les
+métriques… ça m'a l'air d'être un no brainer. Enfin c'est à confirmer. »
+
+**Réponse : confirmé chiffré — FrogNano gagne sur TOUTES les métriques, la
+ligne Spark est close sur ce siège.**
+
+### 8.1 Incident opératoire d'abord : le figerage au premier kernel (2 boots)
+
+Premier boot INT4 07:44Z : init complète (poids 3,81 GiB / 28,4 s, compile,
+graphs CUDA, KV 51 641 tok) puis **figerage** au premier kernel post-init —
+GPU 100 %, EngineCore 93 % CPU, aucune ligne de log pendant 14 min. La
+restauration FrogNano immédiate (08:01Z) a **figé au même point logique** :
+`Warming up Qwen GDN Triton kernels` démarré, jamais terminé, GPU 100 %.
+
+Diagnostic discriminant : un conteneur CUDA vierge interroge le GPU sans
+problème (`nvidia-smi` in-container OK, pas de Xid, P0) — la couche DXG est
+saine ; c'est le kernel de warmup qui ne revient pas. Le `compose down` du
+moteur figé **libère le GPU** (100 % → 38 %, 15,8 → 8,4 GiB).
+
+**Cause (mesurée, n=1 par cas)** : les deux boots morts ont été lancés
+**immédiatement** après le kill d'un moteur ; le boot suivant un `down` +
+**15 s de délai** passe en 91-106 s. C'est le gotcha connu du siège
+(« le contexte CUDA d'un moteur tué met ~10 s à se libérer » — cf. faits
+GPU-2 d'ai-01) qui se manifeste ici au niveau kernel : boot sans délai =
+premier kernel lancé dans un contexte à moitié libéré → boucle infinie.
+**Règle pour ce siège : TOUJOURS ≥15 s entre `compose down` d'un moteur et
+`up` du suivant.** Attribution SUPPOSE (n=2 stalls sans délai, n=2 boots OK
+avec délai, jamais testé l'inverse).
+
+Coût de l'incident : ~35 min de slot :5003 noir (07:44→08:19Z),dont 2
+restaurations. Aucune requête perdue (0 trafic mesuré sur la fenêtre).
+
+### 8.2 Mesures INT4 (image plugin v3, gpu-util 0.78, 32 768, settle respecté)
+
+| Métrique | INT4 | Base BF16 (§3) | FrogNano |
+|---|---|---|---|
+| Boot jusqu'à `/health` 200 | **106 s** | 210 s | 91 s (chaud) |
+| Poids chargés | **3,81 GiB** | ~8,8 GB | — |
+| KV cache | 51 641 tok (1,58×) | 58 128 tok (1,77×) | **421 582 tok** |
+| **Décodage single-stream** | **46,9 tok/s** (47,0/46,8/44,8) | 27,3 tok/s | **66,0 tok/s** |
+| Thinking OFF | fonctionne (`reasoning=None`) | fonctionne | par défaut |
+| **Batterie 7 axes** | **3 PASS / 2 PARTIAL / 2 FAIL** | 4 PASS / 1 PARTIAL / 2 FAIL | **6 PASS / 0 PARTIAL / 1 FAIL** |
+
+Écarts de batterie INT4 vs BF16 : **A2 (comptage hétérogène) PASS→FAIL**,
+**A4 PARTIAL→PARTIAL** (2 axes en PARTIAL cette fois), A5 PASS conservé.
+La quantification **dégrade la fiabilité** en plus de rester derrière
+FrogNano partout. Anomalie notée sans explication : KV INT4 (51 641) <
+KV BF16 (58 128) malgré des poids ~5 Go plus petits — la mémoire libérée
+n'est pas allée au KV à iso-gpu-util (0,78) ; non instruit, sans impact sur
+le verdict.
+
+### 8.3 Verdict final de la ligne Spark
+
+| | Spark INT4 | Spark BF16 | **FrogNano (prod)** |
+|---|---|---|---|
+| Vitesse | 0,71× | 0,41× | **1,0× (66 tok/s)** |
+| Fiabilité batterie | 3/2/2 | 4/1/2 | **6/0/1** |
+| KV | 1,58× | 1,77× | **12,9×** |
+| Attribution workspace (A6) | PARTIAL | FAIL forme | **PASS** |
+
+**FrogNano domine sur chaque axe mesuré, y compris l'intelligence
+opérationnelle (batterie = extraction fiable, l'usage réel du siège).**
+Le « no brainer » du user est confirmé par la mesure. La ligne Spark-X2.6
+est **close** sur po-2025 : profils et plugin v3 restent sur disque et dans
+ce dépôt, rejouables en une commande.
+
+Artefacts : `results_spark26_int4.json`, profil
+`mini-spark26-4b-int4-po2025.yml`, log du boot figé
+`spark26_int4_boot_stall_log.txt`.

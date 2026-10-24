@@ -1,0 +1,74 @@
+# Docker Compose profile — TEST ONLY : Spark-X2.6-4B-INT4 sous image plugin corrigée
+# (vllm-openai-spark26-plugin:v3 = v0.32.0 + fix skip_prefixes) — po-2025, fenêtre
+# 24/10 (Q8 du registre, GO user 24/10 matin).
+# ============================================================================
+# POURQUOI : la base BF16 a été mesurée ce matin (27,3 tok/s, 4/1/2 à la batterie
+#   7 axes, PR #161). Le seul essai qui peut renverser le verdict de vitesse est
+#   la variante INT4 — le refus du 21/10 était l'arch non enregistrée, exactement
+#   ce que le plugin (corrigé) résout. Cache HF déjà présent (pas de download).
+#   Une seule variable vs la fenêtre BF16 : le checkpoint (mêmes flags, même
+#   image v3, volume compile dédié INT4).
+#
+# RETOUR ARMÉ : re-up de mini-frognano-4b-po2025.yml (cache + compile chauds).
+# ----------------------------------------------------------------------------
+services:
+  mini_spark26_4b_int4:
+    image: vllm-openai-spark26-plugin:v3
+    container_name: myia_vllm-mini-spark26-4b-int4
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-spark26-int4:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      XHToken/Spark-X2.6-4B-INT4
+      --served-model-name spark-2.6-4b
+      --host 0.0.0.0
+      --port 8000
+      --trust-remote-code
+      --dtype auto
+      --gpu-memory-utilization 0.78
+      --max-model-len 32768
+      --enable-prefix-caching
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: "no"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  vllm-compile-cache-spark26-int4:

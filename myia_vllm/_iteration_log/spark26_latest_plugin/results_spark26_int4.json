@@ -1,0 +1,156 @@
+{
+  "label": "spark26_int4",
+  "model": "spark-2.6-4b",
+  "base_url": "http://localhost:5003",
+  "axes": {
+    "A0_control_kv": {
+      "verdict": "PASS",
+      "latency_s": 0.56,
+      "completion_tokens": 16,
+      "raw": "temp=41.5C free=22107MB",
+      "detail": {
+        "expects": [
+          "41.5C",
+          "22107MB"
+        ]
+      }
+    },
+    "A1_count_homog_60": {
+      "verdict": "PASS",
+      "latency_s": 0.21,
+      "completion_tokens": 3,
+      "raw": "60",
+      "detail": {
+        "count": 60,
+        "truth": 60
+      }
+    },
+    "A2_count_heterog": {
+      "verdict": "FAIL",
+      "latency_s": 0.4,
+      "completion_tokens": 33,
+      "raw": "{\"FRUIT\": 6, \"LEGUME\": 6, \"LAITIER\": 6, \"VIANDE\": 7}",
+      "detail": {
+        "got": {
+          "FRUIT": 6,
+          "LEGUME": 6,
+          "LAITIER": 6,
+          "VIANDE": 7
+        },
+        "truth": {
+          "FRUIT": 6,
+          "LEGUME": 6,
+          "LAITIER": 6,
+          "VIANDE": 6
+        }
+      }
+    },
+    "A3_derived_mean": {
+      "verdict": "FAIL",
+      "latency_s": 0.09,
+      "completion_tokens": 6,
+      "raw": "10.30",
+      "detail": {
+        "got": 10.3,
+        "truth": 11.37
+      }
+    },
+    "A4_absence_log": {
+      "verdict": "PARTIAL",
+      "latency_s": 2.07,
+      "completion_tokens": 14,
+      "raw": "{\"ERROR\": 8, \"WARN\": 6}",
+      "detail": {
+        "got": {
+          "ERROR": 8,
+          "WARN": 6
+        },
+        "truth": {
+          "ERROR": 7,
+          "WARN": 5
+        },
+        "fabricated_absence": false
+      }
+    },
+    "A5_condense_verbatim": {
+      "verdict": "PASS",
+      "latency_s": 0.71,
+      "completion_tokens": 79,
+      "raw": "L1: Un incident de lecture a été signalé pour le lecteur G.\nL2: Le moteur 5003 est resté UP avec « health 200 en continu ».\nL3: Une garde anti-crash-loop a été posée avec « Miroir PG intact » et « 17:41 locale ».",
+      "detail": {
+        "quotes_present": {
+          "health 200 en continu": true,
+          "Miroir PG intact": true,
+          "17:41 locale": true
+        }
+      }
+    },
+    "A6_tag_attribution": {
+      "verdict": "PARTIAL",
+      "latency_s": 4.42,
+      "completion_tokens": 137,
+      "raw": "```json\n[\n  {\"tag\": \"DONE\", \"author\": \"myia-po-2025\"},\n  {\"tag\": \"ACK\", \"author\": \"myia-po-2028\"},\n  {\"tag\": \"INFO\", \"author\": \"myia-ai-01\"},\n  {\"tag\": \"DONE\", \"author\": \"myia-po-2023\"},\n  {\"tag\": \"ASK\", \"author\": \"myia-po-2028\"},\n  {\"tag\": \"WARN\", \"author\": \"myia-po-2025\"}\n]\n```",
+      "detail": {
+        "tag_ok": "6/6",
+        "author_ok": "0/6",
+        "got": [
+          {
+            "tag": "DONE",
+            "author": "myia-po-2025"
+          },
+          {
+            "tag": "ACK",
+            "author": "myia-po-2028"
+          },
+          {
+            "tag": "INFO",
+            "author": "myia-ai-01"
+          },
+          {
+            "tag": "DONE",
+            "author": "myia-po-2023"
+          },
+          {
+            "tag": "ASK",
+            "author": "myia-po-2028"
+          },
+          {
+            "tag": "WARN",
+            "author": "myia-po-2025"
+          }
+        ],
+        "truth": [
+          {
+            "tag": "DONE",
+            "author": "myia-po-2025|vllm"
+          },
+          {
+            "tag": "ACK",
+            "author": "myia-po-2028|Maintenance"
+          },
+          {
+            "tag": "INFO",
+            "author": "myia-ai-01|vllm"
+          },
+          {
+            "tag": "DONE",
+            "author": "myia-po-2023|CoursIA"
+          },
+          {
+            "tag": "ASK",
+            "author": "myia-po-2028|CoursIA-3"
+          },
+          {
+            "tag": "WARN",
+            "author": "myia-po-2025|claudish"
+          }
+        ]
+      }
+    }
+  },
+  "score": {
+    "PASS": 3,
+    "PARTIAL": 2,
+    "FAIL": 2
+  }
+}
