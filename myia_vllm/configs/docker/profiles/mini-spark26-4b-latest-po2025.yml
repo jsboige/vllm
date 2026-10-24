@@ -1,0 +1,99 @@
+# Docker Compose profile — TEST ONLY : Spark-X2.6-4B (modèle de BASE, BF16) sur
+# l'image `latest` + plugin `XHToken/Spark-plugin` — po-2025, fenêtre 24/10.
+# ============================================================================
+# POURQUOI CETTE FENÊTRE (question user 24/10 : « testé sous image latest ? »)
+#   - Le test du 21/10 portait sur Spark-X2.6-4B-**INT4** sous l'image épinglée
+#     v0.32.0 : refus `ModelConfig` sur DEUX chemins (natif `--trust-remote-code`,
+#     puis `--model-impl transformers`), l'arch `Spark2_5ForCausalLM` n'étant
+#     dans aucun registre de cette version.
+#   - `vllm/vllm-openai:latest` **EST** v0.32.0 : même digest
+#     `sha256:befccf0e7e40…` (poussé 2026-10-18). L'axe « latest » était donc
+#     déjà couvert ; l'axe jamais essayé est le **plugin**.
+#   - `XHToken/Spark-plugin` est un plugin vLLM **CUDA** (entry-point
+#     `vllm.general_plugins` → `vllm_spark2_5_plugin:register`), sans kernel
+#     compilé. Dry-run vérifié dans l'image v0.32.0 elle-même :
+#     `Spark2_5ForCausalLM in ModelRegistry.get_supported_archs()` → **True**.
+#   - Aucune PR/issue upstream ne mentionne `Spark2_5` : le cœur vLLM ne le
+#     servira pas ; la voie plugin est la seule sur NVIDIA aujourd'hui.
+#
+# ATTENTION : déplace TEMPORAIREMENT FrogNano du slot :5003 (pas de co-host —
+# FrogNano occupe ~14,2/16 Go à gpu-util 0.78). Retour armé = re-up du profil
+# canonique mini-frognano-4b-po2025.yml (cache + compile-volume chauds).
+#
+# CHOIX DE CONFIG (délibérés) :
+#   - `--trust-remote-code` OBLIGATOIRE (le modèle embarque configuration_spark.py
+#     et modeling_spark.py ; le plugin fournit le registre vLLM, pas le config HF).
+#   - PAS de `--chat-template` explicite : la carte le passe en fichier, mais le
+#     template est AUSSI embarqué dans tokenizer_config (constaté le 21/10 sur
+#     l'INT4) — on évite d'épingler un hash de snapshot dans un profil.
+#   - PAS de `--kv-cache-dtype fp8` : arch d'attention non mesurée ici ; cette
+#     fenêtre juge la SERVABILITÉ (boot + une génération réelle), pas la capacité.
+#   - PAS de `--tool-call-parser` : le plugin enregistre un parser `spark25`, mais
+#     on ne l'active pas avant d'avoir un boot sain (variable isolée).
+#   - `restart: "no"` + `autoheal=False` : un échec de boot ne doit pas
+#     crash-looper la nuit — retour FrogNano immédiat dans ce cas.
+#   - Volume compile-cache DÉDIÉ (ne pas polluer celui de FrogNano).
+# ----------------------------------------------------------------------------
+services:
+  mini_spark26_4b_latest:
+    # v3 = v2 + correctif du plugin (load_weights appelait `skip_prefixes`, kwarg
+    # inexistant dans TOUTE version publiee de vLLM -> TypeError au chargement).
+    image: vllm-openai-spark26-plugin:v3
+    container_name: myia_vllm-mini-spark26-4b-latest
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-spark26-latest:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      XHToken/Spark-X2.6-4B
+      --served-model-name spark-2.6-4b
+      --host 0.0.0.0
+      --port 8000
+      --trust-remote-code
+      --dtype auto
+      --gpu-memory-utilization 0.78
+      --max-model-len 32768
+      --enable-prefix-caching
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: "no"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  vllm-compile-cache-spark26-latest:
