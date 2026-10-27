@@ -192,6 +192,49 @@ ainsi, il produit exactement le mauvais usage. Les deux commandes à retenir : *
 local → `grep` ; critère sémantique ou source distante → mini, avec vérification mécanique quand la
 sortie reste un sous-ensemble du texte source.**
 
+### Huitième démo — premier cas **SÉMANTIQUE** mesuré (critère non littéral, 27/10 vigie 13:03 locale)
+
+Les quatre niches listées ci-dessus n'avaient jamais été testées ; la première — **critère non
+littéral** — est maintenant mesurée, et c'est le seul cas à ce jour où grep est **structurellement
+incapable** (pas seulement plus lent) : aucune regex n'existe tant que la taxonomie n'est pas écrite.
+
+**Tâche** : 11 lignes représentatives (les types distincts des deux loggers) à regrouper par type de
+message, deux lignes étant du même type si elles ne diffèrent que par des valeurs variables.
+**Le point dur** : le masquage numérique (`sed 's/[0-9]\+/N/g'`) rend **11 types**, alors que trois
+paires sont le **même** message que le littéral coupe en deux :
+
+| Ce que le masque sépare | Pourquoi c'est le même message |
+| --- | --- |
+| `RSM=0.1GB` vs `RSM=1GB` | formatage d'unité (décimal vs entier), même gabarit |
+| `HEARTBEAT … engine=up/off/unhealthy` | 3 types au masque, 1 message, seul l'état varie |
+| `WARN RAM … engine=up/off` | idem |
+
+**Rendu du mini (1 appel, aucun retry, `model_used: frognano-4b`)** — 5 groupes :
+
+`G1=[2,3,5]` WARN RAM CRITIQUE · `G2=[1,6,8,11]` HEARTBEAT · `G3=[4]` INFO boot ·
+`G4=[7,9]` WARN RAM marge hôte · `G5=[10]` WARN ENGINE
+
+**Vérification par étage distinct (faite par moi, pas reprise du rapport)** :
+
+- couverture **11/11, chacune une seule fois**, 0 manquante, 0 hors bornes, aucun écho, aucune ligne inventée ;
+- **partition lossless contre le corpus ENTIER** : 220 + 1 013 + 10 + 232 + 6 = **1 481 = 739 + 742**
+  lignes, exactement le total des deux journaux — chaque compte de groupe reconstruit depuis les
+  comptes du masque, donc contrôlable sans relire les fichiers ;
+- les **3 fusions que le littéral ratait sont toutes correctes**.
+
+**L'erreur qu'il a aussi commise, et qui est le vrai enseignement** : `G1` a fusionné
+`WARN RAM basse` (120 lignes) avec `WARN RAM CRITIQUE` (99 + 1). La sévérité **n'est pas une valeur
+variable** : deux gabarits distincts, deux seuils, deux escalades. Sur-fusion **attrapée
+mécaniquement** uniquement parce que le mot de sévérité est littéral dans le texte.
+
+> **Conséquence à retenir** : la même sur-fusion serait **invisible** sur un critère dont le
+> discriminant n'est pas littéral. Donc « critère sémantique → mini » reste vrai, mais **il faut un
+> oracle** : ici la partition contre les comptes du corpus. Sans oracle, le sémantique n'est pas
+> vérifiable — c'est la limite de la classe, pas un défaut du modèle.
+
+**Artefact réutilisable** (ce n'est pas qu'une démo) : la taxonomie à 5 types couvre l'intégralité
+des 1 481 lignes des deux loggers, ce qui donne la grille de tri des prochains cycles.
+
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
 Sweep de `myia_vllm/docs/` (74 fichiers, 152 appels mini) pour marqueurs d'état périmé
@@ -294,13 +337,19 @@ doit exister byte-exact) et agis dessus. Coût parent : ~0 contexte, la validati
    (issues/PRs `gh`, dashboards RSM, dépôts) : collecte déterministe par l'agent, extraction
    d'évidence verbatim par le mini, vérification par existence de sous-chaîne, liste en sortie
    (évidence déléguée, jugement au parent).
-3. **Presets sk-agent dédiés** (`mini-log-triager`) avec `max_tokens` relevé (cf. miss du
+3. ✅ **Cas sémantique mesuré** (huitième démo, 27/10) — critère non littéral, le seul usage où
+   grep est **structurellement** incapable. Règle ajoutée : sémantique **avec oracle obligatoire**
+   (partition contre les comptes du corpus), sinon la sortie n'est pas vérifiable.
+4. **Nudge v2** — le texte déployé (roo-extensions#4374) peut être lu comme « délègue ton `grep` »,
+   ce qui produit exactement le mauvais usage. La v2 doit porter la bascule : **critère littéral et
+   local → `grep` ; critère sémantique ou source distante → mini, avec oracle**.
+5. **Presets sk-agent dédiés** (`mini-log-triager`) avec `max_tokens` relevé (cf. miss du
    shard B).
-4. **Driver script** (pattern `nb_audit_driver.py` d'ai-01) pour les corpus > 1 000 lignes et
+6. **Driver script** (pattern `nb_audit_driver.py` d'ai-01) pour les corpus > 1 000 lignes et
    pour les **crons dédiés** (fan-out sans agent attendant).
-5. **Proposition Hermes/NanoClaw** (CoursIA) : pré-passe par notebook, livraison DM
+7. **Proposition Hermes/NanoClaw** (CoursIA) : pré-passe par notebook, livraison DM
    (`nb_audit_deliver.py`), vérification chez le bot auditeur.
-6. Mesure d'adoption : compteur `request_success_total` du moteur — l'objectif du mandat
+8. Mesure d'adoption : compteur `request_success_total` du moteur — l'objectif du mandat
    adoption reste « usage réel », pas « pings envoyés ».
 
 ## 7. Hors périmètre (mesuré, ne pas réessayer sans nouvelle preuve)
