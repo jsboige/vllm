@@ -140,6 +140,58 @@ set-diff criait 22. **Normaliser (`tr -d '\r'`) des DEUX côtés avant `comm`**,
 `extra` sont égaux et non nuls avec des lignes qui se ressemblent : suspecter l'instrument avant
 d'accuser le modèle. Un vérificateur qui n'a pas été testé à vide n'est pas un vérificateur.
 
+### Septième mesure — tâche de fond réelle, fichier entier (27/10, horde en arrière-plan)
+
+Test du seul mode que le mandat visait vraiment et qui n'avait jamais été instrumenté :
+**lancer, ne plus attendre, vérifier à la fin**. Un sous-agent `mini-fanout-extractor` (arrière-plan)
+a traité **`gpu-governor.log` en entier** — 735 lignes, 56 755 octets — pendant que la session
+répondait à l'utilisateur et déployait le nudge flotte. 30 shards, **31 appels mini**.
+
+| | Valeur |
+|---|---|
+| WARN vérité (`grep`) | **217** (120 `RAM basse` + 97 `RAM CRITIQUE`) |
+| Rappel 1er passage | **216/217 = 99,5 %** |
+| Après repli grep sur le shard fautif | **217/217 = 100 %** |
+| Fabrication / altération | **0 / 0** |
+| Retries | **1** (shard s04 → repli grep) |
+| Routage | 29 réponses, toutes `frognano-4b`, **aucun `fallback_from`** |
+| Durée | 338 s en arrière-plan |
+
+**Vérification indépendante de l'appelant** (producteur ≠ vérificateur, refaite par moi, pas
+reprise du rapport du sous-agent) : `diff` du livrable assemblé contre `grep WARN` sur le fichier
+entier → **identique, ordre inclus** ; 0 ligne non-WARN ; `comm` après normalisation →
+`manquées=0 ajoutées=0`. Le shard s04 est le cas intéressant : la **dernière ligne** n'est jamais
+rendue, **deux fois de suite à l'identique** — ce n'est pas du bruit, c'est reproductible. Et ce
+n'est pas une règle du « dernière ligne d'un shard » : s18, s23 et s26 finissent aussi sur un WARN
+et l'ont rendu. Le repli grep a rattrapé la ligne, le protocole a donc tenu.
+
+### ★ Où le fan-out ne bat PAS grep — la mesure qui manquait
+
+Le coût réel de cette horde, relevé sur les compteurs du moteur : **57 369 tokens de prompt**
+(35 requêtes au total, dont 31 pour la horde) et **164 787 tokens de sous-agent** pour
+l'orchestration. Or `grep WARN gpu-governor.log` rend les mêmes 217 lignes **pour zéro token** et
+en quelques millisecondes.
+
+Autrement dit : **sur un critère littéral et un corpus local, grep gagne toujours**, et le fan-out
+n'est alors qu'un exercice de préservation de contexte et de parallélisme — pas une économie.
+Cette conclusion vaut contre l'usage que la classe validée met en avant, et elle doit être dite
+telle quelle plutôt que corrigée par une formule vague.
+
+Le fan-out garde une valeur réelle, mais **ailleurs**, et c'est là qu'il faut le vendre :
+
+1. **Critère non littéral** — « quelles lignes contredisent la configuration actuelle ? » n'est pas
+   une regex ; c'est précisément le cas où grep ne peut pas répondre et où le mini lit à la place
+   du parent.
+2. **Corpus distant** — dashboards MCP, issues/PRs `gh` sous quota partagé, pages web, PDF : il
+   n'existe pas de grep local, et la collecte elle-même coûte des appels.
+3. **Volume qui coûterait la fenêtre du parent** — 74 fichiers à pré-lire pour en juger 13.
+4. **Latence parallèle** — 30 shards concurrents contre 30 lectures séquentielles.
+
+Corollaire pour le nudge flotte : il ne doit pas être lu comme « délègue ton `grep` ». Présenté
+ainsi, il produit exactement le mauvais usage. Les deux commandes à retenir : **critère littéral et
+local → `grep` ; critère sémantique ou source distante → mini, avec vérification mécanique quand la
+sortie reste un sous-ensemble du texte source.**
+
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
 Sweep de `myia_vllm/docs/` (74 fichiers, 152 appels mini) pour marqueurs d'état périmé
