@@ -109,6 +109,37 @@ thermique** (max 24 h 40 °C), et le corpus confirme `engine=off` à 23:03:56 lo
 recoupe le `StartedAt` conteneur de 22:07:32Z. Le corpus étant déjà connu, cette passe vaut comme
 **contrôle de stabilité du protocole**, pas comme nouvelle preuve de généralisation.
 
+### Sixième mesure — segment JAMAIS balayé, 49/49 au premier passage (27/10, vigie 09:03 locale)
+
+Premier passage sur une région **inédite** de `_logs/gpu-thermal.log` (lignes 101-200, fenêtre
+09/10 00:58 → 11/10 03:09) — et la région la plus dense jamais rencontrée : **49 WARN sur 100
+lignes**, dont des shards à 22/25 et 17/25. Quatre shards de 25 (décision de découpage motivée par
+le plafond de troncature connu : à 39 WARN sur 50 lignes, un shard de 50 aurait reproduit le miss du
+pilote). Attendu **22 / 17 / 7 / 3** ; obtenu **22 / 17 / 7 / 3, `missed=0 extra=0 non_existantes=0`**
+sur les quatre — **5e succès consécutif, 3e premier passage sans retry**, `model_used: frognano-4b`
+sur les 4 appels (aucun `fallback_from`).
+
+Le garde anti-écho a été explicite dans le prompt (« ne recopie AUCUNE ligne qui ne contient pas
+WARN ») : cette région est pathologiquement répétitive (des dizaines de lignes quasi identiques,
+seuls `free=` et `temp=` varient) et appartient à la famille d'échec « entrée très répétitive →
+écho intégral » mesurée le 26/10. Avec le garde : **0 écho, 0 ligne surnuméraire**. La contre-mesure
+est donc reproductible, elle n'était pas un coup de chance.
+
+Valeur métier réelle (le corpus n'a pas été choisi pour flatter le protocole) : la fenêtre 09-11/10
+montre un **épisode continu de pression mémoire de ~6 h** (09/10 00:58 → 04:28, `free=` entre 236 Mo
+et 3 975 Mo, sans interruption), puis un retour au calme, puis **`engine=off` au 11/10 03:04** avec
+3 WARN consécutifs — un arrêt moteur sous pression mémoire que la vue horaire condensée rendait
+invisible.
+
+**★ Leçon d'instrument (à appliquer à toute vérification future)** : la première passe de `comm` a
+rendu `missed=22 extra=22` avec des lignes **visuellement identiques** — faux positif total, dû au
+comparateur et non au modèle. Les fichiers de vérité écrits par PowerShell (`[System.IO.File]::WriteAllLines`)
+portent des fins de ligne **CRLF**, les productions récupérées via l'API sont en **LF** ; `comm`
+compare octet à octet, `grep -F` tolérait l'écart, d'où un contrôle d'existence à 0 alors que le
+set-diff criait 22. **Normaliser (`tr -d '\r'`) des DEUX côtés avant `comm`**, et si `missed` et
+`extra` sont égaux et non nuls avec des lignes qui se ressemblent : suspecter l'instrument avant
+d'accuser le modèle. Un vérificateur qui n'a pas été testé à vide n'est pas un vérificateur.
+
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
 Sweep de `myia_vllm/docs/` (74 fichiers, 152 appels mini) pour marqueurs d'état périmé
@@ -138,10 +169,14 @@ Prompt par shard (blocs de ≤50 lignes, inline — le canal fichier est HS) :
    d'apparition. Si aucune, réponds juste AUCUNE. Ne commente pas, n'ajoute rien. »
 
 Vérification (mécanique, par shard) :
-  grep '<MOTIF>' <shard> | sort > truth ; sort <sortie_mini> > got
+  # 1. NORMALISER les fins de ligne des DEUX côtés (CRLF PowerShell vs LF API)
+  tr -d '\r' < shard | grep '<MOTIF>' | sort > truth
+  tr -d '\r' < sortie_mini | sort > got
   missed=$(comm -23 truth got | wc -l)   # rappel
   extra=$(comm -13 truth got | wc -l)    # altération/fabrication
   # + contrôle existence : chaque ligne rendue doit être dans truth (grep -Fxq)
+  # ⚠ Si missed == extra > 0 et que les lignes se ressemblent : l'instrument est en
+  #   cause (CRLF/BOM/encodage), pas le modèle. Tester le comparateur à vide d'abord.
 
 Règle de retry : si missed>0 OU extra>0 → relancer SEUL ce shard (1 appel), ou le
 traiter en grep. Jamais d'acceptation sur auto-déclaration.
