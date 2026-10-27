@@ -235,6 +235,41 @@ mécaniquement** uniquement parce que le mot de sévérité est littéral dans l
 **Artefact réutilisable** (ce n'est pas qu'une démo) : la taxonomie à 5 types couvre l'intégralité
 des 1 481 lignes des deux loggers, ce qui donne la grille de tri des prochains cycles.
 
+### Neuvième mesure — fan-out sur PROSE (intercom) : la limite de la classe, et pourquoi l'étage de vérification n'est pas optionnel (27/10 soir)
+
+Premier test du scénario « secrétaire du dashboard » sur du texte réel : 4 messages intercom
+(15 lignes), critère multi-marqueurs énuméré (`[ASK]`, `Q4`, `Registre`, `registre`), oracle
+`grep` = 4 lignes. Le corpus est de la **prose à lignes-paragraphe** (1-2 Ko par ligne), pas des
+logs — et c'est là que la classe plie.
+
+**Tentative 1 (lignes-paragraphe telles quelles)** : 13 lignes rendues pour 4 attendues —
+rappel 3/4 mais **précision 3/13 = 23 %** : 8 faux positifs sans aucun marqueur (le modèle rend
+« le message pertinent », pas « la ligne »), 1 troncature (la ligne `[DONE]` réduite à sa
+dernière phrase), 1 fabrication (`Q4` seul).
+
+**Parade mécanique** : découpage en phrases avant le fan-out (`-split '(?<=\.) (?=[A-Z0-9«\[])``)
+→ 43 phrases ≤ 211 caractères.
+
+**Tentative 2 (phrases)** : précision 23 % → **60 %** (3/5), rappel 3/4, et un **nouveau mode
+d'échec identifié — le marqueur nu** : quand le marqueur est en milieu de phrase entre
+parenthèses (« médiane 86 ms (cible <250, Q4). »), le modèle rend le jeton `Q4` seul au lieu de
+la phrase.
+
+**Verdict final** : l'étage de vérification protocolaire (différence de compte → grep de rappel
+sur le dump déjà constitué pour les shards) livre **4/4**, faux positifs écartés. Le coût de la
+vérification reste une commande `grep` sur un fichier déjà écrit — mais elle est **la différence
+entre utilisable et inutilisable** sur prose.
+
+Règles ajoutées :
+
+1. **La classe verbatim exige des lignes courtes (type log).** Sur lignes-paragraphe : découper
+   mécaniquement en phrases AVANT le fan-out (mesuré : précision 23 % → 60 %).
+2. **Sur prose, l'étage de vérification n'est pas optionnel** — il transforme 60 %/75 % en
+   livrable 100 %. Le producteur n'est jamais son propre vérificateur, et sur prose il FAUT le
+   grep de rappel, pas seulement le contrôle d'existence.
+3. Garde à ajouter au prompt : « ne recopie JAMAIS le marqueur seul — recopie la phrase entière
+   qui le contient » (mode marqueur nu, mesuré 2 fois).
+
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
 Sweep de `myia_vllm/docs/` (74 fichiers, 152 appels mini) pour marqueurs d'état périmé
