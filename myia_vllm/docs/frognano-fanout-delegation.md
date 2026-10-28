@@ -270,6 +270,25 @@ Règles ajoutées :
 3. Garde à ajouter au prompt : « ne recopie JAMAIS le marqueur seul — recopie la phrase entière
    qui le contient » (mode marqueur nu, mesuré 2 fois).
 
+### Dixième mesure — filtre tabulaire littéral : le mini juge la pertinence au lieu de la colonne (28/10 01:06 locale)
+
+Corpus : page 1 de l'inbox (50 lignes de tableau — ID / De / À / Sujet / Priorité / Date), critère
+**littéral et sans ambiguïté** : « recopie chaque ligne dont la colonne À vaut exactement
+`myia-po-2025:vllm` ». Oracle `grep` sur le corpus = **4**.
+
+Résultat : **2/4 — rappel 50 %**. Shard 1 rend 1 ligne sur 3 (rate l'ACK de dispatch et l'ASK
+token HF) ; shard 2 rend la bonne ligne mais **perd la barre verticale initiale** (troncation de
+bord). Les deux lignes ratées sont précisément celles qu'un lecteur jugerait « déjà résolues /
+non actionnables » : le modèle a filtré sur la **pertinence perçue**, pas sur la valeur de colonne.
+Étiquette `model_used: frognano-4b` sur les 2 appels (routage correct, échec de tâche).
+
+Livrable : l'étage de vérification (grep de rappel sur le corpus) rend **4/4**.
+
+Règle ajoutée : **sur un tableau de lignes longues et quasi identiques, le critère littéral ne
+suffit pas** — le mini applique un jugement de pertinence. Filtrer par `grep`/`Select-String` sur
+la colonne (gratuit), ou accepter explicitement ~50 % de rappel avec grep de rappel systématique.
+La classe verbatim garde sa valeur mesurée sur **corpus de logs** (lignes courtes, 98,6-100 %).
+
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
 Sweep de `myia_vllm/docs/` (74 fichiers, 152 appels mini) pour marqueurs d'état périmé
