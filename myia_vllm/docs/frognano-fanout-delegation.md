@@ -6,11 +6,11 @@ usages où le modèle est **réellement fiable**, livrer des **sous-agents tout 
 Critère d'acceptation d'un usage : **le coût de vérification doit rester très inférieur au coût
 de faire soi-même**.
 
-## 1. Classes d'usage (état mesuré au 29/10 — 20 mesures)
+## 1. Classes d'usage (état mesuré au 29/10 — 21 mesures)
 
 | Classe | Statut | Preuve |
 |---|---|---|
-| **Extraction verbatim en fan-out** (sortie = sous-ensemble exact de l'entrée) | **VALIDÉE sur corpus de logs** | 72/73 au pilote, 216/217 puis 100 % sur 735 lignes, 49/49 sur région inédite |
+| **Extraction verbatim en fan-out** (sortie = sous-ensemble exact de l'entrée) | **VALIDÉE sur corpus de logs** | 72/73 au pilote, 216/217 puis 100 % sur 735 lignes, 49/49 sur région inédite, **18/18 post-reboot (21e mesure)** |
 | **Étiquetage d'un champ structurel** (préfixer chaque ligne par la valeur de son champ, p.ex. `machine=`) | **VALIDÉE — 30/30** | 11e mesure : 30 lignes, distribution recomptée identique, **seau « AUCUN » (champ absent) traité correctement** |
 | Tally catégoriel, étiquette neutre (`FIN`, pas `DONE`) | Validée sur 1 forme (8 lignes, 2/2 exact) | cause `DONE` confirmée 25/10 20:05Z |
 | Extraction verbatim sur **prose** (lignes-paragraphe de 1-2 Ko) | **CONDITIONNELLE** — 23 % seul, 60 % après découpage en phrases, **100 % avec l'étage de vérification** | 9e mesure |
@@ -293,6 +293,38 @@ Règle ajoutée : **sur un tableau de lignes longues et quasi identiques, le cri
 suffit pas** — le mini applique un jugement de pertinence. Filtrer par `grep`/`Select-String` sur
 la colonne (gratuit), ou accepter explicitement ~50 % de rappel avec grep de rappel systématique.
 La classe verbatim garde sa valeur mesurée sur **corpus de logs** (lignes courtes, 98,6-100 %).
+
+### Vingt-et-unième mesure — R1 sur région **inédite** post-reboot, 18/18 exacte (29/10 23:0x locale)
+
+Corpus : `myia_vllm/_logs/gpu-governor.log`, **capture par commande** (`tail -40`), 40 lignes
+couvrant 29/10 03:07→23:02 — donc une région **postérieure** à celle balayée par le pilote
+(06-11/10) : jamais vue. Motif `WARN`. Oracle `grep -c` sur le corpus = **18**.
+
+Résultat : **18/18 — 0 manquante, 0 extra** (`Get-Content` des deux côtés, `Trim`, `Compare-Object`
+de contenu ensembliste). Étiquette `model_used: frognano-4b` contrôlée sur la réponse. Le corpus
+était **collé depuis la sortie de la commande**, pas retapé : l'écart que le diff avait attrapé
+au cycle précédent (19ᵉ mesure) **ne s'est pas reproduit** — la faute de l'appelant n'a pas
+dû se reproduire parce qu'elle n'a pas eu lieu.
+
+Trois apports de cette mesure, au-delà du score :
+
+1. **La classe tient après un reboot machine.** Le log du gouverneur repart d'un état réinitialisé
+   (le gouverneur a écrit `INFO boot change -> state reset` à 22:27 locale) — le corpus contient
+   donc un **`INFO boot change`** au milieu des `HEARTBEAT`, ligne inhabituelle pour un filtre
+   `WARN`. Le mini l'a **correctement exclue** : les 18 rendues sont exactement les 18 `WARN`,
+   la ligne `INFO` et les 21 `HEARTBEAT` sont absentes. Un motif qui apparaît sur une ligne
+   atypique ne déclenche pas de sur-rendu.
+2. **La recette R1 est donc re-validée trois fois de suite sur logs** (72/73 puis 216/217 puis
+   100 % puis 49/49 puis 18/18), et son mode d'échec connu reste vrai : *la dernière ligne d'un
+   shard au rendu le plus long peut manquer*. Ici elle n'a pas manqué — la ligne `WARN` la plus
+   tardive (`05:22:04`) est présente, et le `HEARTBEAT` final (`23:02:03`) est correctement
+   absent. Le risque documenté reste donc **possible, pas systématique**.
+3. **Le `grep` de rappel reste le juge.** 18/18 est *la sortie du mini confrontée à la source* ;
+   le nombre attendu vient d'un `grep` indépendant, jamais d'un recomptage par le mini (le mot
+   `DONE` sous-compte — cf. `reference-mini-counting-frontier`).
+
+Ce que cette mesure **ne** prouve pas : rien sur la prose, sur le sémantique, ni sur un seuil
+sur une valeur de champ — les classes refusées le restent (cf. §1).
 
 ### Deuxième démo — sweep entropie docs (25/10 soir, `mini-sweeper`)
 
