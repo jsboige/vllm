@@ -6,12 +6,17 @@ usages où le modèle est **réellement fiable**, livrer des **sous-agents tout 
 Critère d'acceptation d'un usage : **le coût de vérification doit rester très inférieur au coût
 de faire soi-même**.
 
-## 1. Classes d'usage (état mesuré au 25/10 soir)
+## 1. Classes d'usage (état mesuré au 29/10 — 20 mesures)
 
 | Classe | Statut | Preuve |
 |---|---|---|
-| **Extraction verbatim en fan-out** (sortie = sous-ensemble exact de l'entrée) | **VALIDÉE (pilote ci-dessous)** | 72/73 lignes, 0 fabrication, 0 altération |
+| **Extraction verbatim en fan-out** (sortie = sous-ensemble exact de l'entrée) | **VALIDÉE sur corpus de logs** | 72/73 au pilote, 216/217 puis 100 % sur 735 lignes, 49/49 sur région inédite |
+| **Étiquetage d'un champ structurel** (préfixer chaque ligne par la valeur de son champ, p.ex. `machine=`) | **VALIDÉE — 30/30** | 11e mesure : 30 lignes, distribution recomptée identique, **seau « AUCUN » (champ absent) traité correctement** |
 | Tally catégoriel, étiquette neutre (`FIN`, pas `DONE`) | Validée sur 1 forme (8 lignes, 2/2 exact) | cause `DONE` confirmée 25/10 20:05Z |
+| Extraction verbatim sur **prose** (lignes-paragraphe de 1-2 Ko) | **CONDITIONNELLE** — 23 % seul, 60 % après découpage en phrases, **100 % avec l'étage de vérification** | 9e mesure |
+| Tri **sémantique** (regrouper par type de message) | **CONDITIONNELLE — oracle obligatoire** | 8e mesure : bonne partition, mais sur-fusion des deux sévérités, attrapée seulement par le littéral |
+| Filtre tabulaire par critère littéral sur une colonne | **REFUSÉE — 2/4** | 10e mesure : le mini substitue un jugement de pertinence au match de colonne |
+| **Seuil sur la valeur d'un champ** (`≥`, `<`, « un nombre à 3 chiffres ») | **REFUSÉE — 1/4, 19 faux positifs** | 20e mesure 29/10 : même phrasé en nombre de chiffres, la sélection échoue (les copies restent exactes) |
 | Comparaison numérique, seuils, min/max | **REFUSÉE** | échecs dès 16 lignes (24/10, 5 passes) |
 | Agrégation arithmétique (somme, moyenne) | **REFUSÉE** | axe A3, tout le tier 4B testé |
 | Verdict / jugement / auto-déclaration | **REFUSÉE** | règle flotte : producteur ≠ vérificateur |
@@ -394,9 +399,12 @@ doit exister byte-exact) et agis dessus. Coût parent : ~0 contexte, la validati
 3. ✅ **Cas sémantique mesuré** (huitième démo, 27/10) — critère non littéral, le seul usage où
    grep est **structurellement** incapable. Règle ajoutée : sémantique **avec oracle obligatoire**
    (partition contre les comptes du corpus), sinon la sortie n'est pas vérifiable.
-4. **Nudge v2** — le texte déployé (roo-extensions#4374) peut être lu comme « délègue ton `grep` »,
-   ce qui produit exactement le mauvais usage. La v2 doit porter la bascule : **critère littéral et
-   local → `grep` ; critère sémantique ou source distante → mini, avec oracle**.
+4. ✅ **Nudge v2** — poussée sur `roo-extensions#4386`, tête `0f94f193` (29/10) : ligne de jugement
+   (littéral+local → `grep`), prérequis corrigé (4 agents, commande de vérification **ancrée sur le
+   titre** — l'ancienne se comptait elle-même : 2 au lieu de 1), oracle obligatoire sur le
+   sémantique, **tout seuil sur une valeur de champ = regex côté appelant**. En attente de la
+   re-review ai-01 (la `CHANGES_REQUESTED` du 27/10 est adressée point par point dans le commentaire
+   du 29/10).
 5. **Presets sk-agent dédiés** (`mini-log-triager`) avec `max_tokens` relevé (cf. miss du
    shard B).
 6. **Driver script** (pattern `nb_audit_driver.py` d'ai-01) pour les corpus > 1 000 lignes et
@@ -412,6 +420,160 @@ Comparaison numérique (échec dès 16 lignes), agrégation arithmétique, verdi
 d'étiquettes chargées (`DONE`) sans renommage, blocs > 50 lignes par appel, tout passage de
 fichier (canal HS : open_terminal DNS, markitdown sans LibreOffice — texte inline court seul).
 
+## 8. Le chemin d'adoption — 8 délégations calibrées, prêtes à copier
+
+**Mandat user 29/10** : « donner le chemin qui permettra au modèle de rentrer dans les habitudes des
+autres agents, typiquement par des délégations de travail fastidieux à faire et facile à relire et
+corriger au besoin ». Décision rappelée le même jour : **FrogNano reste un modèle d'appoint, jamais
+un failover de cascade** — il est appelé **volontairement**, sur les tâches ci-dessous, jamais en
+repli automatique.
+
+**Prérequis machine (une fois, ~30 s)** — sans ça le réflexe est inerte et l'agent n'a même pas le
+`subagent_type` :
+
+```powershell
+# 1. les 4 sous-agents, au niveau utilisateur (disponibles dans tous les projets)
+$src = "<clone>/vllm/.claude/agents"; $dst = "$env:USERPROFILE\.claude\agents"
+New-Item -ItemType Directory -Force $dst | Out-Null
+Copy-Item "$src\mini-*.md" $dst -Force
+(Get-ChildItem $dst -Filter "mini-*").Count          # attendu : 4
+# 2. la section nudge, puis REDÉMARRER la session (le global est lu au démarrage)
+#    copier <roo-extensions>/.claude/configs/user-global-claude.md -> ~/.claude/CLAUDE.md
+Select-String "$env:USERPROFILE\.claude\CLAUDE.md" -Pattern '^## Délégation tier mini' | Measure-Object | % Count   # attendu : 1
+```
+
+**La règle qui décide de tout, avant chaque recette** : *critère littéral + corpus local → `grep`,
+toujours.* Les 8 recettes ci-dessous sont choisies pour être **hors d'atteinte de grep** (critère
+sémantique, source distante, volume qui coûterait la fenêtre) **ou** pour être **vérifiables par
+grep en une commande**. Le coût de vérification est toujours ≪ le coût de lire soi-même — c'est le
+critère d'acceptation du mandat, et c'est ce qui distingue ces recettes d'un « délègue ton grep ».
+
+### R1 — Inventaire de lignes par motif (la recette phare, 98,6-100 %)
+
+*Fastidieux* : 700 lignes de log pour en extraire les 217 qui portent un mot.
+*Vérifiable en une commande.*
+
+```text
+Bloc de log ci-dessous. Recopie EXACTEMENT (copier-coller, sans rien changer) chaque ligne qui
+contient <MOTIF>. Une ligne par ligne, dans l'ordre d'apparition. Si aucune, réponds juste AUCUNE.
+Ne recopie AUCUNE ligne qui ne contient pas <MOTIF>. Ne commente pas, n'ajoute rien.
+```
+
+```powershell
+# vérification (normaliser les fins de ligne des DEUX côtés)
+$truth = @(Get-Content $bloc | Where-Object { $_ -match '<MOTIF>' } | % Trim)
+$got   = @(Get-Content $sortie | Where-Object { $_.Trim() } | % Trim)
+"manquantes=$(@($truth | ? { $got -notcontains $_ }).Count) extra=$(@($got | ? { $truth -notcontains $_ }).Count)"
+```
+
+**Échec connu** : la **dernière ligne** d'un shard au rendu le plus long peut manquer (2 fois de
+suite, reproductible ; pas une règle générale). Remède : relancer ce seul shard, ou le traiter en
+`grep`. Blocs de **≤50 lignes**, jamais plus.
+
+### R2 — Étiquetage par champ structurel (30/30, la plus fiable après R1)
+
+*Fastidieux* : répartir 200 lignes par siège/workspace/modèle.
+*Vérifiable* : appariement contre la valeur du champ dans la source.
+
+```text
+Pour chaque ligne ci-dessous, préfixe-la par la valeur de son champ `machine=` suivie de `| `,
+ou par `AUCUN| ` si la ligne n'a pas de champ `machine=`. Rends une seule ligne par ligne d'entrée,
+en conservant la ligne d'origine intacte après le préfixe.
+```
+
+**Pourquoi elle marche** : le critère est **structural** (un seul siège possible par ligne), pas
+jugé. C'est exactement ce qui la sépare du filtre tabulaire à 2/4 (R-hors périmètre), où le modèle
+devait décider de la pertinence.
+**Piège** : une étiquette **déjà présente comme mot dans la ligne** est sautée — le modèle rend la
+ligne telle quelle. Si l'étiquette à produire existe déjà dans le texte, la classe n'est pas
+mesurable (17e mesure) : choisir un préfixe absent du corpus.
+
+### R3 — Tri sémantique avec oracle obligatoire
+
+*Fastidieux* : 1 500 lignes de logs, combien de types de messages distincts ?
+*Inatteignable par grep* : la taxonomie n'existe pas encore, aucune regex ne peut la deviner.
+
+```text
+Regroupe les lignes ci-dessous par type de message. Deux lignes sont du même type si elles ne
+diffèrent que par des valeurs variables (horodatage, nombres, températures). Rends une ligne par
+groupe : `G<n> [numéros] <description courte>`. Chaque numéro d'entrée doit apparaître exactement
+une fois.
+```
+
+**Oracle obligatoire** : recompter la partition contre le corpus (`somme des tailles de groupe ==
+nombre de lignes`, chaque index une seule fois). Sans oracle, la sortie n'est **pas** vérifiable —
+c'est la limite de la classe, pas un défaut du modèle (8e mesure : une sur-fusion invisible).
+
+### R4 — Pré-tri d'une source distante (inbox, dashboard, issues)
+
+*Fastidieux* : 50 messages de tableau à trier ; *impossible à grep en local*.
+*Vérifiable* : contrôle d'existence verbatim de chaque citation + compte.
+
+```text
+Parmi les lignes ci-dessous, recopie celles qui concernent <sujet>. Recopie la ligne ENTIÈRE,
+telle quelle, sans la reformuler ni la tronquer. Si aucune, réponds AUCUNE.
+```
+
+⚠ **Mesuré 2/4 sur un tableau à colonne littérale** : le mini filtre sur la pertinence perçue, et
+rate précisément les lignes qu'un lecteur jugerait « déjà résolues ». Ne pas utiliser cette recette
+quand un critère de **colonne** suffit (→ `grep`/`Select-String`) ; la réserver au **sujet** (non
+littéral), et **toujours** clore par le compte + le grep de rappel.
+
+### R5 — Prose : découper AVANT de déléguer
+
+*Fastidieux* : 4 messages de 1-2 Ko chacun, trouver les phrases qui portent un marqueur.
+
+```powershell
+# 1. découpage mécanique en phrases (fait par l'appelant, pas par le mini)
+$phrases = $texte -split '(?<=\.) (?=[A-Z0-9«\[])'
+# 2. puis R1 sur les phrases
+```
+
+**Mesuré** : 23 % de précision sur lignes-paragraphe telles quelles → **60 %** après découpage →
+**100 %** avec l'étage de vérification. Garde à ajouter au prompt : « ne recopie **jamais** le
+marqueur seul — recopie la phrase entière qui le contient » (mode « marqueur nu », observé 2 fois).
+
+### R6 — Sweep de docs pour marqueurs de péremption (`mini-sweeper`)
+
+*Fastidieux* : 74 fichiers de docs à balayer pour « quelle doc décrit encore l'ancienne prod ? ».
+*Vérifiable* : `grep -rliE` de rappel, une commande.
+
+```text
+Pour chaque fichier ci-dessous, recopie les lignes qui mentionnent l'une de ces chaînes :
+<marqueur1>, <marqueur2>, <VARIANTE_MAJUSCULE>. Préfixe chaque ligne par son numéro de ligne.
+N'invente aucune citation : si un fichier n'en contient aucune, réponds `AUCUNE` pour ce fichier.
+```
+
+**Mesuré** : rappel fichier **50 %** (miss concentrés sur la **casse**), précision sauvée par la
+vérification, 1 doc réellement en retard sur 13 items. **Énumérer les variantes de casse exactes**
+dans le prompt, et clore par `grep -rliE '<marqueurs>' <dir>` — c'est LE geste « valider la liste
+de l'horde en fin de session ».
+
+### R7 — Hygiène git (`mini-sweeper`, lecture seule)
+
+*Fastidieux* : 20 branches, 40 docs, distinguer « fusionnée » de « à fast-forwarder » de « à
+supprimer ». *Vérifiable* : `git branch --merged`, `git rev-list --count`.
+Démo du 26/10 : 10 candidats avec preuve verbatim, dont 6 branches fusionnées, `main` 103 commits
+derrière, 3 docs contredisant la prod réelle (dont `DEPLOYMENT_GUIDE.md:5`). Chaque item re-vérifié
+individuellement avant le geste — **la suppression reste au parent**, jamais au mini.
+
+### R8 — Veille courte (`mini-web-research`)
+
+*Fastidieux* : navigation longue pour un fait précis. *Vérifiable* : rouvrir l'URL citée.
+À réserver aux faits **courts et vérifiables** ; toute synthèse multi-sources repasse en tier
+medium, avec un oracle distinct.
+
+### Le geste quotidien (ce qui fait entrer le modèle dans les habitudes)
+
+1. **Début de session / tâche longue** : si un balayage >100 items serait utile mais ne sera jamais
+   fait **et** qu'aucun outil déterministe n'y répond seul → lâcher la horde en arrière-plan.
+2. **Pendant** : faire son propre travail (c'est là que se paie la préservation de contexte).
+3. **Fin** : valider la liste — un `grep` de rappel, un recompte de partition, un `comm`. Puis agir.
+
+**Ce qu'on ne délègue jamais** : un verdict, un comptage, une agrégation, un seuil sur une valeur
+de champ, une suppression, un merge. Le mini **lit** et **recopie** ; le parent **juge** et **agit**.
+
 ---
+
 Pilote et protocole : ce document. Mesures sous-jacentes : `_iteration_log/po2023_sidecar_extract/NOTES.md`
 (échecs numériques), mémoire `reference-mini-counting-frontier` (cause `DONE`), `reference-mini-file-channel-po2025` (canal).
