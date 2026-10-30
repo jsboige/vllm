@@ -4899,3 +4899,46 @@ Le KV monte d'environ 1,6 point toutes les 10 s, soit ~1 400 tokens/s. C'est la 
 - Chantier Lean (#787) : W4 « Hermes + Nanoclaw » est adressé à « ai-01 ». Ce sont les lanes `hermes-agent` et `nanoclaw` ; la lane vllm ne s'en saisit pas, et peut fournir les comptes par client vus de `:5002` sur demande.
 
 **Producteurs.** nbaudit `ok:true` à 18:05:58Z, vague `Image/`. G: OK (616 Go libres, 84 %). Prouveur : aucune passe. `gh` avait dérivé sur `myia-ai-01` cette fois ; remis sur `jsboige` avant toute écriture.
+
+## 30/10 20:1xZ — Cycle de surveillance : cycle calme, une mini-rafale de prefill tenue, zéro 500 depuis 6 jours, zéro 429 en 7 jours
+
+**Prod** (20:11Z, 8 h 10 après le boot) : health 200 en 6,2 ms, RC=0, `StartedAt` 12:01:30Z inchangé, 3/3 Up. VRAM **22 769 / 21 674 / 45 MiB** (sous 23 000). `/dev/shm` 51 % (33G), commit hôte **65,4 %**. KV 37 %, 2 en cours, 0 en attente. **OOM 0 sur un segment vivant de 5 000 lignes** (l'instrument corrigé au cycle précédent voit bien des lignes).
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 18:11Z | 68,2 % | 79,4 % | 93,4 % | 7 |
+| **20:11Z** | **73,6 %** | **76,7 %** | **93,9 %** | **7** |
+
+204,21 M tokens de prompt, 2,23 M générés depuis le boot. Aucune préemption nouvelle en 2 h.
+
+**Télémétrie GPU (#273, PR #286)** : 69 enregistrements depuis 19:05Z, **69 avec le champ `gpu`**, 0 `gpu_err`. Le champ s'appelle `gpu` (liste `{i, util, pw}`), pas `gpu01` : un premier comptage sur `gpu01` rendait 0 sur 69, faux négatif d'instrument, corrigé avant publication.
+
+### Mini-rafale de prefill : 19:22:20 → 19:24:20Z (~2 min)
+
+L'heure d'une ligne du watchdog est le **début** de son cycle : le `WEDGE fail 1/2` de 19:22:18Z couvre la sonde 19:22:18 → 19:23:48Z. Journal moteur pendant ce temps : décodage **0,2 à 1,3 t/s**, KV **6,3 → 58,7 %**, jusqu'à 4 en attente ; « Avg prompt throughput » de 15 114 / 5 191 / 6 443 t/s sur trois fenêtres de 10 s ⇒ **~270 K tokens prefill** en deux minutes. `RECOVERED` à 19:24:18Z, décodage revenu à 177 t/s à 19:24:30Z. Pas de restart, comportement attendu de v6.2. Ce n'est pas la condensation (son appel local a fini à 19:21:22Z, avant la rafale).
+
+Sur les 717 fenêtres de 10 s depuis 18:11Z : KV max 83,3 %, attente max 4, 41 fenêtres de décodage < 5 t/s avec des requêtes en cours (prefills courts dispersés).
+
+### Condensation (depuis 18:00Z)
+
+| déclenchement | issue | durée |
+|---|---|---|
+| 18:18:32Z | primaire coupé, repli cloud OK (18:20:30/53Z) | 90 s |
+| 18:27:09Z | repli cloud OK, disjoncteur **OPENED** (18:29:05Z) | — |
+| 19:10:03Z | HALF-OPEN, primaire coupé, repli cloud OK | 90 s |
+| **19:19:56Z** | **primaire RÉUSSI**, disjoncteur RESET (19:21:22Z) | **86 s** |
+| 19:45:48Z | sauté, verrou tenu (#3782) | — |
+| 20:03:28Z | repli cloud OK (20:05:26/50Z) | ~118 s |
+
+Le seul succès local, en 86 s, s'est fait sur un moteur presque vide (1-4 en cours, KV 2-28 %). Le temps dont le primaire a besoin tombe donc **de part et d'autre** du budget fixe de 90 s. C'est cohérent avec #4434.
+
+### Trafic et sécurité (18:11 → 20:14Z, 687 lignes, 5,7 req/min)
+
+- **Statuts** : 662 × 200, 23 × 401, 2 × 400. Attribution hub : po-2023 163, po-2024 73, ai-01 25 ; **po-2027 et po-2028 : 0 en 2 h** ; 426 sans en-tête (site, web1/web2, condensation, sondes).
+- **400 window+1** : **1 nouveau** (po-2024, 18:45:06Z, 966 702 octets). Celui de 18:15:07Z était déjà compté au cycle précédent. Ils étaient 9 entre 16:11 et 18:15Z.
+- **401** : collecteur Go `116.202.50.2` (`1f7f6080cb65`) ×21, cadence 5-6 min inchangée. Scanner **`2.27.68.12`** (« ISO9000-IQC-Probe/1.0 ») : 1 sonde `/v1/models` à 18:26:13Z, clé inconnue `085dc35c14f0`, 401. Requêtes **sans en-tête** venant de la machine (empreinte `c627c09c14e5` = `sha256("NONE")`, piège connu) : curl/urllib sur `/v1/models`, sans impact.
+- **IP avec des 200** : rien de nouveau. `82.66.89.184` (carte §5) : rien depuis 16:57Z.
+- **500 : aucun depuis le 24/10 17:50:12Z.** Les 55 du journal (23/10 10:34Z → 30/10) sont tous datés du 23 et du 24/10, c'est-à-dire des plantages sur la course du tier (« EngineCore encountered an issue »). L'overlay `tierpin` (PR #176) tient donc depuis **6 jours**, sans nouvel assert : son critère de retrait n'est pas atteint.
+- **429 : aucun sur 43 981 requêtes en 7 jours** (statuts 200/401/400/500/404 seulement). Fenêtre 18:25:43Z ±3 min : 27 × 200, 2 × 401. La bannière 429 « Server is temporarily limiting requests » que po-2028 compare entre sièges ne naît donc pas à `:5002`. Versé sur `workspace-claudish`.
+
+**Producteurs.** nbaudit `ok:true` à 20:05:54Z, vague `Image/`, 0 échec consécutif. G: OK (606 Go libres, 84 %). Prouveur : aucune passe.
