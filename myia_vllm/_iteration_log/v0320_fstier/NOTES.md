@@ -4942,3 +4942,76 @@ Le seul succès local, en 86 s, s'est fait sur un moteur presque vide (1-4 en co
 - **429 : aucun sur 43 981 requêtes en 7 jours** (statuts 200/401/400/500/404 seulement). Fenêtre 18:25:43Z ±3 min : 27 × 200, 2 × 401. La bannière 429 « Server is temporarily limiting requests » que po-2028 compare entre sièges ne naît donc pas à `:5002`. Versé sur `workspace-claudish`.
 
 **Producteurs.** nbaudit `ok:true` à 20:05:54Z, vague `Image/`, 0 échec consécutif. G: OK (606 Go libres, 84 %). Prouveur : aucune passe.
+
+## 30/10 22:1xZ — Cycle de surveillance : saturation soutenue par trois sièges du hub depuis 21:00Z, tenue sans restart ; la troncature déterministe du statut touche 70 % des condensations
+
+**Prod** (22:11Z, 10 h 10 après le boot) : health 200 en 8,5 ms, RC=0, `StartedAt` 12:01:30Z inchangé, 3/3 Up. VRAM **22 766 / 21 674 / 45 MiB** (sous 23 000). `/dev/shm` 51 % (33G), commit hôte **65,2 %** (marge 141,7 Go). **OOM 0 sur un segment vivant de 5 000 lignes** (18:31:57 → 22:11:05Z).
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 20:11Z | 73,6 % | 76,7 % | 93,9 % | 7 |
+| **22:11Z** | **68,4 %** | **81,1 %** | **94,0 %** | **13** |
+
+275,19 M tokens de prompt (+71,0 M en 2 h), 2,85 M générés. Sur l'intervalle seul, recalculé à partir des pourcentages arrondis du cycle précédent (donc à ±0,2 point près) : **GPU ~53 %, combiné ~94 %**. Le cache GPU ne suffit plus à garder les sessions ; **le tier RAM + fs sert ~29 M tokens en 2 h** et tient le taux combiné.
+
+### Régime : saturation KV soutenue à partir de 21:00Z
+
+| heure | fenêtres de 10 s | KV moyen | génération moyenne | fenêtres KV ≥ 90 % |
+|---|---|---|---|---|
+| 18h | 169 | 17,1 % | 64,9 t/s | 0 |
+| 19h | 357 | 25,1 % | 83,0 t/s | 0 |
+| 20h | 356 | 39,2 % | 70,3 t/s | 10 |
+| **21h** | **361** | **80,3 %** | **100,1 t/s** | **128** |
+
+À 22:00-22:11Z le régime continue (KV 57-94 %, 4-8 en cours, jusqu'à 2 en attente). KV **100 % à 21:46:05Z**, attente max 4. Les **6 préemptions nouvelles** tombent probablement dans cette fenêtre, mais elles ne sont pas datables (ni ligne de log, ni champ de télémétrie).
+
+**Qui charge** (journal `error_sources` depuis sa rotation de 20:34:40Z, 631 lignes) :
+
+| siège (en-tête hub) | requêtes | corps médian | corps max | corps > 500 Ko |
+|---|---|---|---|---|
+| po-2024 | 163 | 657 Ko | 780 Ko | 144 |
+| po-2023 | 79 | 609 Ko | 798 Ko | 57 |
+| po-2027 | 62 | 679 Ko | 766 Ko | 62 |
+| ai-01 | 27 | 337 Ko | 389 Ko | 0 |
+| sans en-tête | 300 | 0 | 134 Ko | 0 |
+
+Trois sièges en sessions longues (~150-170 K tokens par tour). **po-2027 revient** (0 requête au cycle précédent), po-2028 reste à 0. Ce sont des tours d'agents dont le préfixe est en grande partie déjà vu, et non des re-prefills complets : le taux combiné reste à ~94 % sur l'intervalle.
+
+**Une seule sonde ratée** : `WEDGE fail 1/2` à 20:31:19Z (début de cycle). Pendant ce temps, journal moteur 20:31:35 → 20:33:54Z : génération **0,2 à 1,1 t/s**, KV **12,9 → 90,2 %**, prefill calculé visible seulement à 20:32:24Z (10 295 t/s) et à 20:33:54Z (17 355 t/s). Le reste est du chargement depuis les tiers, qui n'apparaît pas dans « Avg prompt throughput ». Retour à 162 t/s à 20:34:14Z, **pas de restart**. Aucun autre `fail` jusqu'à 22:11Z, malgré la saturation : 3 873 sondes OK sur le segment lu.
+
+### Condensation (20:20 → 22:13Z)
+
+| déclenchement | résumé | statut | après |
+|---|---|---|---|
+| 20:57:03Z | local, 50 s | coupé à 90 s → cloud OK | — |
+| 21:14:25Z | cloud direct | cloud OK | **troncature déterministe** |
+| 21:36:52Z | local, 64 s | coupé à 90 s → cloud OK | **troncature déterministe** |
+| 22:06:35Z | local, 51 s | coupé à 90 s → cloud OK | **troncature déterministe** |
+
+**Fréquence de la troncature, 7 jours** (tous les `roosync-*.log` d'ai-01, lignes dédoublonnées, comptées par date du préfixe) :
+
+| jour | condensations | « did not converge under 15KB » | « Deterministic truncation applied to Status » |
+|---|---|---|---|
+| 24/10 | 71 | 58 | 57 |
+| 25/10 | 56 | 44 | 44 |
+| 26/10 | 58 | 48 | 47 |
+| 27/10 | 88 | 52 | 54 |
+| 28/10 | 53 | 38 | 37 |
+| 29/10 | 97 | 63 | 63 |
+| 30/10 (→ 22:1xZ) | 41 | 24 | 23 |
+| **total** | **464** | **327** | **325 (70 %)** |
+
+Le commentaire du 29/10 sur #4434 en citait 6, d'après une lecture ciblée. Les deux colonnes concordent à ±2, ce qui contre-mesure le comptage, et le cas de 22:08:53Z porte les deux lignes à la même seconde. **Date d'apparition non établie** : la rétention locale commence le 23/10 (30 condensations, 17 troncatures), qui est donc le début du journal conservé, pas celui du phénomène. Le lien avec le mécanisme « garde la fin, sacrifie l'en-tête » reste SUPPOSÉ. Versé sur [#4434 c.6534649889](https://github.com/jsboige/roo-extensions/issues/4434#issuecomment-6534649889).
+
+### Trafic et sécurité
+
+- **Statuts (2,2 h)** : 765 × 200, 23 × 401, **0 × 400** (aucun window+1 ce cycle), 0 × 500, 0 × 429.
+- **IP avec des 200 (7 h)** : rien de nouveau. Site `90.65.170.144` 1 388, local sans XFF 910, web1 13, `82.66.89.184` 11, web2 6. `82.66.89.184` (poste parisien du user, carte §5) passe **chaque jour depuis le 25/10**, avec un client OpenAI/JS 4.104.0, la clé MEDIUM (`be312daf7c1c`) et des paires de corps ~20 Ko + ~55 Ko : c'est le profil de la condensation RSM.
+- **401** : collecteur Go `116.202.50.2` avec `1f7f6080cb65` (ancienne MEDIUM publique) ×20. **Adresse nouvelle `37.230.119.250`** : même UA Go et même clé morte, 4 sondes `/v1/models` (21:55:54 → 22:07:52Z), toutes en 401. C'est le même collecteur depuis une autre sortie, sans inférence, donc pas d'alerte.
+
+### Coordination
+
+- Mention hermes du 29/10 (« `:5002` ne sert pas `qwen3.6-35b-a3b` ») : close par hermes lui-même. `/v1/models` rend `['qwen3.6-35b-a3b', 'swift-1.5-27b']`. Marquée lue.
+- `global` : 3 `[ASK-USER]` d'autres lanes (CoursIA-2, CoursIA-3, CoursIA po-2027), rien pour vllm.
+
+**Producteurs.** nbaudit `ok:true` à 22:05:49Z, vague `Image/`, 0 échec consécutif. G: OK (605 Go libres, 84 %). Prouveur : aucune passe.
