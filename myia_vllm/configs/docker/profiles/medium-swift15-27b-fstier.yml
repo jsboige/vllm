@@ -425,8 +425,20 @@ services:
     image: python:3-slim
     container_name: myia_vllm-wedge-telemetry-swift15
     command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
+    # GPU columns (#273): the image ships no nvidia-smi; the `utility` capability
+    # makes the NVIDIA runtime inject it (NVML only, no CUDA context, no VRAM).
+    # Under WSL2 device_ids does not isolate: all 3 GPUs are visible with host
+    # indexes, and the script keeps indexes 0,1. Dry-run 30/10: 0 MiB taken.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu, utility]
     environment:
       - WEDGE_METRICS_URL=http://vllm-medium-swift15-27b:${VLLM_PORT_GLM:-5002}/metrics
+      - NVIDIA_DRIVER_CAPABILITIES=utility
     volumes:
       - ./../../../scripts/monitoring/wedge_telemetry.py:/app/wedge_telemetry.py:ro
       - ./../../../_iteration_log:/out
