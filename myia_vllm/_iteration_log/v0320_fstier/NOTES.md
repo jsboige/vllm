@@ -4837,3 +4837,65 @@ Les sondes décodage du watchdog rendent 200 toutes les 30 s pendant la fenêtre
 - **Hermes** clôt son fil sur la condensation : le budget est en cause, pas le moteur.
 
 **Producteurs.** nbaudit `ok:true` à 16:05:53Z, vague `Image/` en cours. G: OK (630 Go libres). Prouveur : aucune passe. `gh` avait dérivé sur `jsboigeEpita` ; il est revenu sur `jsboige` avant toute écriture.
+
+
+## 30/10 18:1xZ — Cycle de surveillance : rafale de re-prefill (16:58-17:05Z), 400 window+1 ×9, instrument OOM aveugle
+
+**Prod** (18:11Z, 6 h 10 après le boot) : health 200 en 7,3 ms, RC=0, `StartedAt` 12:01:30Z inchangé, 3/3 Up. VRAM **22 963 / 21 674 / 45 MiB** : GPU 0 à 37 MiB du seuil de 23 000, sous le pic connu de 23 600 qui a fait clore Q41 ⇒ Q41 reste close. `/dev/shm` 51 %, commit hôte **64,3 %**. KV 74,5 %, 3 en cours, 0 en attente.
+
+**Hit cumulé** (en tokens, compteurs depuis le boot) :
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 16:11Z | 59,1 % | 76,4 % | 90,3 % | 4 |
+| **18:11Z** | **68,2 %** | **79,4 %** | **93,4 %** | **7** |
+
+160,96 M tokens de prompt, 1,67 M générés depuis le boot.
+
+### Rafale de re-prefill : 16:58:25 → 17:05:51Z (~7,5 min)
+
+Journal moteur (`loggers.py`, toutes les 10 s) :
+
+| phase | décodage | en cours / attente | KV |
+|---|---|---|---|
+| 16:58:25Z | 79 t/s | 2 / 0 | 7,6 % |
+| 16:58:34 → 17:05:41Z | **0,3 à 2,1 t/s** | 3-9 / 1-5 | **monte de 13,7 % à 99,2 %** (17:05:01Z) |
+| 17:05:51Z | 182 t/s | 6 / 4 | 86 % |
+
+Le KV monte d'environ 1,6 point toutes les 10 s, soit ~1 400 tokens/s. C'est la vitesse de prefill calculé du 27B dense. Le « Avg prompt throughput » ne compte un prompt qu'à la fin de son prefill. Il affiche quatre pics : 15 786, 23 032, 14 457 et 19 659 t/s, sur des fenêtres de 10 s. Cela fait **~158 K, 230 K, 145 K et 197 K tokens**, soit ~730 K tokens recalculés en 7,5 min, cohérent avec la montée du KV. Le décodage des requêtes en cours tombe alors à un token par pas d'environ 6 s : 0,4 t/s à 3 requêtes, 2 t/s à 9. **C'est la famine de prefill long documentée, ici en rafale, et non une saturation KV au départ** (KV 8-30 % pendant les deux premières minutes).
+
+- **Watchdog v6.2 correct** : `fail 1/2` à 16:58:41, puis `WEDGE-BUSY` à 17:00:41 et 17:02:41. Les compteurs avançaient, il **n'a pas redémarré**. C'est le cas pour lequel v6.2 a été écrit.
+- **Préemptions 4 → 7** : le pic KV de 99,2 % à 17:05:01Z, suivi de 7 → 5 requêtes en cours à 17:05:11Z, est le seul moment de saturation de la fenêtre. Attribution **par corrélation, SUPPOSÉ** : vLLM ne journalise pas les préemptions à ce niveau (0 occurrence de « preempt » dans le segment vivant).
+- **Qui** : ce sont tous des contextes du hub (Bun, IP du site).
+  - **po-2027** : une session de 819 Ko termine pour la première fois à 17:05:51Z. Elle est donc arrivée pendant la rafale, sans antécédent dans le journal des 10 minutes précédentes.
+  - **po-2024** : un **400 de 1 114 439 octets à 16:58:55Z** (dépassement de fenêtre). Ensuite, un contexte de 855 941 octets, quasi identique à celui qui avait terminé à 16:58:19Z (855 776), termine à 17:07:23Z.
+  - **po-2023** : ses deux sessions de 553 et 630 Ko reprennent juste après.
+
+  Lesquelles étaient des miss de cache n'est **pas établi**.
+- **Piège de lecture établi au passage** : `error_sources.jsonl` horodate `ts` **à la fin de la réponse** (`error_source_capture.py:146`, après `await self.app(...)`). Pendant un arrêt, le journal ne montre donc presque rien : les requêtes en cause apparaissent après. Seuls les 4xx frontaux, rejetés sans prefill, sont horodatés à l'arrivée. Une « absence de trafic » dans ce journal n'est donc une absence d'arrivées que si le moteur était libre. C'était le cas pour le gel du hub de 15:30-15:59Z (KV ≤ 3,3 %), dont la lecture reste valide.
+
+### Instrument OOM aveugle depuis un nombre inconnu de cycles
+
+`docker logs --tail 20000` sur le moteur rendait **0 ligne**. Il y avait 8 918 lignes vivantes : `--tail 9000` en rendait 8 918, `--tail 10000` en rendait 0. Le « OOM 0 » des cycles précédents était donc un comptage sur un flux vide. Re-mesuré sur le segment vivant (8 879 lignes, 14:38 → 18:13Z) : **0 OOM**. La spec passe à `--tail 5000` avec un `wc -l` affiché à côté du compte (même PR).
+
+### Condensation
+
+- **17:46:17Z** : retry du disjoncteur HALF-OPEN, puis **timeout à 17:47:47Z (90 s)**. Le moteur avait 1-3 requêtes en cours, 0-1 en attente, KV 17-49 %, 65-120 t/s : il servait normalement. Le disjoncteur était OUVERT depuis 15:29Z, et le repli cloud a réussi deux fois à 16:36Z.
+- **17:59:31Z** : condensation sautée, verrou tenu par un autre détenteur (#3782).
+- **Statut de `global` remplacé par un refus** (#4434 c.6529425167, méta-analyste) : la condensation de 17:11:58Z a écrit un « I cannot complete this request… » comme statut. Ce texte vient du **repli cloud**, pas de notre moteur. Notre moteur servait normalement à 17:09-17:11Z (4-6 requêtes en cours, 0 en attente, 128-130 t/s, KV 80-82 %).
+- **Trois mesures, trois régimes, un seul point commun** : le moteur est au repos à 15:29Z, occupé à 17:10Z, modérément chargé à 17:46Z, et le primaire échoue dans les trois cas. Le facteur limitant est le budget fixe de 90 s, pas l'état du moteur. Versé sur #4434.
+
+### Trafic et sécurité (16:11 → 18:15Z, 808 lignes, 6,5 req/min)
+
+- **400 window+1 : 9 en 2 h** (3 au cycle précédent) : **po-2024 ×5** (16:58:55, 17:17:24, 17:33:43, 17:38:41, 18:15:07Z) et **po-2027 ×4** (16:20:24, 17:25:51, 17:29:40, 17:37:22Z). Corps de 903 Ko à 1,11 Mo. Le `error_body` dit chaque fois « at least 262145 input tokens » : rejet frontal, sans prefill. #431 ne couvre toujours pas ce cas. Relayé à claudish.
+- **IP avec des 200** : rien de nouveau. Le site, web1 et web2 passent avec la clé MEDIUM valide (OpenAI/JS 4.104.0, corps de 18-66 Ko, profil de condensation RSM). **web2 a corrigé sa clé** : `b2082455ef36` n'apparaît plus depuis 16:11Z. `82.66.89.184` (poste parisien du user, carte §5) refait 2 requêtes 200 avec le même client.
+- **ZOLTRAAK/0.2.0 (« security-research »)** depuis `31.77.203.199` (IP nouvelle) : 3 sondes `/v1/models` à 16:39:51-16:40:14Z, avec deux clés inconnues (empreintes d'en-tête `ccd500f719e4` et `64a6d7ec06fd`). Toutes en **401**, aucune inférence ⇒ pas d'alerte (règle §5 : seule une IP qui obtient des 200 alerte).
+- `1f7f6080cb65` (ancienne MEDIUM publique, poller Go Hetzner) : 20 refus, cadence 6 min inchangée.
+
+### Coordination
+
+- Post-mortem hub claudish (#785) : le deuxième effondrement de la porte `.50:3000` est daté **15:15 → 16:00Z**. Il recoupe le trafic hub nul vu de `:5002` de 15:30 à 15:59Z.
+- Maintenance a désactivé MiniTool ShadowMaker sur ai-01 (Q46-B) : le port 8080, qui acceptait TCP sans répondre, est fermé. Le 502 d'`api.large` reste une règle ARR périmée vers `.47:5003`, côté po-2023.
+- Chantier Lean (#787) : W4 « Hermes + Nanoclaw » est adressé à « ai-01 ». Ce sont les lanes `hermes-agent` et `nanoclaw` ; la lane vllm ne s'en saisit pas, et peut fournir les comptes par client vus de `:5002` sur demande.
+
+**Producteurs.** nbaudit `ok:true` à 18:05:58Z, vague `Image/`. G: OK (616 Go libres, 84 %). Prouveur : aucune passe. `gh` avait dérivé sur `myia-ai-01` cette fois ; remis sur `jsboige` avant toute écriture.
