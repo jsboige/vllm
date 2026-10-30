@@ -24,14 +24,16 @@ Hôte = Europe/Paris (UTC+2 en heure d'été, **UTC+1 depuis le passage à l'heu
 
 ## ⚠️ `docker logs --since` INFIBLE depuis le 30/08 → `--tail` uniquement
 
-Le chemin lecture-complète (`--since`, `--tail` géant) voit le segment MORT du journal ; le petit `--tail N` (≈2 500-4 000 lignes watchdog, 20 000 moteur) atteint le segment vivant. Symptôme : `--since 12h | grep -c` = 0 alors que `--tail 2` est frais → c'est CE bug, pas un service arrêté. Borner chaque segment lu et raisonner en comptes absolus.
+Le chemin lecture-complète (`--since`, `--tail` géant) voit le segment MORT du journal ; le petit `--tail N` (≈2 500-4 000 lignes watchdog, ≤ 5 000 moteur) atteint le segment vivant. Symptôme : `--since 12h | grep -c` = 0 alors que `--tail 2` est frais → c'est CE bug, pas un service arrêté. Borner chaque segment lu et raisonner en comptes absolus.
+
+**Un `--tail N` plus grand que le segment vivant rend 0 ligne, pas le segment entier (mesuré 30/10 18:1xZ).** Le moteur avait 8 918 lignes vivantes : `--tail 9000` en rendait 8 918, `--tail 10000` et `--tail 20000` en rendaient **0**. Le `grep -c 'out of memory'` de la spec affichait donc « 0 » sur un flux vide, depuis un nombre inconnu de cycles : **un zéro qui ne mesurait rien**. D'où le `wc -l` à côté de chaque comptage ci-dessous, et le `--tail 5000` côté moteur (environ 2 h de journal sous charge, ce qui couvre un cycle).
 
 ## (1) Check prod read-only
 
 ```bash
 curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" --max-time 8 http://localhost:5002/health
 docker inspect myia_vllm-medium-swift15-27b --format 'RC={{.RestartCount}} status={{.State.Status}} health={{.State.Health.Status}} StartedAt={{.State.StartedAt}}'
-docker logs --tail 20000 myia_vllm-medium-swift15-27b 2>&1 | grep -ac 'out of memory'
+docker logs --tail 5000 myia_vllm-medium-swift15-27b > .tmp/eng.log 2>&1; echo "lignes=$(wc -l < .tmp/eng.log) oom=$(grep -ac 'out of memory' .tmp/eng.log)"   # lignes=0 => instrument aveugle, pas « 0 OOM »
 nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader
 docker ps --filter name=myia_vllm --format '{{.Names}}\t{{.Status}}'
 # /dev/shm hôte (ipc:host — NOUS seuls l'utilisons) : fuite à chaque boot, cf. encadré ci-dessous
