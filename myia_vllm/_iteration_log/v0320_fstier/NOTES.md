@@ -5515,3 +5515,19 @@ Cron one-shot `ca2085e3` : **01/11 01:52Z**, `fstier_prune.ps1 -MaxGiB 30 -Apply
 ### Hub → :5002 : escalade (arbitrage user ~11:5xZ)
 
 Le user a qualifié le silence de « vrai problème » : le pilote devait tenir sur le local jusqu'au 01/11 soir (reset Minimax), soupçon d'erreur de config hub. Faits consolidés à l'appui : depuis 10:02Z, **952 requêtes** passent par le sidecar ai-01, toutes cloud (haiku 412, opus 311, glm-5.3 172, sonnet 57), **0 vers le moteur** ; hub vivant (`/health` 200, activeStreams 11) ; **`admissionFreeze: "no-consent"`** dans le health (sémantique inconnue côté vllm — signalée à claudish) ; uptime ~6,3 h (redémarré ~05:3xZ, mais le routage a continué jusqu'à 10:01:51Z). Escalade : [ASK USER]+WARN sur le dashboard workspace claude-claudish + DM HIGH à po-2025:claudish (msg-20261031T115215-ae60t6). Aucun geste moteur. Re-contrôle au cycle 12:11Z.
+
+## 31/10 12:1xZ — Cycle de surveillance : silence hub PERSISTANT (2 h), moteur idle et sain ; disjoncteur condensation ouvert ; commit hôte 64 %
+
+**Prod.** Health 200 (4,3 ms), RC=0, StartedAt 30/10 12:01:30Z inchangé (0 restart), OOM 0, 3 conteneurs Up. VRAM GPU 0 **23 210** / GPU 1 21 674 MiB — GPU 0 au-dessus du seuil 23 000 par la part bureau (moteur ~21,7 ; Q41 close, cf. 10:1xZ). `/dev/shm` 33G/63G = 51 % (plancher = tier). **Préemptions Δ 0** (50). Watchdog : 0 `fail 1/2` dans la fenêtre (dernier 08:33Z), 3 842 sondes OK dans le tail.
+
+**★ Hub : le silence dure (10:01:51Z → 12:13Z+, > 2 h).** Sidecar ai-01 depuis 10:02Z : **1 308 requêtes cloud** (haiku 478, opus 472, glm-5.3 200, sonnet 158), **0 vers le moteur** — le cloud porte ~1 000+ req/h à lui seul. Moteur **idle** (0 running/waiting, KV 0 %). Hub vivant : `/health` ok, 8 flux, **5 pending** (en hausse), `admissionFreeze:"no-consent"` inchangé, uptime 6,6 h. Escalade de 11:52Z (dashboard claude-claudish [ASK USER] + DM HIGH) **sans réponse à 12:13Z**. Aucun geste moteur.
+
+**Intervalle exact (10:11→12:11Z, instantanés `/metrics`).** Prompt Δ 174 140 tok, **0 hit GPU + 0 hit tier = 100 % à froid**, génération Δ 61 353. Sources : les 2 requêtes directes OpenAI/JS de 10:13/10:14Z + 1 à 12:11:24Z (21 694 o) — consommateur direct non-hub, fp MEDIUM, sans en-tête machine. Pas de re-prefill pathologique (§5quater trivial : requêtes isolées froides).
+
+**Condensation.** À 12:09:55Z le **circuit breaker est OPEN** — primaire local sauté d'office, cloud direct (3 succès). Conséquence mécanique des coupes à 90 s d'avant (#4434) : le disjoncteur reste ouvert alors que le moteur idle servirait vite. Donnée rendue au dossier #4434.
+
+**Sécurité.** 401 = collecteur connu uniquement (`1f7f6080cb65`, 37.230.119.250, Go-http-client, clé morte) + 1 sonde locale à clé vide `b72157f4bb61` (11:56:45Z — la mienne, échec de probe sans clé dans le shell). **0 × 400**, aucune nouvelle IP avec 200.
+
+**Disques et hôte.** G: OK (603 Go, lecture+écriture testées). **Commit 64,3 % (145,7 GB de marge)** — très sous le seuil 85 %. Ubuntu 84 % / 155 Gio libres (post-Q50). nbaudit OK (rc 0, 0 échec) — **vague 2 armée : `19451:Image/`**.
+
+**À venir.** Q51 one-shot `ca2085e3` à **01/11 01:52Z** (tier → 30 Gio) ; sauvegarde `Backup-Ubuntu-WSL` 02:00Z (coupure Docker+WSL, retour moteur ~8 min après) ; cycle post-sauvegarde : vérifier montage HF fantôme, VRAM, génération réelle, `/dev/shm`, puis rendre à Maintenance.
