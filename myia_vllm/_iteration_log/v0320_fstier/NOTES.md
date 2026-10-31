@@ -5531,3 +5531,20 @@ Le user a qualifié le silence de « vrai problème » : le pilote devait tenir 
 **Disques et hôte.** G: OK (603 Go, lecture+écriture testées). **Commit 64,3 % (145,7 GB de marge)** — très sous le seuil 85 %. Ubuntu 84 % / 155 Gio libres (post-Q50). nbaudit OK (rc 0, 0 échec) — **vague 2 armée : `19451:Image/`**.
 
 **À venir.** Q51 one-shot `ca2085e3` à **01/11 01:52Z** (tier → 30 Gio) ; sauvegarde `Backup-Ubuntu-WSL` 02:00Z (coupure Docker+WSL, retour moteur ~8 min après) ; cycle post-sauvegarde : vérifier montage HF fantôme, VRAM, génération réelle, `/dev/shm`, puis rendre à Maintenance.
+
+## 31/10 13:3xZ — Cycle de surveillance : ★ le trafic est REVENU (181 req/76 min, KV jusqu'à 94 %), condensation réparée ; le hub passe à côté du sidecar
+
+**Prod.** Health 200 (3,7 ms), RC=0, StartedAt 30/10 12:01:30Z inchangé (0 restart), 0 OOM sur 5 000 lignes vivantes, 3 conteneurs Up. VRAM GPU 0 **23 119** / GPU 1 **21 674** / GPU 2 2 353 MiB (CoursIA actif) — GPU 0 au-dessus de 23 000 par la part bureau (~1,4 Gio), moteur inchangé. `/dev/shm` 33G/63G = 51 % (plancher = tier). `qdrant_autoheal` toujours présent (labels `autoheal=False` en place, aucun restart).
+
+**★ Fin du silence hub — le moteur travaille de nouveau.** À 13:30Z : 5-7 requêtes en cours, 2-4 en attente (dont 2 « deferred » = attente de CAPACITÉ), **KV 76-94 %**, pics de prefill à 13 200 tok/s. Intervalle exact 12:14→13:30Z (instantanés `/metrics`) : **181 requêtes servies**, prompt Δ **4,65 M tokens**, génération Δ 110 087, **préemptions Δ +1** (51 depuis le boot). Hit : GPU **33,1 %** / tier **71,6 %** / **combiné 81,0 %** — le tier fait toujours le gros du travail.
+
+**★ Le trafic ne passe PAS par le sidecar ai-01.** Sur le journal vivant du sidecar (4 000 lignes, 06:36→13:31Z, 579 req/h) : haiku 217/h, opus 190/h, glm 129/h, sonnet 39/h, **local 4/h**. Et sur les 10 dernières minutes : **0 local**. Les requêtes qui atteignent `:5002` arrivent donc par le chemin direct (buckets sans `x_forwarded_for` = 792 des 1 391 requêtes de 7 h) — le hub les émet lui-même, sans XFF, et le sidecar ne les voit pas. Corollaire pour l'instrumentation : **« 0 dans le sidecar » n'a jamais prouvé « 0 sur le moteur »** ; seule la mesure côté moteur tranche.
+
+**Condensation — réparée.** `12:23:50Z Condensation circuit breaker RESET (LLM success)` puis passes locales réussies (13:02→13:03) ; deux replis cloud (13:09, 13:39) sur un total de 4 passes. Le disjoncteur n'est donc plus ouvert d'office dès qu'un passage local aboutit — le diagnostic de 12:1xZ (mécanique de coupe ⇒ disjoncteur) reste vrai mais n'est pas irréversible. Donnée versée à #4434.
+
+**Sécurité (7 h).** 200 uniquement depuis : **`?` (directe, 792 dont 787 × 200)**, `90.65.170.144` (site hairpin, 595 × 200), `37.187.180.135` (web1/web2, 9 × 200). **0 × 400, 0 × 500** sur la fenêtre. 401 : `1f7f6080cb65` ×42 (collecteur Go connu, clé morte), 6 sans clé, `b72157f4bb61` ×1 (l'auto-sonde de 11:56Z). Aucune IP nouvelle.
+
+**Disques et hôte.** Commit **65,6 % (267,4/407,8 GB, 140,4 GB de marge)**. G: OK, **611 Go libres**. Ubuntu 86 % / 144 Gio libres (stable post-Q50). nbaudit OK (rc 0, 0 échec, séries 17107/17239/17357/17692/19451, **`19451:Image/` armée**).
+⚠ **Défaut d'instrument nbaudit** : `last-result.json` porte `"ts":"2026-10-31T14:05:44Z"` alors que la mesure était à ~13:05Z — le champ écrit l'heure **locale** (UTC+1) avec un suffixe `Z`, exactement le piège documenté du 08/10. À corriger côté script (périmètre vllm, script `nb_audit_hourly.ps1`/runner).
+
+**À venir.** Q51 one-shot `ca2085e3` à **01/11 01:52Z** (tier → 30 Gio) ; `Backup-Ubuntu-WSL` à 02:00Z (Docker quit + `wsl --shutdown` + export 845-880 Gio ⇒ coupure `:5002` ~67 min + boot ; secours #247 corrigé, il n'attend plus 45 min aveuglément) ; cycle post-sauvegarde = vérif montage HF fantôme, VRAM, génération réelle, `/dev/shm`, puis rendu à Maintenance. Le redéploiement du hub claudish annoncé après 00:30Z croise cette coupure — déjà signalé.
