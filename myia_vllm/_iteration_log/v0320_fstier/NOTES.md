@@ -5280,3 +5280,76 @@ Tâche `Backup-Ubuntu-WSL` (Maintenance, prochaine exécution **01/11/2026 03:00
 - Aucun DM nouveau depuis le 30/10 21:15Z, rien de nouveau adressé à vllm sur `workspace-vllm` depuis 02:17Z.
 - **G:** remonte à **632 Gio libres** (556 à 02:11Z) : la marche de −60 Gio signalée à Maintenance s'est résorbée d'elle-même.
 - nbaudit `ok:true` à 04:05:41Z, vague `Image/`, 0 échec consécutif. G: écriture OK. Prouveur : aucune passe.
+
+## 31/10 06:1xZ — Cycle de surveillance : la charge revient (KV moyen 81 % sur l'heure 04h), 6 préemptions, aucun restart ; un 400 window+1 de po-2024, le premier depuis 11 h
+
+### Prod
+
+- Même démarrage (`StartedAt` 30/10 12:01:30Z), RC=0, health 200 en 6,5 ms, 3 conteneurs Up. Journal moteur `--tail 5000` = **5 000 lignes, 0 OOM** (instrument non aveugle).
+- **VRAM** : GPU 0 **23 328**, GPU 1 21 674, GPU 2 45 MiB. Compteur `\GPU Process Memory(*)\Dedicated Usage` sur GPU 0 : `vmwp` = **21 675 MiB** (le moteur, identique sur GPU 1), le reste vient du bureau (Edge 398, dwm 311, Code 246, Chrome 190 + 148, explorer 165 MiB). Q41 reste close.
+- `/dev/shm` 33G / 63G = 51 %. Commit hôte **64,5 %** (262,8 / 407,8 Go).
+
+### Cache et charge
+
+| Compteur (cumul depuis le boot) | 04:11Z | 06:11Z |
+|---|---|---|
+| hit GPU (hits/queries) | 57,6 % | **56,1 %** |
+| hit tier (ext_hits/ext_queries) | 81,7 % | **81,3 %** |
+| combiné ((hits+ext_hits)/queries) | 92,2 % | **91,8 %** |
+| préemptions | 38 | **44** |
+
+456,73 M tokens de prompt (+43,97 M en 2 h, contre +61,1 M à l'intervalle précédent), 5,16 M générés (+0,58 M, ~80 t/s). Sur l'intervalle seul, reconstruit depuis les pourcentages du cycle précédent (±0,5 point sur 412,8 M, soit ±4,7 points sur l'intervalle) :
+- hit GPU **~43 %** (contre ~58 %), combiné **~88 %** (contre ~96 %) ;
+- **~5,2 M tokens recalculés** (±2,1 M), contre ~2,5 M ;
+- les tiers servent ~20 M tokens, ~79 % des miss GPU.
+
+| Heure (UTC) | KV moyen | KV max | attente moy / max | en cours moy / max | génération moy |
+|---|---|---|---|---|---|
+| 02h | 64,9 % | 96,9 % | 0,1 / 2 | 3,3 / 7 | 99 t/s |
+| 03h | 76,3 % | 100 % | 0,1 / 2 | 4,0 / 8 | 101 t/s |
+| 04h | **81,1 %** | 99,0 % | 1,2 / 5 | 5,3 / 11 | 83 t/s |
+| 05h | 57,1 % | 99,8 % | 0,7 / 5 | 3,8 / 7 | 77 t/s |
+| 06h (11 min) | 67,7 % | 90,1 % | 0,3 / 2 | 5,0 / 7 | 94 t/s |
+
+La moyenne de 51 % donnée pour l'heure 04h au cycle précédent ne portait que sur 11 minutes ; l'heure complète est à 81 %. Instantané à 06:11Z : KV 88 %, 4 en cours, 2 en attente (1 `capacity`, 1 `deferred`).
+
+**Rafale de reprise 05:36-05:39Z** : KV 1,3 → 68 % en 4 min, génération 0,8-1 t/s (sessions qui reprennent et repaient leur prefill). Elle explique le `fail 1/2` de 05:36:07Z et le `WEDGE-BUSY` de 05:38:08Z.
+
+### Watchdog
+
+4 × `WEDGE fail 1/2` (04:18:07, 04:47:42, 05:03:03, 05:36:07Z) et 1 × `WEDGE-BUSY` (05:38:08Z, compteurs avancés), **aucun 2/2, aucun restart**. 3 844 sondes OK sur les 4 000 dernières lignes. Comportement attendu sous charge (v6.2).
+
+### Condensation (journal RSM, 04:11 → 06:11Z)
+
+| Passe | Résumé | Statut | Moteur à ce moment |
+|---|---|---|---|
+| 04:18:26Z (notre DONE) | coupé à 90 s → cloud | coupé à 90 s → cloud, troncature | KV 75-96 %, jusqu'à 5 en attente |
+| 05:45:27Z | **local en 32 s** | coupé à 90 s → **disjoncteur OUVERT 05:47:24Z**, `Status contradictions detected` (#1502/#3329), cloud, troncature | KV 73-78 %, 0-1 en attente, 121-155 t/s |
+| 05:53:52Z | disjoncteur ouvert : cloud | cloud, troncature | — |
+| 05:58:03Z | disjoncteur ouvert : cloud | cloud, sans troncature | — |
+
+- Le statut coupé à 90 s **sur un moteur qui génère à 121-155 t/s sans file** (05:45Z) confirme encore le budget fixe de 90 s (roo-extensions#4434), pas une saturation.
+- **Le disjoncteur s'ouvre de façon récurrente** : 9 ouvertures entre le 30/10 12:34Z et le 31/10 05:47Z (12:34, 14:23, 16:34, 18:29, 20:58, 23:03, 00:19, 02:34, 05:47Z), soit une toutes les ~2 h. Ce n'est pas nouveau à ce cycle ; c'est la conséquence mécanique des statuts coupés à 90 s. À verser au dossier #4434.
+
+### Disques
+
+- **Ubuntu : 94 %, 67 Gio libres** (890 Gio utilisés), contre 93 % / 75 Gio à 04:11Z. Pruneur de 05:50:03Z : tier à **297,6 Go (277 Gio)** avant passage, 1 112 fichiers et 29,2 Go supprimés pour revenir au plafond de 250 Gio. Le tier repart donc de 250 Gio à chaque :20/:50 et monte de ~25 Gio en 30 min sous cette charge.
+- **G:** 617 Gio libres (632 à 04:11Z), sonde d'écriture OK.
+
+### Sauvegarde d'Ubuntu (01/11 02:00Z)
+
+- `Backup-Ubuntu-WSL` : `Ready`, prochaine exécution **01/11/2026 03:00 locale = 02:00Z**, inchangée. Pas de marqueur `wsl-backup-docker-down.marker` dans `C:\ProgramData\maint-scripts\state\` (normal hors exécution).
+- **Pas de réponse de Maintenance** au WARN de 04:18Z (ni sur `machine-myia-ai-01`, ni sur `workspace-Maintenance`).
+- Q51 (tier à 30 Gio avant l'export) : **toujours ouverte, échéance 01/11 01:50Z**. Si le tier est au plafond à 01:50Z, l'export emportera ~250-280 Gio de tier.
+
+### Trafic et sécurité (2 h 10)
+
+- **Statuts** : 651 × 200, 21 × 401, **1 × 400**, 0 × 5xx, 0 × 429.
+- **IP avec des 200** : site `90.65.170.144` (344), interne sans XFF (297), web1 `37.187.180.135` (6), poste user Paris `82.66.89.184` (4). Aucune adresse nouvelle.
+- **401** : 20 × collecteur Go `37.230.119.250`, clé `1f7f6080cb65` (ancienne MEDIUM publique, connue), 1 × `curl` sans clé (05:08:23Z, interne). Aucune inférence.
+- **400 window+1 à 05:36:58Z** : `x_claudish_machine=myia-po-2024`, Bun, `swift-1.5-27b`, corps 997 Ko, `262145 input tokens`, rejet frontal sans prefill. **Premier depuis le 30/10 18:45:06Z (~11 h)**, après le canon auto-compact 250 000 de po-2024 (#739). Une occurrence isolée : elle montre qu'un tour peut encore franchir 262 144 malgré le canon (dernier tour qui saute la marge de ~12 K, ou écart de tokenizer), sans être une régression. La règle claudish #431 renvoie ce tour vers le cloud.
+
+### Coordination et producteurs
+
+- Inbox : rien d'adressé à `myia-ai-01:vllm` (les non-lus sont des dispatchs machine d'autres lanes, bug #3960, ignorés).
+- nbaudit `ok:true` à 06:05:44Z, vague `Image/`, 0 échec consécutif. Prouveur : aucune passe.
