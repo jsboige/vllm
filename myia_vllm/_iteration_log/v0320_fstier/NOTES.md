@@ -5109,3 +5109,87 @@ Le ménage des 60 Gio hors prod va au registre (**Q50**), parce que c'est une su
 - `global` : aucune mention de vllm.
 
 **Producteurs.** nbaudit `ok:true` à 00:05:45Z, vague `Image/`, 0 échec consécutif. G: OK (616 Go libres, 84 %). Prouveur : aucune passe.
+
+## 31/10 02:1xZ — Cycle de surveillance : la saturation retombe (KV 91 → 80 → 61 %), tenue sans restart ; GPU 0 franchit 23 000 MiB du côté du bureau ; le disque d'Ubuntu repasse à 92 %
+
+**Prod** (02:11Z, 14 h 10 après le boot) :
+- health 200 en 4,6 ms, RC=0, `StartedAt` 12:01:30Z inchangé, 3/3 Up ;
+- `/dev/shm` 33G (51 %), commit hôte **64,2 %** (marge 145,8 Go) ;
+- OOM 0 sur un segment vivant de 5 000 lignes.
+
+**VRAM : 23 311 / 21 674 / 45 MiB. GPU 0 dépasse la ligne d'alerte de 23 000 MiB** (+408 MiB depuis 00:11Z), mais GPU 1 est plat à 21 674 depuis 14:11Z. Le compteur Windows `GPU Process Memory` le confirme :
+- le processus de la VM (`vmwp`) tient **21 675 MiB sur chacun des deux GPU** ;
+- le bureau tient donc **~1 636 MiB sur GPU 0** : Edge 397, dwm 307, VS Code 242, Chrome 320 (deux processus), explorer 163, plus de petits processus.
+
+Le moteur ne grossit pas : ce sont le bureau et le high-water qui se cumulent. La marge restante sur GPU 0 est de ~1 250 MiB. C'est sous le pic connu de 23 600 qui a fait clore Q41. **Q41 reste close** : ses critères de réouverture (boot raté à 0.73, GPU 1 qui monte, fait majeur nouveau) ne sont pas atteints. Au prochain boot, le moteur à froid (~20 000-20 700) tient dans les ~22 900 MiB que le bureau laisse.
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 31/10 00:11Z | 60,6 % | 80,5 % | 92,3 % | 25 |
+| **31/10 02:11Z** | **57,5 %** | **80,2 %** | **91,6 %** | **37** |
+
+351,63 M tokens de prompt (+37,0 M en 2 h), 3,87 M générés (+0,57 M, ~79 t/s en moyenne). Sur l'intervalle seul, reconstruit depuis les pourcentages du cycle précédent (±0,5 point) :
+- **GPU ~31 %** (contre ~6 % sur l'intervalle précédent) ;
+- tier ~79 % des miss ;
+- combiné ~85 % ;
+- ~5,4 M tokens recalculés (contre ~7,6 M).
+
+Le cache GPU recommence à garder des préfixes quand le KV redescend. **Préemptions +12**, comme sur l'intervalle précédent : elles se concentrent dans l'heure 00h, qui est restée au niveau de 23h.
+
+| heure (Z) | KV moyen | minutes ≥ 90 % | en attente (moy.) | en cours (moy.) | génération (moy.) |
+|---|---|---|---|---|---|
+| 23h | 91,4 % | 37 / 59 | 3,1 | 5,9 | 47 t/s |
+| 00h | 90,6 % | 36 / 60 | 3,2 | 6,0 | 81 t/s |
+| 01h | 80,1 % | 17 / 60 | 1,5 | 4,5 | 75 t/s |
+| 02h (→ 02:11) | 60,6 % | 1 / 12 | 0,2 | 3,7 | 98 t/s |
+
+Source : `wedge_telemetry.jsonl`, un échantillon par minute. Le tableau du cycle précédent comptait des fenêtres de 10 s : les décomptes ≥ 90 % ne se comparent pas, mais les moyennes concordent (23h : 91,4 contre 91,0).
+
+**Charge** (00:11 → 02:11Z, en-têtes du hub, horodatage = fin de réponse) :
+
+| siège | requêtes | corps médian | corps max | corps > 500 Ko |
+|---|---|---|---|---|
+| po-2024 | 79 | 635 Ko | 781 Ko | 70 |
+| po-2023 | 56 | 587 Ko | 761 Ko | 45 |
+| po-2027 | 45 | 664 Ko | 768 Ko | 45 |
+| ai-01 | 24 | 552 Ko | 595 Ko | 21 |
+| po-2028 | 19 | 345 Ko | 432 Ko | 0 |
+
+223 requêtes du hub, contre 263 au cycle précédent. Les mêmes cinq sièges sont présents. ai-01 retombe de 92 à 24 requêtes, mais ses corps grossissent (médiane 389 → 552 Ko) : ses sessions s'allongent. Hors hub : 121 sondes `curl` du watchdog, 35 `OpenAI/JS`, 4 `Bun`, 4 `aiohttp`.
+
+**Point de vue consommateur** (lane OWUI, 00:16:44Z) : un tuteur a répondu en 73,3 s et `Local.qwen3.6-35b-a3b` en 63,2 s pendant la montée du KV de 85,6 à 99,8 % (00:13:45 → 00:14:46Z). C'est le début de l'heure 00h du tableau. Cela correspond au régime « la file domine » : moteur sain, attente due à la file.
+
+**Watchdog** (depuis 00:11Z) : **12 `fail 1/2`**, dont 9 dans l'heure 00h, et **3 `WEDGE-BUSY`** (01:08:39, 01:14:32, 01:16:32Z ; compteurs en hausse, donc pas de restart, conforme à v6.2). Aucun `2/2`, aucun restart. Dernier `fail 1/2` à 01:58:26Z, puis des sondes OK toutes les 30 s.
+
+### Condensation (00:13 → 02:13Z)
+
+- **6 passes** (00:17:21, 00:17:38, 00:19:11, 00:32:12, 00:47:45, 01:09:16Z) ;
+- **4 résumés et 4 statuts coupés à 90 s** sur le modèle local ;
+- 2 passes sont allées directement au cloud : disjoncteur ouvert à 00:19:13Z, passes à 00:32 et 00:47Z ;
+- demi-ouverture à 01:09:16Z, coupée à son tour ;
+- **0 succès local, 18 succès cloud, 6 troncatures déterministes sur 6** ;
+- plus aucune passe après 01:12Z.
+
+Même tableau qu'au cycle 00:1xZ : sous saturation, tout part au cloud et le statut est tronqué ensuite.
+
+### Disque d'Ubuntu (Maintenance [#244](https://github.com/jsboige/Maintenance/issues/244))
+
+- **92 %, 78 Gio libres à 02:13Z** (`df -B1G /` en root), contre 39 à 55 Gio au cycle précédent. **CoursIA-2 a rendu 35 Gio** dans son périmètre (son ASK de 01:12Z, Q-016).
+- Élagage du tier à **01:50:51Z** : 809 fichiers, **19,8 Gio supprimés**, 0 erreur, tier ramené à 250 Gio. Le libre invité mesuré par le pruneur juste avant valait 75,7 Gio. Avec `tier + libre` ≈ 345 Gio, le plafond de 250 Gio s'applique, et le terme « libre − 40 » ne mord plus.
+- Le tier est remonté à **270 Gio à 02:13Z**, soit ~20 Gio en 23 min (~52 Gio/h). La dent de scie s'est élargie avec la saturation, mais reste rattrapée à chaque passage (:20/:50).
+- Les trois copies hors prod sont toujours là : **Q50 ouverte**, sans geste.
+
+### Trafic et sécurité
+
+- **Statuts (2 h)** : 387 × 200, 19 × 401, **0 × 400 / 0 × 5xx / 0 × 429**.
+- **Dernier 400 de la flotte : 30/10 18:45:06Z (po-2024)**. Avant le correctif de po-2024 (fenêtre d'auto-compact 330 000 remise au canon 250 000 à 18:28Z, dans le cadre de #739), on en comptait 128 pour ce siège. Depuis, 1 seul, puis plus rien depuis 7 h 25. Sa prédiction (« les 400 window+1 doivent s'arrêter dès que mes sessions compacteront sous 250 000 ») est **vérifiée côté moteur**.
+- **IP avec des 200 (7 jours, archive `…20261030-203440.jsonl.gz` + fichier vivant)** : aucune adresse nouvelle.
+- **401** : collecteur Go `37.230.119.250`, clé `1f7f6080cb65` (ancienne MEDIUM publique), 19 × `/v1/models`, sans inférence.
+
+### Coordination
+
+- **Issue [#71](https://github.com/jsboige/vllm/issues/71) fermée comme réalisée** ([c.6537668342](https://github.com/jsboige/vllm/issues/71#issuecomment-6537668342)) après la relance d'Hermes. Le profil embeddings, le sidecar, le gouverneur thermique et le runbook sont dans le fork (`a0d1c3bdd8`). Le runtime tourne depuis ce profil sur po-2023 (`8aa1b7da16`), et la vigie vit sur `workspace-vllm`.
+- **OWUI** : son signal consommateur est expliqué ci-dessus ; réponse postée sur le fil.
+- **G:** passe de 616 à **556 Gio libres** en 2 h (une marche de −60 Gio, après 705 → 630 un peu plus tôt dans la série). Ce n'est pas de notre fait : la lane n'écrit sur G: que sa sonde. Je le signale à Maintenance, sans diagnostic.
+
+**Producteurs.** nbaudit `ok:true` à 02:05:47Z, vague `Image/`, 0 échec consécutif. G: écriture OK. Prouveur : aucune passe.
