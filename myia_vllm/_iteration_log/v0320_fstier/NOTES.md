@@ -5499,3 +5499,19 @@ C'est la **troisième passe sans file dont le statut est coupé à 90 s** (05:45
 - po-2025:claudish a établi la chaîne de la panne du hub de 05:13Z : tempête IRP du pilote Dokan de Google Drive, démontage de G: à 05:35:08Z, puis redémarrage de la VM WSL à 05:35:57Z. L'acteur du redémarrage n'est pas établi. Cela concerne po-2025, hors périmètre ai-01.
 - po-2025:claudish signale l'expiration du jeton Codex du hub le 02/11 09:21Z, qui demandera un login user : c'est leur registre.
 - Inbox : 196 non lus, essentiellement des dispatchs CoursIA adressés à la machine (#3960), aucun pour vllm.
+
+## 31/10 12:0-12:3xZ — Hors cycle : Q50/Q51 exécutées (GO user) ; escalade du silence hub ; leçon de topologie du cache HF
+
+### Q50 — 57,4 Gio rendus au disque Ubuntu (GO user ~12:0xZ : « Q50 OK »)
+
+Suppression des 3 dossiers `models--*` du **niveau externe** du cache HF (`/home/user/vllm/.cache/huggingface/hub/`) : axteam Nanbeige4.3-33B-AWQ (21,0 Gio, banc du 29/10 écarté) · philbert440 Qwen3.8-27B-W4A16 (18,2 Gio, ligne close) · doublon Swift (18,2 Gio). `df /` : **857→802 Gio utilisés, 97→155 Gio libres**. Moteur vivant après (health 200, sondes décodage watchdog 200 jusqu'à 11:56:33Z). Retour : [Maintenance#244 c.6543058910](https://github.com/jsboige/Maintenance/issues/244#issuecomment-6543058910).
+
+**Preuve de conservation (faite AVANT la suppression, elle a failli inverser le verdict).** Le montage prod expose `…\huggingface\hub` (externe) sur `/root/.cache/huggingface`, donc le hub HF du conteneur est `hub/hub/` (interne). L'interne semblait n'être qu'un stub de 11 M (`du`), mais c'est le **layout à pool de blobs partagé** : les gros shards de chaque modèle sont des *symlinks* `models--*/blobs/<sha> → ../../blobs/<2hex>/<sha>` pointant vers `hub/hub/blobs/` (20 Gio de fichiers réels — `readlink -f` + `stat` : shard 2 542 796 928 o, ino séparé, nlink=1). Le niveau externe portait encore son propre `CACHEDIR.TAG` : c'est l'ancien layout, copie séparée, hors de tout chemin de résolution HF. `du -sh models--*` sous-compte dans ce layout (il ne suit pas les symlinks) — toujours `readlink -f` + `stat` avant de déclarer un doublon. Le profil `medium-swift15-hyperqwen-eval.yml` documentait déjà ce layout (« shared-pool layout: check hub/blobs »).
+
+### Q51 — one-shot armé (GO user : « Q51 OK »)
+
+Cron one-shot `ca2085e3` : **01/11 01:52Z**, `fstier_prune.ps1 -MaxGiB 30 -Apply` + mesures avant/après + retour sur workspace-vllm et Maintenance#244, juste avant `Backup-Ubuntu-WSL` (02:00Z). L'export de la distro perd ~250-280 Gio de blocs régénérables (57,4 des modèles + ~200 du tier). La passe `:20` suivante échouera sans gravité pendant `wsl --shutdown` ; le plafond 250 Gio reprend après.
+
+### Hub → :5002 : escalade (arbitrage user ~11:5xZ)
+
+Le user a qualifié le silence de « vrai problème » : le pilote devait tenir sur le local jusqu'au 01/11 soir (reset Minimax), soupçon d'erreur de config hub. Faits consolidés à l'appui : depuis 10:02Z, **952 requêtes** passent par le sidecar ai-01, toutes cloud (haiku 412, opus 311, glm-5.3 172, sonnet 57), **0 vers le moteur** ; hub vivant (`/health` 200, activeStreams 11) ; **`admissionFreeze: "no-consent"`** dans le health (sémantique inconnue côté vllm — signalée à claudish) ; uptime ~6,3 h (redémarré ~05:3xZ, mais le routage a continué jusqu'à 10:01:51Z). Escalade : [ASK USER]+WARN sur le dashboard workspace claude-claudish + DM HIGH à po-2025:claudish (msg-20261031T115215-ae60t6). Aucun geste moteur. Re-contrôle au cycle 12:11Z.
