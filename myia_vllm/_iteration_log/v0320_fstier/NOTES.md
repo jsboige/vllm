@@ -5576,3 +5576,25 @@ Le user a qualifié le silence de « vrai problème » : le pilote devait tenir 
 **Coordination.** Mandat LAN-direct + offre capacité envoyés à claudish à 16:12Z (DM `msg-20261031T161208-fkbpxy`) — **pas encore de réponse**. Promotion adoption postée sur global (cross-post 5/5). Le DM d'élucidation (14:40Z) est marqué lu.
 
 **À venir cette nuit.** Q51 one-shot `ca2085e3` **01:52Z** (tier fs → 30 Gio) ; `Backup-Ubuntu-WSL` **02:00Z** (Docker quit + `wsl --shutdown` + export → `:5002` coupé jusqu'à ~03:15Z) ; cycle post-sauvegarde = montage HF fantôme, VRAM GPU 0, génération réelle, `/dev/shm`, rendu à Maintenance + claudish (redéploiement hub croisant la fenêtre).
+
+## 31/10 18:1xZ — Cycle de surveillance : sain, hit combiné 96,3 %, pruneur fs VIVANT, scan externe sans accès
+
+**Prod.** Health 200 (**4,35 ms**), RC=0, StartedAt 30/10 12:01:30Z inchangé (0 restart), **0 OOM / 0 Traceback** sur 5 000 lignes vivantes, 3 conteneurs Up, `/dev/shm` **33G/63G = 51 %**. GPU 0 **23 096** MiB (moteur 21 674 + bureau ~1,42 Gio — bureau seul plus haut qu'au cycle précédent, 23 182), GPU 1 **21 674**, **GPU 2 45 MiB** (libre). Q41 reste close. **Aucun WEDGE depuis 14:10:51Z** (~4 h), 3 846 sondes `OK health=200 decode=200` dans le tampon de 4 000 lignes.
+
+**Intervalle 16:14→18:11Z (1 h 57).** **550 requêtes**, prompt Δ **46,19 M tokens**, génération Δ 616 449, préemptions **+0** (57). Hit **GPU 91,9 % / tier 53,9 % / combiné 96,3 %** — le meilleur point de la journée (§5quater : amortissement des préfixes quasi parfait, le pilote rejoue des préfixes déjà vus). À 18:11Z : 2 flux, **KV 44 %**, 0 en attente (ni `capacity` ni `deferred`).
+
+**Sécurité (3 h).** 885 lignes : **854 × 200**, 31 × 401, **0 × 400**. Les 401 = `37.230.119.250` `Go-http-client/1.1` ×30 (collecteur à clé morte connue, fp `1f7f6080cb65`) + **1 nouveau : `129.80.213.237`** (Oracle Cloud), `GET /v1/models`, UA navigateur Linux, corps 0, **aucun 200, aucune autre occurrence sur 12 h** → scan non authentifié, **pas une alerte**. **0 × 400 gros corps** (la signature #431 reste absente). Census 7 h par IP avec 200 : `?` (hub, sans `x_forwarded_for`) 772, `90.65.170.144` (edge/site) 766, `37.187.180.135` (web1/web2) 10, **`82.66.89.184` 6**.
+
+**★ `82.66.89.184` — identité en cours de tranchage côté claudish, pas une alerte.** Leur dispatch v23 en fait un grain ouvert (po-2023 a la vue IIS, po-2025 la vue hub `machine=`) : leur capture hub porte **39 POST, UA `claude-cli/2.1.312`, corps 311-707 Ko** pendant la panne. Cohérent avec **une session Claude Code passant par le hub** — donc soit le poste Paris du user (ma carte Q13, SUPPOSÉ), soit un siège WAN-only. Trafic autorisé (200), je **ne change pas la carte** : la tranche viendra de la vue hub.
+
+**★ Pruneur du tier fs VIVANT** (`fstier_state.json`, passe **17:50:08Z**) : **772 fichiers / 20,26 Go supprimés**, tier ramené à **268 429 787 136 o = 250,0 GiB** (pile le cap), `errors_count: 0`, 6,47 s. Racine `/home/user/vllm/.kv-tier-fs`. Les trois bugs de la PR #142 sont bien corrigés en production.
+
+**Condensation.** Dernière passe réelle **13:39:45Z** (2 replis cloud) ; depuis, aucun événement, seuls deux rebuilds de client (15:33:17Z, 17:55:15Z). Disjoncteur fermé. **Observation périmètre roo-extensions, pas vllm** : des rotations RSM `-96/-97/-98/-99` (504 o chacune) montrent un process **démarré puis `stdin-end` immédiat, toutes les 5 min** (:06:09, :11:09, :16:09, :21:09) — spawn-and-close cadencé, aucun effet moteur. À porter au propriétaire si ça persiste.
+
+**nbaudit.** `ts 18:05:45Z`, `runner_rc 0`, `deliver_rc 0`, `ok true`, `consecutive_failures 0`, séries `19451:Image/` — producteur sain.
+
+**Hôte/disques.** Commit **70,7 %** (288,4/407,8 GB, **119,4 GB de marge**). G: **OK**, 601 Go libres (84 %). Ubuntu **823G/1007G = 87 %**, **134 Gio libres**.
+
+**Coordination (lecture seule).** claudish a publié son **[ACK] de déploiement main→hub, fenêtre 01/11 00:30–01:45Z, preuves avant 02:00Z**, et confirme que `Backup-Ubuntu-WSL` coupe `:5002` **et le sidecar ai-01** de 02:00Z à ~03:15Z — « pas une panne, annoncé ». Deux faits qui changent la planification : (1) **leur relevé console MiniMax est FIGÉ** (« 4 hr 21 min » deux fois à 4 min d'écart, solde DeepSeek identique au centime) ⇒ **aucun chiffre de quota n'en sort**, seule mesure valable = hub-side, mur **13:30:44Z** ; (2) `eventLoopBlockedMs5m` du hub = **0** à 18:11Z contre 2 327 ms à 13:17Z. **Toujours aucune réponse à mon mandat LAN-direct** (DM 16:12Z).
+
+**À venir cette nuit.** Q51 `ca2085e3` à **01:52Z** (tier → 30 Gio : ~220 Gio rendus, libre attendu ~354 Gio) ; `Backup-Ubuntu-WSL` **02:00Z** → coupure jusqu'à ~03:15Z ; cycle post-sauvegarde = montage HF fantôme, VRAM GPU 0, génération réelle, `/dev/shm`, rendu à Maintenance + claudish.
