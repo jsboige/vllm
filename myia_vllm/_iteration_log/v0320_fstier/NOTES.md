@@ -5353,3 +5353,70 @@ La moyenne de 51 % donnée pour l'heure 04h au cycle précédent ne portait que 
 
 - Inbox : rien d'adressé à `myia-ai-01:vllm` (les non-lus sont des dispatchs machine d'autres lanes, bug #3960, ignorés).
 - nbaudit `ok:true` à 06:05:44Z, vague `Image/`, 0 échec consécutif. Prouveur : aucune passe.
+
+## 31/10 08:1xZ — Cycle de surveillance : charge soutenue mais en décrue (KV moyen 79 % à 06h, 68 % à 07h), 2 préemptions, aucun restart ; le statut de condensation coupé à 90 s aussi sur un moteur sans file
+
+### Prod
+
+- Même démarrage (`StartedAt` 30/10 12:01:30Z), RC=0, health 200 en 4,4 ms, 3 conteneurs Up. Journal moteur `--tail 5000` = **5 000 lignes, 0 OOM** (instrument non aveugle).
+- **VRAM** : GPU 0 **23 346**, GPU 1 21 674, GPU 2 45 MiB. Compteur `\GPU Process Memory(*)\Dedicated Usage` sur GPU 0 : `vmwp` = **21 675 MiB** (le moteur, inchangé), bureau ~1,5 Gio (Edge 398, dwm 311, Code 246, Chrome 190 + 148, explorer 165 MiB). Q41 reste close.
+- `/dev/shm` 33G / 63G = 51 %. Commit hôte **65,1 %** (265,7 / 407,8 Go).
+
+### Cache et charge
+
+| Compteur (cumul depuis le boot) | 06:11Z | 08:11Z |
+|---|---|---|
+| hit GPU (hits/queries) | 56,1 % | **55,5 %** |
+| hit tier (ext_hits/ext_queries) | 81,3 % | **81,6 %** |
+| combiné ((hits+ext_hits)/queries) | 91,8 % | **91,8 %** |
+| préemptions | 44 | **46** |
+
+503,93 M tokens de prompt (+47,2 M en 2 h, contre +44,0 M à l'intervalle précédent), 5,86 M générés (+0,70 M, ~97 t/s). Sur l'intervalle seul, reconstruit depuis les pourcentages du cycle précédent (±0,5 point sur 456,8 M, soit ±4,8 points sur l'intervalle) :
+- hit GPU **~49 %** (contre ~43 %), combiné **~92 %** (contre ~88 %) ;
+- **~3,8 M tokens recalculés** (±2,3 M), contre ~5,2 M ;
+- les tiers servent ~20 M tokens, ~84 % des miss GPU.
+
+| Heure (UTC) | KV moyen | KV max | attente moy / max | en cours moy / max | génération moy |
+|---|---|---|---|---|---|
+| 06h | **78,8 %** | 99,8 % | 1,0 / 5 | 5,0 / 8 | 95 t/s |
+| 07h | 67,9 % | 95,7 % | 0,1 / 2 | 4,1 / 8 | 101 t/s |
+| 08h (12 min) | 67,6 % | 86,0 % | 0,1 / 1 | 3,8 / 5 | 101 t/s |
+
+Instantané à 08:11Z : KV 86 %, 4 en cours, 0 en attente. Trafic hub sur 2 h (en-tête `x_claudish_machine`) : po-2023 83, po-2028 67, po-2027 66, po-2024 55, ai-01 16 ; 318 requêtes sans en-tête (sondes, condensation, appels directs).
+
+### Watchdog
+
+3 × `WEDGE fail 1/2` (06:19:16, 06:35:36, 06:45:58Z), toutes à KV 84-95 % avec 1-3 en attente ; **aucun `WEDGE-BUSY`, aucun 2/2, aucun restart**. 3 840 sondes OK sur les 4 000 dernières lignes.
+
+### Condensation (journal RSM, 06:11 → 08:11Z)
+
+| Passe | Résumé | Statut | Moteur à ce moment |
+|---|---|---|---|
+| 06:33:31Z (disjoncteur HALF-OPEN, retente le local) | coupé à 90 s → cloud | coupé à 90 s → cloud, `Status contradictions detected` (#1502/#3329), troncature | **saturé** : KV 93-99,8 %, 1-4 en attente |
+| 07:36:26Z | **local** (pas de timeout) | coupé à 90 s → cloud, condensé sous le plafond, sans troncature | **non saturé** : KV 74-80 %, **0 en attente**, 84-117 t/s |
+
+- La passe de 06:33Z confirme la lecture de claudish (machine dashboard 06:36Z) : à ce moment, la requête attendait derrière une file pleine.
+- **La passe de 07:36Z montre l'autre moitié** : sans aucune file, le statut est quand même coupé à 90 s. La saturation n'explique donc qu'une partie des replis ; l'autre est le budget fixe de 90 s pour une génération de statut longue (roo-extensions#4434). Réponse rendue à claudish sur le dashboard machine.
+
+### Disques
+
+- **Ubuntu : 93 %, 73 Gio libres** (883 Gio utilisés). Pruneur de 07:50:03Z : tier à 288,4 Go (268,5 Gio) avant passage, 759 fichiers et 19,9 Go supprimés pour revenir à 250 Gio. `du` à 08:1xZ : **274 Gio** (avant le passage de 08:20Z).
+- **G:** 606 Gio libres (617 à 06:11Z), sonde d'écriture OK.
+
+### Sauvegarde d'Ubuntu (01/11 02:00Z)
+
+- `Backup-Ubuntu-WSL` : `Ready`, prochaine exécution **01/11/2026 03:00 locale = 02:00Z**, dernière 01/10 rc=0. Pas de marqueur `wsl-backup-docker-down.marker`.
+- **Toujours pas de réponse de Maintenance** au WARN de 04:18Z.
+- Q51 (tier à 30 Gio avant l'export) : ouverte, échéance 01/11 01:50Z.
+
+### Trafic et sécurité (fenêtre 2 h, `error_sources.jsonl`)
+
+- 605 requêtes : 580 × 200, 25 × 401, **0 × 400** (le dernier 400 window+1 reste celui de po-2024 à 05:36:58Z).
+- IP avec des 200 sur 7 h : hairpin `90.65.170.144` (1 109), local `?` (850), web1 `37.187.180.135` (14), poste Paris `82.66.89.184` (6). **Aucune IP nouvelle avec un 200.**
+- **401** : 21 × collecteur Go `37.230.119.250` (clé `1f7f6080cb65`, connue) ; 3 × **ZOLTRAAK** depuis `31.77.203.199` (06:25:58-06:26:26Z, `/v1/models`, empreintes `ccd500f719e4`/`64a6d7ec06fd`, scanner déjà connu, claudish#718) ; 1 × `curl` local sans clé. Aucune inférence.
+
+### Coordination
+
+- roo-extensions#4386 (`@vllm`, deux corrections demandées) : traitée par po-2025:vllm, commit `fe420729` poussé à 07:51Z ; reste la relecture de roo-extensions.
+- nbaudit : passage de 08:05Z OK, `consecutive_failures` 0, série 19451 désormais sur `Image/` (vague 2).
+- po-2025:vllm signale un redémarrage moteur + hub à 05:35:57Z sur po-2025 (cause non établie, signature Docker Desktop/VM). Hors périmètre ai-01.
