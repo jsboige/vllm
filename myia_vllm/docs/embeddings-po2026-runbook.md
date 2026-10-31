@@ -30,7 +30,7 @@ Issue de rattachement : jsboige/vllm#71. Tout chiffre ci-dessous est **mesuré**
 ## Recovery éprouvé
 
 | Symptôme | Geste | Preuve/leçon |
-|---|---|---|
+| --- | --- | --- |
 | Docker daemon down (HTTP 000 + GPU 0 MiB) | Kill Docker Desktop + `wsl --shutdown` + relance, attendre ~160 s | [[docker-daemon-crash-detection]] siège |
 | Sidecar lent/wedge (« SLOW-not-dead », `/health` 200 mais inférence lente) | `docker restart embedding-proxy-logger` | Angle mort n°9 : un health 200 ne prouve rien, toujours tester un POST réel |
 | Pull Docker Hub 401/403 | Workaround **skopeo en conteneur détaché** via socket Docker (`MSYS_NO_PATHCONV=1`), image injectée au store local | Keyring Docker Desktop HS (non touché) ; procédure éprouvée 30/09 (image 29,8 Go) |
@@ -90,7 +90,7 @@ Un garde-fou **autonome** qui prouve la chaîne par une **vraie requête** et re
 seul conteneur impliqué. Ni lui ni le vigie 5 h ne dépendent d'une session ouverte.
 
 | | |
-|---|---|
+| --- | --- |
 | Script | `myia_vllm/scripts/monitoring/embedding_liveness_guard.py` |
 | **Copie d'exécution** | `D:\Production\Embeddings\bin\embedding_liveness_guard.py` — **hors dépôt** |
 | Enregistrement | `myia_vllm/scripts/monitoring/register_liveness_guard.ps1` (tâche utilisateur `/IT`, 5 min, sans élévation, dry-run `-WhatIf` obligatoire) |
@@ -155,6 +155,28 @@ Set-ScheduledTask -TaskName $TaskName -Settings $task.Settings
 `Get-ScheduledTask` affichant `Ready` **ne prouve rien** : les deux pannes ci-dessus sont
 invisibles à qui ne regarde que l'état de la tâche. Vivacité = `LastTaskResult = 0` **et**
 une ligne de journal récente (voir la commande ci-dessus).
+
+### ⚠️ Le flash de console (flicker #75) — l'action de la tâche doit rester derrière le lanceur masqué
+
+Une action `python.exe`/`powershell.exe` nue sur une tâche `/IT` **ouvre une console à
+chaque tir** (12 flashs/h mesurés pour une garde /5 min) — `-WindowStyle Hidden` ne
+supprime pas le flash (conhost s'affiche AVANT que le style s'applique). Le correctif
+flotte (`roo-extensions scripts/scheduling/harden-hidden-tasks.ps1`) route l'action via
+`wscript.exe //B` + un VBS qui passe `SW_HIDE` au `CreateProcess` ; le VBS vit dans
+`C:\ProgramData\claude-hidden-launchers\`, l'action d'origine est sauvegardée en
+`.orig.json` (rollback exact), et le VBS **propage le code de sortie** (sans ça, wscript
+rend 0 et un `LastTaskResult` menteur masque une garde morte — incident 26/10).
+
+**Piège** : `schtasks /create /f` **réécrit l'action en python.exe nu** — ré-enregistrer
+la garde sans re-durcir fait revenir le flash en silence. `register_liveness_guard.ps1`
+appelle donc le script flotte juste après la création (idempotent : une tâche déjà
+durcie est « non éligible » et juste auditée). Durci la première fois le 30/10 19:02Z
+par la lane Maintenance ; re-branché dans l'enregistreur le 31/10 (PR suivante).
+
+**COROLLAIRE mesuré** : la ligne de commande est **figée dans le VBS** — si le chemin
+du runtime bouge (migration, renommage), le VBS pointe dans le vide alors que l'action
+de tâche reste cohérente ; seul l'audit du script flotte le voit. Le déplacer = passer
+`harden-hidden-tasks.ps1` à nouveau.
 
 ## Mémoire host (SPOF n°4/5, résolu 05/10)
 
