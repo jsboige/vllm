@@ -108,6 +108,8 @@ if ($WhatIf) {
     Write-Output ""
     Write-Output "Would first install: $source"
     Write-Output "               ->     $runtime"
+    Write-Output "Would then re-route the action through the fleet hidden launcher (see below)"
+    Write-Output "so the console never flashes (flicker #75)."
     Write-Output "What the task would do every $IntervalMinutes min:"
     Write-Output "  - POST /v1/embeddings on :8004 (fleet path) with the key, require dims 2560"
     Write-Output "  - POST /v1/embeddings on :8005 (engine) only to localise a fault"
@@ -162,6 +164,29 @@ if ($task) {
 } else {
     Write-Output "  settings             : TASK NOT FOUND - cannot apply settings"
     exit 1
+}
+
+# `schtasks /create /f` writes a BARE python.exe action: every 5-minute tick would
+# open a console window on the desktop (flicker #75, 12 flashes/h measured). The
+# fleet's harden-hidden-tasks.ps1 re-routes the action via wscript.exe + a VBS that
+# passes SW_HIDE at CreateProcess - the ONLY form that never shows conhost (a plain
+# -WindowStyle Hidden shows it first, then hides). It was applied by hand on
+# 2026-10-30 19:02Z; re-running this register script without this step would SILENTLY
+# undo it. The script is idempotent (audits already-hardened tasks) and saves the
+# original action as .orig.json next to the launcher, so -Rollback stays exact.
+$harden = 'D:\Dev\roo-extensions\scripts\scheduling\harden-hidden-tasks.ps1'
+if (Test-Path $harden) {
+    & $harden -TaskName $TaskName
+    $a = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).Actions[0]
+    if ($a -and $a.Execute -eq 'wscript.exe') {
+        Write-Output "  hidden launcher     : OK  $($a.Execute) $($a.Arguments)"
+    } else {
+        Write-Output "  hidden launcher     : NOT APPLIED (action still '$($a.Execute)') - the console WILL flash"
+    }
+} else {
+    Write-Output "  hidden launcher     : SKIPPED - $harden not found on this host"
+    Write-Output "  WARNING: the task will open a console window every $IntervalMinutes min (flicker #75)."
+    Write-Output "           Harden manually (roo-extensions scripts/scheduling/harden-hidden-tasks.ps1)."
 }
 
 Write-Output ""
