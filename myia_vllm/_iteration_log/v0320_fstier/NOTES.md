@@ -5420,3 +5420,82 @@ Instantané à 08:11Z : KV 86 %, 4 en cours, 0 en attente. Trafic hub sur 2 h (e
 - roo-extensions#4386 (`@vllm`, deux corrections demandées) : traitée par po-2025:vllm, commit `fe420729` poussé à 07:51Z ; reste la relecture de roo-extensions.
 - nbaudit : passage de 08:05Z OK, `consecutive_failures` 0, série 19451 désormais sur `Image/` (vague 2).
 - po-2025:vllm signale un redémarrage moteur + hub à 05:35:57Z sur po-2025 (cause non établie, signature Docker Desktop/VM). Hors périmètre ai-01.
+
+## 31/10 10:1xZ — Cycle de surveillance : regain de charge à 08h puis décrue, 4 préemptions, aucun restart ; le hub n'envoie plus rien au moteur depuis 10:01:51Z ; troisième statut de condensation coupé à 90 s sans file
+
+### Prod
+
+- Même démarrage (`StartedAt` 30/10 12:01:30Z), RC=0, health 200 en 7,5 ms, 3 conteneurs Up. Journal moteur `--tail 5000` = **5 000 lignes, 0 OOM, 0 Traceback, 0 AssertionError**.
+- **VRAM** : GPU 0 **23 325**, GPU 1 21 674, GPU 2 45 MiB. Compteur `\GPU Process Memory(*)\Dedicated Usage` : `vmwp` = **21 675 MiB** sur chacun des deux GPU (le moteur, inchangé). Le bureau occupe ~1,4 Gio sur GPU 0 : 398, 311, 241, 190, 165 et 148 MiB. Q41 reste close.
+- `/dev/shm` 33G / 63G = 51 %. Commit hôte **66,4 %** (270,6 / 407,8 Go).
+
+### Cache et charge
+
+Pour la première fois, l'intervalle est **calculé exactement** sur les compteurs absolus. L'instantané `/metrics` de 08:11Z avait été gardé dans `.tmp/metrics.txt`, et celui de 10:11Z est conservé au même endroit pour le cycle suivant. Les chiffres d'intervalle des cycles précédents étaient reconstruits depuis des pourcentages arrondis.
+
+| Compteur | 08:11Z | 10:11Z | intervalle |
+|---|---|---|---|
+| queries (tokens) | 504 048 060 | 550 983 756 | +46 935 696 |
+| hits GPU | 279 624 080 | 311 013 888 | +31 389 808 (**66,9 %**) |
+| ext_queries | 224 423 980 | 239 969 868 | +15 545 888 |
+| ext_hits (RAM + fs) | 183 125 536 | 195 821 664 | +12 696 128 (**81,7 %**) |
+| préemptions | 46 | **50** | +4 |
+
+- Cumul depuis le boot : hit GPU 56,4 %, tier 81,6 %, **combiné 92,0 %**.
+- Sur l'intervalle : **combiné 93,9 %**, **~2,85 M tokens recalculés** (contre ~3,8 M estimés au cycle précédent). Les tiers servent 12,7 M tokens, soit 81,7 % des miss GPU.
+- 550,87 M tokens de prompt (+46,94 M en 2 h), 6,52 M générés (+0,656 M, ~91 t/s).
+
+| Heure (UTC) | KV moyen | KV max | attente moy / max | en cours moy / max | génération moy |
+|---|---|---|---|---|---|
+| 08h | **75,7 %** | 98,7 % | 0,7 / 6 | 4,5 / 8 | 90 t/s |
+| 09h | 63,3 % | 89,6 % | 0,0 / 0 | 3,5 / 7 | 107 t/s |
+| 10h (11 min) | 11,3 % | 73,2 % | 0,0 / 0 | 0,5 / 3 | 17 t/s |
+
+L'heure 08h, mesurée sur 12 min au cycle précédent (67,6 %), est remontée à 75,7 % sur l'heure entière. Il y a eu un regain entre 08:12 et 09:00Z, avec jusqu'à 6 requêtes en attente à 08:34Z. 09h n'a eu aucune file. Trafic hub sur 2 h (en-tête `x_claudish_machine`) : po-2028 95, po-2023 73, po-2027 67, po-2024 55, ai-01 14, 248 sans en-tête. 304 corps de 100 Ko à 1 Mo.
+
+### Le hub n'envoie plus rien depuis 10:01:51Z
+
+- Derniers appels du hub : po-2023 à 10:01:43Z, po-2027 et po-2024 à 10:01:51Z, po-2028 à 09:45:45Z, tous en `Bun`, corps de 700-760 Ko. Depuis, et jusqu'à 10:14Z, le moteur ne reçoit que les sondes `curl` du watchdog (0 en cours, 0 en attente).
+- Le hub de po-2025 est vivant : `/health` 200 à 10:12Z, `activeStreams 7`, `pendingRequests 2`, uptime 16 577 s (pas de redémarrage depuis 05:36Z). Le trafic part donc ailleurs.
+- Trois machines se sont arrêtées dans la même fenêtre de 8 s, ce qui ressemble à un changement de routage côté hub (cascade, mur MiniMax projeté 13-15Z par po-2025, ou disjoncteur sur `:5002`) plutôt qu'à des fins de sessions. C'est **SUPPOSÉ** : la cascade n'est pas visible d'ici.
+- Le moteur n'a rien refusé : 0 × 400, 0 × 5xx sur 2 h, KV max 73 % à 10h.
+- Question posée à claudish sur `workspace-claudish` (`ai01-vllm-info-hub-silence-20261031T1002Z`). Aucun geste.
+- ⚠ `claudish_traffic` sur le sidecar d'ai-01 a rendu **UNKNOWN** (corpus `--since` tourné) ; `--tail 3000` lit le segment vivant.
+
+### Watchdog
+
+1 × `WEDGE fail 1/2` à 08:33:43Z, au pic du regain (KV 84-93 %, 2-6 en attente). **Aucun `WEDGE-BUSY`, aucun 2/2, aucun restart.** 3 840 sondes OK sur les 4 000 dernières lignes.
+
+### Condensation (journal RSM, 08:10 → 10:15Z)
+
+Une seule passe, à 09:19:18Z, au moment où le disjoncteur passe en HALF-OPEN :
+- résumé **local** en 32 s ;
+- **statut coupé à 90 s** (09:20:48Z), alors que le moteur avait **0 en attente**, 4-5 en cours, KV 38-46 % et 101-145 t/s ;
+- repli cloud pour le statut, puis `primary attempt refused — pass deadline reached the cloud reserve (#3962)` à l'auto-condensation ;
+- `LLM did not converge under 15KB` suivi d'une troncature déterministe.
+
+C'est la **troisième passe sans file dont le statut est coupé à 90 s** (05:45Z le 30/10, 07:36Z et 09:19Z le 31/10). Le budget fixe de 90 s est donc une cause indépendante de la saturation (roo-extensions#4434). 16 battements « Condensation LLM config » sur la fenêtre : la condensation reste configurée sur notre moteur.
+
+### Disques
+
+- **Ubuntu : 92 %, 86 Gio libres** (871 Gio utilisés), contre 73 Gio à 08:1xZ. Le pruneur tient le tier sous 250 Gio.
+- **G:** 603 Gio libres, sonde d'écriture OK.
+
+### Sauvegarde d'Ubuntu (01/11 02:00Z)
+
+- `Backup-Ubuntu-WSL` : `Ready`, prochaine exécution 01/11 03:00 locale = **02:00Z**, dernière 01/10 rc=0. **Toujours pas de réponse de Maintenance** au WARN de 04:18Z.
+- claudish (po-2025) propose de redéployer le hub le **01/11 après ~00:30Z**. Le hub est sur po-2025, il n'est pas coupé par l'export. En revanche `:5002` et le sidecar d'ai-01 le seront à partir de 02:00Z, et je l'ai signalé dans le même message pour qu'un `:5002` injoignable ne soit pas pris pour une régression du déploiement.
+- Q51 (tier à 30 Gio avant l'export) : ouverte, échéance 01/11 01:50Z.
+
+### Trafic et sécurité (fenêtre 2 h, `error_sources.jsonl`)
+
+- 552 requêtes : 531 × 200, 21 × 401, **0 × 400**.
+- IP avec des 200 sur 7 h : hairpin `90.65.170.144` (1 084), local `?` (867), web1 `37.187.180.135` (15), poste Paris `82.66.89.184` (6). **Aucune IP nouvelle avec un 200.**
+- **401** : 19 × collecteur Go `37.230.119.250` (clé `1f7f6080cb65`, connue, `/v1/models` toutes les ~5-6 min), 1 × `Python-urllib` local sans clé (08:24:07Z), 1 × `curl` local sans clé (08:36:47Z). Aucune inférence. ZOLTRAAK n'est pas revenu.
+
+### Coordination
+
+- nbaudit : passage de 10:05:43Z OK, `consecutive_failures` 0, série 19451 sur `Image/`.
+- po-2025:claudish a établi la chaîne de la panne du hub de 05:13Z : tempête IRP du pilote Dokan de Google Drive, démontage de G: à 05:35:08Z, puis redémarrage de la VM WSL à 05:35:57Z. L'acteur du redémarrage n'est pas établi. Cela concerne po-2025, hors périmètre ai-01.
+- po-2025:claudish signale l'expiration du jeton Codex du hub le 02/11 09:21Z, qui demandera un login user : c'est leur registre.
+- Inbox : 196 non lus, essentiellement des dispatchs CoursIA adressés à la machine (#3960), aucun pour vllm.
