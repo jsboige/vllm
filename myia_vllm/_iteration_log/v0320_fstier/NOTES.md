@@ -5622,3 +5622,25 @@ Compléments : garder le nom public en valeur de repli documentée ; après basc
 **Hôte/disques.** Commit **70,6 %** (119,9 GB de marge). G: **OK**, 600 Go libres. Ubuntu inchangé (~87 %) ; **pruneur fs repassé à 19:50:04Z** (1 040 fichiers / 27,30 Go supprimés, retour au cap 250,0 GiB, 0 erreur, 1,92 s — deuxième passe vivante consécutive).
 
 **Cette nuit.** Q51 `ca2085e3` **01:52Z** (tier → 30 Gio) ; déploiement claudish main→hub **00:30–01:45Z** (preuves avant 02:00Z, recreate = pic de sondes attendu) ; `Backup-Ubuntu-WSL` **02:00Z** → `:5002` + sidecar coupés jusqu'à ~03:15Z ; cycle 02:11Z tournera dans la fenêtre (attendu : moteur injoignable, ne pas alarmer).
+
+## 31/10 22:1xZ — Cycle de surveillance : onde du soir qui décroît ; GPU 0 >23 000 = bureau (3ᵉ récurrence) ; réponse embeddings sur le WARN po-2027
+
+**Prod.** Health 200 en 14 ms ; RC=0, `StartedAt` 2026-10-30T12:01:30Z inchangé (**0 restart en ~34 h**), 3 conteneurs Up, shm 51 % (33G/63G = plancher tier, aucun orphelin). Journal moteur 5 000 lignes / **0 OOM**. 1 nouveau `fail 1/2` (20:39:13Z, 15ᵉ du jour, tous 1/2, aucun 2/2, 0 restart) — le régime « sonde affamée au pic » documenté. À l'instant : KV 48,4 %, 2 flux, 0 en attente — la décrue du pic est engagée.
+
+**★ GPU 0 = 23 080 MiB — seuil 23 000 franchi, attribution = bureau (3ᵉ récurrence du jour).** `nvidia-smi --query-compute-apps` ne montre QUE des processus WDDM du bureau : ShellHost, explorer, CrossDeviceResume, SearchHost, StartMenuExperienceHost, EdgeWebView ×1, TextInputHost, asus_framework, NVIDIA Overlay ×2 — signature identique à la récurrence de 06:1xZ (`vmwp` 21 675 MiB/GPU). Le moteur n'a pas dérivé (VRAM stable par ailleurs, GPU 1 21 674). **Pas d'action** (Q41 close : le critère « en charge » vise l'empreinte moteur, pas le bureau ; le reboot 27/10 à 0.73 n'a pas crashé). **Point de vigilance reporté** : le redémarrage post-sauvegarde de cette nuit (~03:15Z) se fera bureau éventuellement encore chargé — le cycle post-sauvegarde vérifie le boot sous cette condition réelle.
+
+**Intervalle 20:11→22:11Z.** **478 requêtes** ; prompt **Δ 48,20 M tok** (l'onde du soir tient ~24 M/h) ; génération Δ 0,66 M tok. Hit **GPU 39,7 % / tier 88,3 % / combiné 93,0 %** — le tier fs porte l'amortissement (sessions récurrentes, GPU LRU tournant). Préemptions **+2 (61)**. Lifetime : GPU 58,7 / tier 81,3 %.
+
+**Sécurité (fenêtre 2 h, 507 lignes).** 486 × 200, 21 × 401 (20 = collecteur à clé morte `37.230.119.250`, 1 auto-sonde locale), **0 × 400, 0 × 500, 0 gros corps rejeté**. 200 uniquement d'IP connues : edge `90.65.170.144` 280 (chemin hub actuel), local `?` 200 (consommateurs directs — bucket où atterrira le trafic hub après le basculement LAN-direct), web1 `37.187.180.135` 4, Paris `82.66.89.184` 2. **Aucune IP nouvelle avec 200.**
+
+**Pruneur fs : 3ᵉ passe vivante consécutive** — 21:50:04Z, 907 fichiers / 23,81 Go rendus, retour au cap 250,0 Gio, 0 erreur, 2,44 s. Le produit est stable en production.
+
+**Coordination.** Mention po-2027 15:44Z (`embeddings.myia.io` sert 500 ~1 h 40 APRÈS la clôture d'incident 14:02Z) : **mesuré à 22:1xZ = 401 sur sonde non authentifiée en 64 ms** — service UP, couche auth vivante, plus aucun 500. Réponse factuelle postée sur `workspace-roo-extensions` ; l'écart 15:44Z vs clôture reste à réconcilier par le siège po-2023. Mention po-2028 19:51Z (roo-extensions #3293 §9, assignation D4) : déjà lue par 4 workspaces ai-01 dont `ai-01:roo-extensions` — pas au périmètre vllm, marquée lue sans action.
+
+**Condensation.** Nominale : aucun événement (ni ERROR/WARN ni circuit breaker) sur les 3 rotations du jour (`roosync-20261031-164/166/172.log`).
+
+**nbaudit.** `ts 22:05:48Z`, rc 0/0, `ok true`, 0 échec consécutif, vague 2 `19451:Image/` active — sain.
+
+**Hôte/disques.** Commit **70,9 %** (marge 118,5 GB). G: **OK**, 599 Go libres.
+
+**Cette nuit (rappel).** Déploiement hub claudish **00:30–01:45Z** (leur recreate = pic de sondes attendu, pas un incident) ; Q51 one-shot `ca2085e3` **01:52Z** (tier fs → 30 Gio, `fstier_prune.ps1 -MaxGiB 30 -Apply`, moteur non touché) ; sauvegarde Ubuntu **02:00Z** (`:5002` + sidecar coupés jusqu'à ~03:15Z — le cycle 02:11Z tournera DANS la fenêtre : moteur injoignable = attendu). Cycle post-sauvegarde : vérifier le retour moteur (montage HF fantôme, StartedAt, VRAM GPU 0, génération réelle, shm attendu purgé) et rendre à Maintenance#244 + claudish.
