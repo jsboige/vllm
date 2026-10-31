@@ -5015,3 +5015,97 @@ Le commentaire du 29/10 sur #4434 en citait 6, d'après une lecture ciblée. Les
 - `global` : 3 `[ASK-USER]` d'autres lanes (CoursIA-2, CoursIA-3, CoursIA po-2027), rien pour vllm.
 
 **Producteurs.** nbaudit `ok:true` à 22:05:49Z, vague `Image/`, 0 échec consécutif. G: OK (605 Go libres, 84 %). Prouveur : aucune passe.
+
+## 31/10 00:1xZ — Cycle de surveillance : saturation aggravée (KV 91 % sur l'heure 23h, cinq sièges du hub), tenue sans restart ; le disque d'Ubuntu est à 96 %, mais le tier fs le protège
+
+**Prod** (00:11Z, 12 h 10 après le boot) :
+- health 200 en 4,5 ms, RC=0, `StartedAt` 12:01:30Z, 3/3 Up ;
+- VRAM **22 903 / 21 674 / 45 MiB**. GPU 0 a pris +137 MiB et GPU 1 est plat, donc la hausse vient du bureau (discriminant Q41). C'est sous 23 000 ;
+- `/dev/shm` 33G (51 %), commit hôte **65,2 %** ;
+- OOM 0 sur un segment vivant de 5 000 lignes.
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 30/10 22:11Z | 68,4 % | 81,1 % | 94,0 % | 13 |
+| **31/10 00:11Z** | **60,6 %** | **80,5 %** | **92,3 %** | **25** |
+
+314,63 M tokens de prompt (+39,4 M en 2 h, contre +71,0 M sur l'intervalle précédent), 3,30 M générés (+~0,45 M, soit ~62 t/s en moyenne). Sur l'intervalle seul, recalculé depuis les pourcentages arrondis du cycle précédent (±0,5 point) :
+- **GPU ~6 %** ;
+- tier ~79 % des miss ;
+- **combiné ~81 %** ;
+- **~7,6 M tokens recalculés** (contre ~4,3 M sur l'intervalle précédent).
+
+À 91 % de KV, le cache GPU ne garde plus rien d'un tour à l'autre : les tiers RAM et fs servent ~29 M tokens et portent seuls l'amortissement. **Préemptions +12** : elles ne sont pas datables, mais l'heure 23h est la plus saturée.
+
+| heure (Z) | KV moyen | fenêtres ≥ 90 % | en attente (moy.) | en cours (moy.) | génération (moy.) |
+|---|---|---|---|---|---|
+| 20h | 45,9 % | 10 / 267 | 0,1 | 2,6 | 73 t/s |
+| 21h | 80,3 % | 128 / 361 | 0,3 | 5,2 | 100 t/s |
+| 22h | 84,2 % | 143 / 360 | 1,0 | 5,0 | 76 t/s |
+| **23h** | **91,0 %** | **225 / 359** | **3,1** | 5,8 | **47 t/s** |
+| 00h (→ 00:11) | 91,8 % | 44 / 67 | 3,2 | 7,0 | 85 t/s |
+
+**Charge** (2 h, horodatage = fin de réponse, en-têtes du hub) :
+
+| siège | requêtes | corps médian | corps max | corps > 500 Ko |
+|---|---|---|---|---|
+| ai-01 | 92 | 389 Ko | 496 Ko | 0 |
+| po-2024 | 68 | 629 Ko | 781 Ko | 67 |
+| po-2023 | 44 | 646 Ko | 751 Ko | 42 |
+| po-2027 | 38 | 655 Ko | 807 Ko | 38 |
+| po-2028 | 21 | 292 Ko | 336 Ko | 0 |
+
+**Deux sièges nouveaux par rapport au cycle précédent** :
+- **ai-01** : 5 requêtes de 22:00 à 22:30Z, puis 39 entre 22:30 et 23:00Z ; workspace `:unknown` ;
+- **po-2028** : de retour, il était à 0.
+
+Cinq sessions longues en parallèle sur 831 K tokens de KV : c'est le régime « la file domine » de la loi de préchauffe du 28/10. Moins de requêtes terminées que le cycle précédent (263 contre 331), parce que chacune attend plus.
+
+**Watchdog** : **11 `fail 1/2`** depuis 22:11Z (10 dans l'heure 23h, 1 à 00:06:42Z), **2 `WEDGE-BUSY`** (23:41:45 et 23:55:39Z, compteurs en hausse, donc pas de restart, conforme à v6.2), `RECOVERED` à 00:08:42Z, aucun `2/2`, 3 859 sondes OK sur le segment lu.
+
+### Condensation (22:13 → 00:13Z)
+
+| déclenchement | résumé | statut | après |
+|---|---|---|---|
+| 23:01:42Z | local coupé à 90 s → cloud OK | local coupé à 90 s → cloud OK | auto-condense refusé (réserve cloud #3962), **disjoncteur OUVERT 23:03:41Z**, **troncature déterministe** |
+| 23:48:22Z (demi-ouvert) | local coupé à 90 s → cloud OK | local coupé à 90 s → cloud OK | **troncature déterministe** |
+| 23:58:55Z | local coupé à 90 s → cloud OK | local coupé à 90 s → cloud OK | **troncature déterministe** |
+
+Fait nouveau par rapport au cycle 22:1xZ : à ce niveau de saturation, **le résumé est coupé lui aussi**. Il passait en local en 50 à 64 s quand le KV était à ~80 %. Les trois condensations ont été faites entièrement par le cloud, et les trois statuts ont été tronqués. La troncature suit donc la sortie cloud, et non le modèle local. Le disjoncteur s'ouvre en routine (~12 fois par jour sur 7 jours, 6 le 30/10) : ce n'est pas un fait nouveau.
+
+### Disque d'Ubuntu (WSL) — alerte Maintenance [#244](https://github.com/jsboige/Maintenance/issues/244)
+
+Maintenance annonce un mur « entre le 02/11 vers 05:00Z et le 04/11 ». Mesures de ma lane, prises dans la VM en root (`du -x`, `df -B1G`) :
+
+| contenu (`/home/user/vllm`) | Gio | statut |
+|---|---|---|
+| `.kv-tier-fs` (tier fs du cache KV) | 265 avant l'élagage | cache régénérable, élagué toutes les 30 min |
+| HF `hub/hub/` : Swift prod (lu par le moteur, révision `9dba8a05`, blobs partagés) | ~20 | **garder** |
+| HF `hub/hub/` : rollback MoE `cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit` | 47 | **garder** (rollback armé, WSL seulement) |
+| HF `hub/hub/` : drafters DFlash (z-lab, syvai) | ~3 | profils de re-test |
+| HF `hub/` : **doublon Swift** (même révision, `links=1`, copie séparée) | 19 | hors prod |
+| HF `hub/` : `axteam/Nanbeige4.3-33B-AWQ-4bit` (banc 29/10, écarté) | 22 | hors prod |
+| HF `hub/` : `philbert440/Qwen3.8-27B-W4A16-AWQ` (ligne close, re-test DFlash2) | 19 | hors prod |
+| **total** | **390** | |
+
+Le moteur lit `/root/.cache/huggingface/hub` = l'hôte `hub/hub/` (bind `…\huggingface\hub → /root/.cache/huggingface`, sans `HF_HOME` ni `--download-dir`). Les trois copies du niveau `hub/` lui sont invisibles. Elles viennent probablement de conteneurs d'éval GPU 2 qui montaient le mauvais niveau (fait n°3 de CLAUDE.md, SUPPOSÉ). Les trois dépôts répondent 200 sur l'API Hugging Face, révision de Swift comprise.
+
+**Le tier fs ne peut pas faire le mur, il l'amortit.** Le plafond du pruneur vaut `min(250 GiB, tier + libre invité − 40 GiB, tier + libre C: − 12 %)` (`fstier_prune.ps1`). Mesure en direct au passage de **00:20:03Z** : tier 265,8 Gio, **15,8 Gio supprimés** (648 fichiers, 0 erreur), libre dans Ubuntu **39,2 → 55 Gio** (`df` à 00:19:54 puis 00:20:45Z). Aujourd'hui, `tier + libre` ≈ 305 Gio : c'est le plafond de 250 Gio qui s'applique, et le libre oscille entre ~39 et ~55 Gio. Si les autres lanes prennent environ 15 Gio de plus, le terme invité devient le plus petit, et chaque passage remet le libre à 40 Gio. Avec une dent de scie de 12 à 16 Gio par demi-heure, le libre oscillerait alors entre ~24 et 40 Gio, sans descendre à 0. Cela vaut tant que le tier a des blocs à céder, soit jusqu'à 250 Gio de marge. **Le coût est la rétention du cache** : chaque Gio pris ailleurs est retiré au tier, qui porte en ce moment ~79 % des miss GPU.
+
+**Correction pour Maintenance** : le saut de « ~10 Gio en quelques minutes » de leur tableau (47 Gio libres à 23:49, puis 57,4 Gio à 23:50:40Z) correspond à **notre élagage de 23:50:02Z** (480 fichiers, 11,7 Gio supprimés, 0 erreur, `fstier_state.json`). Ce ne sont pas les runners CI. Ensuite, −5,1 Gio en 7 min (23:50:40 → 23:57:56Z) est compatible avec le débit d'écriture du tier (~57 Go/h depuis le boot). Une pente globale mesurée par deux `df` pris à des moments différents de cette dent de scie (amplitude ~12 Gio) n'est pas un signal. **Piste « fichiers supprimés mais ouverts » : négative.** `lsof +L1` en root ne montre aucun fichier supprimé sur la racine ext4 : seulement des `memfd:doublemapper` des runners (.NET, RAM, taille virtuelle 2 Tio) et des descripteurs de taille 0. Aucun bloc du tier n'est ouvert.
+
+Le ménage des 60 Gio hors prod va au registre (**Q50**), parce que c'est une suppression de données : je ne la fais pas sans GO. Elle n'est pas nécessaire pour éviter le mur, mais elle rendrait 60 Gio de rétention au cache.
+
+### Trafic et sécurité
+
+- **Statuts (2 h)** : 416 × 200, 18 × 401, **0 × 400 / 0 × 5xx / 0 × 429**.
+- **IP avec des 200 (7 jours, archive `…20261030-203440.jsonl.gz` + vivant)** : aucune adresse nouvelle. Le premier 200 le plus récent date du 28/10 (`92.184.141.58`, famille mobile Free de la carte).
+- **401** : collecteur Go `37.230.119.250` avec `1f7f6080cb65` (ancienne MEDIUM publique), 17 × `/v1/models`, sans inférence. Plus 1 `curl` sans clé (`c627c09c14e5` = `NONE`).
+
+### Coordination
+
+- **Maintenance (ai-01) `[WARN][ASK][DISK]`** : réponse ci-dessus, postée sur leur fil et sur #244.
+- **po-2023:vllm `[WARN]`** : index `ws-*` de Qdrant figés depuis ~28 h. Le producteur est hors de la lane vllm (famille #4352). Je n'ai fait aucun geste.
+- `global` : aucune mention de vllm.
+
+**Producteurs.** nbaudit `ok:true` à 00:05:45Z, vague `Image/`, 0 échec consécutif. G: OK (616 Go libres, 84 %). Prouveur : aucune passe.
