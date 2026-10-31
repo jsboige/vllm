@@ -5560,3 +5560,19 @@ Le user a qualifié le silence de « vrai problème » : le pilote devait tenir 
 **Mandat émis (réponse DM `msg-20261031T161208-fkbpxy`).** (1) **Routage LAN-direct hub→swift** (po-2025 → ai-01 `192.168.0.x:5002`, clé MEDIUM) pour le flux interne, l'edge public restant pour les sièges externes (`external-vllm`) — motive : 3 h de coupure aujourd'hui pour une panne tiers, SPOF Q65 réalisé 2×, hub et moteur sur le même LAN. claudish porte le volet config. (2) **Offre de capacité post-Minimax** (mur à 13:30:44Z ; deepseek-flash PAYG ~1 750/h selon leur relevé) : levier = leur cap `maxConcurrency 8`, busy-skip conservé, **calibrage après la sauvegarde de cette nuit**. (3) Rappel unique : `:5002` coupé 02:00→~03:15Z, leur redéploiement hub >00:30Z croise la fenêtre.
 
 **Promotion postée (global, cross-post 5/5 : CoursIA, CoursIA-2, CoursIA-3, hermes-agent, claudish).** Mandats user 29/10 + 31/10 cités ; agents prêts (`swift-worker` ai-01 ; `mini-delegator/sweeper/fanout-extractor/verifier` FrogNano po-2025) ; règles d'usage issues des mesures (tours courts/moyens, rafales, hit 90,6 %) ; effet de bord annoncé (coupure 02:00Z) ; suite sur workspace-vllm.
+
+## 31/10 16:1xZ — Cycle de surveillance : sain et léger ; retour de l'IP Paris ; pas de nouveau 400-gros-corps
+
+**Prod.** Health 200 (4,2 ms), RC=0, StartedAt 30/10 12:01:30Z inchangé, 0 OOM sur 5 000 lignes vivantes, 3 conteneurs Up, shm 33G = 51 %. GPU 0 **23 182** (moteur 21 674 + bureau ~1,5), GPU 1 21 674, **GPU 2 retombé à 45 MiB** (training CoursIA terminé). **1 WEDGE `fail 1/2` à 14:10:51Z** (saturation du matin), aucun restart.
+
+**Intervalle 13:30→16:13Z.** **666 requêtes**, prompt Δ **64,9 M tokens**, génération Δ 761 K, préemptions **+6** (57). Hit GPU 52,3 % / tier 81,1 % / **combiné 91,0 %** — amortissement sain (§5quater : rien de cassé, le hit monte). À 16:13Z : 1 flux, KV 23,6 %.
+
+**Sécurité (2 h).** 200 uniquement depuis `90.65.170.144` (site/edge, 308 — dont le trafic hub piloté), `?` directes (208), web1 (3) et **`82.66.89.184` ×4** — l'IP Paris du user, **sur la carte** (Q13), revenue après un mois d'arrêt (depuis le 01/10) : à signaler au user, pas une alerte. 401 = collecteur connu seul (`1f7f6080cb65` ×21). **0 × 400 dans la fenêtre** : le grep « 400 + corps >100K » a matché l'occurrence **déjà connue de 05:36:58Z** (corps 997 Ko, UA Bun via edge — le log vivant couvre ~11 h) ; vérifié au timestamp avant publication.
+
+**Condensation.** Dernière passe 13:39Z (2 replis cloud), puis calme — le disjoncteur est resté fermé.
+
+**Hôte/disques.** Commit **69,5 %** (124,3 GB de marge). G: OK, 603 Go. Ubuntu **87 %** (131 Gio libres, en légère baisse — l'élagage Q51 de ce soir à 01:52Z rendra ~200+ Gio de tier).
+
+**Coordination.** Mandat LAN-direct + offre capacité envoyés à claudish à 16:12Z (DM `msg-20261031T161208-fkbpxy`) — **pas encore de réponse**. Promotion adoption postée sur global (cross-post 5/5). Le DM d'élucidation (14:40Z) est marqué lu.
+
+**À venir cette nuit.** Q51 one-shot `ca2085e3` **01:52Z** (tier fs → 30 Gio) ; `Backup-Ubuntu-WSL` **02:00Z** (Docker quit + `wsl --shutdown` + export → `:5002` coupé jusqu'à ~03:15Z) ; cycle post-sauvegarde = montage HF fantôme, VRAM GPU 0, génération réelle, `/dev/shm`, rendu à Maintenance + claudish (redéploiement hub croisant la fenêtre).
