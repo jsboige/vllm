@@ -5193,3 +5193,90 @@ Même tableau qu'au cycle 00:1xZ : sous saturation, tout part au cloud et le sta
 - **G:** passe de 616 à **556 Gio libres** en 2 h (une marche de −60 Gio, après 705 → 630 un peu plus tôt dans la série). Ce n'est pas de notre fait : la lane n'écrit sur G: que sa sonde. Je le signale à Maintenance, sans diagnostic.
 
 **Producteurs.** nbaudit `ok:true` à 02:05:47Z, vague `Image/`, 0 échec consécutif. G: écriture OK. Prouveur : aucune passe.
+
+## 31/10 04:1xZ — Cycle de surveillance : nuit calme (KV 65 → 76 → 51 %, zéro sonde ratée) ; la sauvegarde mensuelle d'Ubuntu du 01/11 02:00Z coupera la prod pendant l'export d'une distro de ~845-880 Gio
+
+**Prod** (04:11Z, 16 h 10 après le boot) :
+- health 200 en 3,2 ms, RC=0, `StartedAt` 12:01:30Z inchangé, 3/3 Up ;
+- `/dev/shm` 33G (51 %), commit hôte **64,4 %** (marge 145,0 Go) ;
+- OOM 0 sur un segment vivant de 5 000 lignes.
+
+**VRAM : 23 304 / 21 674 / 45 MiB.** GPU 0 reste au-dessus de 23 000 (−7 MiB depuis 02:11Z) ; GPU 1 est plat. Compteur Windows `GPU Process Memory` : `vmwp` tient **21 675 MiB par GPU**, comme à 02:11Z. Le bureau tient ~1,6 GiB sur GPU 0 : Edge 397, dwm 311, VS Code 240, Chrome 190 + 130, explorer 165, csrss 84, NVIDIA Overlay 72. **Q41 reste close** : ses critères de réouverture ne sont pas atteints.
+
+| instant | GPU | tier (sur les miss GPU) | combiné | préemptions |
+|---|---|---|---|---|
+| 31/10 02:11Z | 57,5 % | 80,2 % | 91,6 % | 37 |
+| **31/10 04:11Z** | **57,6 %** | **81,7 %** | **92,2 %** | **38** |
+
+412,76 M tokens de prompt (+61,1 M en 2 h, contre +37,0 M à l'intervalle précédent), 4,58 M générés (+0,71 M, ~98 t/s). Sur l'intervalle seul, reconstruit depuis les pourcentages du cycle précédent (±0,5 point sur 351,6 M, soit ±2,9 points sur l'intervalle) :
+- **GPU ~58 %** (contre ~31 % puis ~6 %) ;
+- tier ~90 % des miss ;
+- **combiné ~96 %** ;
+- ~2,5 M tokens recalculés (±1,8 M), contre ~5,4 M.
+
+Plus de prompt servi pour moins de recalcul : les sessions de la nuit ont un préfixe stable et le KV n'est plus sous pression. **Une seule préemption en 2 h.**
+
+| heure (Z) | KV moyen | KV max | minutes ≥ 90 % | en attente (moy.) | en cours (moy.) | génération (moy.) |
+|---|---|---|---|---|---|---|
+| 02h | 64,9 % | 96,9 % | 9 / 59 | 0,1 | 3,3 | 99 t/s |
+| 03h | 76,3 % | 100,0 % | 16 / 60 | 0,1 | 4,0 | 101 t/s |
+| 04h (→ 04:11) | 51,0 % | 72,4 % | 0 / 11 | 0,0 | 2,5 | 88 t/s |
+
+L'heure 03h touche 100 % de KV par moments sans former de file (0,1 en attente en moyenne) : 3 à 4 sessions longues tiennent tout le cache, et le tier sert le reste.
+
+**Charge** (02:11 → 04:11Z, en-têtes du hub, horodatage = fin de réponse) :
+
+| siège | requêtes | corps médian | corps max | corps > 500 Ko |
+|---|---|---|---|---|
+| po-2024 | 177 | 650 Ko | 772 Ko | 167 |
+| po-2027 | 106 | 650 Ko | 788 Ko | 106 |
+| po-2023 | 59 | 614 Ko | 762 Ko | 56 |
+| po-2028 | 6 | 437 Ko | 478 Ko | 0 |
+
+348 requêtes du hub (contre 223) sur quatre sièges : **ai-01 a disparu** et po-2028 est quasi muet. po-2024 et po-2027 tiennent chacun une session longue continue. Hors hub : 213 sondes `curl` du watchdog, 21 `Go-http-client` (le collecteur à clé morte), 18 `OpenAI/JS`.
+
+**Watchdog** (depuis 02:11Z) : **aucun `fail 1/2`**, aucun `WEDGE-BUSY`, aucun restart, 210 sondes OK. Le dernier `fail 1/2` date de 01:58:26Z.
+
+### Condensation (02:13 → 04:13Z)
+
+- **3 passes** (02:28:31, 02:32:56, 03:17:35Z) ;
+- **résumés 3/3 en local**, en 43, 41 et 57 s ;
+- **statuts 3/3 coupés à 90 s**, repris par le cloud ;
+- 2 troncatures déterministes sur 3. À 02:34:58Z, le cloud a condensé le statut sous le plafond, sans troncature ;
+- disjoncteur ouvert à 02:34:54Z, demi-ouvert à 03:17:35Z ;
+- 2 détections « Status contradictions » (#1502/#3329), dont une réconciliée (« latest dated state wins », #3803). C'est la routine : 18 à 51 par jour sur ai-01 depuis le 24/10.
+
+Moteur au repos, le résumé passe à chaque fois et le statut échoue à chaque fois. C'est la signature d'un budget fixe de 90 s trop court pour le statut, déjà versée à [roo-extensions#4434](https://github.com/jsboige/roo-extensions/issues/4434), et non d'une saturation.
+
+### Disque d'Ubuntu (Maintenance [#244](https://github.com/jsboige/Maintenance/issues/244))
+
+- **93 %, 75 Gio libres** (`df -B1G /` en root, 04:2xZ).
+- Élagage à 03:50:03Z : 855 fichiers, 20,9 Gio, 0 erreur. Le tier est remonté à 268 Gio à 04:2xZ, le rythme reste de ~50 Gio/h.
+- CoursIA-2 a mesuré (c.6536839639) **51,2 Gio de blocs réservés au root** sur cette racine ext4 : le « mur à 100 % » ne vaut que pour les écritures non-root. Le moteur et le pruneur écrivent en root.
+
+### ⚠ Sauvegarde mensuelle d'Ubuntu, 01/11 02:00Z : coupure de la prod pendant tout l'export
+
+Tâche `Backup-Ubuntu-WSL` (Maintenance, prochaine exécution **01/11/2026 03:00 locale = 02:00Z**), script `C:\ProgramData\maint-scripts\backup_ubuntu_distro.ps1`, lu en entier :
+1. quitte Docker Desktop (`Docker Desktop.exe --quit`, force-kill à 60 s), puis `wsl --shutdown` ;
+2. `wsl --export Ubuntu` vers `F:\Backups\WSL-staging` (USB, exFAT, 1 266,7 Gio libres) ;
+3. relance Docker Desktop ; la vérification du livrable (relecture intégrale + SHA256) et la rotation viennent ensuite.
+
+**Ce qui nous concerne :**
+- **La prod vllm et les ~50 conteneurs d'ai-01 sont coupés pendant tout l'export**, puis le moteur reboote (~8 min à chaud). Après un `wsl --shutdown`, le tier RAM et `/dev/shm` sont vidés, sans fuite à purger ; le tier fs survit.
+- **Taille de l'export** : la distro occupe **865-882 Gio** (`df`), `du -x /` = 845 Gio (CoursIA-2, 31/10 00:5xZ). Le dernier livrable fait 594 Gio (01/10), et le script est documenté pour ~248 Go (juin). **Notre part sous `/home/user/vllm` est de ~390 Gio, dont 250-270 de tier fs régénérable** (sans valeur de sauvegarde) et 60 Gio de copies hors prod (Q50).
+- **Durée : non mesurée.** Le seul débit connu date du 07/06 : 247,9 Gio écrits avant 03:19:42 locale pour un départ à 03:00, donc ≥ ~215 Mo/s, et vers G:, pas vers F:. À ce débit, 845 Gio prendraient ~67 min (SUPPOSÉ).
+- **Défaut latent du processus de secours** (`restore_docker_after_failed_backup.ps1`, lancé détaché avec `-DelayMinutes 45`) : à +45 min, il relance Docker si le marqueur est présent et Docker absent. **Il ne vérifie pas que l'export est encore en cours.** Or le marqueur n'est retiré que dans le `finally` qui suit l'export. **Si l'export dure plus de 45 min**, c'est-à-dire si le débit reste sous ~336 Mo/s pour 845 Gio, Docker redémarre en plein export. Le script lui-même documente ce cas comme cassant l'intégration WSL de Docker (incident du 07/06).
+- Ce n'est pas notre infra : signalé au propriétaire (Maintenance) avec ces mesures, sans geste.
+- **Ce qui relève de vllm : registre Q51** (passe du pruneur à 30 Gio vers 01:52Z, ce qui retire ~220-240 Gio de l'export ; reco oui ; échéance 01/11 01:50Z).
+
+### Trafic et sécurité
+
+- **Statuts (2 h)** : 579 × 200, 21 × 401, **0 × 400 / 0 × 5xx / 0 × 429**.
+- **IP avec des 200 (7 jours, archive + fichier vivant)** : aucune adresse nouvelle.
+- **401** : collecteur Go `37.230.119.250`, clé `1f7f6080cb65` (ancienne MEDIUM publique), 21 × `/v1/models`, sans inférence.
+
+### Coordination et producteurs
+
+- Aucun DM nouveau depuis le 30/10 21:15Z, rien de nouveau adressé à vllm sur `workspace-vllm` depuis 02:17Z.
+- **G:** remonte à **632 Gio libres** (556 à 02:11Z) : la marche de −60 Gio signalée à Maintenance s'est résorbée d'elle-même.
+- nbaudit `ok:true` à 04:05:41Z, vague `Image/`, 0 échec consécutif. G: écriture OK. Prouveur : aucune passe.
