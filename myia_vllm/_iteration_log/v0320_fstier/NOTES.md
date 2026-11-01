@@ -5687,3 +5687,40 @@ GO user 31/10 (~12:0xZ). `fstier_prune.ps1 -MaxGiB 30 -Apply` (one-shot cron `ca
 **Census 2 h (traversant la fenêtre).** 423 × 200, 13 × 401 (collecteur clé morte + auto-sondes) ; 200 : edge 275 (le hub est TOUJOURS sur l'edge public — cohérent : basculement LAN en attente de Q65), local `?` 144, web1 2, Paris 2. **Aucune IP nouvelle avec 200**, 0 × 400/500.
 
 **Rendus.** Maintenance#244 (retour moteur chiffré) + DM claudish (fenêtre fermée tôt, moteur sain, leurs pilotes débloqués).
+
+---
+
+## 01/11 06:1xZ — Cycle de surveillance : ★ les timeouts de condensation sont de l'ARITHMÉTIQUE, pas un moteur coincé (mesuré)
+
+**Prod saine.** health 200 en 4,1 ms, `RC=0`, `StartedAt 02:50:54Z` inchangé (boot post-sauvegarde), 3 conteneurs Up 3 h, 0 OOM sur 5 000 lignes de log moteur. VRAM GPU 0 **22 569** / GPU 1 21 386 / GPU 2 **45** MiB (libre, CoursIA inactif). shm **33 G = plancher** (tier 32 GiB), commit hôte **71,0 %** (marge 118 Go), G: 630 Go (remonté de 58 Go — churn DriveFS, hors périmètre).
+
+**Intervalle 04:11→06:11Z (2 h exactes).** 566 requêtes, prompt **Δ 59,27 M tokens**, génération Δ 659 505. Hit **GPU 84,5 % / tier 74,2 % / combiné 96,0 %**. **0 préemption** (absolute 0 depuis le boot). Depuis le boot : 107,86 M tokens prompt, 977 requêtes terminées (638 `stop` + 339 `length`), **0 `abort`, 0 `error`**.
+
+**Watchdog.** 3 `WEDGE fail 1/2` depuis le boot (02:57:10, 03:02:01, 04:27:13), tous **RECOVERED en 1-2 min**, **0 restart**. Celui de 03:02 a été classé `WEDGE-BUSY` (compteurs avançant `p 1 719 259→2 147 002`) : **v6.2 a correctement refusé de redémarrer** — deuxième validation terrain du rail. 3 874 sondes `OK health=200 decode=200` dans le buffer.
+
+**Sécurité (7 h).** 200 : edge `90.65.170.144` 1 024, local sans `x_forwarded_for` 675, Paris `82.66.89.184` 10, web1 `37.187.180.135` 10. **Aucune IP nouvelle avec 200.** 4xx : `37.230.119.250` 401×62 (collecteur clé morte), `?` 401×5, `31.77.203.199` 401×4 (ZOLTRAAK, connu), edge 401×1, `127.0.0.1` 401×1 (auto-sonde). **0 × 400-gros-corps, 0 × 500.** Empreinte inconnue `045b4e2ea2db` = 2 × `GET /v1/models` **401** de `Bun/1.3.14` à 23:37:26-27Z (sonde de connectivité sans clé, aucun 200) — pas une alerte.
+
+**Census 12 h.** 3 120 lignes, ~4,3 req/min. UA : `Bun/1.3.14` 1 696 (hub), `curl/8.22.0` 1 124 (sondes watchdog), `OpenAI/JS 4.104.0` 169 (condensation RSM/hub), `Go-http-client` 114 (collecteur mort). Clés : `be312daf7c1c` (MEDIUM) 2 994, `1f7f6080cb65` 114, NONE 5. **Corps : 1 684 sur 3 120 (54 %) sont > 100 Ko** — la charge est bien du long contexte, pas du tour court.
+
+### ★ Le fait du cycle — condensation : 90 s de budget contre 34 t/s par flux
+
+claudish signale (`msg-20261101T044404-dipdx1`) un 3ᵉ timeout de condensation sur `qwen3.6-35b-a3b` à **05:03Z** (« socket held open, ni complétion ni erreur HTTP »), et rapproche les 2 de po-2024 (00:31Z, 00:34Z). Leur hypothèse : **modèle/poids coincé**. Mon propre RSM a ouvert son disjoncteur à **05:57:26Z** (3 déclenchements 05:49:40 / 05:54:37 / 05:55:26, repli cloud ensuite) — même symptôme, autre machine.
+
+**Ce que la mesure dit.** Les 44 requêtes de condensation des 2,2 dernières heures sont **toutes loguées 200** côté moteur (`auth_prefix` MEDIUM, corps 17-78 Ko) : le moteur **accepte et sert**. Aucun `abort`, aucune `error`, 0 préemption, 0 OOM. Ce n'est donc pas un moteur coincé.
+
+Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des requêtes en cours**, le débit de génération **par flux** (`Avg generation throughput ÷ Running`) donne **médiane 34,6 t/s, p10 17,2, p90 47,6**. D'où la durée d'une sortie de N tokens :
+
+| tokens de sortie | à la médiane | au p10 (charge) |
+|---|---|---|
+| 1 000 | 29 s | 58 s |
+| 2 000 | 58 s | **117 s** |
+| 4 000 | 115 s | 233 s |
+| 7 200 | 208 s | 419 s |
+
+**Conclusion** : dès qu'on dépasse ~1 500 tokens de sortie, ou dès que la charge divise le débit par flux, le budget fixe de **90 s** est franchi — sans qu'aucune requête n'ait été perdue côté moteur. C'est exactement la signature observée : « socket ouvert, rien ne revient », pendant que `/health` répond et que les autres flux servent. Le déclencheur circadien l'explique aussi : les timeouts tombent aux heures pleines (00:31, 00:34, 05:03, 05:49-05:57) et jamais au repos.
+
+**Portée pour #4434** : le budget fixe de 90 s n'est pas seulement mal calibré pour la file, il est **structurellement insuffisant** pour une condensation de 15 Ko sur Swift sous charge. Les leviers appartiennent au propriétaire de l'outil (roo-extensions) : budget dérivé de la taille d'entrée et du débit mesuré, `max_tokens` borné, ou routage de la condensation vers un modèle à haut débit par flux (FrogNano a mesuré **111 t/s mono-flux** côté po-2025) plutôt que vers le 27B dense partagé.
+
+**Correction d'un artefact d'instrument** : 12 % des échantillons rendent un « per-stream » < 1 t/s — ce sont les intervalles où le lot est **en prefill** (génération nulle par construction), pas des stalls. Ces 154 échantillons sont exclus du calcul ci-dessus ; les compter comme des gels fabriquerait une fausse mesure de stall qui recouperait trompeusement les plaintes de condensation.
+
+**Rendus** : DM claudish (mesure + leviers, réponse à leur INFO) ; commentaire #4434 (roo-extensions) avec le tableau.
