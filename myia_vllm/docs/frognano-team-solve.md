@@ -37,7 +37,7 @@ faire.
 
 ## 2. Le workflow
 
-```
+```text
              ┌─ Extracteur A (motif M, persona alertes) ──┐
 ORDONNANCEUR ┤                                             ├─ PORTES ── VERDICT
 (appelant)   └─ Extracteur B (motif ¬M, persona mesures) ─┘  (mécaniques)  (appelant)
@@ -254,6 +254,46 @@ Conséquences pour l'orchestrateur :
 précaution sur des classes couvertes par une porte**. Il ne dit pas qu'il rend le mini apte à
 tout — les classes sans oracle restent au tier medium (§6), et la dérive d'un mini outillé en
 boucle reste non mesurée (§10).
+
+## 12. Les portes en une commande — `frognano_gate.py`
+
+Un mandataire ne doit **pas** avoir à recopier les snippets des §3-§5 : tant que la porte est un
+copier-coller, elle n'est appliquée que par ceux qui ont lu la doc — c'est-à-dire presque jamais.
+Le mécanisme est donc livré comme script : `myia_vllm/scripts/adoption/frognano_gate.py`
+(aucune dépendance, sortie humaine par défaut, `--json` pour un appelant automatisé, **exit code
+0 = porte passée / 1 = échouée / 2 = erreur d'usage**).
+
+```bash
+python myia_vllm/scripts/adoption/frognano_gate.py partition --corpus C --a A --b B
+python myia_vllm/scripts/adoption/frognano_gate.py threshold --corpus C --a A --b B \
+        --field free --op lt --value 2000
+python myia_vllm/scripts/adoption/frognano_gate.py fidelity  --src S --dst D
+python myia_vllm/scripts/adoption/frognano_gate.py selftest
+```
+
+Ce que la porte fait, et que la version PowerShell ne faisait pas :
+
+- **multiplicités**, pas seulement l'appartenance : une ligne présente 2× dans la source et 3×
+  dans l'union est signalée `sur-comptee` (l'ancienne porte passait) ;
+- **`threshold` exige que `partition` passe** : on ne compare jamais des nombres issus de lignes
+  non prouvées ;
+- **parse exhaustif obligatoire** : un seul champ non parsé = porte échouée, jamais ignoré ;
+- **`--json`** : un mandataire consomme `{passed, hits, hit_lines}` sans lire de prose.
+
+**`selftest`** rejoue les cas mesurés **et les falsifications qui doivent échouer** (fabrication,
+omission, doublon, compte faux du contradicteur, champ non parsé, nombre altéré, nombre perdu) :
+**11/11 contrôles OK**. C'est la contre-preuve de la porte — une porte qui ne sait pas échouer ne
+prouve rien.
+
+**Mesuré le 01/11 (2ᵉ passe indépendante, par le script)** : deux extracteurs `mini-summarizer`
+(`model_used: frognano-4b`, aucun repli) sur le corpus figé → **partition 4 + 28 = 32, 0
+fabrication, 0 doublon, 0 manquante, COMPTE PROUVÉ : 4** ; seuil `free < 2000` → **1 ligne,
+`min=1128`, parse 32/32**. Séries : R9 2/2, R10 2/2.
+
+**Limites assumées** : `fidelity` retire les séparateurs (prouve les chiffres, pas la position
+décimale — cf. §5) ; le script ne connaît **aucun** motif ni champ métier, il reçoit tout en
+argument ; et il ne remplace pas le checkpoint §9 — il le rend inutile là où une porte existe, et
+le laisse nécessaire partout ailleurs.
 
 ---
 

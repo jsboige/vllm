@@ -178,3 +178,36 @@ mini », soit exactement cette architecture, déjà configurée ; twins cloud `a
 **Ce que l'addendum ne prouve pas** : le taux de justesse de swift lui-même sur cas ambigus
 (2/2 sur un twin cloud), ni la dérive d'un mini outillé en boucle (job long avec outils) —
 mesures à faire avant de promouvoir un job outillé de bout en bout.
+
+## 9. Addendum 01/11 20:0xZ — 2ᵉ passe R9/R10 par le **script** (les portes quittent le copier-coller)
+
+**Motif** : une porte qui vit dans un snippet de doc n'est appliquée que par ceux qui ont lu la
+doc. Pour un modèle mandataire — le cas d'usage visé — elle doit être **une commande à exit
+code**. D'où `myia_vllm/scripts/adoption/frognano_gate.py` (zéro dépendance, `--json`, usage
+documenté §12).
+
+**`selftest` : 11/11** — les cas mesurés **et** les falsifications qui doivent échouer
+(fabrication, omission, doublon, compte faux du contradicteur, champ non parsé, nombre altéré,
+nombre perdu). Une porte qui ne sait pas échouer ne prouve rien : c'est la contre-preuve.
+
+**2ᵉ passe réelle, indépendante de celle du §3** : deux `mini-summarizer` (`model_used:
+frognano-4b`, **aucun repli**) sur le même corpus figé →
+
+```text
+[PORTE PASSEE] partition
+  A=4 B=28 corpus=32 (somme = corpus)
+  fabriquees=0 sur-comptees=0 doublons=0 manquantes=0
+  COMPTE PROUVE : 4
+[PORTE PASSEE] threshold
+  free lt 2000.0 -> 1 ligne(s) ; parse 32/32 ; min=1128.0 max=19308.0
+```
+
+Séries : **R9 2/2, R10 2/2**. Coût de cette passe : 2 requêtes mini.
+
+**Ce que le script durcit par rapport aux snippets** : multiplicités (2× dans la source, 3× dans
+l'union = `sur-comptee`, l'ancienne porte passait) ; `threshold` **refuse** de comparer si
+`partition` a échoué ; parse exhaustif obligatoire ; sortie machine.
+
+**Ce qu'il ne change pas** : `fidelity` conserve sa limite v1 (chiffres, pas position décimale) ;
+le script ne connaît aucun motif métier ; il rend le checkpoint §9 inutile là où une porte
+existe, et le laisse nécessaire partout ailleurs.
