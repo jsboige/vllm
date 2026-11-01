@@ -5740,3 +5740,19 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Sécurité (7 h).** 200 : edge `90.65.170.144` 1 027, local sans `x_forwarded_for` 697, web1 10, Paris 10 — **que des IP connues, aucune nouvelle avec 200**. 4xx : `37.230.119.250` 401×63 seul. **0 × 400-gros-corps, 0 × 500.** Corps : 1 003/1 807 (**55 %**) > 100 Ko — la charge reste du long contexte. nbaudit OK (08:05:54Z, 5 séries, vague 2 `Image/`). Hub toujours sur l'edge public (Q65 en attente).
 
 **RAS — cycle sans geste.**
+
+### 01/11 10:1xZ — Cycle de surveillance : matinée chargée, disjoncteur tient clos
+
+**Prod.** Boot 02:50:54Z inchangé, RC=0, health 200 en 3,4 ms, 3 conteneurs Up. Engine log 5 000 lignes **0 OOM**. VRAM GPU 0 **22 677** / GPU 1 21 658 MiB (bande 0,73 attendue), GPU 2 libre (98 MiB). `/dev/shm` 33 G = plancher (tier 32 GiB). 3 `WEDGE fail 1/2` dans la fenêtre (08:55:43, 09:34:12, 09:37:01Z), tous récupérés en ≤ 1 sonde, **aucun 2/2, aucun restart** — matinée à 4-5 flux avec KV 60-83 % à l'instant.
+
+**Intervalle 08:11→10:11Z** (compteurs boot) : **556 req**, prompt Δ **56,00 M tok**, gen Δ 0,64 M. Hit **combiné 94,0 %** (GPU 64,3 / tier 83,3 — le tier porte encore l'amortissement). **+1 préemption** (total 1 depuis le boot — la première, isolée). **0 × 400, 0 × 500** dans la fenêtre moteur.
+
+**Condensation.** Disjoncteur **clos depuis 07:04:51Z** (aucune nouvelle ouverture). 3 replis cloud isolés (08:37, 09:23×2 Z) — le pattern arithmétique #4434 aux heures chargées, dégradation gracieuse nominale, pas de panne.
+
+**Pruneur fs — 5ᵉ passe** (09:50:03Z) : **1 230 fichiers / 32,28 Go supprimés**, retour au cap 250,0 GiB, 0 erreur, 1,53 s.
+
+**Hôte.** Commit **71,8 %** (292,9/407,8 Go, marge 114,8 Go). G: OK (611 Go libres). nbaudit OK (10:05:46Z, 5 séries, vague 2 `19451:Image/`, 0 échec consécutif).
+
+**Sécurité (7 h).** 200 : edge `90.65.170.144` 1 222, local sans XFF 783, web1 13, Paris `82.66.89.184` 12 — **que des IP connues, aucune nouvelle avec 200**. `37.230.119.250` = continuation de la sonde Go déjà qualifiée au cycle 08:1xZ : 324× `GET /v1/models` sur 36 h, **toutes 401, corps 0** — jamais entrée. Census 2 h : 581 lignes (4,9/min), UA Bun 347 + curl 196 (sondes), **59 % des corps > 100 Ko** (long contexte soutenu), statuts 559×200 / 22×401. Hub toujours sur l'edge public (Q65 en attente).
+
+**RAS — cycle sans geste.** Registre 0 question ouverte.
