@@ -5788,3 +5788,28 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Sécurité.** ★ **`92.184.146.49` (2× 200, 12:36/12:38Z)** : clé **MEDIUM interne** (fp `be312daf7c1c` = auth_prefix documenté), UA `OpenAI/JS 4.104.0`, corps 19/54 Ko, famille mobile Free déclarée — l'IP mobile déclarée de po-2027 (`92.184.103.95`) est à **0 req/7 j** ⇒ lecture : consommateur interne sur IP mobile tournée (**SUPPOSÉ**, attribution non établie). Pas un incident (clé interne valide), consigné au census. Reste inchangé : edge 1 059, local 751, web1 14, Paris 4. 401-only : sonde Go 72, ZOLTRAAK 2, GCP 1. Fenêtre 2 h : 522×200 / 21×401, **0 × 400-gros-corps**. Hub toujours edge (Q65).
 
 **RAS moteur — cycle sans geste.** Registre 0 question ouverte.
+
+### 01/11 16:1xZ — Cycle de surveillance : meilleur amortissement de la journée, GPU 0 au bureau, 2ᵉ IP mobile
+
+**Prod.** Boot **02:50:54Z inchangé** (13 h), RC=0, health 200 en **15,3 ms**, 3 conteneurs Up 13 h. Engine log 5 000 lignes **0 OOM**. VRAM **GPU 0 23 030** / GPU 1 21 658 / GPU 2 45 MiB. `/dev/shm` **33 G / 63 G = 51 %** = plancher (tier RAM 32 GiB). 2 flux, **KV 25,3 %** à l'instant.
+
+**GPU 0 > 23 000 — 4ᵉ récurrence, attribuée au bureau par la mesure.** `nvidia-smi --query-compute-apps` : **aucun processus CUDA de calcul**, uniquement des applications WDDM — Chrome + 3× Edge + 2× WebView2 + VS Code + Docker Desktop + ShellHost/explorer/SearchHost/StartMenu + 2 overlays NVIDIA. C'est le high-water du bureau sous charge de navigateurs, pas une dérive du moteur (GPU 1, sans bureau, stable à 21 658). **Q41 reste close** (le reboot du 27/10 à 0,73 n'a pas crashé). Vigilance reportée au prochain restart, pas d'action.
+
+**Intervalle 14:11→16:11Z** : **570 req**, prompt Δ **59,69 M tok**, gen Δ 0,65 M. Hit **GPU 58,1 % / tier 90,4 % / combiné 96,0 %** — meilleur combiné de la journée ; le tier porte l'amortissement (22,6 M tok servis depuis les tiers sur 59,7 M), le GPU garde 58 % en direct. **0 préemption** (total **3 depuis le boot**, 13 h, 1 500+ requêtes). **0 × 400, 0 × 500.** Lifetime : GPU 76,7 % / tier 80,7 %.
+
+**Watchdog** : 1 `fail 1/2` dans la fenêtre (**15:09:11Z**, récupéré, compteurs en marche — snapshot p=336 401 138), **jamais 2/2**, **3 891 sondes `OK health=200 decode=200`**, 0 CRASH-LOOP / RESTARTING / BOOT-STALL.
+
+**★ Condensation : 4ᵉ ouverture soldée en cloud, puis plus rien.** Séquence mesurée : OPENED 13:47:11Z → HALF-OPEN **14:22:06Z** → client primaire construit → **timeout 90 s** (client de repli construit à 14:23:36Z) → repli cloud ×2 (14:24:02/14:24:20Z) → **condensation terminée en 113 s** (`status + summary parallèle: 29s`, mention explicite « modèle primaire en échec »). Depuis, **aucun événement de condensation pendant ~1 h 50** (aucun nouveau OPENED, aucun RESET journalisé) ⇒ le board n'a pas eu besoin de condenser, l'état du disjoncteur n'est pas tranchable sur ce seul log. Signature identique aux précédentes (#4434 : budget fixe 90 s vs débit par flux sous charge).
+
+**Pruneur fs — 8ᵉ passe vivante** (15:50:53Z) : **887 fichiers / 23,28 Go supprimés**, tier ramené à **250,0 GiB** (cap), **0 erreur**, 51,5 s. Gardes de place : invité 136,8 Go libres (plancher 42,9) ; `/mnt/c` 710,6 Go libres (réserve 479,6). Le pruneur tient le cap tout seul depuis le boot.
+
+**Hôte.** Commit **71,6 %** (291,8/407,8 Go, marge 115,9 Go — sous le seuil 85). G: **629 Go** (84 %), sonde d'écriture OK. nbaudit **OK** (16:05:49Z, `runner_rc=0 deliver_rc=0`, 0 échec consécutif, vague 2 `19451:Image/`).
+
+**Sécurité (7 h).** 200 : edge `90.65.170.144` 1 143, local sans XFF 751, **web1 `37.187.180.135` 12**, **web2 `51.75.200.22` 2**, `92.184.146.49` 2, **`92.184.144.96` 2 (NOUVELLE)**. 401-only hors 200 : sonde Go, ZOLTRAAK, GCP (inchangés).
+★ **`92.184.144.96` — 2ᵉ IP mobile Free du même consommateur, même empreinte.** 14:56:38Z et 14:58:42Z, UA `OpenAI/JS 4.104.0`, clé **MEDIUM interne** (fp `be312daf7c1c`), corps **16 440 / 53 707 o** — **signature identique** à `92.184.146.49` deux heures plus tôt (12:36/12:38Z : 18 777 / 53 976 o). Même cadence (~2 h 20), même forme (2 appels à ~2 min d'intervalle), même famille `92.184.x`. Lecture : **un consommateur interne sur IP mobile qui tourne** (SUPPOSÉ, attribution non établie) — pas un incident (clé interne valide), mais **le census doit porter les deux**. **0 × 400-gros-corps** dans la fenêtre.
+
+**Périmètre RSM (relayé, pas traité).** Deux artefacts de clé dashboard signalés sur [roo-extensions#4439](https://github.com/jsboige/roo-extensions/issues/4439#issuecomment-6560504092) : **(a)** clé **malformée** `workspace-vllm"}PMC_JSON_DOWN` créée le 01/11 14:48:21Z par `myia-po-2023|vllm` (JSON brut publié **dans le champ clé**, 1 message, servie par PG) ; **(b)** le WARN `[retirement #3782] clé retirée RESSUSCITÉE` nomme `workspace-vllm (1)` (retirée 29/10 04:14:06Z) **alors que l'API ne la sert plus** ⇒ il se déclenche sur une autre surface que PG. Aussi notés : 9 dashboards `mirrorDiverged` (#4187), `Append lock budget exhausted (PG held)` sur `workspace-CoursIA-2` (15:55:16Z, fail-open), WARN `NonNominativeBaselineService non disponible` ×152 = message de démarrage répété, pas un événement.
+
+**Coordination.** Inbox 1 127 messages / **75 non-lus**, tous **machine-level `myia-ai-01`** venant d'autres workspaces (CoursIA-2/3, roo-extensions) — adressage machine-only = bug #3960, ignoré par la lane (aucun n'est adressé `myia-ai-01:vllm` dans la fenêtre). Intercom : `myia-po-2023|vllm` cycle 59 (VERT, embeddings po-2023) et `myia-po-2025|vllm` vigie 15:47Z (VERT, po-2025) — informationnels, **aucune action demandée à cette lane**.
+
+**RAS moteur — cycle sans geste.** Registre 0 question ouverte.
