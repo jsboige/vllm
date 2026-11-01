@@ -5852,3 +5852,23 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Q69 claudish (arbitrage user « discuter avec vllm ce qu'il peut encaisser ») — RÉPONDUE** (`msg-20261101T181555-lqejr7`) : po-2028 = +549 req/j ≈ +23 req/h moy (+13 % du courant, +8 % du pic 285 req/h du jour) = absorbable EN VOLUME, mais le genou est en flux concurrents (≥7 → 90-390 s/resp, #700 D ; minutes en file à 80-100 % KV). Conditions : (1) po-2028 admis à `maxConcurrency=4` + busy-skip, (2) sous-agents prioritaires hors cap (mandat 27/10), (3) aucun geste avant le reset Minimax 00:00Z puis re-mesure 24 h en pile réelle — conforme à l'instinct user. Caveat transmis : à tier 32 GiB tout crash = ~17 min d'indispo (#314/Q52) → la marge de simultanéité vaut plus que la moyenne.
 
 **Registre : Q52 toujours ouverte** (GO purge pré-boot entrypoint). Prochain cycle 20:11Z : surveiller le retour Minimax (reset ~00:00Z) sur la pile combinée.
+
+## 01/11 20:1xZ — ★ INCIDENT #2 : le watchdog devient auto-destructeur (WEDGE→restart→orphelin /dev/shm→KO 91 min)
+
+**Chronologie établie (sources : watchdog, inspect, log moteur 19:57+).**
+- **~18:39-18:41Z** : WEDGE réel (compteurs figés `p=28 364 630 g=360 608`) — même famille que celui de 16:25 ce matin.
+- **18:41:37Z** : le watchdog v6.2 fait son travail et **redémarre** (`docker restart` → RestartCount INCHANGÉ = 2, signature muette connue).
+- **18:41:37→20:12:40 : INDISPO 91 min.** Chaque boot échoue `32766 MiB required, 31625 MiB free` : l'orphelin `/dev/shm` (32 GiB) de la génération tuée par le restart bloque l'allocation. Grâce `BOOTING` 30 min (RC plat) puis **CRASH-LOOP** détecté 20:01:33 (RC 47→56, « NO OOM, cause UNKNOWN » — le watchdog ne lit pas la cause shm dans son message).
+- **20:11Z** : mon cycle arrive, identifie le piège, **purge** des 16 orphelins (>20:10:59) → **UP 20:12:40Z**, génération réelle `MOTEUR OK`, KV 831 723, VRAM 19 707/19 676.
+
+**★ Fait structurant nouveau** : à tier 32 GiB, **tout redémarrage du watchdog transforme un WEDGE de quelques minutes en panne totale auto-entretenue**. L'organe de sécurité est devenu la cause de la panne qu'il combat. Ce matin (16:30) le watchdog avait mal lu et n'avait pas redémarré → 17 min d'indispo ; ce soir il a bien agi → **91 min**. Le correctif #314 (purge pré-boot dans l'entrypoint) n'est plus une amélioration, c'est **la condition pour que le watchdog reste utile**.
+- Alternative sans recreate : purge **par le watchdog** juste avant son `docker restart` (même geste, porté par lui) — à arbitrer avec le user (Q52).
+- ⚠ Le watchdog affiche « cause UNKNOWN » sur un CRASH-LOOP dont la cause est dans le log moteur (`Insufficient space in /dev/shm`) : sa détection est correcte mais **son diagnostic ne regarde pas la bonne signature** — amélioration séparée.
+
+**Ce qui n'est PAS en cause.** `autoheal=False` présent sur le conteneur (créé 28/10) → autoheal écarté. Aucun OOM noyau (dmesg vide). Pas de CIDR/plateforme. Le `docker events` API de Docker Desktop reste infiable (commande pendue, tuée). Le log moteur n'a pas de segment antérieur à 19:57 (bug de rotation connu) → la mort d'origine n'est visible que par le watchdog.
+
+**Conséquence trafic.** Census 2 h 30 : 242 req (~97/h, contre ~178/h avant), 231×200, 11×401 (sonde Go). **Aucune 5xx loggée** : pendant la mort de l'API les clients reçoivent des erreurs de connexion qui n'atteignent jamais le middleware — l'absence de 5xx n'est PAS une preuve d'absence d'impact. Condensation : rebuilds fallback 18:17-18:20 (le [DONE] de 18:16 était déjà parti en cloud), plus rien ensuite (aucun append pendant l'indispo).
+
+**Périmètres.** nbaudit sain (passes 19:05 et 20:05 = 0 audit, "nothing to do" — aucun appel modèle pendant l'indispo, pas de fausse réussite ; à noter : `#19451 83 to audit, 0 picked`, filtre collisions PR probable). Pruneur 19:50 : 0 suppr./0 err (tier figé pendant l'indispo). G: OK. Commit hôte 63,4 % (l'arrêt moteur libère le tmpfs). shm post-boot : 32G/63G = le tier, normal.
+
+**Registre : Q52 requalifiée en URGENTE** (2ᵉ occurrence le même jour, 91 min). Prochaine mort = même tarif jusqu'au correctif.
