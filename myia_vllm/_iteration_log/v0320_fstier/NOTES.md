@@ -5872,3 +5872,15 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Périmètres.** nbaudit sain (passes 19:05 et 20:05 = 0 audit, "nothing to do" — aucun appel modèle pendant l'indispo, pas de fausse réussite ; à noter : `#19451 83 to audit, 0 picked`, filtre collisions PR probable). Pruneur 19:50 : 0 suppr./0 err (tier figé pendant l'indispo). G: OK. Commit hôte 63,4 % (l'arrêt moteur libère le tmpfs). shm post-boot : 32G/63G = le tier, normal.
 
 **Registre : Q52 requalifiée en URGENTE** (2ᵉ occurrence le même jour, 91 min). Prochaine mort = même tarif jusqu'au correctif.
+
+## 01/11 22:1xZ — Cycle : premier intervalle sur le moteur corrigé, propre de bout en bout
+
+**Moteur (boot 21:14:45Z, RC=0 inchangé).** Health 200/5 ms, 3 conteneurs, VRAM 21 404/20 984 (bande 0.73), shm 33G = plancher. **Log moteur : 0 ERROR, 0 OOM sur 1 497 lignes** (premier segment totalement propre depuis le correctif #318). Watchdog : 1 WEDGE `fail 1/2` récupéré (21:36:34Z), 92 sondes OK, aucun restart. **Le correctif tient sur son premier vrai intervalle.**
+
+**Relevé capacité (22:11Z, PRÉ-retour Minimax — le 00:11Z ira à coursia-5d).** Depuis boot (56 min) : prompt 16,51 M tok, 191 succès ≈ **~205 req/h**, hit GPU 85,7 % / tier 55,8 % (réchauffage) / combiné 82,0 %, **0 préemption**. Census 1 h : 207 req, que des IP connues (site 98, locaux 100, sonde Go 9×401), **91 corps >100 Ko/h = la cohorte long-contexte pèse la moitié du trafic** (swift-readers CoursIA + condensations), 0 signature 400-gros-corps.
+
+**Périmètres.** Condensation silencieuse depuis 18:20Z (aucun échec, aucun événement). nbaudit OK (22:05:44Z, 0 échec). Pruneur fs 10ᵉ passe 21:50:57Z : 758 fich./19,9 Go, 0 err (cap 250 tenu). G: OK. Commit hôte 70,0 % (marge 122 Go).
+
+**Coordination.** Réponse capacité envoyée à coursia-5d (4 flux longs max / 2 garantis en attendant la mesure 00:11Z) ; correction de mon faux « aucun preset mini-* » (artefact `head -20` — gotcha mémoire ajouté). Règle d'annonce des fenêtres sur `global` posée (spec PR #319 + fiche mémoire).
+
+**Registre : 0 ouverte.** Prochain cycle 00:11Z = **relevé post-retour Minimax (~00:00Z)** à envoyer à coursia-5d (engagement pris).
