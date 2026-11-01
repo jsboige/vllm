@@ -5724,3 +5724,19 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Correction d'un artefact d'instrument** : 12 % des échantillons rendent un « per-stream » < 1 t/s — ce sont les intervalles où le lot est **en prefill** (génération nulle par construction), pas des stalls. Ces 154 échantillons sont exclus du calcul ci-dessus ; les compter comme des gels fabriquerait une fausse mesure de stall qui recouperait trompeusement les plaintes de condensation.
 
 **Rendus** : DM claudish (mesure + leviers, réponse à leur INFO) ; commentaire #4434 (roo-extensions) avec le tableau.
+
+---
+
+## 01/11 08:1xZ — Cycle de surveillance : croisière propre, disjoncteur condensation refermé de lui-même (confirme l'arithmétique)
+
+**Prod saine.** health 200 en 3,7 ms, `RC=0`, `StartedAt 02:50:54Z` inchangé, 3 conteneurs Up 5 h, 0 OOM, 0 signature d'erreur sur 5 000 lignes moteur. VRAM GPU 0 **22 580** / GPU 1 21 386 / GPU 2 45 MiB — stable au MiB près sur 2 h. shm 33 G = plancher. Commit hôte **70,3 %** (marge 121 Go). G: 615 Go.
+
+**Intervalle 06:11→08:11Z.** 500 requêtes, prompt **Δ 45,23 M tokens**, génération Δ 533 220. Hit **GPU 92,7 % / tier 57,1 % / combiné 96,9 %** — la bascule GPU↑/tier↓ signifie que le working set tient mieux dans le KV GPU en creux matinal (moins d'évictions vers le tier). **0 préemption** (toujours 0 depuis le boot, 45,23 M tokens servis sans une seule). **Aucun WEDGE nouveau** depuis 04:27:13Z. Live à la prise : 4 flux, 0 en attente, KV 66,6 %, 93,2 t/s agrégés.
+
+**Pruneur fs actif** : passe 07:50:03Z **426 fichiers / 11,18 Go supprimés** (le tier était remonté au-dessus du cap après la nuit — comportement nominal du canon 250 Gio), 0 erreur, 10 653 fichiers restants.
+
+**★ Confirme le cycle précédent** : le disjoncteur de condensation, resté OPEN à 06:23Z (repli cloud), est passé **HALF-OPEN à 07:03:35Z** (cooldown écoulé), le retry LLM a **réussi** et la condensation s'est refermée à 07:04:51Z — **sans aucune intervention**. Exactement la prédiction de l'hypothèse arithmétique : au creux de la charge le débit par flux remonte et le budget de 90 s suffit de nouveau. Aucun « RESET » explicite loggé, mais aucun OPENED depuis — l'état est sain.
+
+**Sécurité (7 h).** 200 : edge `90.65.170.144` 1 027, local sans `x_forwarded_for` 697, web1 10, Paris 10 — **que des IP connues, aucune nouvelle avec 200**. 4xx : `37.230.119.250` 401×63 seul. **0 × 400-gros-corps, 0 × 500.** Corps : 1 003/1 807 (**55 %**) > 100 Ko — la charge reste du long contexte. nbaudit OK (08:05:54Z, 5 séries, vague 2 `Image/`). Hub toujours sur l'edge public (Q65 en attente).
+
+**RAS — cycle sans geste.**
