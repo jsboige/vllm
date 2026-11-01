@@ -16,6 +16,8 @@ Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/
 
 **NE JAMAIS modifier/redémarrer sans GO user.** Jamais `pin=1` avec l'offload (`cudaHostRegister` WSL2 falsifié ×2). Si un boot-OOM récidive malgré 0.70 : fait nouveau majeur — diagnostiquer GPU 0 au moment du boot, ne pas rebaisser mécaniquement.
 
+**★ ANNONCER LA FENÊTRE SUR `global` AVANT TOUT RESTART MOTEUR (leçon 01/11, 21:11Z).** Même un restart court ou de validation : deux sous-agents `swift-reader` de CoursIA (954 s et 958 s, ~95k tokens) ont été coupés sans fichier écrit par deux redémarrages non annoncés. Le GO user autorise le geste, il ne dispense pas d'annoncer : message `global` avec **heure de début + durée attendue**, avant le geste. Non annoncé = vécu comme une panne chez le voisin, et une perte de travail réelle.
+
 ## ⚠️ Discipline fuseaux (piège vérifié)
 
 Hôte = Europe/Paris (UTC+2 en heure d'été, **UTC+1 depuis le passage à l'heure d'hiver le 2026-10-25**) ; conteneurs, `StartedAt`, logs RSM = UTC ; `docker logs --since/--until` prend l'heure LOCALE. Ancrer sur l'epoch, suffixer les heures citées (`12:32Z`).
