@@ -5671,3 +5671,19 @@ GO user 31/10 (~12:0xZ). `fstier_prune.ps1 -MaxGiB 30 -Apply` (one-shot cron `ca
 - **Moteur non touché** : health 200 en 6,5 ms après la passe. Les blocs supprimés (>30 min d'âge, inactifs) redeviennent des misses → re-prefill à la demande, coût borné au working set récent ; le plafond normal 250 Gio reprend à la première passe :20/:50 après le retour WSL (échec sans gravité pendant `wsl --shutdown`).
 - Rendus : INFO workspace-vllm + commentaire [Maintenance#244 c.6552002611](https://github.com/jsboige/Maintenance/issues/244#issuecomment-6552002611) (login `jsboige` vérifié avant écriture, REST).
 - Gotcha opérateur : Git Bash mange les backslashes du chemin Windows du script devant `pwsh -File` (« D:vllmmyia… ») — **slashes `/` obligatoires** dans l'appel.
+
+## 01/11 04:1xZ — Cycle POST-SAUVEGARDE : moteur revenu en 50 min, tier fs a survécu à l'export et sert les replays
+
+**Fenêtre réelle.** Le créneau cron 02:11Z a été sauté (session occupée sur Q51) — ce cycle 04:11Z couvre la fenêtre ET le retour. `Backup-Ubuntu-WSL` a démarré à 02:00Z ; WSL relancé à **02:50Z** (processus `wsl`/`wslhost` vus à 03:50:41-53 locale = 02:50Z) ⇒ **fenêtre ≈ 50 min**, cohérente avec la distro amincie de ~280 Gio (Q51 237,7 Go + doublons modèles 57,4 Gio) : à ~215 Mo/s documentés, ~600 Gio ≈ 47 min. Le secours `-DelayMinutes 45` n'a pas tiré (export fini dans la fenêtre — le défaut latent de `restore_docker_after_failed_backup.ps1` n'a donc PAS été exercé).
+
+**Retour moteur : SAIN sur tous les critères du plan.**
+- Boot **02:50:54Z**, RC=0, healthy, 3 conteneurs Up ; **génération réelle** (3-4 flux, 86-110 t/s, KV 52-61 %) — pas le pattern walking-dead.
+- **VRAM GPU 0 = 22 318 MiB au boot sous gpu-util 0.73 AVEC le bureau chargé** (22-23 GiB la veille au soir) : la vigilance reportée du cycle 22:1xZ est levée — pas de boot-OOM, Q41 reste close.
+- **shm 33G = plancher du tier** (tmpfs recréé propre — la réédition du « 57G au réveil » n'a pas eu lieu).
+- **Pruneur repassé seul à 03:50:05Z en cap 250,0** (0 suppression — tier à ~32-40G ≪ 250 ; 0 erreur) : le retour au plafond normal s'est fait sans intervention, comme prédit.
+- **★ Le tier fs a SURVIVU à l'export et sert les replays** : depuis boot (1 h 20), 411 requêtes / **48,59 M tokens prompt** (reprise affamée : les sessions hub re-prefillent leurs contextes après le wipe GPU+RAM), hit prefix **93,6 %** dont **~40 % external (fs tier)** — les blocs écrits avant 02:00Z et non élagués à 01:52Z étaient intacts sur le disque au réveil. C'est la première validation production du scénario « restart → replay depuis le disque » À L'ÉCHELLE D'UN REBOOT RÉEL AVEC TRAFIC.
+- **0 préemption depuis boot.**
+
+**Census 2 h (traversant la fenêtre).** 423 × 200, 13 × 401 (collecteur clé morte + auto-sondes) ; 200 : edge 275 (le hub est TOUJOURS sur l'edge public — cohérent : basculement LAN en attente de Q65), local `?` 144, web1 2, Paris 2. **Aucune IP nouvelle avec 200**, 0 × 400/500.
+
+**Rendus.** Maintenance#244 (retour moteur chiffré) + DM claudish (fenêtre fermée tôt, moteur sain, leurs pilotes débloqués).
