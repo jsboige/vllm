@@ -55,7 +55,9 @@ Le moteur est le **seul conteneur `ipc=host`** de la machine (51 conteneurs insp
 
 Un `/dev/shm` plein = ENOSPC pour les blocs suivants → **crash moteur** ; sous charge (fenêtre Minimax) la marge est le facteur limitant. **Seuil d'alerte : > 45G utilisés (≈ 72 %).**
 
-**Recette** — ne supprime que les fichiers **antérieurs au démarrage du conteneur** (donc jamais un fichier mappé ni la génération vivante) :
+**★ 2026-11-01 — l'orphelin du tier bloque désormais TOUT redémarrage, et le watchdog en était le déclencheur (91 min d'indispo).** À tier 32 GiB, la région `vllm_offload_*.mmap` (34,4 Go) survit à la mort du process : chaque boot suivant échoue `Insufficient space in /dev/shm ... 32766 MiB required, 3162x MiB free` → boucle de crash. Le 01/11 : mort 16:30Z (17 min) puis **WEDGE ~18:40Z → le watchdog redémarre 18:41:37Z (geste correct) → 91 min d'indispo** jusqu'à purge manuelle. **Correctif déployé le 01/11 21:11Z (PR #318)** : purge automatique à deux étages — (a) en tête de l'entrypoint du moteur (avant tout, no-op sur boot propre), (b) par le watchdog via `docker exec` juste avant son propre `docker restart`. **Diagnostic à jour** : si le conteneur cyclote en `BOOTING`/CRASH-LOOP, vérifier d'abord `docker logs --tail 50 <c> | grep 'shm-orphan purge'` — présent = le correctif a tourné (chercher ailleurs) ; absent = entrypoint ancien ou purge en échec → appliquer la recette manuelle ci-dessous **immédiatement** (c'est ce qui a rendu le service les deux fois).
+
+**Recette manuelle (repli, si le correctif est absent ou en échec)** — ne supprime que les fichiers **antérieurs au démarrage du conteneur** :
 
 ```bash
 docker inspect myia_vllm-medium-swift15-27b --format '{{.State.StartedAt}}'   # borne (UTC)

@@ -122,6 +122,19 @@ services:
     command:
       - |
         set -e
+        # 2026-11-01 (#314): purge /dev/shm orphans BEFORE anything else. With
+        # ipc:host + the 32 GiB RAM tier, the dead instance's vllm_offload_*.mmap
+        # SURVIVES its process; every later boot then dies with "Insufficient
+        # space in /dev/shm ... 32766 MiB required, 3162x MiB free" and the
+        # container crash-loops (observed twice on 01/11: 17 min and 91 min
+        # outages, both repaired by a manual purge). This engine container is the
+        # ONLY ipc:host user on the host, so at entrypoint time every file
+        # matching these patterns is an orphan of a previous generation.
+        # No-op on a clean boot.
+        for f in /dev/shm/vllm_offload_*.mmap /dev/shm/psm_* /dev/shm/sem.mp-*; do
+          if [ -e "$$f" ]; then echo "[shm-orphan purge] rm $$f ($$(stat -c%s "$$f" 2>/dev/null) bytes)"; rm -f "$$f"; fi
+        done
+        echo "[shm-orphan purge] done: $$(df -h /dev/shm | tail -1)"
         ok=0; big=0
         for i in $$(seq 1 36); do
           big=$$(find /root/.cache/huggingface -type f -size +4G -printf '%s\n' 2>/dev/null | sort -rn | head -1); big=$${big:-0}
@@ -332,6 +345,15 @@ services:
                   else
                     echo "$$TS RESTARTING $$CONTAINER (WEDGE: API up but decode stuck, counters flat p=$$PT g=$$GT)"
                   fi
+                  # 2026-11-01 (#314): a docker restart kills the engine process
+                  # but its 32 GiB /dev/shm tier region survives, and EVERY
+                  # following boot then fails ("32766 MiB required") -> crash-loop.
+                  # On 01/11 this converted a WEDGE into a 91-min outage: the
+                  # watchdog's own (correct) restart was the trigger. Purge the
+                  # orphans from inside the container BEFORE restarting.
+                  # Best-effort: if the exec fails, the restart still happens and
+                  # the engine entrypoint purge is the backstop.
+                  docker exec $$CONTAINER sh -c 'for f in /dev/shm/vllm_offload_*.mmap /dev/shm/psm_* /dev/shm/sem.mp-*; do [ -e "$$f" ] && rm -f "$$f"; done' >/dev/null 2>&1 || true
                   docker restart $$CONTAINER
                   WEDGE_FAIL=0
                   BUSY_COUNT=0
