@@ -5765,7 +5765,7 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 
 **★ Condensation : disjoncteur ré-OUVERT à 12:01:58Z** (4ᵉ ouverture) après 4 replis cloud isolés (11:14, 11:24×2, 12:01Z). Même signature que les précédentes : heures chargées, moteur sain par ailleurs (499 req servies, hit 94 %, 0 wedge). Arithmétique #4434 — le cooldown (~40 min) refermera au creux ; à verser au dossier, pas de geste moteur.
 
-**Pruneur fs.** Passe de 11:50Z vérifiée dans `fstier_state.json` (cycle suivant) ; à 09:50Z : 1 230 fichiers / 32,28 Go, 0 err.
+**Pruneur fs — 6ᵉ passe vivante** (11:50:04Z) : **855 fichiers / 20,9 Gio supprimés**, 11 082 restants (retour cap 250), 0 erreur. La passe précédente (09:50Z) : 1 230 fichiers / 32,28 Go.
 
 **Hôte.** Commit **73,5 %** (299,5/407,8 Go — +1,7 pt vs 10:1xZ, vmmemWSL ; sous le seuil 85). G: OK (609 Go). nbaudit OK (12:06:49Z, vague 2 `Image/`, 0 échec).
 
