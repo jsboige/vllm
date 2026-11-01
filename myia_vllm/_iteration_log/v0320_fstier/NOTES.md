@@ -5772,3 +5772,19 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Sécurité (7 h).** 200 : edge `90.65.170.144` 1 046, local sans XFF 773, web1 14, Paris 10 — **que des IP connues, aucune nouvelle avec 200**. 401-only : sonde Go `37.230.119.250` (72), famille ZOLTRAAK `31.77.254.4` (2, même /16 que le 31.77.203.199 connu), GCP `34.77.99.151` (1). Fenêtre 2 h : 511×200 / 26×401, **0 × 400-gros-corps**. Hub toujours sur l'edge (Q65).
 
 **RAS moteur — cycle sans geste.** Registre 0 question ouverte.
+
+### 01/11 14:1xZ — Cycle de surveillance : amortissement GPU au plus haut, disjoncteur en cyclage horaire
+
+**Prod.** Boot 02:50:54Z inchangé, RC=0, health 200, 3 conteneurs Up. 5 000 lignes **0 OOM**. VRAM GPU 0 **22 650** / GPU 1 21 658 MiB. `/dev/shm` 33 G = plancher. 1 `fail 1/2` (13:41:34Z, récupéré, compteurs en marche). KV 61-69 % à l'instant, 3 flux.
+
+**Intervalle 12:11→14:11Z** : **515 req**, prompt Δ **48,57 M tok**, gen Δ 0,57 M. Hit **GPU 92,0 % / tier 40,7 % / combiné 95,3 %** — inversion du cycle précédent : au creux le working set rentre dans le KV GPU (requêtes externes tier : 3,9 M vs 20,9 M au cycle précédent), l'amortissement suit la charge. **0 préemption** (total 3 depuis boot). **0 × 400, 0 × 500.**
+
+**★ Condensation : cyclage horaire du disjoncteur.** 4ᵉ ouverture 12:01:58Z → HALF-OPEN 12:35:42Z (cooldown 34 min) → **retry LLM échoué** (4 replis cloud 12:37-12:40) → **5ᵉ ouverture 13:47:11Z**. L'après-midi chargée fait échouer le retry du cooldown là où le creux de 07:03Z l'avait fait passer — cohérent avec l'arithmétique #4434 (34,6 t/s médian vs budget 90 s). Repli cloud systématique = dégradation gracieuse, aucune donnée perdue. À verser au dossier.
+
+**Pruneur fs — 7ᵉ passe vivante** (13:50:40Z) : **681 fichiers / 16,65 Gio**, 0 erreur.
+
+**Hôte.** Commit **72,2 %** (294,5/407,8 Go). G: OK (634 Go — +25 vs cycle précédent, churn DriveFS). nbaudit OK (14:05:48Z).
+
+**Sécurité.** ★ **`92.184.146.49` (2× 200, 12:36/12:38Z)** : clé **MEDIUM interne** (fp `be312daf7c1c` = auth_prefix documenté), UA `OpenAI/JS 4.104.0`, corps 19/54 Ko, famille mobile Free déclarée — l'IP mobile déclarée de po-2027 (`92.184.103.95`) est à **0 req/7 j** ⇒ lecture : consommateur interne sur IP mobile tournée (**SUPPOSÉ**, attribution non établie). Pas un incident (clé interne valide), consigné au census. Reste inchangé : edge 1 059, local 751, web1 14, Paris 4. 401-only : sonde Go 72, ZOLTRAAK 2, GCP 1. Fenêtre 2 h : 522×200 / 21×401, **0 × 400-gros-corps**. Hub toujours edge (Q65).
+
+**RAS moteur — cycle sans geste.** Registre 0 question ouverte.
