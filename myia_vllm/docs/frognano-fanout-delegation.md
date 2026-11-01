@@ -21,6 +21,14 @@ de faire soi-même**.
 | Agrégation arithmétique (somme, moyenne) | **REFUSÉE** | axe A3, tout le tier 4B testé |
 | Verdict / jugement / auto-déclaration | **REFUSÉE** | règle flotte : producteur ≠ vérificateur |
 
+> **01/11 2026 — les classes « refusées » ci-dessus le restent EN MONO-APPEL, mais trois
+> d'entre elles deviennent servables AVEC PREUVE par une assemblée de 2 extracteurs à
+> personas + portes mécaniques** (comptage prouvé par partition, seuil prouvé par parse
+> appelant, réécriture/traduction derrière porte de fidélité numérique) : recettes
+> **R9-R11 dans [`frognano-team-solve.md`](frognano-team-solve.md)**, mesure du 01/11 dans
+> `_iteration_log/frognano_teamsolve/NOTES.md`. Le mini n'y compte ni ne juge jamais —
+> il cite ; la partition et le recompte sont mécaniques.
+
 ## 2. Pilote fan-out 25/10 21:15-21:30 locale — extraction verbatim
 
 **Corpus** : `myia_vllm/_logs/gpu-governor.log`, 200 premières lignes (06-11/10), shingées en
