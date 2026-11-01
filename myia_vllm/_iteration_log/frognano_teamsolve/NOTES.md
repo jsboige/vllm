@@ -137,3 +137,44 @@ mêmes deux extractions servent le compte ET le seuil.
 - **Pas une généralisation à n=1 essai par condition** : les baselines s'appuient sur des
   séries antérieures (comptage : échecs mesurés dès 6 lignes ; seuil : 20e mesure 1/4 + 19 FP) ;
   les passes de l'assemblée sont nouvelles et deviennent les 1res d'une série à tenir.
+
+## 8. Addendum 01/11 19:4xZ — checkpoint swift : la frange suffit (2/2), et l'étage est tombé
+
+**Le checkpoint swift, validé sur la question qui compte** : un arbitre de tier +1 peut-il
+trancher sans relire le corpus, donc à coût négligeable ? Deux tests, prompts de ~200-300
+tokens :
+
+| Cas | Arbiteur voit | Verdict | Attendu |
+|---|---|---|---|
+| Claim « exactement 3 lignes WARN » + ses 4 citations | frange seule | **CONTREDIT** (« les citations contiennent à elles seules 4 lignes distinctes ») | CONTREDIT |
+| G1 fusionnant `WARN RAM basse` (120) et `WARN RAM CRITIQUE` (100) + politique d'escalade | fusion + politique | **FUSION_RISQUÉE** (« noie les cas urgents dans le volume ») | FUSION_RISQUÉE |
+
+**2/2 sur `fast-responder` (glm-5.3-flash, twin cloud)** — pas sur swift : voir ci-dessous.
+Ces deux cas sont exactement la classe que les portes mécaniques ne couvrent pas (conséquence
+opérationnelle d'une fusion, soutien logique d'une affirmation par ses propres citations).
+
+**L'étage swift était indisponible pendant le test — mesuré, pas supposé** :
+`classifier-local` et `summarizer-local` (swift no-thinking sur ai-01) ont échoué **3 fois sur 3**
+en **502 Bad Gateway** (HTML IIS en corps d'erreur) ; `https://api.medium.text-generation-webui.myia.io/health`
+= **502 sur 4/4 tentatives**, confirmé à **19:49:05Z** (~1 h après la première observation),
+pendant que `models.myia.io/health` = **200** et que les presets cloud via hub répondaient
+normalement. Aucune fenêtre annoncée sur le dashboard global à cette heure (ai-01 postait par
+ailleurs à 16:41Z et 17:21Z) ⇒ lu comme une panne non annoncée de l'endpoint medium, owner
+ai-01 ; signalé, pas touché (règle cross-workspace).
+
+**La leçon de design qui en sort, et elle vaut plus que le 2/2** : le checkpoint est une
+**dépendance distante**. Ce soir, R9/R10 ont tourné **sans lui** — les portes mécaniques ont
+suffi — et le checkpoint a simplement été sauté. Règle retenue : le checkpoint est une couche
+d'**amélioration**, jamais un chemin critique ; s'il est muet, le job se poursuit et le rapport
+marque « checkpoint sauté ». Corollaire : conditionner un job à un étage qui peut tomber est un
+défaut de conception, pas une garantie de fiabilité.
+
+**Inventaire des presets d'arbitrage déjà provisionnés** (relevé `list_agents`) : `classifier-local`
+et `summarizer-local` (swift no-thinking, les moins chers), `terminal-analyst` (swift + outils),
+**`swift-delegator`** — décrit comme « le medium garde le jugement et délègue le mécanique au
+mini », soit exactement cette architecture, déjà configurée ; twins cloud `analyst-glm5` /
+`fast-responder` en substitut.
+
+**Ce que l'addendum ne prouve pas** : le taux de justesse de swift lui-même sur cas ambigus
+(2/2 sur un twin cloud), ni la dérive d'un mini outillé en boucle (job long avec outils) —
+mesures à faire avant de promouvoir un job outillé de bout en bout.

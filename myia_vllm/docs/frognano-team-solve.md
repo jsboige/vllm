@@ -143,6 +143,118 @@ contraedicteur n'est cru que sur ses citations, jamais sur son compte (mesuré :
   R11 : 1/1) — la verbatimité inter-appels étant variable (cf. 22e-25e mesures), la porte reste
   le juge à chaque usage.
 
+## 9. Checkpoint swift — l'arbitre de la frange (mesuré 01/11, 2/2)
+
+**Le problème qu'il résout** : les portes mécaniques n'existent que là où un oracle existe
+(grep local, partition, regex). Sur un job **long** et une source **distante ou hétérogène**
+(dashboard, web, PDF, prose), il n'y a pas d'oracle — et l'appelant ne peut pas lire 2 000
+lignes pour trancher. C'est exactement la classe où le mini produit de l'utile et où la
+vérification coûte plus cher que le travail.
+
+**Protocole** : un arbitre de tier supérieur, appelé **au checkpoint**, qui ne voit QUE :
+
+1. la mission ;
+2. les **affirmations** du producteur ;
+3. ses **citations** verbatim ;
+4. la **politique opérationnelle** (ce que l'humain fait de la sortie).
+
+Il **ne relit jamais le corpus** — c'est toute l'économie du dispositif, et c'est ce qui a été
+validé :
+
+| Cas testé (01/11) | Arbiteur voit | Verdict rendu | Attendu |
+|---|---|---|---|
+| Claim « exactement 3 lignes WARN » + 4 citations | la frange seule (~200 tokens) | **CONTREDIT** (« les citations contiennent à elles seules 4 lignes distinctes ») | CONTREDIT |
+| Taxonomie G1 fusionnant `WARN RAM basse` (120) et `WARN RAM CRITIQUE` (100) | la fusion + la politique (CRITIQUE escalade) | **FUSION_RISQUÉE** (« noie les cas urgents dans le volume ») | FUSION_RISQUÉE |
+
+2/2 sur `fast-responder` (glm-5.3-flash, twin cloud — **substitut explicite** : le swift local
+était indisponible, cf. ci-dessous). La décision logique « les citations contredisent le
+compte » ne dépend pas du modèle arbitre ; ce qui reste à mesurer sur swift local, c'est le
+taux sur des cas ambigus.
+
+**Règles** :
+
+- **Quand** : seulement quand une porte mécanique ne peut pas décider — fusion sémantique,
+  conséquence opérationnelle, pertinence. Jamais sur chaque étape : 1 à 3 checkpoints par job
+  typique. Coût : quelques centaines de tokens par checkpoint, contre des milliers pour faire
+  relire le corpus.
+- **Le verdict de l'arbitre est une recommandation, pas un fait** : l'appelant l'applique
+  mécaniquement (scinder le groupe, relancer l'extraction sur la frange signalée). Un arbitre
+  non plus ne « verdict » pas — il oriente une décision que l'appelant exécute.
+- **Dépendance distante — mesuré à nos frais** : le 01/11, `api.medium…/health` a rendu **502
+  sur 4/4 tentatives** (19:49:05Z confirmé, ~1 h d'indisponibilité) pendant que `models.myia.io`
+  répondait 200. Le workflow R9/R10 a continué **sans le checkpoint** (portes mécaniques
+  seules) : le checkpoint est une **couche d'amélioration, jamais un chemin critique** ; s'il
+  est muet, le job se poursuit et le rapport marque « checkpoint sauté ».
+- **Presets disponibles aujourd'hui** (ne pas en inventer) : `classifier-local` et
+  `summarizer-local` (swift no-thinking, le moins cher), `terminal-analyst` (swift + outils),
+  **`swift-delegator`** — déjà provisionné pour exactement cette architecture (« le medium
+  garde le jugement et délègue le mécanique au mini ») ; twins cloud `analyst-glm5` /
+  `fast-responder` en substitut, toujours étiquetés comme tels dans le rapport.
+
+## 10. Outils et jobs longs — le vrai levier d'adoption
+
+Le risque d'adoption est nommé par le user : *« il est plus rapide de faire soi-même »* — vrai
+sur les jobs courts à critère littéral (`grep` gagne, cf. §6), faux sur les jobs **fastidieux et
+chronophages** que personne ne fait jamais. C'est là que se joue l'utilité, et c'est là que les
+outils changent la classe :
+
+| Preset mini | Outil(s) déjà branchés | Ce que ça autorise |
+|---|---|---|
+| `mini-coder-fix` | `open_terminal` | diagnostic mono-fichier bouclé (lire → éditer → tester) |
+| `mini-repo-scan` | `open_terminal` (lecture) | inventaire/cartographie d'un sous-arbre |
+| `mini-summarizer` | `markitdown` | documents (PDF/DOCX/XLSX) → Markdown → extraction |
+| `mini-web-research` | `searxng` | collecte de sources sur une question précise |
+
+**Architecture pour un job long** (à mesurer avant d'être promue) : le mini travaille par
+tranches courtes (≤50 lignes, ≤10 étapes), chaque tranche franchie par une porte mécanique ;
+un checkpoint d'arbitrage tous les N items sur la seule frange ; l'appelant ne lit à la fin que
+la liste consolidée et une commande de contrôle. La préservation du **contexte de l'appelant**
+reste l'incitation qui marche (`frognano-fanout-delegation.md` §4).
+
+**Non mesuré, à faire** : la dérive d'un mini **outillé en boucle** (combien de tours avant que
+la qualité tombe), et le coût réel d'un job de bout en bout avec outils + checkpoints. Tant que
+ce n'est pas mesuré, un job outillé long se conduit avec un point de contrôle humain en fin de
+chaîne.
+
+## 11. Ce que ça change pour le modèle **mandataire** (le vrai gain d'usage)
+
+L'argument d'adoption ne se joue pas seulement en tokens ni en latence : il se joue en
+**précaution**. Un modèle mandataire qui délègue au mini doit aujourd'hui se poser une question
+à chaque appel — *« cette tâche est-elle dans sa classe validée ? »* — parce que la frontière
+mesurée (comptage interdit, seuil sur valeur de champ 1/4, pas de verdict) est une liste de
+pièges qu'il doit connaître par cœur. C'est un coût cognitif invisible et permanent : la
+délégation paraît risquée, donc elle n'a pas lieu.
+
+L'assemblée déplace ce coût **du mandataire vers la machine** :
+
+| Sans portes | Avec portes |
+|---|---|
+| le mandataire doit choisir une tâche **déjà** dans la classe validée | il peut soumettre la tâche **telle quelle** : c'est la porte qui refuse ou répare |
+| une sortie fausse est indétectable à la lecture (le compte faux arrive au même format que le juste) | une sortie fausse **échoue à la porte** — 0 fabrication / 0 omission / 32 parses, ou porte échouée |
+| la confiance est une propriété du **modèle** (« que sait-il faire ? ») | la confiance est une propriété du **montage** (« quelles portes ai-je posées ? ») |
+| chaque nouveau cas d'usage exige une calibration préalable | l'extensibilité vient d'ajouter un **motif**, pas de re-calibrer un modèle |
+
+Conséquences pour l'orchestrateur :
+
+- **Le mandataire n'a plus besoin d'être prudent sur le contenu, seulement sur l'usage** :
+  ce qui sort d'une porte peut être consommé sans relecture ; ce qui échoue est un signal
+  explicite, pas une erreur silencieuse. C'est ce qui rend la délégation **routinière** plutôt
+  qu'exceptionnelle — et une délégation routinière est la seule qui produise un changement de
+  comportement.
+- **R3 (producteur ≠ vérificateur) devient mécanisable** : la règle flotte n'est plus une
+  discipline que le mandataire doit s'imposer, c'est un script qui tourne après chaque appel.
+- **La porte garde le mandataire honnête** : `grep -c` reste imbattable sur un fichier local
+  (§6) — la porte ne pousse pas à déléguer ce qui ne doit pas l'être ; elle rend simplement
+  déléguable ce qui ne l'était pas.
+- **Le checkpoint §9 est ce qui rend le montage tenable sur la durée** : sans lui, un job long
+  finit par produire une frange que plus aucune porte ne couvre ; avec lui, la frange est
+  arbitrée pour quelques centaines de tokens, sans relire la source.
+
+**Limite à ne pas franchie** : ce tableau dit que le montage rend le mini **utilisable sans
+précaution sur des classes couvertes par une porte**. Il ne dit pas qu'il rend le mini apte à
+tout — les classes sans oracle restent au tier medium (§6), et la dérive d'un mini outillé en
+boucle reste non mesurée (§10).
+
 ---
 
 Mesures : `_iteration_log/frognano_teamsolve/NOTES.md`. Classes de base et recettes R1-R8 :
