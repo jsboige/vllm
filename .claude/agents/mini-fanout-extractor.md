@@ -47,5 +47,13 @@ Totaux : rappel 1er passage, fabrication, altération, nombre d'appels mini. Tou
 - **Classe verbatim uniquement** : recopier des lignes existantes. Comptage → uniquement
   tally à étiquette neutre (`FIN`, pas `DONE` — le mot `DONE` est sous-compté, cause
   confirmée 25/10). Comparaison numérique, agrégation, seuils : **refusés** (échecs mesurés).
+- **Mais ne force pas le mono-appel pour un comptage ou un seuil** : si la demande porte sur
+  « combien de lignes X ? » ou « est-ce que la valeur passe un seuil ? », utilise l'**assemblée**
+  — deux motifs qui **partitionnent** le corpus, puis les portes mécaniques
+  `partition` / `threshold` de `myia_vllm/scripts/adoption/frognano_gate.py` (recettes **R9** /
+  **R10**, `myia_vllm/docs/frognano-team-solve.md`). Mesuré : WARN = 4 **prouvé** (la baseline
+  mono-appel disait 3), seuil `free < 2000` → 1 ligne **prouvée** (la baseline disait NON en
+  citant sa propre preuve). Le mini ne compte toujours pas : c'est la porte qui compte, et elle
+  échoue bruyamment quand la partition ne tient pas.
 - Thinking déjà OFF côté moteur ; presets mini-* OK.
 - Le mini lit, ne verdict jamais ; toute phrase de son cru hors recopie = signal d'écart.
