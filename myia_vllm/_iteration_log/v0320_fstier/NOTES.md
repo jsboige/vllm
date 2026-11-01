@@ -5756,3 +5756,19 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Sécurité (7 h).** 200 : edge `90.65.170.144` 1 222, local sans XFF 783, web1 13, Paris `82.66.89.184` 12 — **que des IP connues, aucune nouvelle avec 200**. `37.230.119.250` = continuation de la sonde Go déjà qualifiée au cycle 08:1xZ : 324× `GET /v1/models` sur 36 h, **toutes 401, corps 0** — jamais entrée. Census 2 h : 581 lignes (4,9/min), UA Bun 347 + curl 196 (sondes), **59 % des corps > 100 Ko** (long contexte soutenu), statuts 559×200 / 22×401. Hub toujours sur l'edge public (Q65 en attente).
 
 **RAS — cycle sans geste.** Registre 0 question ouverte.
+
+### 01/11 12:1xZ — Cycle de surveillance : creux de midi, disjoncteur condensation ré-ouvert (4ᵉ)
+
+**Prod.** Boot 02:50:54Z inchangé, RC=0, health 200 en 3,6 ms, 3 conteneurs Up 9 h. Engine log 5 000 lignes **0 OOM**. VRAM GPU 0 **22 691** / GPU 1 21 658 MiB (stable au MiB près vs 10:1xZ). `/dev/shm` 33 G = plancher. **0 WEDGE dans la fenêtre** (aucun `fail 1/2` depuis 09:37Z) — creux de midi : 2 flux, KV 42 %.
+
+**Intervalle 10:11→12:11Z** : **499 req**, prompt Δ **48,97 M tok**, gen Δ 0,65 M. Hit **combiné 94,2 %** (GPU 57,3 / tier 86,5 — le working set déborde du KV GPU vers le tier, amortissement intact). **+2 préemptions** (total 3 depuis le boot — grêle, pas une pente). **0 × 400, 0 × 500.**
+
+**★ Condensation : disjoncteur ré-OUVERT à 12:01:58Z** (4ᵉ ouverture) après 4 replis cloud isolés (11:14, 11:24×2, 12:01Z). Même signature que les précédentes : heures chargées, moteur sain par ailleurs (499 req servies, hit 94 %, 0 wedge). Arithmétique #4434 — le cooldown (~40 min) refermera au creux ; à verser au dossier, pas de geste moteur.
+
+**Pruneur fs.** Passe de 11:50Z vérifiée dans `fstier_state.json` (cycle suivant) ; à 09:50Z : 1 230 fichiers / 32,28 Go, 0 err.
+
+**Hôte.** Commit **73,5 %** (299,5/407,8 Go — +1,7 pt vs 10:1xZ, vmmemWSL ; sous le seuil 85). G: OK (609 Go). nbaudit OK (12:06:49Z, vague 2 `Image/`, 0 échec).
+
+**Sécurité (7 h).** 200 : edge `90.65.170.144` 1 046, local sans XFF 773, web1 14, Paris 10 — **que des IP connues, aucune nouvelle avec 200**. 401-only : sonde Go `37.230.119.250` (72), famille ZOLTRAAK `31.77.254.4` (2, même /16 que le 31.77.203.199 connu), GCP `34.77.99.151` (1). Fenêtre 2 h : 511×200 / 26×401, **0 × 400-gros-corps**. Hub toujours sur l'edge (Q65).
+
+**RAS moteur — cycle sans geste.** Registre 0 question ouverte.
