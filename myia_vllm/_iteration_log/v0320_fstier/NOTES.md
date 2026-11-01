@@ -5660,3 +5660,14 @@ Compléments : garder le nom public en valeur de repli documentée ; après basc
 **Autres.** Condensation nominale (aucun événement). nbaudit `ts 00:05:51Z`, rc 0/0, ok, 0 échec, vague 2 `Image/`. Hôte commit **71,2 %** (117,3 Go de marge). G: **OK**, 572 Go libres (**−27 Go en 2 h** vs 599 — churn DriveFS, hors périmètre vllm, à suivre).
 
 **Nuit (état).** Fenêtre claudish **00:30–01:45Z** (one-shot 00:35Z ; MiniMax re-armé 23:37:54Z, GLM 23:25:34Z ⇒ passage PAYG bref + pic de canaries attendus). Q51 `ca2085e3` **01:52Z** (tier → 30 Gio). Sauvegarde Ubuntu **02:00Z** → `:5002` + sidecar coupés jusqu'à ~03:15Z ; **le cycle 02:11Z tournera DANS la fenêtre** (moteur injoignable = attendu). Cycle post-sauvegarde : retour moteur (montage HF fantôme, StartedAt, VRAM GPU 0 **avec bureau éventuellement chargé** — vigilance reportée du cycle 22:1xZ), shm attendu purgé, rendu Maintenance#244 + claudish.
+
+## 01/11 01:52Z — Q51 exécutée : tier fs élagué à 30 Gio avant la sauvegarde Backup-Ubuntu-WSL
+
+GO user 31/10 (~12:0xZ). `fstier_prune.ps1 -MaxGiB 30 -Apply` (one-shot cron `ca2085e3`) :
+
+- **Avant** : tier 253 G ; disque Ubuntu 815G/1007G (86 %, 142 G libres).
+- **Passe** : 9 058 fichiers / 237,7 Go supprimés en 3,59 s, **0 erreur** (state `ts 01:52:36Z, max_gib 30.0, mode apply, after 30,0 GiB`).
+- **Après** : tier **32 G** (cible atteinte) ; disque Ubuntu **594G/1007G (63 %, 362 G libres)** = **+220 G libérés pour l'export** de ce soir. Cumulé aux 57,4 Gio de doublons modèles rendus au matin (c.6543058910) : ~280 Gio de blocs régénérables hors de l'image.
+- **Moteur non touché** : health 200 en 6,5 ms après la passe. Les blocs supprimés (>30 min d'âge, inactifs) redeviennent des misses → re-prefill à la demande, coût borné au working set récent ; le plafond normal 250 Gio reprend à la première passe :20/:50 après le retour WSL (échec sans gravité pendant `wsl --shutdown`).
+- Rendus : INFO workspace-vllm + commentaire [Maintenance#244 c.6552002611](https://github.com/jsboige/Maintenance/issues/244#issuecomment-6552002611) (login `jsboige` vérifié avant écriture, REST).
+- Gotcha opérateur : Git Bash mange les backslashes du chemin Windows du script devant `pwsh -File` (« D:vllmmyia… ») — **slashes `/` obligatoires** dans l'appel.
