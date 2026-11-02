@@ -176,8 +176,9 @@ mini », soit exactement cette architecture, déjà configurée ; twins cloud `a
 `fast-responder` en substitut.
 
 **Ce que l'addendum ne prouve pas** : le taux de justesse de swift lui-même sur cas ambigus
-(2/2 sur un twin cloud), ni la dérive d'un mini outillé en boucle (job long avec outils) —
-mesures à faire avant de promouvoir un job outillé de bout en bout.
+(2/2 sur un twin cloud — premier passage sur swift réel au **§10.2**), ni la dérive d'un mini
+outillé en boucle (job long avec outils) — mesure à faire avant de promouvoir un job outillé de
+bout en bout.
 
 ## 9. Addendum 01/11 20:0xZ — 2ᵉ passe R9/R10 par le **script** (les portes quittent le copier-coller)
 
@@ -211,3 +212,68 @@ l'union = `sur-comptee`, l'ancienne porte passait) ; `threshold` **refuse** de c
 **Ce qu'il ne change pas** : `fidelity` conserve sa limite v1 (chiffres, pas position décimale) ;
 le script ne connaît aucun motif métier ; il rend le checkpoint §9 inutile là où une porte
 existe, et le laisse nécessaire partout ailleurs.
+
+## 10. Addendum 02/11 07:5xZ — contrôle discriminant (4ᵉ passe) + checkpoint **sur swift réel**
+
+### 10.1 `partition`/`threshold` — un contrôle que les 3 passes précédentes ne faisaient pas
+
+Corpus neuf : 32 lignes de `_logs/gpu-governor.log`, fenêtre 01/11 05:02 → 02/11 08:02. Il contient
+une **paire piège** : deux lignes au **même horodatage** `2026-11-02 04:02:03`, l'une
+`HEARTBEAT temp=31C free=2100MB mode=normal`, l'autre `WARN RAM basse free=2100MB temp=31C mode=normal`.
+
+C'est le contrôle que les passes 1-3 ne faisaient pas : un extracteur qui filtre sur la **forme** de
+la ligne (la présence de `temp=`/`mode=`, la position du champ) plutôt que sur le **motif** se
+tromperait sur l'une des deux. Chaque extracteur n'a gardé que la sienne.
+
+```text
+[PORTE PASSEE] partition
+  A=4 B=28 corpus=32 (somme = corpus)
+  fabriquees=0 sur-comptees=0 doublons=0 manquantes=0
+  COMPTE PROUVE : 4
+[PORTE PASSEE] threshold
+  free lt 4000.0 -> 5 ligne(s) ; parse 32/32 ; min=1114.0 max=19569.0
+```
+
+Séries : **R9 4/4, R10 4/4**.
+
+**Le détail que la porte ne doit pas laisser passer dans un rapport** : le seuil rend **5 lignes
+pour 4 instants distincts** — `04:02:03` figure deux fois parce que la même mesure est enregistrée
+en `HEARTBEAT` et en `WARN`. C'est correct (le seuil porte sur l'union **vérifiée**, pas sur A seul),
+mais un rapport qui annoncerait « 5 incidents » surestimerait. La porte prouve le **compte** ;
+l'interprétation du compte reste à l'appelant.
+
+### 10.2 Checkpoint sur swift **local** — 1/1, première fois sur la cible réelle
+
+Le blocage du §8 est levé : `api.medium.text-generation-webui.myia.io/health` = **200** et
+`models.myia.io/health` = **200** au 02/11 07:5xZ. `classifier-local` répond et la réponse porte
+`model_used = swift-1.5-27b-no-thinking` — **le vrai swift, pas un twin cloud** (le contrôle de
+routage reste indispensable : un preset peut servir un autre modèle sans erreur).
+
+Cas soumis — précisément la frange qu'aucune porte ne couvre : les deux nuits de RAM CRITIQUE sont
+**prouvées** par les portes (§10.1) ; la question posée est **watch ou action**. L'arbitre ne voit
+que la mission, les affirmations du producteur, deux citations verbatim et la politique
+opérationnelle (barre de kill 4 GB, RSM mesuré à 0.1 GB, survie des conteneurs, restart Docker
+interdit sans cadre user).
+
+```text
+VERDICT: WATCH
+RAISON: absorbés sans OOM ni perte de conteneur, RAM revenue à 11 GB
+SEUIL_3E_NUIT: une 3e nuit consécutive <4GB déclenche l'escalade
+CE_QUE_TU_NE_PEUX_PAS_JUGER: si la baisse progressive avant les pics est un cycle de vie
+  normal ou une lente accumulation de fuites
+```
+
+**Ce que ça mesure vraiment** : pas une *justesse* — il n'existe pas d'oracle mécanique pour une
+décision de politique. Ce qui est mesuré est plus étroit, et vaut quand même : (a) l'étage swift
+**répond** sur sa cible réelle ; (b) il **ne contredit aucun fait fourni** ; (c) il **nomme
+correctement sa propre frontière** — cycle de vie normal *vs* fuite lente, qui est effectivement ce
+que ces données ne tranchent pas ; (d) son verdict **coïncide** avec la lecture que la politique
+impose déjà.
+
+Le point (c) est celui qui sépare un arbitre utile d'un générateur de confiance : un modèle qui
+aurait répondu « tout va bien » sans nommer ce qu'il ignore n'aurait rien apporté.
+
+**Ce que ça ne prouve pas** : 1/1, sur un cas où la politique était très cadrée. La justesse de
+swift sur cas **réellement** ambigus reste non établie — il faudrait une série de cas où la
+politique laisse une indétermination, et un moyen de trancher après coup. Série checkpoint :
+**3/3**, dont 1 sur swift réel.

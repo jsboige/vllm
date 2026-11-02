@@ -139,11 +139,11 @@ contraedicteur n'est cru que sur ses citations, jamais sur son compte (mesuré :
 - **Presets sk-agent dédiés** aux personas (Contrôleur/Régistraire/Traducteur/Avocat du diable)
   pour éviter de recoller les `system_prompt`.
 - Driver pour crons dédiés (pattern `nb_audit_driver.py`).
-- Série à tenir : les passes du 01/11 sont les premières de chaque classe (R9 : 1/1, R10 : 1/1,
-  R11 : 1/1) — la verbatimité inter-appels étant variable (cf. 22e-25e mesures), la porte reste
-  le juge à chaque usage.
+- Série à tenir : au 02/11, **R9 : 4/4, R10 : 4/4, R11 : 1/1, checkpoint : 3/3** (dont 1 sur
+  swift réel). La verbatimité inter-appels étant variable (cf. 22e-25e mesures), la porte reste
+  le juge à chaque usage — une série n'est pas une garantie.
 
-## 9. Checkpoint swift — l'arbitre de la frange (mesuré 01/11, 2/2)
+## 9. Checkpoint swift — l'arbitre de la frange (mesuré 01-02/11, 3/3)
 
 **Le problème qu'il résout** : les portes mécaniques n'existent que là où un oracle existe
 (grep local, partition, regex). Sur un job **long** et une source **distante ou hétérogène**
@@ -165,11 +165,18 @@ validé :
 |---|---|---|---|
 | Claim « exactement 3 lignes WARN » + 4 citations | la frange seule (~200 tokens) | **CONTREDIT** (« les citations contiennent à elles seules 4 lignes distinctes ») | CONTREDIT |
 | Taxonomie G1 fusionnant `WARN RAM basse` (120) et `WARN RAM CRITIQUE` (100) | la fusion + la politique (CRITIQUE escalade) | **FUSION_RISQUÉE** (« noie les cas urgents dans le volume ») | FUSION_RISQUÉE |
+| Compte prouvé + 2 nuits de RAM CRITIQUE absorbées, aucune perte de conteneur (02/11) | la frange seule + politique (barre de kill 4 GB, RSM 0.1 GB, restart interdit) | **WATCH** + « une 3ᵉ nuit consécutive déclenche l'escalade » + nomme ce qu'il ne peut pas juger (cycle de vie *vs* fuite lente) | WATCH |
 
 2/2 sur `fast-responder` (glm-5.3-flash, twin cloud — **substitut explicite** : le swift local
-était indisponible, cf. ci-dessous). La décision logique « les citations contredisent le
-compte » ne dépend pas du modèle arbitre ; ce qui reste à mesurer sur swift local, c'est le
-taux sur des cas ambigus.
+était indisponible, cf. ci-dessous), puis **1/1 sur swift local** le 02/11 (`classifier-local`,
+`model_used = swift-1.5-27b-no-thinking` vérifié dans la réponse). Série **3/3**.
+
+Sur le cas du 02/11, ce qui a été mesuré n'est **pas une justesse** — il n'existe pas d'oracle
+mécanique pour une décision de politique. Ce qui est mesuré : l'étage répond sur sa cible réelle,
+ne contredit aucun fait fourni, **nomme correctement sa propre frontière**, et coïncide avec la
+lecture que la politique impose déjà. Un arbitre qui aurait répondu « tout va bien » sans nommer
+son angle mort n'aurait rien apporté : c'est ce point, plus que l'accord, qui distingue un arbitre
+d'un générateur de confiance.
 
 **Règles** :
 
@@ -184,7 +191,8 @@ taux sur des cas ambigus.
   sur 4/4 tentatives** (19:49:05Z confirmé, ~1 h d'indisponibilité) pendant que `models.myia.io`
   répondait 200. Le workflow R9/R10 a continué **sans le checkpoint** (portes mécaniques
   seules) : le checkpoint est une **couche d'amélioration, jamais un chemin critique** ; s'il
-  est muet, le job se poursuit et le rapport marque « checkpoint sauté ».
+  est muet, le job se poursuit et le rapport marque « checkpoint sauté ». Revérifié le 02/11 :
+  **200 sur les deux endpoints**, le checkpoint a tourné sur swift réel.
 - **Presets disponibles aujourd'hui** (ne pas en inventer) : `classifier-local` et
   `summarizer-local` (swift no-thinking, le moins cher), `terminal-analyst` (swift + outils),
   **`swift-delegator`** — déjà provisionné pour exactement cette architecture (« le medium
@@ -288,7 +296,15 @@ prouve rien.
 **Mesuré le 01/11 (2ᵉ passe indépendante, par le script)** : deux extracteurs `mini-summarizer`
 (`model_used: frognano-4b`, aucun repli) sur le corpus figé → **partition 4 + 28 = 32, 0
 fabrication, 0 doublon, 0 manquante, COMPTE PROUVÉ : 4** ; seuil `free < 2000` → **1 ligne,
-`min=1128`, parse 32/32**. Séries : R9 2/2, R10 2/2.
+`min=1128`, parse 32/32**.
+
+**4ᵉ passe (02/11) — contrôle discriminant.** Le corpus contenait deux lignes au **même
+horodatage**, l'une `HEARTBEAT`, l'autre `WARN` portant les mêmes valeurs : un extracteur qui
+filtre sur la **forme** de la ligne au lieu du **motif** se trompe sur l'une des deux. Chacun n'a
+gardé que la sienne → **partition 4 + 28 = 32, COMPTE PROUVÉ : 4** ; `free < 4000` → **5 lignes,
+parse 32/32, min=1114**. Les 5 lignes correspondent à **4 instants distincts** (`04:02:03`
+apparaît en `HEARTBEAT` *et* en `WARN`) : la porte prouve le compte, l'interprétation du compte
+reste à l'appelant. **Séries : R9 4/4, R10 4/4.**
 
 **Limites assumées** : `fidelity` retire les séparateurs (prouve les chiffres, pas la position
 décimale — cf. §5) ; le script ne connaît **aucun** motif ni champ métier, il reçoit tout en
