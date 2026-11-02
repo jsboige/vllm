@@ -5954,3 +5954,30 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Annexes** : nbaudit **OK** (08:07:02Z, vague 2 `Image/`) ; **commit hôte 75,8 %** (marge 98,5 Go) ; registre **0 ouverte**.
 
 **PR du cycle : #325.** Prochain cycle 10:11Z — watch : préemptions (3ᵉ point = pente ou pas), densité `fail 1/2`, VRAM GPU 0 vs 23 000, charge vs seuil 210.
+
+## 02/11 10:1xZ — Cycle : 13 h stable, charge en hausse (302 req/h) ; préemptions 4→6→**8** (3ᵉ point = pente lente confirmée) ; hit intervalle 42 % ; verdict absorption po-2028 rendu
+
+**Moteur** : boot 2026-11-01T21:14:45Z, **RC=0**, health 200 en 3,4 ms, **0 OOM / 0 ERROR** sur 5 000 lignes lues, **1 244 sondes** OK (+173 en 2 h ≈ 1,44/min), 3 conteneurs Up. VRAM GPU 0 **22 333** / GPU 1 **21 788** MiB (GPU 0 **−156** vs 22 489 du cycle précédent, sous la ligne 23 000 ; marge 667 MiB avant alerte), GPU 2 122 MiB (CoursIA libre). `/dev/shm` **33G/63G = 51 %** — plancher, correctif #318 tient (3ᵉ intervalle consécutif).
+
+**Sondes lentes** : 2 nouveaux `fail 1/2` (**08:35:25Z**, **10:02:13Z**), soit **8 depuis 04:17Z** (04:17, 04:47, 04:59, 06:44, 07:12, 07:52, 08:35, 10:02) — **jamais 2/2, zéro restart**. Densité stable (~1/22 min). Prefill +48,8 M tok (261,4 M → 310,2 M) en ~2 h.
+
+**§5quater — les deux premiers signaux montent, le troisième est absent** :
+- **Préemptions 8** : 0 (9 h) → 4 (06:11Z) → 6 (08:11Z) → 8 (10:11Z). Troisième point consécutif à +2/cycle : **la pente lente se confirme** (elle n'était « pas une pente » qu'à deux points). En absolu **8 préemptions en 13 h reste faible** — le moteur absorbe, il ne sature pas.
+- **Hit préfixe intervalle ≈ 42 %** (80 % à 02:11Z → 53 % à 08:11Z → 42 % maintenant). Ancré sur les snapshots watchdog (`p` = prompt_tokens ≈ `prefix_cache_queries`, égalité mesurée le 30/10) : 261,4 M @07:52Z, 276,5 M @08:35Z ⇒ queries ≈ 268,5 M à 08:12Z ; cumul now 312,31 M q / 208,03 M h = 66,6 % ⇒ Δ43,8 M q / Δ18,2 M h. **Résultat approximatif (±5 pts)** — les brutes du cycle précédent n'étaient pas consignées, à corriger : **consigner les brutes `queries`/`hits` à chaque cycle désormais**.
+- **Re-prefill ABSENT** : 425 corps >100 Ko sur 3 h, **423 tailles distinctes**, 2 paires dupliquées (187 156 ×2, 607 323 ×2 = retry isolé). C'est du **trafic froid nouveau**, pas un client qui re-paie son contexte. Le critère d'escalade §5quater (les 3 signaux) n'est donc **pas** réuni → **pas d'alerte user**, mais la convergence 2/3 est notée avec un seuil personnel : hit < 30 % **ou** préemptions > 15 **ou** apparition de re-prefill ⇒ alerte + registre.
+
+**Charge** : **hausse**, pas déclin — 07h 170 (44 min couverts) → **08h 279** → **09h 302** req/h, >100 Ko **54 %**. Le plateau remonte (262 au cycle 06:11Z → 279-302). Déclencheur relevé DÉCHARGÉ (<~210 sur 2 h pleines) **toujours non atteint** — rien à envoyer à coursia-5d.
+
+**Sécurité** : **0 IP inconnue**. `90.65.170.144` (hairpin du site) 478/478 en 200 ; **`92.184.146.187` = po-2027** (2 req) — **confirmé légitime par DM du 02/11 11:07Z** : condenseur RSM, IP mobile Free de Marseille (voyage du 01/11), allowlistable → carte IP à mettre à jour, pas d'alerte. `51.75.200.22` = web2. **34 × 401** = poller nanoclaw clé morte connue (`fp 1f7f6080cb65`). **0 × 400 + corps >100 Ko** ⇒ signature #431 toujours absente.
+
+**G: / commit** : G: **écriture OK + suppression OK** (sonde réintégrée), 615 G libres (84 %). Commit hôte **75,4 %** (307,6/407,8 GB, marge 100,2 GB) — en baisse, bien sous le seuil 85 %. Condensation : **3 replis cloud** (08:40Z, 09:36Z, 09:37Z sur #2719) — famille #4434/#3962 (primaire local lent sous charge, 4 préemptions au même moment), dashboard écrit malgré tout, zéro perte. WARN RSM (`Message not found c2754-*`, `STALE-FILE #3230`) = périmètre RSM, pas vllm.
+
+**nbaudit** : **ok 10:05:47Z**, runner_rc=0, deliver_rc=0, 0 échec consécutif, 5 séries, **`19451:Image/`** = vague 2 active et saine.
+
+**Coordination — Q-73 arbitrée « Go » par l'user** (tradeoff po-2028→swift + po-2023→MiniMax, po-2025:claudish 10:14Z) : le point (a) est **gated sur le verdict d'absorption de vllm**. Verdict **rendu** en DM HIGH (`verdict-absorption-swift-po2028-20261102-1022`) + REPLY sur workspace-vllm :
+- **OUI en volume jusqu'à ~23-50 req/h additionnels** à `maxConcurrency=4` + busy-skip (Q69 tient sur le fond).
+- **NON démontré à 320/h** : le moteur sert ~300 req/h **tous clients** ; si po-2028 pesait 320/h sur swift, il serait 100 % du trafic et le plafond hub de 136 resp/h serait dépassé depuis des heures ⇒ les deux chiffres ne décrivent pas la même chose.
+- **Réconciliation ×14 impossible depuis ai-01** : une seule IP externe atteint le moteur (le hairpin) ; `x-claudish-machine` s'arrête au hub. La ventilation est l'organe de claudish → à trancher chez eux avant le flip.
+- Le **+549 req/j** venait de **leur** mesure Q69 (`msg-20261101T181555-lqejr7`, 01/11 18:15Z) — l'écart est interne au hub, pas un désaccord entre sièges.
+
+**Registre** : 0 ouverte.
