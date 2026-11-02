@@ -104,7 +104,17 @@ python myia_vllm/scripts/adoption/bench_capacity.py --concurrency 1,8,16
 
 Le script lit la clé depuis `myia_vllm/.env` (jamais en argument), construit le corpus à la forme du
 journal du gouverneur, mesure TTFT et latence en streaming, et écrit `bench_capacity_out.json`.
-La vérification de qualité recompte les échantillons contre le corpus attendu.
+
+Sortie attendue pour `--concurrency 1` (relevé de contrôle du 02/11) — si les ordres de grandeur
+ne sont pas là, le siège n'est pas dans l'état décrit ici, et c'est **ça** qu'il faut signaler :
+
+```
+N=1   wall=  1.31s  agg=  116.3 tok/s  per-req= 116.4 tok/s  TTFT med=0.08s ...
+      ok=1/1 err=0  ptok=1341 ctok=152  verbatim=OUI
+```
+
+Les valeurs de `ptok`/`ctok` sont stables au token près (le prompt est figé) : c'est le contrôle le
+plus net. `verbatim=OUI` est le contrôle de qualité intégré.
 
 ## 9. Ce que cette fiche ne dit pas
 
