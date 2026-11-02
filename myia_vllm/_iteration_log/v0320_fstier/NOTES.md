@@ -5884,3 +5884,15 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Coordination.** Réponse capacité envoyée à coursia-5d (4 flux longs max / 2 garantis en attendant la mesure 00:11Z) ; correction de mon faux « aucun preset mini-* » (artefact `head -20` — gotcha mémoire ajouté). Règle d'annonce des fenêtres sur `global` posée (spec PR #319 + fiche mémoire).
 
 **Registre : 0 ouverte.** Prochain cycle 00:11Z = **relevé post-retour Minimax (~00:00Z)** à envoyer à coursia-5d (engagement pris).
+
+## 02/11 00:1xZ — Cycle : 2ᵉ intervalle corrigé propre ; relevé 00:11Z = la cohorte Minimax n'est PAS repartie (charge en hausse)
+
+**Moteur (VERIFIÉ).** Boot 21:14:45Z inchangé (RC=0, 3 h), health 200/3,8 ms, **0 OOM/0 ERROR/0 Traceback** sur 4 209 lignes, 303 sondes watchdog OK, seul WEDGE = le `fail 1/2` 21:36:34Z déjà récupéré. VRAM 21 989/21 516 MiB (bande 0.73). `/dev/shm` 33G = plancher, **que des `psm_*` de la génération courante** (le correctif #318 a purgé au recreate, aucun orphelin régénéré) — 2ᵉ intervalle confirme la tenue.
+
+**Relevé capacité 00:11Z (ENGAGEMENT coursia-5d — envoyé).** Le « post-retour Minimax » attendu (~00:00Z) **n'est pas visible** : charge en HAUSSE continue — 21h 214 → 22h 320 → 23h 330 req/h → 00h (11 min) rythme **~496/h** (extrapolé, à confirmer 02:11Z). Corps >100 Ko : 89 → 161 → **192/h** (~la moitié du trafic). Sous cette charge : **0 préemption**, hit préfixe 78,8 % cumulé (61,4 M/77,9 M), 0 OOM — la contrainte reste les flux concurrents (4 longs max/2 garantis), pas les req/h. **Attribution Minimax vs CoursIA non séparable côté moteur** (tout passe par le hairpin hub 90.65.170.144) ; sidecar claudish ai-01 muet = nominal, le routage vit sur le hub po-2025. Le relevé DÉCHARGÉ sera envoyé dès que la cohorte part (baisse nette) — coursia-5d aura les deux bornes.
+
+**Sécurité (VERIFIÉ).** IP toutes connues ; **92.184.144.158 + 92.184.144.96 = famille mobile Free, pré-annoncée par le user** (voyage Paris→Marseille de po-2027 le 01/11) — pas une alerte. Les 2×500 de 16:30Z coïncident avec la mort moteur n°1 (requêtes en vol) ; le 400 (31 Ko) n'est pas la signature #431. 0 × 400-gros-corps sur 8 h.
+
+**Périmètres.** nbaudit OK (00:05:44Z, vague 2 `Image/` active, 0 échec). G: OK (616G libres, probe OK). Condensation silencieuse (aucun échec, client reconstruit 23:52:52Z). Pruneur fs : passe 23:50Z hors fenêtre de lecture ce cycle (10ᵉ passe 21:50Z 0 err au précédent). **Commit hôte 85,3 % (347,7/407,8 Go, marge 60,1 Go) — JUSTE au seuil 85 %** : aucun travail lourd, à surveiller au 02:11Z.
+
+**Coordination.** Global : notre incident/repair déjà correctement consigné, rien à corriger. 2 messages informationnels marqués lus (tour cluster 21:36Z flotte 100/100 ; ACK CoursIA-2).
