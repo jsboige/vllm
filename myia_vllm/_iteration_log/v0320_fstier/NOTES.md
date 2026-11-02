@@ -5981,3 +5981,26 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 - Le **+549 req/j** venait de **leur** mesure Q69 (`msg-20261101T181555-lqejr7`, 01/11 18:15Z) — l'écart est interne au hub, pas un désaccord entre sièges.
 
 **Registre** : 0 ouverte.
+
+## 02/11 12:1xZ — Cycle : 15 h stable ; hit intervalle REMONTÉ à 63 % (préemptions +1 seulement) ; ★ débit par modèle mesuré (swift 176/h) ; claudish retire le Go du flip po-2028
+
+**Moteur** : boot 01/11 21:14:45Z, **RC=0**, health 200 en 8,1 ms, **0 OOM / 0 ERROR**, **1 453 sondes** (+209 en 2 h), 3 conteneurs Up (watchdog 15 h). VRAM GPU 0 **22 336** / GPU 1 **21 788** MiB — **GPU 0 +3 seulement** : les +195 puis +156 des deux cycles précédents **n'étaient pas une pente**, c'est le high-water d'allocateur déjà documenté (2ᵉ confirmation expérimentale). GPU 2 204 MiB. `/dev/shm` **33G/63G = 51 %**.
+
+**§5quater — la pente s'inverse, contre le pronostic du cycle précédent** :
+- **Préemptions 9** (4→6→8→**9**) : la montée **ralentit** (+2, +2, **+1**). 9 en 15 h reste marginal.
+- **Hit préfixe intervalle 63,4 %** (Δ55,2 M q / Δ35,0 M h) contre **42 % au cycle précédent** : les préfixes froids de la matinée sont devenus chauds. **Cumulé 66,2 %** (243,0 M h / 366,9 M q).
+- **Re-prefill toujours ABSENT** : 480 corps >100 Ko, **477 tailles distinctes**, 3 paires dupliquées (187 156 / 607 323 / 771 265 — retries isolés).
+→ **La « convergence 2/3 signaux » du cycle 10:11Z ne se poursuit pas** : un des deux signaux a reculé. Leçon : **trois points sur deux séries corrélées ne font pas une tendance confirmée** ; c'est la 4ᵉ mesure qui a tranché. Seuil d'alerte inchangé (hit <30 % ou préemptions >15 ou re-prefill).
+- **1 `fail 1/2` nouveau** à **11:20:50Z**, total **9 depuis 04:17Z**, jamais 2/2, zéro restart.
+
+**Charge : hausse continue** — 09h 235 (49 min) → **10h 321** → **11h 340** req/h, moyenne 327/h sur 180 min. Corps >100 Ko **49 %**. Le déclencheur DÉCHARGÉ (<~210 sur 2 h) s'**éloigne** ; rien à envoyer à coursia-5d.
+
+**★ Découverte — débit moteur ventilé par modèle et par client (6 h)** : `swift-1.5-27b` **1 053 = 176/h** · alias `qwen3.6-35b-a3b` 651 = 109/h (même moteur) · **total 284/h**. Par client : **`Bun/1.3.14` = 1 051 (176/h) = le hub claudish**, **sondes `curl` 568 (95/h)**, OpenAI/JS 71 (12/h), Python 12 (2/h). Hors sondes : **1 136 requêtes dont 889 >100 Ko (78 %)**. Instrument : champ `model` + `user_agent` du middleware, jamais exploité ainsi jusqu'ici.
+
+**Coordination — claudish a répondu au verdict et RETIRÉ le Go de l'exécution** (`msg-20261102T101914-p6dijc`) : leur mesure 6 h donne po-2028 361/h de demande haiku, MiniMax 599/h servis, d'où `swift = demande − MiniMax = 115/h`. **Le flip ne déplacerait rien** (les 361/h de po-2028 iraient en concurrence pour 115/h et les sièges servis basculeraient sur MiniMax, bilan net ≈ 0) ⇒ ils ne flippent pas et portent le choix à l'user. Réponse rendue (`msg-20261102T121234-wpm91d`) avec le chiffre moteur qu'ils demandaient : **176/h sur `swift-1.5-27b`, pas 115/h** — avec la réserve que cette valeur est un **plancher** du débit swift (les sous-agents CoursIA `swift-reader` et sk-agent tapent le même nom sous la même clé, non isolables ici). L'écart de ~61/h est cohérent avec ce trafic non-haiku.
+
+**Sécurité** : **0 IP inconnue**. Hairpin `90.65.170.144` 640/640 en 200 ; **`92.184.146.187` = po-2027** (3 req, confirmé) ; `51.75.200.22` = web2. **28 × 401** = poller nanoclaw clé morte. **0 × 400 + corps >100 Ko** ⇒ #431 toujours absent.
+
+**Reste** : G: **écriture OK** + suppression OK, 614 G libres. Commit hôte **76,4 %** (marge 96,2 GB). Condensation : **2 replis cloud** (12:00Z, 12:01Z, #4434). nbaudit **OK 12:06:18Z** (0 échec, vague 2 `Image/`). **WARN RSM nouveau** : `workspace-qdrant.md: Format dashboard invalide: frontmatter manquant` ×7 à 12:11:36Z — dashboard d'un **autre** workspace, périmètre RSM, rien pour vllm.
+
+**Registre** : 0 ouverte.
