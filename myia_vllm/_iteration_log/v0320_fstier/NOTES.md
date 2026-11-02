@@ -5934,3 +5934,23 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Annexes** : nbaudit **OK** (06:05:52Z, vague 2 `Image/`, 0 échec) ; condensation **silencieuse** ; **commit hôte 76,0 %** (marge 97,8 Go) ; inbox = dispatchs CoursIA machine-level (ignorés, #3960) ; global : l'[ASK] code-index était pour po-2023:vllm et a reçu sa réponse (gel structurel post-Zoo, #4352 pour le levier).
 
 **Registre : 0 question ouverte.** PR du cycle : #324. Prochain cycle 08:11Z — watch : préemptions (une pente continue = alerte §5quater ; 4 statiques = rien), charge (plateau 260 ou descente sous 210), G: en lecture seule.
+
+## 02/11 08:1xZ — Cycle : 11 h stable, plateau ~270 req/h tenu ; densité de `fail 1/2` en hausse (6 depuis 04:17Z, tous récupérés) ; préemptions 4→6 ; G: réparé et re-sondé OK
+
+**Moteur (VÉRIFIÉ)** : boot 21:14:45Z inchangé (11 h, RC=0), health 200/7 ms, **0 ERROR/0 OOM** sur 5 000 lignes, 1 071 sondes OK, `/dev/shm` 33G plancher, KV en service **72,2 %**, 5 requêtes en cours, VRAM **22 489/21 788** (GPU 0 +195 MiB vs cycle précédent — sous la ligne 23 000, à suivre).
+
+**Densité des sondes lentes en hausse, moteur sain** : 6 × `WEDGE fail 1/2` depuis 04:17Z (04:17, 04:47, 04:59, 06:44, 07:12, **07:52:15Z**), **jamais 2/2, aucun restart**, compteurs en forte avance entre chaque (prefill 174,6M → **261,4M tok**, +70M en 3 h ≈ 6,5K tok/s soutenu). Motif documenté (famine de sonde pendant les gros prefills) mais la cadence se resserre (~1/30-45 min) : c'est la conséquence du trafic long-contexte, pas d'un défaut moteur.
+
+**Préemptions 4 → 6** (+2 en ~1 h, 07:19Z→08:1xZ) : montée **lente**, pas encore une pente (deux points). Watch : une progression continue = alerte §5quater ; KV à 72 % laisse de la marge.
+
+**Charge** : plateau **~270 req/h** (04h 270 → 05h 273 → 06h 271 → 07h 240 → 08h partiel 276), corps >100 Ko **56-62 %**. Déclencheur relevé DÉCHARGÉ (<~210 sur 2 h) toujours **non atteint**. Hit préfixe : cumulé 70,7 %, **intervalle 53,5 %** (Δ45,9M q / Δ24,6M h) — préfixes froids persistants, même lecture qu'au cycle précédent (pas de re-prefill : tailles de corps distinctes).
+
+**Sécurité** : 0 IP inconnue avec 200 — `90.65.170.144` (hairpin) 1 036/1 036 en 200, `92.150.81.115` = **po-2027 connue** (2 req), reste = local sans XFF. 41 × 401 = poller nanoclaw clé morte connue. 0 × `400 + body>100 Ko`.
+
+**G: — réparé, re-sondé OK** : écriture `probe6` réussie puis supprimée, df 609 G libres. La sonde d'écriture **réintègre le cycle** (elle en avait été retirée pendant l'incident du lecteur). Rappel de l'épisode : lecteur jamais remonté entre 01:53:50Z et 07:19:45Z (redémarrage user), 5 h 30 d'ENOENT expliqués, fail-closed + PG intacts.
+
+**Condensation — dégradation gracieuse observée** : auto-condense 08:03-08:05Z sur #2719 passée par le **repli cloud** (« primary attempt refused — pass deadline reached the cloud reserve #3962 ») puis **troncature déterministe** (« LLM did not converge under 15KB »), dashboard écrit quand même. Famille #4434 (primaire lent sous charge). Plus `roosync_dashboard` en erreur 08:01:36Z et 08:07:34Z côté RSM (périmètre propriétaire, pas vllm).
+
+**Annexes** : nbaudit **OK** (08:07:02Z, vague 2 `Image/`) ; **commit hôte 75,8 %** (marge 98,5 Go) ; registre **0 ouverte**.
+
+**PR du cycle : #325.** Prochain cycle 10:11Z — watch : préemptions (3ᵉ point = pente ou pas), densité `fail 1/2`, VRAM GPU 0 vs 23 000, charge vs seuil 210.
