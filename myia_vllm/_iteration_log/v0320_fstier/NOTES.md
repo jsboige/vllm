@@ -6004,3 +6004,25 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Reste** : G: **écriture OK** + suppression OK, 614 G libres. Commit hôte **76,4 %** (marge 96,2 GB). Condensation : **2 replis cloud** (12:00Z, 12:01Z, #4434). nbaudit **OK 12:06:18Z** (0 échec, vague 2 `Image/`). **WARN RSM nouveau** : `workspace-qdrant.md: Format dashboard invalide: frontmatter manquant` ×7 à 12:11:36Z — dashboard d'un **autre** workspace, périmètre RSM, rien pour vllm.
 
 **Registre** : 0 ouverte.
+
+## 02/11 14:1xZ — Cycle : 17 h stable ; ★ la 5ᵉ mesure RÉ-INVERSE la 4ᵉ (préemptions 9→15, hit 33 %) ; ★ distribution e2e mesurée : 5 % des requêtes dépassent déjà 240 s (donnée avant-flip livrée à claudish)
+
+**Moteur (boot 21:14:45Z inchangé, RC=0).** Health 200/4 ms, 3 conteneurs, VRAM 22 334/21 788 (GPU 0 −2 MiB — 3ᵉ cycle de plateau high-water), shm 33G = plancher 51 %. Log moteur 5 000 lignes : **0 OOM, 0 ERROR**. Watchdog : 1 616 sondes OK, **13 `fail 1/2`** dans la fenêtre (04:47→13:20Z, cadence qui se resserre), jamais 2/2, zéro restart.
+
+**§5quater — la 5ᵉ mesure ré-inverse la 4ᵉ :**
+- **Préemptions 9 → 15** (+6 = la plus grosse hausse de la série ; série : 4→6→8→9→15).
+- **Hit préfixe intervalle 33 %** (Δ49,9 M q / Δ16,5 M h ; brutes : 366,9 M/243,0 M → 416,72 M/259,46 M ; série : 80→53→42→63→33 %).
+- **Re-prefill TOUJOURS ABSENT** : 946 corps >100 Ko, **942 tailles distinctes**, 4 dupliquées x2 (187 156 / 607 323 / 771 265 / 747 762 — retries isolés).
+- Les seuils personnels sont aux portes (préemptions 15 = limite « >15 », hit 33 % > 30 %) mais **pas d'alerte formelle** : 1 critère à la limite, 1 proche, 1 négatif. Leçon amendée : **ni la 3ᵉ ni la 4ᵉ mesure ne « tranchent »** — ces deux séries oscillent avec la composition horaire du trafic ; le seul signal resté constant sur 5 cycles est l'absence de re-prefill.
+- Charge : 287→307→326→345→313→343 req/h (6 h), **14h parti à 456/h** (13 min couvertes). Ventilation : `swift-1.5-27b` **203/h** (100 % hub Bun, en hausse de 176), alias 107/h, sondes 92/h ; 72 % des corps applicatifs >100 Ko.
+
+**★ Nouvel instrument — distribution e2e (buckets `/metrics:e2e_request_latency_seconds`)**, 4 722 complétions depuis boot (17 h) : ≤60 s **73,6 %** · ≤120 s 86,7 % · ≤240 s **95,0 %** · **>240 s : 235 req = 5,0 %** · >480 s 36 · >960 s 2. Moyenne 54,95 s, TTFT 8,93 s, queue 3,00 s, 0 en file à l'instant (6 running). **Le timeout client 240 s du hub est déjà touché par 1 requête sur 20 dans le régime actuel** — la moyenne ne pilote rien, c'est la queue qui gouverne (les >240 s se concentrent dans les salves long-contexte, là mêmes où les préemptions montent). Tier : fs 837,8 GB écrits / 37,1 GB lus (4,4 % = puits d'écriture) ; CPU→GPU 2 599 GB — les tiers servent le hit, pas le décodage (84 % du e2e).
+
+**Coordination (2 ASK claudish répondus, mesuré) :**
+- **[ASK HIGH] « le débit monte-t-il au-dessus de 176/h avant le timeout 240 s ? »** → réponse `msg-20261102T141627-8wvw06` : le débit est déjà à 203/h ; la distribution e2e ci-dessus est la donnée **avant-flip** ; recommandation : armer le flip avec avant/après distribution + **compteur client-timeout/retry côté hub** (le moteur ne voit jamais un client qui abandonne).
+- **[ASK MED] condensation bienvenue ?** → réponse `msg-20261102T141639-voc8xi` : oui, 2 req/h, c'est le moteur qui la ralentit, pas elle qui charge ; choix de modèle = roo-extensions (arbitrage user 29/10).
+- **claudish 13:07Z** : le flip est ré-armé en sens INVERSE (`STEP_EXCLUDE` → ai-01+po-2027+po-2023+po-2024 ⇒ **po-2028 rentre sous swift**, les 3 autres vers MiniMax) au prochain recreate naturel ; Q-75 ouverte chez eux (recreate exprès ?). Notre avant/après distribution e2e est le plan de mesure.
+- **po-2025:vllm 13:55/13:59Z** : fiche capacité FrogNano livrée (PR #328) + **profil servi swift mesuré depuis /metrics public** (55,10 s e2e moyen, décodage 84 %, plafond KV 383-601 resp/h selon profil, parade = admission par taille de prompt, pas limite de débit) — convergent avec nos mesures ; 2 corrections publiées à claudish (GPU confondu, le 90 s n'était pas un endpoint pendu).
+- **Worker report (claude-worker)** : les prompts mode/style forkent le system prompt au byte ~143 ⇒ aucun partage de préfixe cross-lane — levier côté consommateurs (hub/OWUI), action none ici ; noté pour le dossier hit.
+
+**Santé périphérique.** Commit hôte **78,1 %** (marge 89,4 Go, sous 85). **G: OK** écriture+suppression (redémarrage gdrive du matin tient, 3ᵉ sonde OK consécutive). nbaudit **OK** 14:06:17Z (vague 2 `Image/`). Condensation : événements INFO normaux, aucune passe en échec ce cycle. WARN RSM hors périmètre vllm : `pg-cold-pool-resume` timeouts ×2 + `EBUSY machine-myia-po-2024.md` (dashboard-reconcile) + IdentityManager heartbeat ×5 — relayables à roo-extensions si persistants. Sécurité : **0 IP inconnue** (hairpin 1 406/1 406, `?` 664 = locaux sans xff, po-2027 4, web2 2) ; 62×401 = poller nanoclaw clé morte ; **0 signature 400+>100K (#431)**. Registre : **0 ouverte**.
