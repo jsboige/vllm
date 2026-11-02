@@ -33,6 +33,15 @@ obtiens.
 > C'est le mode qui a fait la différence au pilote : c'est le **harnais** qui exécute, l'agent ne
 > fait que juger sur les sorties.
 
+**Instrument déjà écrit — ne le réinvente pas.** Pour les deux classes où le mini échoue le plus
+(comptage, seuil sur valeur de champ), la porte mécanique existe et rend un **exit code** :
+`python myia_vllm/scripts/adoption/frognano_gate.py partition --corpus C --a A --b B` (compte
+prouvé si A et B partitionnent le corpus) et `... threshold --corpus C --a A --b B --field free
+--op lt --value 2000` (parse exhaustif obligatoire). `--json` pour un verdict machine ; `selftest`
+rejoue 11 contrôles, **dont les falsifications qui doivent échouer** — si `selftest` ne passe pas,
+la porte n'est pas une preuve, quel que soit le résultat obtenu. Recettes : `R9`/`R10` dans
+`myia_vllm/docs/frognano-team-solve.md`.
+
 **2. Étage distinct (quand rien n'est comptable).**
 Un résumé, un diagnostic, une reformulation ne se recalculent pas. Dans ce cas la vérification est
 un **jugement indépendant** : tu compares la production à sa **source** et tu cherches ce qui est
