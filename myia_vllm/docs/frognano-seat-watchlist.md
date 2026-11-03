@@ -5,23 +5,42 @@ sur cette machine, **en vérifiant les quants disponibles**. Contrainte de sièg
 pratique ~**14,4 Go** de VRAM (16 384 MiB − marge desktop), moteur `:5003`, pool KV fp8.
 Le user attend explicitement « un bon 9B » (décision pivot 29/10).
 
-## Candidat n°0 — `LiquidAI/LFM3-1.7B` (réouvert le 03/11) ★ MEILLEURE PISTE MESURÉE
+## `LiquidAI/LFM3-1.7B` — ❌ **écarté le 03/11 sur la fiabilité** (le plus rapide du siège, mais pas fiable seul)
 
-Mon verdict du 02/11 (« thinking inline non séparable ») était **faux** — correction dans
-`_iteration_log/lfm3_overlay_v0320/NOTES.md` §CORRECTION. Faits vérifiés dans le checkpoint :
+> **Verdict mesuré le 03/11** (`_iteration_log/lfm3_reliability_po2025/NOTES.md`) :
+> **il hallucine PLUS que FrogNano**, critère explicite du user → **pas d'onboarding**,
+> FrogNano reste en prod. Contrôle apparié, même corpus 22 lignes, même session :
+>
+> | | rendues | réelles | couverture | délibération dans `content` |
+> |---|---|---|---|---|
+> | FrogNano-4B | **13** | 13 | 13/14 | **0** |
+> | LFM3-1.7B | 41 | 13 | 13/14 | **27** |
+>
+> **`enable_thinking:false` est COSMÉTIQUE sur ce checkpoint** : le template émet bien
+> `<think></think>` vide, mais **le raisonnement fuit en clair dans `content`** dès que la
+> tâche est difficile (`Wait, let us list exactly…`, re-listes abrégées `... temp=31C ...`,
+> corpus re-dumpé annoté `-> include`). Le flag supprime l'enveloppe, pas le comportement.
+> Sur 120 lignes avec `mt=4096` il atteint **42/42, 0 fabrication** — mais en recopiant
+> **73 lignes hors-motif** (précision 37 % contre 100 % pour FrogNano), et le comportement
+> **varie d'un run à l'autre**. Ce qui marche : piège d'hallucination → `AUCUNE` (correct),
+> appel d'outil → `finish=tool_calls` bien formé.
 
-- **`enable_thinking` est natif au template** (`chat_template.jinja` l. 3) : `false` ⇒ il émet
-  `<think></think>` **vide** puis la réponse. Même mécanisme que Qwen/FrogNano.
-- **Le template rend les outils** (22 occurrences) au format `<tool_call>/<function=…>/<parameter=…`.
-- Un parser générique existe déjà : `deepseek_r1_reasoning_parser.py` a `<think>`/`</think>`.
-- **Déjà mesuré sur cette machine** : KV 408 734 (12,47× le contexte), **110,8 / 615,1 /
-  1 245,9 tok/s à N=1/8/16** = 0,96× / 1,16× / **1,50× FrogNano**, 0 erreur/25, TTFT ≤ 0,43 s.
-- Servable **aujourd'hui** par l'overlay conservé `vllm-openai-v0320-lfm3:v1` (poids 3,3 GB sur
-  le siège), en attendant le merge de vllm#64959.
+Faits techniques vérifiés (conservés pour un successeur éventuel) :
 
-**Reste non mesuré** (conditionne la bascule) : comportement avec `enable_thinking:false`,
-**verbatim** aux 3 niveaux dans ce mode, **fiabilité des appels d'outils**. Re-test court
-~6-8 min avec la recette ci-dessous + `chat_template_kwargs {"enable_thinking": false}`.
+- **`enable_thinking` est natif au template** (`chat_template.jinja` l. 3) — mécanisme Qwen,
+  mais **sans effet réel sur la délibération** (voir verdict ci-dessus).
+- **Le template rend les outils** (22 occurrences) au format `<tool_call>/<function=…>/<parameter=…>` ;
+  `--tool-call-parser qwen3_coder` fonctionne.
+- **Piège de service** : `--reasoning-parser deepseek_r1` + `enable_thinking:false` ⇒ **`content`
+  vide**, tout part dans `reasoning` (le parser cherche un `</think>` qui n'arrive jamais).
+  **Retirer le parser.**
+- **Débit** : KV 408 734 (12,47× le contexte), 110,8 / 615,1 / 1 245,9 tok/s à N=1/8/16
+  = 0,96× / 1,16× / **1,50× FrogNano**, 0 erreur/25, TTFT ≤ 0,43 s.
+- Servable par l'overlay conservé `vllm-openai-v0320-lfm3:v1` (poids 3,3 GB sur le siège).
+
+**Ré-ouvrable si** un template ultérieur rend `enable_thinking:false` réellement silencieux,
+OU si le siège reçoit un trafic où le débit devient le facteur limitant — **et alors avec la
+porte mécanique devant**, jamais en producteur direct.
 
 ## Candidat n°1 — `Qwen/Qwen3.5-9B` (officiel, mars 2026)
 
