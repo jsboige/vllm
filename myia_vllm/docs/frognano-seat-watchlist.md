@@ -98,7 +98,31 @@ un A/B qualite contre le BF16 de base avant toute promotion, pas seulement un te
 **Prochain geste si le user donne un GO** : fenetre de ~10 min, boot stock sur `:5024`,
 gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 02/11 et le 03/11.
 
-## Candidat n°1 — `cyankiwi/Ornith-1.5-9B-AWQ-INT4` ★ **proposé par le user 03/11 soir, fenêtre en cours**
+## `cyankiwi/Ornith-1.5-9B-AWQ-INT4` — ✅ **MESURÉ le 03/11 : tient sur le siège et bat FrogNano sur la classe servie** (arbitrage user)
+
+> **Verdict mesuré** (`_iteration_log/ornith_15_9b_po2025/NOTES.md`, fenêtre GO user, `:5003`
+> indisponible 8 min 30) — le modèle **boote et sert**, contrairement au 12B :
+>
+> | | FrogNano-4B (prod) | Ornith-1.5-9B |
+> | --- | --- | --- |
+> | Verbatim corpus-piège 22 lignes | 13/14 | **14/14** |
+> | Bruit / fabrications (thinking off) | 0 / 0 | **0 / 0** |
+> | Stabilité inter-runs | stable | **3/3 identiques** |
+> | Débit N=16 | **829,1 tok/s** | 506,7 tok/s (**0,61×**) |
+> | Pool KV | **426 473 tok** (13,0 ctx) | 122 523 tok (3,74 ctx) |
+> | VRAM en service | 12 724 MiB | 12 530 MiB |
+> | Boot | ~80 s | **260 s** |
+>
+> **`enable_thinking: false` est RÉEL ici** — il supprime les 40 lignes de bruit et tout le
+> préambule de délibération sans perdre une ligne de l'oracle. C'est **l'inverse du cas LFM3**, où
+> le flag était cosmétique. Corollaire de service : **ne jamais servir ce modèle sans ce flag**
+> (`--default-chat-template-kwargs`), sinon `content` est pollué et la classe verbatim tombe.
+>
+> **Comptage (R2)** : échoue comme tout le siège. **Outil (R4)** : `finish=tool_calls` bien formé.
+>
+> **Ce n'est pas un remplacement à somme nulle** : +1 ligne de rappel et le déterminisme contre
+> **0,61× le débit** et **0,29× le pool KV**. Le siège est bâti comme tier horde (mandat 29/10) ;
+> **la promotion est un arbitrage user, pas une décision de lane.** Poids 8,40 Go conservés.
 
 **Pré-vérification géométrique PASSEÉE AVANT téléchargement** (leçon Gemma appliquée dès sa première heure) :
 
@@ -166,6 +190,7 @@ la batterie fiabilité du siège tranche (réf. FrogNano 13/14, 0 bruit).
 
 | Modèle | Verdict | Ré-ouvrir si |
 | --- | --- | --- |
+| Ornith-1.5-9B-AWQ (cyankiwi) | **Mesuré 03/11, tient** : verbatim **14/14** déterministe (×3) contre 13/14 pour FrogNano, mais **0,61× le débit** et **0,29× le KV** — exige `enable_thinking:false` | décision user de promotion (arbitrage qualité/débit) |
 | LFM3-1.7B-NVFP4 (LiquidAI) | Servable (greffe v0.32.0+#64959, 1,50× FrogNano à N=16) mais **hallucine plus que FrogNano** (27 lignes de délibération vs 0 ; `enable_thinking:false` cosmétique) | template ultérieur réellement silencieux, ou trafic où le débit limite — **avec porte mécanique** |
 | Gemma-4-12B-AWQ (axteam) | **Infaisable** (03/11) : géométrie KV ~343 Ko/tok sous fenêtre 16 K, fp8 KV interdit SM 8.6 | **carte ≥ 24 Go** (poids 7,87 Go conservés dans le cache HF du siège) |
 | Nanbeige4.2-3B | 0,89× FrogNano à N=16 et KV 88 Ko/tok ⇒ perdant partout | une version KV compacte |

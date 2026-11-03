@@ -1,0 +1,50 @@
+[
+  {
+    "n": 1,
+    "wall": 2.9973795413970947,
+    "ok": 1,
+    "errors": 0,
+    "ptok": 1339,
+    "ctok": 192,
+    "agg_tps": 64.05595199015329,
+    "ttft_med": 0.14563322067260742,
+    "ttft_max": 0.14563322067260742,
+    "lat_med": 2.996778726577759,
+    "lat_max": 2.996778726577759,
+    "per_req_tps": 64.0687943681644,
+    "sample": "The user wants me to copy verbatim, line by line, all lines from the corpus that contain the word WARN. Let me go through the corpus and find all lines containing \"WARN\".\n\nLet me scan through:\n1. 2026-11-01 05:02:03 HEARTBEAT temp=31C free=7000MB mode=normal - no\n2. 2026-11-01 06:02:03 HEARTBEAT temp=31C free=6830MB mode=normal - no\n3. 2026-11-01 07:02:03 HEARTBEAT temp=31C free=6660MB mode=normal - no\n4. 2026-11-01 0",
+    "warn_expected": 4
+  },
+  {
+    "n": 8,
+    "wall": 4.411158561706543,
+    "ok": 8,
+    "errors": 0,
+    "ptok": 10712,
+    "ctok": 1536,
+    "agg_tps": 348.2078412084485,
+    "ttft_med": 0.6058781147003174,
+    "ttft_max": 1.0916383266448975,
+    "lat_med": 4.288767576217651,
+    "lat_max": 4.385153770446777,
+    "per_req_tps": 44.768492285403745,
+    "sample": "The user wants me to copy verbatim, line by line, all lines from the corpus that contain the word WARN. Let me go through the corpus and find all lines containing \"WARN\".\n\nLet me scan through:\n1. 2026-11-01 05:02:03 HEARTBEAT temp=31C free=7000MB mode=normal - no\n2. 2026-11-01 06:02:03 HEARTBEAT temp=31C free=6830MB mode=normal - no\n3. 2026-11-01 07:02:03 HEARTBEAT temp=31C free=6660MB mode=normal - no\n4. 2026-11-01 0",
+    "warn_expected": 4
+  },
+  {
+    "n": 16,
+    "wall": 6.062848329544067,
+    "ok": 16,
+    "errors": 0,
+    "ptok": 21424,
+    "ctok": 3072,
+    "agg_tps": 506.6925367455164,
+    "ttft_med": 1.1784895658493042,
+    "ttft_max": 2.2737843990325928,
+    "lat_med": 5.805486083030701,
+    "lat_max": 6.019566774368286,
+    "per_req_tps": 33.07242082848417,
+    "sample": "The user wants me to copy verbatim, line by line, all lines from the corpus that contain the word WARN. Let me go through the corpus and find all lines containing \"WARN\".\n\nLet me scan through:\n1. 2026-11-01 05:02:03 HEARTBEAT temp=31C free=7000MB mode=normal - no\n2. 2026-11-01 06:02:03 HEARTBEAT temp=31C free=6830MB mode=normal - no\n3. 2026-11-01 07:02:03 HEARTBEAT temp=31C free=6660MB mode=normal - no\n4. 2026-11-01 0",
+    "warn_expected": 4
+  }
+]
