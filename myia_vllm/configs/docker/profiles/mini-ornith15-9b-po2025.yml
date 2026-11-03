@@ -1,21 +1,30 @@
 # Docker Compose profile — Ornith-1.5-9B-AWQ-INT4 (tier mini, po-2025)
 # ============================================================================
-# STATUT : profil de SERVICE écrit le 03/11 au soir, NON DÉPLOYÉ.
+# STATUT : profil de SERVICE écrit le 03/11 au soir. Fenêtre de promotion
+# annoncée sur workspace-vllm avant le geste ; rollback FrogNano armé.
 # Il n'existe pas pour remplacer FrogNano aujourd'hui : il existe parce que la
 # décision « Ornith ADOPTÉ » (03/11, user, registre Q12) n'avait AUCUN artefact
 # de service — les deux fenêtres DFlash n'étaient que des `docker run`
 # d'évaluation, et chaque `trap` de fenêtre restaurait FrogNano. Sans ce
 # fichier, la décision restait lettre morte.
 #
-# DÉPENDANCE BLOQUANTE AVANT TOUTE PROMOTION (issue #362) :
+# PÉRIODE DE TRANSITION — ALIAS `frognano-4b` CONSERVÉ (arbitrage user 03/11) :
 #   les consommateurs demandent le modèle PAR SON NOM (`frognano-4b`), pas par
 #   l'alias `mini` — prouvé le 03/11 par un `call_agent` sk-agent qui répond
-#   `model_used: "frognano-4b"`. Servir `ornith-1.5-9b mini` SEUL casserait
-#   donc les presets `mini-*` en silence (modèle introuvable). Deux sorties
-#   propres : (a) roo-extensions bascule ses presets sur `mini` (#362, la
-#   raison d'être de l'alias), ou (b) on accepte une fenêtre de promotion avec
-#   les deux noms. AUCUNE des deux ne se fait sans cadre user.
-#   Ce que je REFUSE : servir `frognano-4b` sur un modèle qui n'est pas FrogNano.
+#   `model_used: "frognano-4b"`. Servir `ornith-1.5-9b mini` SEUL casserait les
+#   presets `mini-*` en silence (modèle introuvable).
+#   Décision user (03/11 au soir) : « ai-01:vllm continue à servir swift sous
+#   l'alias qwen3.6-35b-a3b, ça ne me choque pas, il faut bien assurer une
+#   période de transition pour ne pas briquer les systèmes existants ».
+#   ⇒ `frognano-4b` est servi comme ALIAS DE TRANSITION, sur le précédent
+#     ai-01 (`--served-model-name qwen3.6-35b-a3b swift-1.5-27b`, 25/09).
+#   DETTE À SOLDER, datée au 2026-11-03 : l'alias `frognano-4b` devient MENSONGER
+#   dès cette promotion (un Ornith-9B répond sous le nom d'un FrogNano-4B). Il se
+#   retire quand roo-extensions a basculé ses presets sur `mini` (#362) — sortie
+#   = supprimer le 3e nom de la ligne `--served-model-name` et redéployer.
+#   Tant que la dette vit, tout diagnostic doit lire le nom RÉEL servi :
+#   `curl -s :5003/v1/models` renvoie les trois ids, et le moteur logue
+#   `ornith-1.5-9b` comme modèle chargé.
 #
 # PARAMÈTRES : repris de la mesure du 03/11 (fenêtre d'éval, VÉRIFIÉ aux logs).
 #   poids 7,61 Gio en 92,6 s · KV 4,17 Gio · pool 122 523 tok (3,74 ctx de 32K)
@@ -81,7 +90,7 @@ services:
 
     command: >
       cyankiwi/Ornith-1.5-9B-AWQ-INT4
-      --served-model-name ornith-1.5-9b mini
+      --served-model-name ornith-1.5-9b mini frognano-4b
       --host 0.0.0.0
       --port 8000
       --dtype auto
