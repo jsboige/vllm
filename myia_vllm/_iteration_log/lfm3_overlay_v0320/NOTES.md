@@ -75,6 +75,48 @@ nos charges sans travail de template. Parké : overlay + image + poids conservé
 à rouvrir quand (a) template/reasoning-parser testé, ou (b) upstream #64959
 mergé → re-test sur stock pur, overlay retiré.
 
+---
+
+## ⚠ CORRECTION 03/11/2026 — le « point bloquant » ci-dessus est FAUX
+
+Le verdict du 02/11 affirmait « thinking inline non séparable, couper exigerait un
+`--chat-template` custom ou un reasoning-parser ». **Vérification faite dans le
+checkpoint lui-même** (`~/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/
+snapshots/ac2586a34f1a1c03329dbdcdefabd8b6478ddaa7/chat_template.jinja`, 12 129 c) :
+
+| Fait | Preuve |
+|---|---|
+| **`enable_thinking` est natif** | l. 3 `{%- set enable_thinking = enable_thinking \| default(true) -%}` |
+| `false` ⇒ bloc think **vide** | l. 273-280 `{%- if enable_thinking -%}{{- "<think>" -}}{%- else -%}{{- "<think></think>" -}}` |
+| `preserve_thinking` existe aussi | l. 2 |
+| **le template rend les outils** | 22 occurrences de `tools`, format `<tool_call>\n<function=NAME>\n<parameter=k>` (famille qwen3-coder) |
+| **un parser générique existe déjà** | `vllm/reasoning/deepseek_r1_reasoning_parser.py` : `start_token="<think>"`, `end_token="</think>"` |
+
+**Erreur méthodologique** : la « sonde thinking-off » du 02/11 était un **system
+prompt** (« réponds sans raisonner »). Ce n'est pas le mécanisme du template : le
+bloc `<think>` est émis parce que `enable_thinking` vaut `true` **par défaut**, pas
+parce qu'il serait inconditionnel. J'ai conclu sur un test qui ne pouvait pas
+marcher, sans passer `chat_template_kwargs`.
+
+**Ce qui reste vrai** (et n'est pas une propriété du modèle) : sans
+`--reasoning-parser`, l'API rend le raisonnement **dans `content`** et
+`ctok = max_tokens` sous plafond court. C'est une configuration, pas une limite.
+
+**Ce qui reste NON MESURÉ** et conditionne toute bascule :
+
+1. comportement avec `enable_thinking: false` (répond-il vraiment, sans délayer ?) ;
+2. **verbatim** aux 3 niveaux dans ce mode (la classe servie) ;
+3. **fiabilité des appels d'outils** (jamais testée sur ce modèle).
+
+Re-test court (~6-8 min, même fenêtre que le 02/11) : `chat_template_kwargs
+{"enable_thinking": false}` + gates verbatim + une sonde d'appel d'outil. À faire
+**avant** de trancher entre LFM3 et FrogNano. Voir aussi
+`myia_vllm/docs/frognano-seat-watchlist.md`.
+
+**Leçon à garder** : une sonde qui échoue ne prouve pas que le mécanisme est
+impossible — elle peut prouver qu'on a sondé le mauvais levier. Lire le template
+avant de conclure sur le template.
+
 ## Gotchas pour successeurs
 
 - `bench_capacity.py --base` attend l'URL **complète** de l'endpoint

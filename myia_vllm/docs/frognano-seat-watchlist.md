@@ -5,7 +5,25 @@ sur cette machine, **en vérifiant les quants disponibles**. Contrainte de sièg
 pratique ~**14,4 Go** de VRAM (16 384 MiB − marge desktop), moteur `:5003`, pool KV fp8.
 Le user attend explicitement « un bon 9B » (décision pivot 29/10).
 
-## Candidat n°1 — `Qwen/Qwen3.5-9B` (officiel, mars 2026) ★ MEILLEURE PISTE
+## Candidat n°0 — `LiquidAI/LFM3-1.7B` (réouvert le 03/11) ★ MEILLEURE PISTE MESURÉE
+
+Mon verdict du 02/11 (« thinking inline non séparable ») était **faux** — correction dans
+`_iteration_log/lfm3_overlay_v0320/NOTES.md` §CORRECTION. Faits vérifiés dans le checkpoint :
+
+- **`enable_thinking` est natif au template** (`chat_template.jinja` l. 3) : `false` ⇒ il émet
+  `<think></think>` **vide** puis la réponse. Même mécanisme que Qwen/FrogNano.
+- **Le template rend les outils** (22 occurrences) au format `<tool_call>/<function=…>/<parameter=…`.
+- Un parser générique existe déjà : `deepseek_r1_reasoning_parser.py` a `<think>`/`</think>`.
+- **Déjà mesuré sur cette machine** : KV 408 734 (12,47× le contexte), **110,8 / 615,1 /
+  1 245,9 tok/s à N=1/8/16** = 0,96× / 1,16× / **1,50× FrogNano**, 0 erreur/25, TTFT ≤ 0,43 s.
+- Servable **aujourd'hui** par l'overlay conservé `vllm-openai-v0320-lfm3:v1` (poids 3,3 GB sur
+  le siège), en attendant le merge de vllm#64959.
+
+**Reste non mesuré** (conditionne la bascule) : comportement avec `enable_thinking:false`,
+**verbatim** aux 3 niveaux dans ce mode, **fiabilité des appels d'outils**. Re-test court
+~6-8 min avec la recette ci-dessous + `chat_template_kwargs {"enable_thinking": false}`.
+
+## Candidat n°1 — `Qwen/Qwen3.5-9B` (officiel, mars 2026)
 
 - **Ce que c'est** : dense 9B officiel Qwen, **vision incluse** (Image-Text-to-Text, ~10 B
   paramètres totaux avec l'encodeur), licence Apache-2.0, thinking `<think>`.
