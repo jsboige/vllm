@@ -70,10 +70,18 @@ Corpus-piège 22 lignes, oracle `grep temp=31C` = **14**. Référence à battre 
    et **déterministe sur 3 runs** (LFM3 variait d'un run à l'autre, ce qui le rendait inutilisable
    comme producteur). Le seul point noir est le comptage, identique à tout le siège.
 
-**Conséquence de service** : Ornith ne doit **jamais** être servi sans `enable_thinking: false`
-(côté serveur via `--default-chat-template-kwargs`, comme Swift-1.5 le fait déjà pour
-`preserve_thinking`). Le défaut pollue `content` et casse la classe verbatim — le banc le montre
-explicitement (`verbatim=NON` aux trois niveaux).
+**Conséquence de service** : cette phrase était trop forte et a été corrigée par arbitrage user
+le 03/11 au soir — **voir l'addendum ci-dessous**.
+
+> **Addendum 03/11 (arbitrage user)** : « le thinking n'est pas un problème en soi, il faut juste
+> prévoir dans les tests suffisamment de max_tokens pour absorber le thinking et rendre des
+> contenus non vides ». Autrement dit : le §2 ci-dessus ne montre **pas** une perte de capacité
+> mais un **coût de volume**. Couverture **inchangée à 14/14** avec thinking actif ; les ~40 lignes
+> de bruit sont de la précision d'extraction, pas de l'hallucination (0 fabriquée dans les deux
+> modes). `--default-chat-template-kwargs '{"enable_thinking": false}'` reste une **option** pour
+> l'appelant qui veut une sortie propre — ce n'est **pas** une condition de service. Une réponse
+> vide ou tronquée est une erreur de protocole de test, pas une propriété du modèle. Les épreuves
+> à venir tournent thinking actif avec un budget de tokens dimensionné (épopée #365).
 
 ## 3. Débit — le prix
 
