@@ -42,12 +42,34 @@ Faits techniques vérifiés (conservés pour un successeur éventuel) :
 OU si le siège reçoit un trafic où le débit devient le facteur limitant — **et alors avec la
 porte mécanique devant**, jamais en producteur direct.
 
-## Candidat n°1 — `axteam/gemma-4-12B-it-AWQ-4bit` ★ NOUVEAU, le plus prometteur (veille 03/11)
+## ❌ `axteam/gemma-4-12B-it-AWQ-4bit` — **INFaisable sur ce siège, testé le 03/11** (était candidat n°1)
 
-Repere par la veille du 03/11. **12B au lieu de 4B**, et c'est la premiere fois qu'un candidat du
-siege coche *a la fois* le tier superieur, le grand contexte et **le support stock sans overlay**.
+> **Verdict mesuré le 03/11** (`_iteration_log/gemma4_12b_po2025/NOTES.md`, fenêtre GO user) :
+> **le modèle ne tient pas sur la 3080 Ti 16 Go** — la fiabilité n'a même pas pu être mesurée.
+> Trois configs, trois causes distinctes :
+>
+> | Config | Échec |
+> | --- | --- |
+> | util 0.85, 32K, KV fp16 | KV requis **5,82 GiB** > dispo **2,79 GiB** |
+> | util 0.88, 32K, **KV fp8** | **FP8 KV interdit sur SM 8.6** (fp8e4nv exige SM89+ — la carte est Ampere) |
+> | util 0.88, **16K**, KV fp16 | KV requis **5,25 GiB** > dispo **3,29 GiB** ; max estimé **10 240** |
+>
+> **La cause racine est la géométrie KV** : têtes hétérogènes `{sliding: 256, full: 512}` —
+> les couches sliding coûtent **~307 Ko/tok** jusqu'à une fenêtre ≥ 16 K, les full ~37 Ko/tok,
+> soit **~343 Ko/tok uniforme** sous la fenêtre (contre ~16 Ko/tok fp8 pour FrogNano). Réduire
+> le contexte ne réduit presque pas l'exigence KV tant qu'on reste sous 16 K. Poids 8,45 GiB
+> (l'estimation tenait) — c'est bien le KV qui tue.
+>
+> **Config max faisable : ~8-10 K de contexte, pool KV ~10 K tokens** = 1 conversation.
+> Le motif horde N=16 (~24 K tokens) est impossible, le contexte est ÷4 vs FrogNano.
+> **Ré-ouvrir sur une carte ≥ 24 Go** (8,45 + 5,25 + ~1,5 ≈ 15,2 GiB → confortable) —
+> poids 7,87 Go conservés dans le cache HF du siège.
+>
+> **Leçon watchlist** : « archi dans le registre » ≠ « servable au contrat ». Avant tout
+> téléchargement, lire `head_dim` par famille de couches ET la fenêtre glissante dans
+> `config.json` — deux lignes qui auraient prédit l'échec sans fenêtre moteur.
 
-**VERIFIE** (lecture directe du depot et de l'arbre vLLM, pas d'un blog) :
+Faits techniques vérifiés avant l'échec (conservés pour un successeur éventuel) :
 
 - Base `google/gemma-4-12B-it`, **Apache-2.0**, **non gated**. Modifie le **2026-11-02** (tout neuf).
 - Quant **`compressed-tensors` / `pack-quantized` W4A16** — exactement le format servi en prod sur
@@ -77,7 +99,7 @@ un A/B qualite contre le BF16 de base avant toute promotion, pas seulement un te
 gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 02/11 et le 03/11.
 
 
-## Candidat n°2 — `Qwen/Qwen3.5-9B` (officiel, mars 2026)
+## Candidat n°1 — `Qwen/Qwen3.5-9B` (officiel, mars 2026) — **reprend la tête de file 03/11 soir** (le 12B Gemma est infaisable)
 
 - **Ce que c'est** : dense 9B officiel Qwen, **vision incluse** (Image-Text-to-Text, ~10 B
   paramètres totaux avec l'encodeur), licence Apache-2.0, thinking `<think>`.
@@ -96,12 +118,14 @@ gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 0
 - **Précédent utile** : la fenêtre LFM3 (02/11) a validé la recette d'éval complète en ~8,5 min
   (overlay, boot, bench 3 niveaux, verdict, retour FrogNano) — réutilisable telle quelle.
 
-## Candidat n°3 — Gemma 4-9B (Google, avril 2026) — **piste en partie PERIMEE par le n°1**
+## Candidat n°2 — Gemma 4-9B (Google, avril 2026) — **ré-ouvert 03/11 soir** (le 12B n'a PAS tenu en VRAM)
 
-> **Mise a jour 03/11** : la ligne « aucun quant W4A16 officiel n est encore identifie » ne tient plus —
-> le candidat n°1 (`axteam/gemma-4-12B-it-AWQ-4bit`) est un W4A16 compressed-tensors verifie sur la
-> famille gemma4, et l archi `gemma4_unified` est confirmee dans le registry de v0.32.0. Un 12B rend
-> cette entree 9B moins interessante : a rouvrir seulement si le 12B ne tient pas en VRAM.
+> **Mise a jour 03/11 soir** : la condition de ré-ouverture « si le 12B ne tient pas en VRAM » est
+> **tombée** — le 12B est infaisable (géométrie KV, voir ci-dessus). MAIS l'échec du 12B transfère
+> son soupçon au 9B : **vérifier `head_dim` et la fenêtre glissante dans le `config.json` du 9B
+> AVANT tout téléchargement** — si la famille garde les têtes hétérogènes `{sliding: 256, full: 512}`
+> et la fenêtre 16 K, le 9B paye le même ~343 Ko/tok uniforme (à 9/12 des couches près) et peut
+> être infaisable aussi. Deux lignes de config à lire, zéro Go téléchargé.
 
 - INT4 ≈ **10 Go** (18 Go en FP16), d'après la comparaison publique Gemma 4 / Llama 4 / Qwen 3.5.
 - **À vérifier avant tout** : quel checkpoint INT4 exact (AWQ/compressed-tensors ?), et le statut
@@ -114,8 +138,9 @@ gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 0
 ## Déjà évalués — fermés avec conditions de ré-ouverture
 
 | Modèle | Verdict | Ré-ouvrir si |
-|---|---|---|
-| LFM3-1.7B-NVFP4 (LiquidAI) | Servable (greffe v0.32.0+#64959, 1,50× FrogNano à N=16) mais **thinking inline non séparable** — verbatim NON aux 3 niveaux, rédhibitoire pour la délégation | merge de vllm#64959 **et** un `--chat-template`/parser qui sépare le raisonnement |
+| --- | --- | --- |
+| LFM3-1.7B-NVFP4 (LiquidAI) | Servable (greffe v0.32.0+#64959, 1,50× FrogNano à N=16) mais **hallucine plus que FrogNano** (27 lignes de délibération vs 0 ; `enable_thinking:false` cosmétique) | template ultérieur réellement silencieux, ou trafic où le débit limite — **avec porte mécanique** |
+| Gemma-4-12B-AWQ (axteam) | **Infaisable** (03/11) : géométrie KV ~343 Ko/tok sous fenêtre 16 K, fp8 KV interdit SM 8.6 | **carte ≥ 24 Go** (poids 7,87 Go conservés dans le cache HF du siège) |
 | Nanbeige4.2-3B | 0,89× FrogNano à N=16 et KV 88 Ko/tok ⇒ perdant partout | une version KV compacte |
 | Spark-X2.6-4B | dominé sur toutes les métriques (ligne close 24/10) | — |
 | Qwen3.8-27B / Nanbeige 4.3-33B | ne passent pas (16 Go) — 33B reste une décision ai-01 | changement de siège |
