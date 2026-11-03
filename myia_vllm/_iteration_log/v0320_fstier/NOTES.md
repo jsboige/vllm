@@ -6274,3 +6274,17 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **Autres** : nbaudit `ok:true` 20:05:56Z (vague 2 `Image/`, 0 échec) · G: write OK, 85 % · marge commit **68,2 %** · condensation nominale (aucun repli cloud depuis 13:50, seulement 2 reconstructions de client 18:10/18:42) · RSM : `NonNominativeBaselineService` ×6 en 2 s à 19:38 (périmètre voisin, récurrent connu) · snapshot compteurs réécrit pour le prochain delta.
 
 **Clôture** : PR toujours impossible (Q56 — jeton `jsboige` invalide), commit en push direct main + branche témoin, comme documenté.
+
+## 03/11 22:11Z — Cycle : hit 78,9 % (host porte 98,5 % du servi), préemptions +19 (série qui accélère 0→9→14→33), VRAM plateau 3ᵉ lecture ; ★ nouveau IP scanner-family avec clé morte ; compte gh re-dérivé puis flux PR ré-exercé
+
+**Delta d'intervalle** (20:10:50Z → 22:11:12Z, 120 min) : **+34 716 266 requêtes prefix, +27 398 896 servis = 78,9 %** — en baisse depuis 90,6 % mais sain. **Le profil de service a changé : le device (GPU) ne sert presque plus rien cet intervalle (+362 864 tokens, contre +28,6 M au précédent) — le tier host porte 98,5 % du cache servi** (+27,0 M). Lecture : la vague du soir apporte des sessions neuves (préfixes froids, servis en RAM après premier passage) et/ou le LRU GPU évite plus. Préfill reçu ~4 811 t/s, **calculé ~1 002 t/s** (contre 550 au précédent) — le moteur travaille plus pour le même volume.
+
+**★ Préemptions : 14 → 33 (+19)** — la série s'accélère (0→9 sur 2 h, +5, puis +19), KV 81-90 %. Toujours pas de dégénéré : 738 sondes OK, **5 WEDGE `fail 1/2` + 1 WEDGE-BUSY, tous récupérés, zéro 2/2, zéro restart**. Le seuil d'escalade du dashboard (préemptions >15) est franchi en intervalle — mais l'escalade §5quater exige la TRIADE (hit cassé + re-prefill massifs + préemptions) : le hit est à 78,9 %, la triade n'est PAS réunie. **Point de watch prioritaire au prochain cycle** : si +19 se répète ET que le hit passe sous ~50 %, la triade se constitue → registre.
+
+**VRAM : plateau confirmé 3ᵉ lecture** — GPU 0 22 301 (+16), **GPU 1 21 020 identique pour la 3ᵉ fois consécutive**. À 0,71, la marge est stable sous charge du soir.
+
+**★ Sécurité — nouveau venu dans la famille du scanner** : `31.77.254.4` ×2 **401** avec l'empreinte de la clé morte nanoclaw `1f7f6080cb65` (la même que le poller Go mort `37.230.119.250`, ×18). **Aucun 200, aucune inférence.** L'espace `31.77.x` est celui du scanner ZOLTRAAK (`31.77.203.199`, bloqué po-2023) — un IP frère sonde avec une **vraie valeur de clé flotte périmée** en main. Faits : la clé est morte (401), l'exposition est qu'un tiers détient une valeur de clé réelle. **Addendum envoyé à po-2023:Maintenance** (étendre le blocage ou couvrir la famille). Census : 367×200, **zéro 400, zéro 500** ; `92.184.113.170` ×2 200 = famille CGNAT Free mobile po-2027 (SUPPOSÉ, plage connue).
+
+**⚠ Compte gh RE-DÉRIVÉ** : `gh api user` rend `myia-ai-01` à 22:1xZ — une autre lane de la machine a rebasculé la config globale depuis la re-auth user de ~21:05Z. Le jeton `jsboige` est bon (le commentaire #4521 de 21:12Z est passé) ; c'est le **switch global par lanes concurrentes** qui dérive. Remède tenu : `gh auth switch -u jsboige` + vérification `gh api user` **immédiatement avant chaque écriture**. Ce cycle ré-exerce le flux PR complet.
+
+**Autres** : nbaudit `ok:true` 22:05:58Z (vague 2 `Image/`) · G: write OK · marge commit **68,7 %** · condensation : reconstructions de client 21:06-21:34 (2 fallback + 2 primaires), pas d'échec.
