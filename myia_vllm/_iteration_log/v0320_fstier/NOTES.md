@@ -6260,3 +6260,17 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **Coordination** : claudish B3 **clos de leur côté** (échantillon M1 : aucune requête vision dans la classe sans préambule Claude Code ; notre réponse bornée acceptée) ; leviers (b)/(c) attendent le tableau M1. **WARN flotte** : limite secondaire GraphQL par UTILISATEUR (tous jetons) bloquée ce soir — en-têtes et `rate_limit` menteurs, seul le corps d'une vraie requête dit vrai ; nous sommes REST-only, non affectés, mais ça valide la règle une deuxième fois. Croisement non tranché : po-2027 mesure des **headers hub à 11,3 s** (flap heartbeat) pendant que nos sondes profondes passent — notre moteur à KV 85-97 % est un contributeur *possible*, pas démontré.
 
 **Autres** : nbaudit `ok:true` 17:26Z (`consecutive_failures 0`, **vague 2 `Image/` armée et saine**) · G: OK write probe · marge commit **65,8 %** · condensation nominale (repli cloud unique 13:50, pendant la fenêtre — attendu ; primaire reconstruit 16:04/16:46) · snapshot compteurs `.tmp/metrics_snapshot_20261103T1745Z.txt` (désormais avec `cached_by_source`) pour delta exact au prochain cycle.
+
+## 03/11 20:10Z — Cycle : delta d'intervalle PROPRE à 0,71 — **hit 90,6 %** (formule corrigée), VRAM plate sur 2 h, zéro 400/500, scanner absent 2ᵉ cycle
+
+**Premier delta calculable depuis la correction de formule** (snapshot 17:45Z → 20:10:50Z, 145 min) : **+51 036 805 requêtes prefix, +46 260 704 tokens servis du cache = 90,6 %** (device 62 % / host 36,5 % / disk 1,7 %). Le préfill **calculé** réel tombe à ~550 t/s (contre ~5 900 t/s reçus) — c'est exactement le régime attendu : le working set paie son delta, pas son contexte. Cumulé depuis le boot : **88,7 %**. Préemptions 9→14 (**+5**, pas de série montante), KV 90,1 %, 4 running / 2 waiting, fs tier **+359 chunk-hits** (+795 K tokens disque). **L'amortissement à 0,71 non seulement tient, il s'améliore** — la question « l'offloading fait-il son travail ? » a maintenant deux cycles de réponse chiffrée.
+
+**Prod** : health 200 / 2,9 ms · RC=0 · `StartedAt` 16:06:57Z (**4 h**, aucun restart) · OOM 0/5 000 · 641 sondes OK · **5 WEDGE `fail 1/2` récupérés, zéro 2/2** · shm 33G/63G = 51 % · 3 conteneurs Up.
+
+**★ VRAM PLATE sur 2 h — le point qui clôt la question de la dérive à 0,71** : GPU 0 **22 267 → 22 285 MiB (+18)**, GPU 1 **21 020 → 21 020 (identique bit à bit)**. Le high-water est atteint, il ne monte plus ; 733 MiB de marge sous la ligne 23 000, stable. Deux points ne font pas une pente, mais un **plateau** sur 2 h en charge constante est un autre fait : le 0,71 a bien acheté la marge sans coût mesurable.
+
+**Charge** : 590 req / 150 min = **~236 req/h** · **566×200, ZÉRO 400, ZÉRO 500** · 24×401 = poller Go mort `37.230.119.250` (22, inerte) + clé morte web2 `b2082455ef36` (2, connue) · corps 100K-1M = **54 %** · seules IP non-internes avec 200 : hairpin du site `90.65.170.144` (330) — **zéro IP inconnue, scanner ZOLTRAAK absent pour le 2ᵉ cycle consécutif** (le blocage po-2023 tient, Q54 confirme sur la durée).
+
+**Autres** : nbaudit `ok:true` 20:05:56Z (vague 2 `Image/`, 0 échec) · G: write OK, 85 % · marge commit **68,2 %** · condensation nominale (aucun repli cloud depuis 13:50, seulement 2 reconstructions de client 18:10/18:42) · RSM : `NonNominativeBaselineService` ×6 en 2 s à 19:38 (périmètre voisin, récurrent connu) · snapshot compteurs réécrit pour le prochain delta.
+
+**Clôture** : PR toujours impossible (Q56 — jeton `jsboige` invalide), commit en push direct main + branche témoin, comme documenté.
