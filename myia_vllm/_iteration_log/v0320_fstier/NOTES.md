@@ -6178,3 +6178,15 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **★ Sécurité — scanner `ZOLTRAAK`** : IP `31.77.203.199` (hors carte) sonde `/v1/models` par salves espacées de quelques heures (02/11 16:09Z, 03/11 00:22/06:25/08:33/10:35Z), UA `ZOLTRAAK/0.2.0 (security-research; chess)`, **deux préfixes d'auth inconnus** (fp `ccd500f719e4`, fp `64a6d7ec06fd`). **Tous 401 — zéro 200, zéro inférence, porte tenue.** Arbitrage porté au registre (Q54 : laisser / bloquer hub / bloquer pare-feu). Aucune des IPs connues ne dérape ; trafic externe scopé toujours silencieux.
 
 **Autres** : e2e bucket `le="240.0"` — le suffixe `.0` m'a piégé une 3ᵉ fois (regex `le="240` nu désormais). nbaudit ok (vague 2 `Image/` active). GPU 2 = 56 MiB.
+
+## 03/11 13:43Z — Cycle : GPU 0 confirmé >23 000 (23 175, 2ᵉ lecture) — règle 0.70 armée pour le prochain restart ; la vague de prefill continue (4,8K t/s)
+
+**Prod** : health 200 / 12,5 ms, RC=0, healthy, `StartedAt` inchangé (14,2 h), OOM 0/5 000, `/dev/shm` 51 %, 3 conteneurs Up.
+
+**★ VRAM GPU 0 = 23 175 MiB — 2ᵉ lecture consécutive au-dessus du seuil 23 000** (11:43 : 23 115 → 13:43 : 23 175, +60 MiB/2 h ; GPU 1 inchangé 21 834 ; marge 1 389 MiB). Cohérent avec un high-water d'allocateur sous prefill soutenu (leçon 09/10 : pas une fuite). **La condition de la règle pré-écrite du profil est remplie : `GPU_UTIL_SWIFT15=0.70` au prochain restart** (coût ≈ −45K tokens KV sur 831 723) — le restart reste à GO user, la valeur elle-même est déjà tranchée par le profil. Pas de question de registre nouvelle.
+
+**Charge (11:43→13:43Z)** : +34,5 M tokens prompt en 120 min = **4 790 t/s de prefill soutenu** (la vague de 5,4K t/s continue, légèrement en retrait) · décode 56 t/s · 186 req/h (en baisse de 275) mais corps 100K-1M = **54 %** (en hausse) — moins de requêtes, chacune plus grosse · **hit intervalle 78,8 %** (amortissement stable 76-82 % toute la journée) · préemptions 70→78 (+8, ralentit) · seulement **2 WEDGE fail 1/2 sur l'intervalle** (11:47, 13:07), jamais 2/2 · e2e cumulé >240 s : 16,6 % (437/2 632).
+
+**Sécurité §5** — trois IPs nouvelles, aucune alerte (zéro 200 inconnu) : `92.184.113.3` ×4 tous 200 sous fp `be312daf7c1c` (**= auth_prefix de la clé MEDIUM elle-même**, UA OpenAI/JS) et famille mobile Free 92.184.x = famille de po-2027 (3ᵉ adresse, rotation CGNAT mobile — SUPPOSÉ, attribution famille+clé, pas certain) · `34.77.99.151` ×1 401 sur `/v1/.env` (bot de bruit internet cherchant des .env exposés, UA Mozilla — refusé) · `127.0.0.1` ×2 401 `/v1/models` (sonde locale sans clé, curl 8.21 ≠ watchdog 8.23). Scanner ZOLTRAAK silencieux sur la fenêtre. Clé scopée externe toujours silencieuse.
+
+**Autres** : nbaudit `ok:true` 13:31Z (vague 2 `Image/`) · G: OK · marge commit hôte 64,9 %.
