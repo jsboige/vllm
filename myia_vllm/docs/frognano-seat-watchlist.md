@@ -12,7 +12,7 @@ Le user attend explicitement « un bon 9B » (décision pivot 29/10).
 > FrogNano reste en prod. Contrôle apparié, même corpus 22 lignes, même session :
 >
 > | | rendues | réelles | couverture | délibération dans `content` |
-> |---|---|---|---|---|
+> | --- | --- | --- | --- | --- |
 > | FrogNano-4B | **13** | 13 | 13/14 | **0** |
 > | LFM3-1.7B | 41 | 13 | 13/14 | **27** |
 >
@@ -98,8 +98,35 @@ un A/B qualite contre le BF16 de base avant toute promotion, pas seulement un te
 **Prochain geste si le user donne un GO** : fenetre de ~10 min, boot stock sur `:5024`,
 gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 02/11 et le 03/11.
 
+## Candidat n°1 — `cyankiwi/Ornith-1.5-9B-AWQ-INT4` ★ **proposé par le user 03/11 soir, fenêtre en cours**
 
-## Candidat n°1 — `Qwen/Qwen3.5-9B` (officiel, mars 2026) — **reprend la tête de file 03/11 soir** (le 12B Gemma est infaisable)
+**Pré-vérification géométrique PASSEÉE AVANT téléchargement** (leçon Gemma appliquée dès sa première heure) :
+
+- `config.json` lu (`Qwen3_5ForConditionalGeneration`, `model_type: qwen3_5`) — **la famille exacte de
+  Swift-1.5 en prod et d'OmniCoder-9B** (cyankiwi avait quantisé ce dernier) ⇒ **zéro overlay**.
+- **KV-léger** : 32 couches dont **24 `linear_attention`** (état fixe, pas de KV par token) et **8
+  `full_attention`** seulement, `head_dim 256` × **4 têtes KV** ⇒ **~32 Ko/tok fp16** (fp8 KV interdit
+  SM 8.6) — la classe FrogNano, l'opposé de Gemma (~343 Ko/tok).
+- **262 144 natif**, vision (ViT 27 couches), **MIT**, **MTP 1 couche** présent dans le checkpoint.
+- Quant **pack-quantized W4A16 group 32** par **cyankiwi** — le quantiseur du Qwen3.6-35B-AWQ resté
+  en prod des mois. Calibration « STEM and Agentic », version 26.05.01. Poids 8,99 Go (3 shards).
+- Fit estimé (overhead mesuré chez Gemma 2,34 Gio) : util 0.88 ⇒ KV ~3,4 Gio ⇒ **~3 contextes pleins
+  de 32K, horde N=16 tient**. Inconnue non bloquante : état GDN fp32 par séquence (`max_num_seqs`
+  le plafonne), le boot chiffre.
+
+**Ce que c'est** (carte éditeur, RAPPORTÉ) : Ornith-1.5 = self-improvement end-to-end (génération
+de tâches + scaffolds + rollouts, RL) par ornith-ai, construit sur Ornith-1.0 lui-même développé
+« on top of Qwen3.5 and Gemma4 » avec prétraining continu. Leur table : **Terminal-Bench 2.1
+46,2/47 (Terminus-2/Claude Code) contre 21,3/18,9 pour Qwen3.5-9B base** — le fine-tune double la
+base sur l'agentic, et passe Gemma-4-31B (42,1). Benchmarks éditeur non vérifiés localement —
+la batterie fiabilité du siège tranche (réf. FrogNano 13/14, 0 bruit).
+
+## Candidat rétrogradé — `Qwen/Qwen3.5-9B` (officiel, mars 2026) — **rejeté par le user 03/11 soir**
+
+> **Décision user** : la base brute est « assez vieille » et dominée — leur propre table la met à
+> **21,3/18,9 Terminal-Bench 2.1** là où le fine-tune Ornith fait 46,2/47. « On veut mieux que ça. »
+> La ligne reste pour mémoire : deux quants W4A16 vérifiés (RedHatAI, sanskar003), fit ~10-11 Go,
+> mais la valeur de la tranche 9B est dans ses fine-tunes (Ornith, OmniCoder), pas dans la base.
 
 - **Ce que c'est** : dense 9B officiel Qwen, **vision incluse** (Image-Text-to-Text, ~10 B
   paramètres totaux avec l'encodeur), licence Apache-2.0, thinking `<think>`.
