@@ -133,9 +133,19 @@ d'ouvrir la fenêtre, la santé a été **prouvée par génération réelle** (`
 passthrough GPU vérifié depuis le conteneur (3080 Ti vue, 12 718 MiB) — c'est le mode de panne du
 08-31 et un `/health` seul ne l'aurait pas distingué.
 
-**Cause de la mort du moteur : non établie.** Le garde-fou traite le symptôme. Il tourne toutes les
-~10 min et peut donc retirer le moteur au milieu d'une fenêtre — point à connaître pour toute lane
-qui en ouvre une sur ce siège. Le journal Docker ne portait que les deux `start`, aucun `stop`/`kill`.
+**Cause de la mort du moteur : non établie.** Le garde-fou traite le symptôme. Le journal Docker
+ne portait que les deux `start`, aucun `stop`/`kill`.
+
+> **Correction du 03/11 au soir (mesure Maintenance, à substituer à ma formulation du §5)** :
+> l'indisponibilité a duré **~2 min 10 s** (15:54:11 → 15:56:21), pas « < 20 s » — les 20 s sont
+> la durée de la **relance**, pas de la panne. **Budgéter 2-3 min par fenêtre moteur.**
+> La garde **ne retire pas un moteur sain** (25 lignes « engine UP — nominal » encadrent
+> l'incident) : en temps normal son seul geste est d'écrire une ligne. Le risque résiduel est
+> ailleurs — sa sonde `docker version` est **bornée à 20 s**, donc un moteur **vivant mais bloqué
+> > 20 s** est lu comme DOWN et se fait tuer en pleine fenêtre.
+> **Arbitrage retenu : fenêtre annoncée, garde non coupée.** Créneaux à éviter : **03:30–06:30**
+> locales (archivage claudish), **04:51**, et **le 1er du mois à 03:00** (export de la distro,
+> conteneurs arrêtés). Maintenance occupe 00:53 et 12:53.
 
 ## 6. Restauration
 
