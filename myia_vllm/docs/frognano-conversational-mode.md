@@ -90,9 +90,8 @@ par l'appelant. Sans l'un des deux, le mode conversationnel reste un outil **int
 
 ## Fragilité à connaître (avant de déléguer)
 
-- **L'état vit dans le processus sk-agent** : un restart du serveur sk-agent **tue les
-  conversations**. Une conversation n'est pas un journal durable — le corpus de référence reste
-  le fichier, pas l'historique du modèle.
+- **L'état vit dans le processus sk-agent** (voir la limite 1 ci-dessus) : une conversation n'est
+  pas un journal durable — le corpus de référence reste le fichier, pas l'historique du modèle.
 - **Le mode conversationnel ne rend pas le modèle meilleur** : il rend le *transport* incrémental.
   Les classes refusées (comptage, jugement, verdict) le restent.
 - **`model_used` se contrôle à chaque réponse** : un preset mal nommé retombe silencieusement sur
