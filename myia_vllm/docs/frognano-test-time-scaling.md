@@ -124,3 +124,84 @@ avant d'en tirer quoi que ce soit.
 Voir aussi : `frognano-team-solve.md` (l'assemblée à personas et les portes mécaniques),
 `frognano-conversational-mode.md` (le transport conversationnel et ses limites),
 `frognano-capacity-sheet.md` (le moteur).
+
+---
+
+## Troisième protocole (03/11, mandat user) — directeur **non-swift** : RÉUSSITE, et il corrige ma doctrine
+
+Le user a demandé de reprendre l'architecture B avec **un autre modèle que Swift** (« explicitement
+saturé par des contextes longs, prévoir au moins 400 s »), via Minimax ou Haiku PAYG. Test exécuté
+avec `critic` (preset sk-agent, hub, **`timeout=420`**), sur le corpus-piège de 22 lignes — celui qui
+contient la ligne `WARN` que **tous** les producteurs ratent.
+
+### Montage
+
+Un seul appel, trois blocs dans le contexte du directeur : le journal source (22 lignes), la
+production de **LFM3-1.7B** (41 lignes, dont 27 de délibération), la production de **FrogNano-4B**
+(13 lignes propres). Consigne : auditer chaque production, désigner la plus fiable, **rendre la
+liste correcte**.
+
+### Résultat — le premier 14/14 du siège
+
+| Architecture | Corpus-piège 22 lignes | Bruit |
+|---|---|---|
+| FrogNano seul | 13/14 | 0 |
+| LFM3 seul | 13/14 | **27 lignes de délibération** |
+| Critique à persona sur FrogNano (matin 03/11) | rappel 1/2 | **7 fabrications / 10 lignes** |
+| **Directeur fort (cloud, 420 s)** | **14/14, correspondance exacte d'ensemble** | **0** |
+
+Vérifié **mécaniquement** après coup, pas sur parole : `set(rendu) == set(oracle)`, 0 manquante,
+0 en trop, toutes les lignes issues du corpus. **C'est la première fois qu'une configuration de ce
+siège résout intégralement le piège motif-vs-forme.**
+
+L'audit qu'il a rendu est lui aussi juste, y compris le point que personne n'avait vu :
+
+> « Total attendu : 14 lignes — 13 HEARTBEAT + 1 ligne WARN `2026-11-03 02:12:03 WARN RAM basse
+> free=3824MB temp=31C mode=normal`, où `temp=31C` n'est pas en 3e champ — **c'est le piège**. »
+> « Sous un contrat "verbatim, rien d'autre", **la contamination est plus grave que l'omission** :
+> P1 est inexploitable en l'état, P2 est incomplète mais utilisable après ajout d'une ligne. »
+
+### ⚠ Correction de ma propre doctrine (point 3 du protocole précédent)
+
+J'avais écrit : *« le directeur doit ordonner une **exécution** (`grep`/`comm`), jamais une
+**relecture** — la relecture est exactement ce que A a raté. »* **Ce test la falsifie en partie.**
+Le directeur a réussi en **pure relecture, sans exécuter un seul outil** : les trois blocs étaient
+dans son contexte, il a scanné. La règle correcte est plus étroite :
+
+> **Le levier n'est pas l'outil, c'est la capacité de vérifier.** Un modèle **faible** à qui on
+> demande de relire fabrique (mesuré : 7 inventions sur 10 lignes) — il lui faut une exécution
+> déléguée. Un modèle **fort** disposant du corpus entier dans son contexte relit correctement,
+> sans outil. C'est la **force du modèle** qui rend la relecture fiable, pas la forme de la
+> consigne.
+
+Corollaire opérationnel : **le directeur doit être d'un tier supérieur au producteur**, et il doit
+**recevoir la source**, pas seulement les productions à comparer. Les deux conditions sont
+nécessaires ; l'outillage n'est qu'un substitut quand l'une des deux manque.
+
+### Caveat honnête sur le modèle réellement servi
+
+`model_used` renvoie `glm-5.3`, mais le directeur **s'est identifié lui-même comme DeepSeek Flash
+(`ds@deepseek-flash`)** dans sa réponse — cohérent avec la cascade de failover active ce jour
+(le rôle `sonnet` était précisément servi par DeepSeek Flash). **RAPPORTÉ par le modèle, pas
+VERIFIÉ indépendamment.** Ce qui est VERIFIÉ, c'est le résultat (14/14 mécanique). Pour la
+décision d'architecture, la distinction est secondaire : dans les deux cas c'est un **modèle
+cloud d'un tier supérieur au producteur**, ce que le user demandait (« autre chose que Swift »).
+
+### Non testé, et pourquoi
+
+**L'échelle.** Le corpus de 120 lignes n'a pas été passé au directeur : cela exigeait de
+re-transcrire 7,4 K caractères de journal dans l'appel, avec un risque réel d'erreur de
+transcription qui aurait faussé la mesure. **Non mesuré ≠ mesuré négatif** — c'est le prochain
+test à faire, et il demande un canal fichier vers sk-agent (les attachments refusent le texte).
+
+### Ce que ça change dans la pratique du siège
+
+1. **La délégation à deux étages devient défendable** : FrogNano produit vite et proprement
+   (13/14, 0 bruit), un directeur cloud relit et rend 14/14. Coût : ~5,5 K caractères de prompt
+   pour le directeur, quelques centaines de tokens de sortie — FrogNano fait le gros du travail.
+2. **La porte mécanique reste obligatoire**, mais elle change de rôle : elle n'est plus le seul
+   filet, elle devient le **juge final** qui vérifie le directeur lui-même. Un directeur fort
+   n'est pas infaillible — il est simplement bien meilleur sur le motif-vs-forme.
+3. **Ne jamais accepter le 14/14 sur parole** : je l'ai recompté contre l'oracle. C'est la règle
+   du siège appliquée au directeur aussi.
+
