@@ -1,0 +1,132 @@
+# Docker Compose profile — Ornith-1.5-9B-AWQ-INT4 (tier mini, po-2025)
+# ============================================================================
+# STATUT : profil de SERVICE écrit le 03/11 au soir, NON DÉPLOYÉ.
+# Il n'existe pas pour remplacer FrogNano aujourd'hui : il existe parce que la
+# décision « Ornith ADOPTÉ » (03/11, user, registre Q12) n'avait AUCUN artefact
+# de service — les deux fenêtres DFlash n'étaient que des `docker run`
+# d'évaluation, et chaque `trap` de fenêtre restaurait FrogNano. Sans ce
+# fichier, la décision restait lettre morte.
+#
+# DÉPENDANCE BLOQUANTE AVANT TOUTE PROMOTION (issue #362) :
+#   les consommateurs demandent le modèle PAR SON NOM (`frognano-4b`), pas par
+#   l'alias `mini` — prouvé le 03/11 par un `call_agent` sk-agent qui répond
+#   `model_used: "frognano-4b"`. Servir `ornith-1.5-9b mini` SEUL casserait
+#   donc les presets `mini-*` en silence (modèle introuvable). Deux sorties
+#   propres : (a) roo-extensions bascule ses presets sur `mini` (#362, la
+#   raison d'être de l'alias), ou (b) on accepte une fenêtre de promotion avec
+#   les deux noms. AUCUNE des deux ne se fait sans cadre user.
+#   Ce que je REFUSE : servir `frognano-4b` sur un modèle qui n'est pas FrogNano.
+#
+# PARAMÈTRES : repris de la mesure du 03/11 (fenêtre d'éval, VÉRIFIÉ aux logs).
+#   poids 7,61 Gio en 92,6 s · KV 4,17 Gio · pool 122 523 tok (3,74 ctx de 32K)
+#   · ~36,5 Ko/tok · boot 260 s · VRAM en service 12 530 MiB · kv-cache auto
+#   (bf16 : fp8 interdit SM 8.6) · 0 erreur / 25 req · TTFT N=16 1,18 s méd.
+#   Débit 64,1 / 348,2 / 506,7 tok/s à N=1/8/16 (0,56 / 0,65 / 0,61 × FrogNano).
+#   ⚠ `--max-num-seqs 32` et `--max-num-batched-tokens 8192` sont la FORME DU
+#     SIÈGE, pas la forme mesurée (l'éval tournait aux défauts vLLM). À re-mesurer
+#     au banc de promotion — une variable à la fois.
+#
+# TWO VARIABLES VOLONTAIREMENT NON PRISES :
+#   1. `--kv-cache-dtype fp8` — FrogNano le sert sur la MÊME carte SM 8.6, ce qui
+#      contredit la règle « fp8 interdit sur Ampere » et fait l'objet de #358.
+#      Ne pas mélanger cette question avec une promotion.
+#   2. Tier RAM/fs offload (#359) — à évaluer APRÈS la promotion, sur trafic réel.
+#
+# THINKING OFF PAR DÉFAUT (`enable_thinking: false`) : ce n'est PAS la consigne
+#   « ne jamais servir Ornith sans le flag » (retirée le 03/11 — le thinking est
+#   un coût de tokens, pas un défaut de capacité). C'est le CONTRAT DU TIER : le
+#   mini sert du travail mécanique, et FrogNano est déjà réglé ainsi. Mesuré sur
+#   Ornith : 14/14 avec flag (0 bruit), 14/14 sans flag (40 lignes de bruit).
+#   Un appelant qui veut réfléchir l'active PAR REQUÊTE.
+#
+# `--reasoning-parser qwen3` est OBLIGATOIRE, pas optionnel : la fenêtre d'éval
+#   du 03/11 ne le chargeait pas, résultat `reasoning: null` et un `</think>`
+#   orphelin dans `content`. Avec thinking ON par défaut chez certains
+#   appelants, un parser absent signifie `content` pollué pour tout le monde.
+#
+# DÉPLOIEMENT (fenêtre annoncée + GO user — JAMAIS en passant) :
+#   docker compose -f myia_vllm/configs/docker/profiles/mini-frognano-4b-po2025.yml --env-file myia_vllm/.env down
+#   # ≥ 15 s (règle du siège : un down/up collé fige le moteur)
+#   docker compose -f myia_vllm/configs/docker/profiles/mini-ornith15-9b-po2025.yml --env-file myia_vllm/.env up -d
+#
+# ROLLBACK ARMÉ (retour chaud, même carte, poids déjà en cache) :
+#   docker compose -f …mini-ornith15-9b-po2025.yml --env-file myia_vllm/.env down
+#   # ≥ 15 s
+#   docker compose -f …mini-frognano-4b-po2025.yml --env-file myia_vllm/.env up -d
+# ----------------------------------------------------------------------------
+services:
+  mini_ornith15_9b:
+    image: vllm/vllm-openai:v0.32.0
+    container_name: myia_vllm-mini-ornith-9b
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+      # Auth par env natif vLLM (même clé que FrogNano : le siège garde son
+      # contrat d'authentification, un consommateur n'a pas à changer de clé).
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-ornith9b-v0320:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      cyankiwi/Ornith-1.5-9B-AWQ-INT4
+      --served-model-name ornith-1.5-9b mini
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --gpu-memory-utilization 0.88
+      --max-model-len 32768
+      --max-num-seqs 32
+      --max-num-batched-tokens 8192
+      --kv-cache-dtype auto
+      --mamba-ssm-cache-dtype float16
+      --skip-mm-profiling
+      --limit-mm-per-prompt '{"image":0,"video":0}'
+      --enable-prefix-caching
+      --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
+      --reasoning-parser qwen3
+      --default-chat-template-kwargs '{"enable_thinking": false}'
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # boot mesuré 260 s (poids 92,6 s) — 900 s couvre un volume de cache de
+      # compilation FROID, qui est le seul cas lent sur cette image.
+      start_period: 900s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  # Volume dédié : un cache de compilation partagé entre deux modèles différents
+  # est le piège déjà rencontré sur ce siège (10-15× de ralentissement).
+  vllm-compile-cache-ornith9b-v0320:
