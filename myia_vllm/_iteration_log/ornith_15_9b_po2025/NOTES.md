@@ -156,6 +156,103 @@ myia_vllm-mini-frognano-4b` → `/health` 200 en **100 s** → **génération r�
 Poids Ornith **conservés** dans le cache HF (8,40 Go) : aucun coût, et une décision de promotion
 n'aurait pas à re-télécharger.
 
+## 7. Inventaire des voies d'hébergement — « comment l'héberger au mieux » (épopée #365, issue #364)
+
+Relevé sur l'**API HF** (`filter=base_model:{quantized,finetune,adapter,merge}:ornith-ai/Ornith-1.5-9B`),
+pas sur la barre latérale d'une page : **100 quantifications · 44 finetunes · 10 adapters · 12 merges**.
+
+**Quantifications utilisables par nos kernels : 7.** Le seul servi reste `cyankiwi/Ornith-1.5-9B-AWQ-INT4`
+(celui de l'éval). Les cinq autres W4A16 (`letechlead`, `Sohailhosseini`, `quocbao747`, `Pilcothink`,
+`nchapman`) sont la même recette sous cinq auteurs. **L'alternative à instruire dans #358 est
+`cyankiwi/…-AWQ-FP8`** (poids fp8, ~9-10 Go), pas un autre W4A16.
+**NVFP4 écarté d'office** (`protoLabsAI`, `Cobra91310`, `Avifenesh`, `kingjones777`) : kernels natifs
+Blackwell (SM 10.x+), la carte est **SM 8.6**. Le reste des 100 est GGUF/MLX, hors runtime.
+
+**Décodage spéculatif — deux voies, une seule crédible.**
+- **DFlash officiel** `ornith-ai/Ornith-1.5-9B-DFlash` : éditeur ornith-ai, MIT, **405 154 téléch.**,
+  **un seul `model.safetensors` de 2 464,1 Mo (2,41 GiB)**, aucune quantification vLLM (le seul dérivé
+  est un GGUF). Recette : vLLM ≥ 0.20.2 (testé 0.28.0 ; nous en 0.32.0), `num_speculative_tokens: 8`.
+  **Le coût documenté sur ai-01 ne se transpose pas** : là-bas DFlash forçait `flash_attn`, qui refuse
+  le KV fp8 (−40 % de fenêtre) ; ici le KV est **déjà bf16** ⇒ coût nul par construction.
+- **MTP** : la tête 1 couche est dans le checkpoint (`--speculative-config '{"method":"mtp",
+  "num_speculative_tokens":3}'`, carte Swift). Mais **MTP × cible AWQ a un antécédent d'acceptance
+  ~0 %** sur cette flotte (GLM-4.6-AWQ) et l'acceptance sur Ornith est **inconnue, pas nulle**.
+  Seconde fenêtre, après DFlash — deux mécanismes dans la même fenêtre rendraient les deux
+  résultats inattribuables.
+
+**Finetunes : un seul compte, et il n'est pas servable.** `ukisai/Swift-1.5-Ornith-9B` annonce
+**−33,1 % de tokens de thinking** (médiane GPQA-Diamond) pour **+1,51 pp** sur GPQA Diamond — mais
+**−2,13 IFBench, −2,29 LiveCodeBench v6, −2,0 AIME 2026, −0,67 AIME 2024**, et GPQA est justement le
+benchmark de sélection (biais assumé par l'éditeur, qui écrit « experimental release »). **BF16 = 19 Go,
+au-delà des ~14,4 Go de plafond pratique, et zéro quantification publiée** ⇒ le servir exigerait de
+**quantifier nous-mêmes** puis de re-mesurer la classe verbatim : deux fenêtres pour un gain non
+démontré sur *notre* tâche. À rouvrir si le volume de tokens (pas la justesse) devient le facteur
+limitant. Licence propre : Apache-2.0 sur la contribution, MIT sur la base.
+
+**Adaptateurs LoRA (10)** : aucun servable sans fusion ; deux en réserve —
+`ermiaazarkhalili/…Function-Calling-xLAM` et `xoykor/…Agentic-GPT-5.6-Sol-Distill`. Le reste des
+finetunes/merges est de la variante *uncensored/abliterated*, bruit pour ce siège.
+
+**★ Deux défauts de la fenêtre d'éval du 03/11, trouvés en relisant ses propres artefacts.**
+1. `--tool-call-parser qwen3_coder` alors que la carte conseille `qwen3_xml` pour vLLM : **les deux
+   marchent** (`finish_reason=tool_calls`, `get_weather({"city": "Paris"})` bien formé) ⇒ la
+   recommandation de la carte n'est pas bloquante, et l'éditeur n'est pas cohérent lui-même
+   (`qwen3_coder` pour SGLang).
+2. **Aucun `--reasoning-parser` n'était chargé.** Conséquence lue dans la réponse brute : `reasoning`
+   est **null** et `content` contient la délibération **plus un `</think>` orphelin** (la balise
+   ouvrante vit dans le prompt, seule la fermante fuit). C'est l'explication mécanique du constat R0.
+   ⇒ **`--reasoning-parser qwen3` devient obligatoire** dans le profil de service, pas optionnel :
+   depuis l'arbitrage du 03/11 (thinking ON par défaut), un parser absent signifie `content` pollué
+   pour tout appelant.
+
+**Note de champ pour les consommateurs** : la carte annonce `reasoning_content` ; notre vLLM **0.32.0
+expose `reasoning`** — cohérent avec ce que notre propre note Qwen3.6 documente déjà. Hermes, NanoClaw
+et sk-agent doivent lire `reasoning` ; `reasoning_content` est de la doc en retard sur notre version.
+
+## 8. Décodage spéculatif DFlash — CLOS par l'arithmétique (2 fenêtres, 03/11)
+
+Issue #357. Draft officiel `ornith-ai/Ornith-1.5-9B-DFlash` (MIT, 405 154 téléch.,
+un `model.safetensors` de **2 464,1 Mo**), recette éditeur `{"method":"dflash",
+"num_speculative_tokens":8}`. Deux fenêtres, **2 configurations, 2 échecs au boot** —
+aucune n'a atteint le banc.
+
+| Fenêtre | Config | KV disponible | KV requis pour 32K | Longueur max estimée |
+| --- | --- | ---: | ---: | ---: |
+| v1 16:33Z | `batch 8192 · seqs 32 · util 0.88` | **133 MiB** | 2,05 GiB | — |
+| v2 16:41Z | `batch 2048 · seqs 16 · util 0.88` | **891 MiB** | 1,82 GiB | **6 160 tokens** |
+
+**L'hypothèse de v2 est partiellement confirmée, et c'est ce qui rend le résultat solide** :
+le surcoût du draft **scales** bien avec `max-num-batched-tokens` / `max-num-seqs` —
+**3 561 → 2 803 MiB** de surcoût (−758 MiB). Mais il faudrait passer de 891 MiB à ~9,7 GiB
+de KV pour tenir 32 768 : **facteur 5,3**. Aucun réglage ne comble ça.
+
+**★ Le draft coûte 2,3 à 2,4× la taille de son fichier.** Le safetensors annonce 2 464 MiB ;
+le coût VRAM réel est **5 267 à 6 025 MiB**. Les 2 803–3 561 MiB d'écart sont des buffers de
+profiling / activation / CUDA graphs que le fichier ne montre pas. **Leçon transposable** (à
+porter à ai-01 dans #363) : *la taille d'un modèle draft n'est pas son coût VRAM* ; sur une
+carte de 16 Go, c'est l'écart qui décide, pas le poids.
+
+**Le calcul de clôture, pour que le prochain ne le refasse pas :** budget 14 418 MiB
+(`util 0.88`) − cible hors-KV 8 260 (mesuré le 03/11) − **draft réduit à ses seuls poids
+2 464** = **3 694 MiB de KV ≈ 64 900 tokens** — largement assez pour 32 K. Autrement dit
+**ce n'est pas le modèle qui bloque, c'est le surcoût de son implémentation.** Rouvrir la
+ligne demande soit un vLLM qui profile le draft plus maigre, soit un draft aux buffers moins
+coûteux — **pas une quantification du draft**, qui réduirait les poids et laisserait les
+activations intactes.
+
+**Conséquence pour l'adoption** : le déficit de débit d'Ornith (**506,7 vs 829,1 tok/s à
+N=16, 0,61×**) ne sera pas comblé par DFlash sur ce siège. Les leviers restants sont la
+compression KV (#358) et le tier fichier (#359), qui ne touchent pas au débit de décodage.
+**MTP reste non mesuré** — autre mécanisme, autre fenêtre, et l'antécédent MTP × cible AWQ
+est une acceptance ~0 % sur cette flotte.
+
+**Restauration, deux fois** : `trap` exécuté à chaque sortie (y compris chemin d'échec),
+FrogNano relancé, `/health` 200, puis **génération réelle** (`finish_reason=stop`,
+`Paris`), VRAM 12 734–12 737 MiB. **Indisponibilité cumulée ≈ 15 min** (7 min + 8 min).
+`v1` a produit un faux « restauration non prouvée » : la sonde envoyait une requête **sans
+clé** ⇒ 401 ⇒ absence de `finish_reason`. Corrigé en v2, et re-testé à la main **avant** de
+réutiliser le script.
+
 ## Artefacts
 
 | Fichier | Contenu |
