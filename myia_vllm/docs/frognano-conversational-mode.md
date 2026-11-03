@@ -42,15 +42,32 @@ détentir ni à le re-sérialiser**.
 accumulé. Test delta dédié (T1 = 6 lignes, T2 = 24 lignes ajoutées) : **+2 410 tokens de prompt
 pour les 2 tours**, soit ~1 500 au T2 (historique + delta), pas ~300. L'économie réelle porte sur
 **le payload que l'appelant construit**, pas sur les tokens que le moteur lit. Ce que le serveur
-économise en calcul vient du **cache de préfixe** (le préfixe déjà vu n'est pas recalculé) —
-mesuré au niveau moteur sur la vie du compteur : `prefix_cache_hits_total` 3 264 pour
-`prefix_cache_queries_total` 15 249 (**21,4 %**), mais **l'attribution par tour manque
-d'instrument** (pas d'instantané avant/après pris pendant ce test — à refaire proprement).
+économise en calcul vient du **cache de préfixe** (le préfixe déjà vu n'est pas recalculé) — et
+c'est maintenant mesuré **par tour**, pas seulement sur la vie du compteur (voir la table plus bas).
 
 Forme d'usage : *« voici les lignes depuis ton dernier tour — qu'est-ce qui est nouveau ? »*
 C'est **exactement la forme du cycle vigie**, en délégable. Mesuré : T1 (6 lignes, 0 `WARN`) →
 `ok` ; T2 (24 lignes ajoutées, 2 `WARN` dont une de 155 caractères avec `<`) → **les 2 lignes,
 verbatim, `diff` byte-identique** à l'oracle `grep` sur le corpus figé (`conv-vigie-delta-001`).
+
+### Le cache de préfixe, chiffré par tour (l'instrument qui manquait)
+
+Instantané `vllm:prompt_tokens_total` / `prefix_cache_hits_total` avant et après **un tour** de la
+même conversation (T3, historique de 2 tours) :
+
+| Compteur | Delta du tour |
+|---|---|
+| `prompt_tokens_total` | **+1 872** |
+| `prefix_cache_hits_total` | **+1 632** |
+| ⇒ tokens réellement préfilés | **240** |
+
+**87,2 % du prompt est servi par le cache** : le moteur relit 1 872 tokens et n'en calcule que
+240. C'est ce qui rend l'historique re-lu peu coûteux **en calcul**.
+
+⚠ **Ce que le cache ne départage PAS** : un appelant one-shot qui renvoie le même journal d'un
+cycle à l'autre bénéficie du même préfixe stable et des mêmes hits. **L'avantage du conversationnel
+n'est donc pas économique — il est d'orchestration** (aucun état ni corpus à porter côté appelant).
+À dire tel quel plutôt que de vendre une économie de tokens qui n'existe pas.
 
 ## Coût mesuré
 
