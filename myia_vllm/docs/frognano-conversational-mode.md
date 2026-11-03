@@ -20,6 +20,7 @@ Conversation `conv-adoption-fidelite-001` (mémoire de faits) et `conv-adoption-
 | **Extraction incrémentale** (partie 2 ajoutée au tour suivant) | 3/3 lignes WARN **verbatim** sur les 2 parties | **MARCHE** |
 | Comparaison inter-tours (min de `free=`) | `2900MB` — la bonne valeur, tirée de la partie 2 | **MARCHE** |
 | **Comptage à travers les tours** | demandé le total (attendu 3) → a répondu **`2`** | **ÉCHEC** |
+| **Veille de journal par delta** (T1 = 6 lignes, T2 = 24 lignes ajoutées seulement) | 2/2 lignes `WARN` **verbatim**, `diff` byte-identique à l'oracle `grep` sur le corpus figé | **MARCHE** |
 
 Le comptage échoue **alors même qu'au tour suivant le modèle a listé les 3 lignes correctement** :
 ce n'est pas une perte de contexte, c'est la **frontière de comptage du modèle** (déjà documentée
@@ -28,22 +29,42 @@ déplace pas. **Règle inchangée : toute sortie comptable est recomptée par l'
 
 ## Ce que le conversationnel apporte *en plus* du one-shot
 
-Un seul cas, mais il est structurel : **le corpus peut GRANDIR sans être renvoyé**.
+Un seul cas, mais il est structurel : **le corpus peut GRANDIR sans que l'appelant ait à le
+détentir ni à le re-sérialiser**.
 
-- **One-shot** (le mode mesuré jusqu'ici) : chaque cycle renvoie tout le journal (60 lignes
-  ≈ 6-8 K tokens). Sur 12 cycles/jour, c'est 12 × le même contenu re-payé.
-- **Conversationnel** : chaque tour n'envoie que **le delta** (3-6 nouvelles lignes ≈ 300 tokens) ;
-  le serveur garde l'historique et le cache de préfixe. Le modèle répond sur l'ensemble.
+- **One-shot** (le mode mesuré jusqu'ici) : l'appelant doit reconstituer le journal entier
+  (60 lignes ≈ 6-8 K tokens) et le renvoyer à chaque cycle.
+- **Conversationnel** : l'appelant n'envoie que **le delta** (3-6 nouvelles lignes ≈ 300 tokens)
+  et ne garde aucun état ; le serveur porte l'historique.
+
+⚠ **Correction mesurée le 03/11 (ce que ce n'est PAS)** : l'historique est **re-lu par le moteur
+à chaque tour**. Le prompt côté moteur ne reste donc pas au delta — il croît avec l'historique
+accumulé. Test delta dédié (T1 = 6 lignes, T2 = 24 lignes ajoutées) : **+2 410 tokens de prompt
+pour les 2 tours**, soit ~1 500 au T2 (historique + delta), pas ~300. L'économie réelle porte sur
+**le payload que l'appelant construit**, pas sur les tokens que le moteur lit. Ce que le serveur
+économise en calcul vient du **cache de préfixe** (le préfixe déjà vu n'est pas recalculé) —
+mesuré au niveau moteur sur la vie du compteur : `prefix_cache_hits_total` 3 264 pour
+`prefix_cache_queries_total` 15 249 (**21,4 %**), mais **l'attribution par tour manque
+d'instrument** (pas d'instantané avant/après pris pendant ce test — à refaire proprement).
 
 Forme d'usage : *« voici les lignes depuis ton dernier tour — qu'est-ce qui est nouveau ? »*
-C'est **exactement la forme du cycle vigie**, en délégable.
+C'est **exactement la forme du cycle vigie**, en délégable. Mesuré : T1 (6 lignes, 0 `WARN`) →
+`ok` ; T2 (24 lignes ajoutées, 2 `WARN` dont une de 155 caractères avec `<`) → **les 2 lignes,
+verbatim, `diff` byte-identique** à l'oracle `grep` sur le corpus figé (`conv-vigie-delta-001`).
 
 ## Coût mesuré
 
-Au **tour 6** d'une conversation (6 tours d'historique), le delta moteur d'un tour = **+1 118
-tokens de prompt, +6 de génération** (compteurs `vllm:prompt_tokens_total` avant/après).
-Croissance **linéaire** (~180 tok/tour de contenu accumulé) ⇒ 20 tours ≈ 3,5-4 K tokens de prompt :
-négligeable face au contexte 32 K et au pool KV de 426 K (13 contextes pleins).
+Au **tour 6** d'une conversation (6 tours d'historique), le coût moteur de ce tour = **+1 118
+tokens de prompt, +6 de génération** (compteurs `vllm:prompt_tokens_total` avant/après). C'est
+bien le **prompt complet relu** (système + historique + nouveau tour), pas le seul delta.
+Croissance linéaire dans l'historique accumulé : 20 tours de petits messages ≈ 3,5-4 K tokens de
+prompt, négligeable face au contexte 32 K et au pool KV de 426 K (13 contextes pleins).
+
+Comparaison honnête avec le one-shot, à contenu égal : **le prompt moteur est du même ordre**
+(les deux renvoient tout le contenu), mais le conversationnel **délègue la reconstitution du
+corpus au serveur** — c'est un gain de code appelant et de robustesse (pas de re-sérialisation,
+pas d'état client), pas une division de la facture. Le gain de **temps**, lui, vient du cache de
+préfixe : le préfixe déjà calculé n'est pas refait.
 
 ## Fragilité à connaître (avant de déléguer)
 
@@ -69,6 +90,15 @@ Via le MCP sk-agent (`mcp__sk-agent__call_agent`), preset `mini-summarizer`, mê
    — l'échec est le résultat attendu de la frontière de comptage**
 7. « Sans compter : liste VERBATIM toutes les lignes WARN du journal complet. » → attendu
    **les 3 lignes, verbatim**
+
+**Variante veille par delta** (`conv-vigie-delta-001`, 2 appels, ~30 s) — corpus **figé sur
+disque avant l'appel**, c'est le point qui rend l'oracle fiable :
+
+- T1 : « Je te donne le début d'un journal. Lis-le et réponds seulement `ok` » + les 6 premières
+  lignes (0 `WARN`).
+- T2 : « Voici les NOUVELLES lignes du même journal, depuis ton dernier tour. Liste VERBATIM
+  toutes les lignes `WARN` » + **uniquement** les 24 lignes ajoutées (2 `WARN`).
+  → attendu **2/2 verbatim** ; contrôle `grep WARN corpus_B | diff - rendu` = **0 écart**.
 
 Contrôles : `model_used=frognano-4b` à chaque tour ; delta `vllm:prompt_tokens_total` par tour.
 
