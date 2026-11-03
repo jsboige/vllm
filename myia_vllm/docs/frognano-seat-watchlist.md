@@ -115,8 +115,15 @@ gates verbatim d'abord, puis mesure de debit a N=1/8/16. Meme protocole que le 0
 >
 > **`enable_thinking: false` est RÉEL ici** — il supprime les 40 lignes de bruit et tout le
 > préambule de délibération sans perdre une ligne de l'oracle. C'est **l'inverse du cas LFM3**, où
-> le flag était cosmétique. Corollaire de service : **ne jamais servir ce modèle sans ce flag**
-> (`--default-chat-template-kwargs`), sinon `content` est pollué et la classe verbatim tombe.
+> le flag était cosmétique.
+>
+> **Arbitrage user 03/11 : le thinking n'est pas un problème en soi.** Il ne vide pas `content`
+> pour peu que `max_tokens` soit dimensionné pour absorber la délibération — c'est une **erreur de
+> protocole de test** de conclure sur une réponse tronquée. Ce que le thinking coûte réellement,
+> mesuré : ~40 lignes hors motif pour une couverture **inchangée à 14/14**, et des tokens en plus.
+> Le flag reste une **option** pour l'appelant qui veut une sortie propre ; ce n'est **pas** une
+> condition de service. Les épreuves doivent donc tourner **thinking actif par défaut**, avec un
+> budget de tokens suffisant, et vérifier `content` non vide.
 >
 > **Comptage (R2)** : échoue comme tout le siège. **Outil (R4)** : `finish=tool_calls` bien formé.
 >
@@ -190,7 +197,7 @@ la batterie fiabilité du siège tranche (réf. FrogNano 13/14, 0 bruit).
 
 | Modèle | Verdict | Ré-ouvrir si |
 | --- | --- | --- |
-| Ornith-1.5-9B-AWQ (cyankiwi) | **Mesuré 03/11, tient** : verbatim **14/14** déterministe (×3) contre 13/14 pour FrogNano, mais **0,61× le débit** et **0,29× le KV** — exige `enable_thinking:false` | décision user de promotion (arbitrage qualité/débit) |
+| Ornith-1.5-9B-AWQ (cyankiwi) | **Mesuré 03/11, tient** : verbatim **14/14** déterministe (×3) contre 13/14 pour FrogNano, mais **0,61× le débit** et **0,29× le KV**. Thinking actif = +40 lignes hors motif, couverture inchangée ⇒ coût de tokens, pas défaut (arbitrage user) | **adopté** le 03/11 (épopée #365) |
 | LFM3-1.7B-NVFP4 (LiquidAI) | Servable (greffe v0.32.0+#64959, 1,50× FrogNano à N=16) mais **hallucine plus que FrogNano** (27 lignes de délibération vs 0 ; `enable_thinking:false` cosmétique) | template ultérieur réellement silencieux, ou trafic où le débit limite — **avec porte mécanique** |
 | Gemma-4-12B-AWQ (axteam) | **Infaisable** (03/11) : géométrie KV ~343 Ko/tok sous fenêtre 16 K, fp8 KV interdit SM 8.6 | **carte ≥ 24 Go** (poids 7,87 Go conservés dans le cache HF du siège) |
 | Nanbeige4.2-3B | 0,89× FrogNano à N=16 et KV 88 Ko/tok ⇒ perdant partout | une version KV compacte |
