@@ -66,6 +66,28 @@ corpus au serveur** — c'est un gain de code appelant et de robustesse (pas de 
 pas d'état client), pas une division de la facture. Le gain de **temps**, lui, vient du cache de
 préfixe : le préfixe déjà calculé n'est pas refait.
 
+## Deux limites structurelles du `conversation_id` (mesurées le 03/11)
+
+Le serveur sk-agent vivant sur ce siège est celui de `roo-extensions`
+(`D:\dev\roo-extensions\mcps\internal\servers\sk-agent\sk_agent.py`) — lu en lecture seule.
+
+1. **Les conversations vivent en mémoire du processus.** `self._threads: dict[str,
+   ChatHistoryAgentThread] = {}` (`sk_agent.py:597`). Le serveur MCP est lancé **par session**
+   (transport stdio) : un redémarrage de session tue toutes les conversations. Conséquence
+   directe pour l'usage que ce doc propose : **la veille de journal par delta fonctionne DANS un
+   cycle, pas ENTRE deux cycles** — un `conversation_id` réutilisé au cycle suivant repart vierge.
+2. **Un `conversation_id` inconnu ne produit pas d'erreur : il crée un fil neuf, silencieusement**
+   (`_get_or_create_thread`, `sk_agent.py:1368-1374`). Mesuré : `conv-adoption-hubert-001` →
+   « Hubert » (la conversation existe) ; `conv-id-inexistant-999` → « inconnu » (fil neuf, aucune
+   erreur, `model_used=frognano-4b` dans les deux cas). **Un appelant qui réutilise un id périmé
+   croit avoir repris une conversation et en a ouvert une vide.** Garde : placer une **sonde de
+   rappel** (« quel fait t'ai-je donné au premier tour ? ») en tête de tout tour repris, et la
+   traiter comme un échec si la réponse ne restitue pas le fait.
+
+**Ce que ça demande côté chaîne** (product owner `roo-extensions`, pas cette lane) : soit un
+sk-agent **long-vivant** (transport HTTP plutôt que stdio-par-session), soit l'historique porté
+par l'appelant. Sans l'un des deux, le mode conversationnel reste un outil **intra-cycle**.
+
 ## Fragilité à connaître (avant de déléguer)
 
 - **L'état vit dans le processus sk-agent** : un restart du serveur sk-agent **tue les
