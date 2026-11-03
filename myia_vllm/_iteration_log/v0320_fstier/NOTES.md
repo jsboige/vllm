@@ -6217,3 +6217,28 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **WARN RSM** (périmètre voisin, à relayer, pas à traiter) : `MessageManager Message not found` ×5 (ids `c2761-dispatch-*`, `ai01-dispatch-po2023/po2024-20261103d`) · `BaselineManager NonNominativeBaselineService non disponible` ×2.
 
 **Autres** : nbaudit `ok:true` 15:31:35Z, rc runner/deliver 0/0, `consecutive_failures 0`, 5 séries, **`subpath ["19451:Image/"]` = vague 2 toujours armée** · G: 85 % (3,1 T/3,7 T) et **write probe OK** (pas de HANG) · marge commit hôte **65,9 %** (263,5/399,8 GB, marge 136,3 GB — très loin du seuil 85 %).
+
+## 03/11 16:06:51Z — FENÊTRE EXÉCUTÉE : `gpu-util 0.73 → 0.71` (décision user Q55) — boot 230 s, **KV 776 824**, décor récupéré sur GPU 0
+
+**Décision.** Le user retient **0,71**, pas le 0,70 que prescrivait la règle pré-écrite. C'est le bon arbitrage et il mérite d'être écrit : la règle « GPU 0 > 23 000 → 0.70 » avait été écrite en supposant un moteur qui grossit ; la mesure du cycle a montré le contraire (GPU 1 plat à 21 834 sur trois lectures, le bureau fait la différence). 0,71 garde **60 % du bénéfice de marge pour les deux tiers du prix**.
+
+| | 0,73 (avant) | 0,71 (après) | Δ |
+|---|---|---|---|
+| KV GPU | 831 723 | **776 824** | **−54 899 (−6,6 %)** |
+| Concurrence max (contextes 262K) | 3,17 | **2,96** | −0,21 |
+| VRAM à froid GPU 0 / GPU 1 | 23 297 (en charge) / 21 834 | **20 668 / 19 174** | marge 1 267 → **3 896 MiB** |
+
+**Le KV réel est à 0,1 % de l'interpolation** (prévu 777 700, mesuré 776 824) — la relation gpu-util↔tokens est donc quasi linéaire sur cette plage, ce qui rend le prochain arbitrage calculable sans fenêtre.
+
+**Exécution, dans l'ordre exigé.**
+1. **Annonce sur `global` AVANT le geste** (16:06Z annoncé, ~4 min, cross-post **3/3 OK** : machine ai-01, `po-2028:CoursIA`, `po-2025:claudish`) — leçon du 01/11 : le GO autorise le geste, il ne dispense pas d'annoncer.
+2. **`GPU_UTIL_SWIFT15=0.71` persisté dans `myia_vllm/.env`** — sans ça, un recreate futur serait retombé **silencieusement** à 0,73 (défaut du profil). Puis **défaut du profil passé à 0.71** lui aussi (le dépôt porte la production, pas seulement le `.env` local).
+3. **`docker compose config` vérifié AVANT** : `--gpu-memory-utilization 0.71` rendu.
+4. **Recreate, pas restart** : `up -d --no-deps vllm-medium-swift15-27b` à **16:06:51Z**. L'env est figé à la création du conteneur — un `docker restart` n'aurait rien appliqué.
+5. **Vérification.** `StartedAt 16:06:57Z`, **health 200 à 16:10:45Z = T+230 s** ; `cache_config_info` porte `gpu_memory_utilization="0.71"`, `kv_cache_size_tokens=776 824`, `kv_cache_max_concurrency=2.96`, `cache_dtype nvfp4`, `block_size 1424`, `kv_offloading_size 32` ; **génération réelle** par le watchdog (`16:10:59 OK health=200 decode=200`), pas un `/health` seul ; `RC=0`, aucune boucle.
+
+**Ce que la fenêtre a coûté** : les requêtes en vol à 16:06Z ont été coupées (6 en exécution, 4 en file, KV 95,2 % à l'instant de l'annonce). Les blocs survivent dans le tier disque et reviennent par replay.
+
+**Le correctif `/dev/shm` a fonctionné sans intervention** : `/dev/shm` à 32G/63G = 51 % après le boot, **zéro orphelin, aucune purge manuelle**. C'est exactement le scénario qui avait coûté 91 min d'indispo le 01/11 (l'orphelin du tier bloquant tout redémarrage) — la purge d'entrypoint de la PR #318 l'a absorbé seule. **Deuxième confirmation de ce correctif en conditions réelles.**
+
+**⚠ Écart d'instrument à corriger un jour** : `docker inspect .Config.Cmd` rend la chaîne de commande **avec la clé d'API en clair** (`--api-key d9164427…`). Je ne la recopie pas dans les rapports ; toute extraction d'args doit filtrer cette ligne. Un `grep -o 'api-key .*'` mal placé publierait le secret — c'est le genre de fuite qui a déjà coûté une rotation le 30/09.
