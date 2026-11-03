@@ -217,9 +217,9 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 
 1. **Hit rate prefix** (compteurs `/metrics`, reset à chaque boot — noter l'âge moteur) :
    ```bash
-   curl -s http://localhost:5002/metrics | grep -E '^vllm:(prefix_cache|gpu_prefix_cache|cpu_prefix_cache).*(queries|hits)_total'
+   curl -s http://localhost:5002/metrics | grep -E '^vllm:(prefix_cache_queries_total|prompt_tokens_cached_by_source_total)'
    ```
-   En croisière longue (sessions récurrentes) le ratio hits/queries doit **monter**. Ratio plat ~0 avec des corps >100K en jeu = **amortissement cassé** → alerte user + registre.
+   **⚠ FORMULE CANONIQUE (corrigée 03/11, cycle 17:41Z)** : ratio = `Σ prompt_tokens_cached_by_source_total{device,host,disk,p2p} / prefix_cache_queries_total`. **`prefix_cache_hits_total` compte le DEVICE SEUL** — lu seul il a fabriqué une fausse panne (« 2,8 %, amortissement cassé ») alors que le vrai ratio était **86 %** : à working set > KV GPU, le tier RAM sert l'essentiel (host = 81 % du cache servi) et n'apparaît PAS dans ce compteur. En croisière longue (sessions récurrentes) le ratio doit **monter**. Vrai ratio plat ~0 avec des corps >100K en jeu = **amortissement cassé** → alerte user + registre — vérifié sur la formule complète avant de publier.
 2. **Signature re-prefill (census §5ter)** : même IP/empreinte avec `body_bytes > 100K` **répétés à cadence de tour** (au lieu de delta 1-10K) = le client re-paie tout son contexte à chaque tour.
 3. **Préemptions** : `vllm:num_preemptions_total` (reset au boot) qui **monte en continu** = saturation KV réelle (plus discriminant que la VRAM). `kv_offload_cpu_cache_usage_perc` reste une gauge in-flight, PAS une jauge de remplissage.
 4. **Wedge watch renforcé** : les prefills géants affament les sondes (GEN_TIMEOUT 90 s) ; `WEDGE fail 1/2` pendant un gros prefill = attendu ; `2/2` → vérifier d'abord que des sessions longues sont en vol avant de conclure à une panne.
