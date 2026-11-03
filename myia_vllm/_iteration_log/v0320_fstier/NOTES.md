@@ -6168,3 +6168,13 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **Sécurité §5** : 6 IP sur 7 h, toutes connues (hairpin 990/991, interne 399, po-2027 6, web2 4, web1 2). **Zéro trafic clé scopée `external-vllm` sur la fenêtre** (Jamin/Candy silencieux). Aucune IP inconnue à 200.
 
 **Autres** : nbaudit `ok:true`, 0 échec consécutif, 09:05:47Z — et **vague 2 armée** (`subpath: ["19451:Image/"]`, 3 carnets/série) : le fanion du 10/10 est levé. G: 84 %, sonde d'écriture OK. Marge commit hôte **62,4 %** (249,4/399,8 Go) — très en dessous du seuil 85 %.
+
+## 03/11 12:43Z — Cycle : préfill soutenu 5,4K t/s, ★ GPU 0 franchit 23 000 (23 115) ; ★ scanner ZOLTRAAK (tous 401) ; hit intervalle 76,6 %
+
+**Prod** : health 200 / 7,1 ms, RC=0, healthy, `StartedAt` 2026-11-02T23:29:01Z (12,2 h), OOM 0/5 000 lignes, `/dev/shm` 33 G = 51 %, 3 conteneurs Up. **VRAM GPU 0 = 23 115 MiB — PREMIER FRANCHISSEMENT du seuil d'alerte 23 000** (marge 1 449 MiB ; GPU 1 21 834 stable). Un point isolé en charge, à confirmer au prochain cycle ; si confirmé en charge, la ligne du profil dit `GPU_UTIL_SWIFT15=0.70` au prochain restart (geste à GO user, jamais auto).
+
+**Charge (intervalle 09:55→11:43Z, 108 min)** : prompt tokens **187,62 M → 222,55 M = +34,9 M ≈ 5 390 t/s de prefill soutenu** (moyenne, pas des bursts isolés) ; décode 61 t/s ; 275 req/h (census 2 h, en hausse de 216). **Hit préfixe intervalle 76,6 %** (+26,8 M cached / +34,9 M prompt) — l'amortissement tient (76-82 % sur la journée), pas de triad completion. Corps 100K-1M = 41 % (en baisse de 55 %). Préemptions **49 → 70** (+21). **7 WEDGE `fail 1/2` sur l'intervalle (10:15→11:07), jamais 2/2**, pendant les prefills massifs — la famine documentée ; 109 OK. e2e cumulé > 240 s : 378/2 307 = **16,4 %**.
+
+**★ Sécurité — scanner `ZOLTRAAK`** : IP `31.77.203.199` (hors carte) sonde `/v1/models` par salves espacées de quelques heures (02/11 16:09Z, 03/11 00:22/06:25/08:33/10:35Z), UA `ZOLTRAAK/0.2.0 (security-research; chess)`, **deux préfixes d'auth inconnus** (fp `ccd500f719e4`, fp `64a6d7ec06fd`). **Tous 401 — zéro 200, zéro inférence, porte tenue.** Arbitrage porté au registre (Q54 : laisser / bloquer hub / bloquer pare-feu). Aucune des IPs connues ne dérape ; trafic externe scopé toujours silencieux.
+
+**Autres** : e2e bucket `le="240.0"` — le suffixe `.0` m'a piégé une 3ᵉ fois (regex `le="240` nu désormais). nbaudit ok (vague 2 `Image/` active). GPU 2 = 56 MiB.
