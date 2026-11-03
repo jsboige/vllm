@@ -394,18 +394,28 @@ maintenant, contre le candidat.
 Qualité **à égalité**, latence **dégradée** : sur la chaîne réelle, Ornith n'apporte rien et
 coûte du temps d'attente.
 
-### Le facteur qui n'était pas dans le critère mais qui tranche au siège
+### Les facteurs qui n'étaient pas dans le critère (table corrigée le 04/11, voir plus bas)
 
 | | FrogNano-4B | Ornith-1.5-9B |
 |---|---|---|
-| VRAM (repos / sous horde) | 12 753 MiB | 13 654 → **16 053 MiB** (sur 16 384) |
-| Température GPU (repos / sous horde) | 39 °C | 36 → **76 °C** |
+| VRAM au repos | 12 753 MiB | 13 654 MiB |
+| VRAM **sous horde N=8** | **14 755 MiB** (mesuré 22:03:51 locale) | **16 053 MiB** (nvidia-smi fin de batterie) |
+| Temp GPU au repos | 39 °C | 36 °C |
+| Temp GPU **sous horde N=8** | **75 °C** (même échantillon) | **76 °C** |
 | Boot à chaud | ~80 s | 110 s (chargement 68 s) |
 | KV | 426 473 tok fp8 | 163 065 tok (4,98× à 32 K) |
 
-Sur une **3080 Ti Laptop** dont le gouverneur thermique est une garde obligatoire, passer de
-39 °C à 76 °C sous charge pour un gain de qualité nul est disqualifiant en soi. La VRAM à
-16 053/16 384 MiB ne laisse aucune marge.
+**Correction du 04/11 (vigie 00:0x locale).** La première rédaction comparait FrogNano au
+repos (39 °C) à Ornith sous charge (76 °C) et en tirait un désavantage thermique «
+disqualifiant ». C'était une comparaison déloyale : le logger thermique horaire a
+échantillonné **FrogNano à 75 °C / util 97 % / 14 755 MiB à 22:03:51 locale**, pendant sa
+propre horde T9 (baseline v2 stampée 21:02:21Z) — **les deux modèles montent à ~75-76 °C
+sous la même charge**. Le logger horaire a **raté** la fenêtre d'Ornith (22:15-22:21 locale,
+aucun échantillon entre 22:03:51 et 23:03:51) : seuls les `nvidia-smi` en direct couvrent une
+fenêtre sub-horaire. Ce qui reste réel : Ornith consomme **1,3 GiB de VRAM de plus sous
+charge** (16 053 vs 14 755 sur 16 384 — il ne reste que 331 MiB) et son débit horde est
+**−40 %**. **Le verdict ne bouge pas** : il repose sur le critère figé (2 défaites), pas sur
+l'argument thermique.
 
 ### Décision
 
