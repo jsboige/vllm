@@ -190,7 +190,7 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 ```
 
 **Attendu / à interpréter** :
-- **Sondes watchdog** `ua=curl` ~2/min, `"Count to twenty."` : normal.
+- **Sondes watchdog** `ua=curl` ~2/min, `"Reply with the single word: ok"` (max_tokens 8, finit en `stop` — depuis le 03/11 ; l'ancien `"Count to twenty."` à 24 tokens finissait en `length` et polluait les stats, mesuré 71 tokens nécessaires) : normal.
 - **Condensation** `ua=Python-*` « expert en synthèse … 15 Ko » : normal, horaire.
 - **Clé unique `fp=<MEDIUM>`** en tête : c'est la clé partagée des consommateurs internes (hub claudish, sk-agent, Roo, sondes). **Vérifier l'identité de la clé AVANT toute conclusion de sécurité** — comparaison côté hôte (`.env`), en n'imprimant que des `sha256[:12]` :
   ```bash
