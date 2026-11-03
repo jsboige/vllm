@@ -337,3 +337,85 @@ de l'éval avec le seau manquant), `.tmp/promo_gate.py` (v3), `.tmp/promote_run{
 **Leçon transposable** : un vérificateur ne se signale jamais par un faux négatif bruyant,
 il se signale par un **« 0 bruit » trop beau**. Les trois défauts trouvés ce soir poussaient
 tous dans le sens du résultat propre.
+
+---
+
+## 4e passe, 03/11 21:13→21:26Z — batterie versionnée + harnais sk-agent : ORNITH NON RETENU
+
+Le user a rouvert la question (« tu pousses les tests, et si Ornith a un avantage significatif,
+on onboarde, sinon retropedalage et on pousse sur la solidification par sk-agent en test time
+scaling », 03/11 22:30 locale). Cette passe corrige d'abord **deux artefacts de mon propre
+protocole de mesure**, puis rejoue l'ensemble sur les deux modèles.
+
+### Les deux artefacts corrigés (ils faussaient dans le sens d'Ornith)
+
+1. **Plafond de génération constant (8192)** en T5 : `finish=length` se lisait comme un échec
+   de rappel, et une ligne coupée en deux se lisait comme une **fabrication**. Remplacé par
+   `budget_for()`, dimensionné sur la sortie attendue (~1,6 token/caractère, marge ×2).
+2. **La horde (T9) tournait à 1024 tokens** pour une tâche qui en demande 1434 : elle mesurait
+   la troncature de son propre plafond, pas la tenue sous charge (cov_moy 0,694). Elle hérite
+   maintenant du même budget que l'épreuve séquentielle équivalente.
+
+Après correction, la baseline FrogNano ne bouge qu'en T5 (205/207 → **124/125**, sans
+fabrication) et en T9 (cov 0,694 → **1,00**) : le défaut T6 est intact.
+
+### Batterie (`myia_vllm/scripts/testing/capability_campaign_po2025.py`, `--repeat 2`)
+
+Critère **figé dans le script AVANT la mesure** (voir l'en-tête du fichier) : ≥ 3 victoires,
+**aucune défaite**, et au moins une victoire portant sur un défaut de l'incumbent.
+
+| épreuve | FrogNano | Ornith-1.5-9B | verdict |
+|---|---|---|---|
+| T1 réel homogène 45 | 36/36 · 1,00 | 36/36 · 1,00 | = |
+| T2 densité faible 60 | 7/8 · **0,875** | **8/8 · 1,00** | Ornith (défaut incumbent) |
+| T3 hétérogène 60 | **13/13 · 1,00** | 12/13 · 0,92 | **FrogNano** |
+| T4 quasi-doublons 1 caractère | 31/31 · 1,00 | 31/31 · 1,00 | = |
+| T5 balayage 200 | 124/125 · 0,992 · 0 fp | 125/125 · 1,00 · **4 fp** | Ornith (couverture, mais 4 fp) |
+| T6 piège injecté | 10/20 · 0,50 · **10 fp** | 11/20 · 0,55 · 4 fp · **4 fab** | Ornith (marginal) |
+| T7 motif absent | refus OK | refus OK | = |
+| T9 horde N=8 | **733 tok/s** · 1,00 | **442,5 tok/s** · 1,00 | **FrogNano (−40 %)** |
+
+**Deux défaites → `MAX_LOSSES = 0` violé → PAS d'avantage significatif.** Le critère est
+appliqué tel qu'il a été figé ; il n'est pas réinterprété après coup.
+
+Nuances à conserver : Ornith rattrape **une** ligne que FrogNano rate en T2 (et cette
+couverture 0,875 est sous le seuil matériel 0,90 — c'est bien un défaut de l'incumbent) ;
+sur T6 il divise les faux positifs par 2,5 (10 → 4) mais introduit **4 lignes fabriquées**
+que FrogNano n'a jamais produites — le seau qui manquait à l'éval du 03/11 se remplit
+maintenant, contre le candidat.
+
+### Harnais sk-agent (chaîne à deux étages), prompts rejoués au caractère près
+
+| appel | FrogNano | Ornith |
+|---|---|---|
+| `mini-summarizer` (3 puces, 0 nombre inventé) | conforme | **conforme, identique** |
+| `swift-delegator` (décision + extraction verbatim) | correct, **2/2 lignes exactes**, < 120 s | correct, **2/2 lignes exactes**, mais **expire à 120 s** — a exigé `timeout=300` |
+
+Qualité **à égalité**, latence **dégradée** : sur la chaîne réelle, Ornith n'apporte rien et
+coûte du temps d'attente.
+
+### Le facteur qui n'était pas dans le critère mais qui tranche au siège
+
+| | FrogNano-4B | Ornith-1.5-9B |
+|---|---|---|
+| VRAM (repos / sous horde) | 12 753 MiB | 13 654 → **16 053 MiB** (sur 16 384) |
+| Température GPU (repos / sous horde) | 39 °C | 36 → **76 °C** |
+| Boot à chaud | ~80 s | 110 s (chargement 68 s) |
+| KV | 426 473 tok fp8 | 163 065 tok (4,98× à 32 K) |
+
+Sur une **3080 Ti Laptop** dont le gouverneur thermique est une garde obligatoire, passer de
+39 °C à 76 °C sous charge pour un gain de qualité nul est disqualifiant en soi. La VRAM à
+16 053/16 384 MiB ne laisse aucune marge.
+
+### Décision
+
+**Retropédalage** : FrogNano reste le modèle servi sur `:5003`. Rollback exécuté et vérifié
+(health 200 en 80 s, génération réelle `Paris` / `stop`, 12 753 MiB, 39 °C). La lane bascule
+sur la **solidification par sk-agent en test-time scaling**, conformément à la règle du user :
+ce qui manque au siège n'est pas un meilleur modèle de base, c'est un **étage de vérification
+mécanique** au-dessus du mini (le vote échoue sur erreurs corrélées ; la **liste vérifiable**
+gagne).
+
+Artefacts : `.tmp/measure_ornith.sh`, `.tmp/campaign_ornith.json`, `.tmp/campaign_frognano_v2.json`,
+`.tmp/measure_ornith_20261103T211309Z.log`.
+
