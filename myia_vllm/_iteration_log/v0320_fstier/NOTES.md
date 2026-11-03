@@ -6110,3 +6110,17 @@ Le débit, lui, se mesure : sur **1 286 échantillons du log moteur avec des req
 **Coordination** : **EPIC Origami #19309** (po-2024:CoursIA-2 : 13 `[RELEASED]` gaspillés, 14ᵉ évité, re-baseline ou exclusion demandée — geste réservé ai-01 par le format) → **engagée pour le cycle jour** (réponse `msg-20261103T034834-q9fk1u`) : body 29 116 octets + 39 commentaires à lire intégralement avant édition ; base de re-scope = leur recommandation (CausalBridges-17.. + audit de l'existant, P-11/P-14/P-15/P-16 angles morts). po-2025:CoursIA-2 : ACK fermé, réserves levées de leur côté, rien attendu de nous.
 
 **Instruments (3 leçons)** : (a) **redirect `2>&1 > f` = ordre inversé** — stderr part au terminal et le fichier reste vide (vécu ×2 sur le watchdog ; l'ordre correct est `> f 2>&1`) ; (b) segment vivant du journal watchdog ∈ [150, 300] lignes (`--tail 300+` → 0 ligne) — compter avec `--tail 150` ; (c) les outputs des tâches de fond sont **nettoyés au passage de cron** → le monitor `absmon` était mort, ré-armé (auto-baseline, task `bxj6azi3l`). Registre : **0 ouverte**.
+
+## 03/11 06:4xZ — Cycle : montée du matin (226/h, KV 88 %, préemptions 15→24) mais hit 79,2 % intact ⇒ 4ᵉ triade incomplète ; IP 37.230.119.250 = poller Go mort connu
+
+**Prod** : health 200 (3 ms), RC=0, StartedAt 23:29:01Z inchangé, 3 conteneurs Up 6 h. VRAM GPU 0 **22 638** / GPU 1 21 834 MiB. Log 5 000 lignes : **0 OOM, 0 ERROR**. `/dev/shm` 51 % ✓. Commit hôte 61,3 % ✓.
+
+**Watchdog 02:21→05:42Z (3 h 20)** : 112 sondes OK, **22 lignes WEDGE / 16 RECOVERED / 0 RESTARTING** — toutes `fail 1/2`, rafales max 4-5 coupées par les lignes `— counters` (compteurs moteur qui avancent = sain-qui-travaille), **jamais 2/2**.
+
+**§5quater — la rampe du matin se mesure** : préemptions 15→**24 (+9 en ~1 h, accélération vs +6/3 h)**, KV 85-88 %, waiting 4 / running 5. Mais hit externe **79,2 % INTACT** et **aucune signature re-prefill** (44 % de corps >100 K, médiane 53,6 K vs 38 %/48 K au cycle précédent = cohorte long-contexte à cadence de tour, servie du cache). **4ᵉ triade incomplète** (préemptions et part >240 s montent, amortissement non cassé, 0 restart) ⇒ pas d'escalade — mais c'est la première mesure de la rampe, le cycle 8:43 dira si elle tient. e2e : cumulé 811/1015 = 20,1 % >240 s ; **intervalle 86/311 = 27,6 %** (↑ 15,6 %) ; >480 s cumulé 55/1015 = 5,4 %. Charge **271 req/1,2 h ≈ 226/h** (↑ 177/h).
+
+**Sécurité** : **0 IP inconnue avec 200**. **`37.230.119.250` = le poller Go mort connu** (clé `1f7f6080cb65`, `/v1/models`, UA `Go-http-client/1.1`, 401×12 en 1,5 h, **0 inférence**) — même clé, nouvelle adresse d'hébergement (plage OVH comme web1), **pas une alerte**. Corps max **4,46 Mo** = 200 sur `/v1/chat/completions` (`AsyncOpenAI/Python 1.109`) — signature vision base64, bénin, one-off (médiane 53,6 Ko). Aucun 400 + >100 Ko (#431 non déclenché).
+
+**Écrans** : G: OK (85 %, 592 G libres, write OK). nbaudit OK 05:28:38Z (vague 2 `Image/`). Condensation nominale. WARN RSM récurrents : `NonNominativeBaselineService` (04:35/04:56/05:28, 2ᵉ jour), `MessageManager Message not found: nbpre-19451-*` (04:35, 05:28 — ids preaudit absents du store RSM), `[STALE-FILE #3230]` (écriture servie par PG, bénin) — **périmètre RSM, à relayer au propriétaire**.
+
+**Instruments** : census — re-wrapper `json.loads` **par ligne** (1 parse-fail sur 272 = ignorable, ne pas laisser tomber la fenêtre entière) ; `sed` avec groupe de capture manquant = échec bruyant mais tardif → préférer `grep -oE` pour les extractions multi-champs. Registre : **0 ouverte**.
