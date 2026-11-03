@@ -263,3 +263,77 @@ réutiliser le script.
 | `.tmp/ornith_22_default.txt` / `ornith_22_thinkoff.txt` | sorties brutes comparables |
 | `.tmp/ornith_tool.json` | réponse complète de la sonde outil |
 | `bench_capacity_out.json` | débit N=1/8/16 |
+
+## Fenêtre de promotion 03/11 nuit — AUCUNE PROMOTION (3 fenêtres, 4 versions de porte)
+
+Trois tentatives de mise en service sur `:5003`, **trois rollbacks automatiques réussis**,
+FrogNano resservi et **prouvé par génération réelle** à chaque fois (`Paris`/`stop`).
+Aucun consommateur touché, trafic externe 0. Indisponibilité cumulée ≈ 21 min.
+
+| Fenêtre | Boot | Portes 1-3 | Verbatim | Issue |
+| --- | --- | --- | --- | --- |
+| 20:18Z | 275 s (cache froid) | PASS | 4/5, 0 fp | rollback |
+| 20:27Z | 135 s (cache chaud) | PASS | 4/5, 1 fp (substitution) | rollback |
+| 20:34Z | 130 s | PASS | **réel 14/14 ×3**, synthétique 4/5+1fp | rollback |
+
+Boot 275 s à froid / **130-135 s à chaud** (contre 260 s annoncés) — le volume de compilation
+dédié fait son travail. VRAM en service 13 642 MiB. **KV 129 523 tok**, soit **+5,7 % sur les
+122 523 de l'éval** (profil de service : `--max-num-seqs 32`, prefix caching) — la forme du
+siège ne coûte rien en capacité sur cette carte.
+
+### Ce qui a réellement échoué : mes instruments, pas le modèle
+
+**Deux bugs dans MA porte, tous deux dans le sens « résultat plus propre qu'il n'est » :**
+
+1. **Comparaison brute, non normalisée** (v1). FrogNano numérote ses lignes (`1. …`), Ornith
+   non. La comparaison de chaînes notait **FrogNano 0/5 de rappel** — un écart qui mesurait la
+   ponctuation, pas la capacité.
+2. **Le piège était invisible** (v1 et v2). Le filtre de collecte `if "temp=31C" in l`
+   **éliminait la ligne piège `temp=31.0C` avant de la compter** : la précision sortait à
+   « 0 faux positif » **par construction**.
+
+**Et un troisième défaut, DANS L'ÉVAL QUI A MOTIVÉ LA DÉCISION.** Son `verdict()` range les
+lignes en trois seaux — `real` (dans l'oracle), `noise` (ne commence pas par `2026-`), `fake`
+(commence par `2026-` **et absent du corpus**). Une ligne **présente au corpus mais hors
+oracle** — exactement le piège — ne tombe dans **aucun seau**. Le « **0 bruit** » publié
+signifie « aucune ligne hors corpus », **pas** « aucune ligne indue ». L'éval n'a jamais
+mesuré la précision qu'elle affirmait.
+
+### La matrice, mesurée des deux côtés, 3 runs chacun, déterministe
+
+| Corpus | FrogNano (prod) | Ornith-1.5-9B |
+| --- | --- | --- |
+| **réel** 22 lignes `HEARTBEAT`, oracle 14 | **13/14**, 0 fp, 0 fabriquée | **14/14**, 0 fp, 0 fabriquée |
+| **synthétique** 12 lignes, oracle 5 | **5/5**, **1 fp** (recopie `temp=31.0C`) | 4/5, **1 fp** (substitue `ERROR fan stalled node=2` à `DEBUG probe temp=31C baseline`) |
+
+Aucun des deux ne domine. Les deux erreurs sont des **inclusions silencieuses** d'une ligne
+fausse, de natures différentes : FrogNano inclut un **quasi-raté du motif** (repérable à la
+relecture, `31.0` au lieu de `31`), Ornith inclut une ligne **sans aucun rapport** avec le
+motif (plus difficile à repérer). Sur le corpus **réaliste**, celui qui ressemble au travail
+servi, **Ornith est strictement meilleur** et FrogNano rate toujours la ligne où `temp=31C`
+est **au milieu** (`free=3824MB temp=31C mode=normal`).
+
+### Pourquoi la v4 a refusé alors que l'admission passait — et pourquoi je ne rejoue pas
+
+La v4 déclarait deux choses **incompatibles**, dans le même en-tête : « le corpus synthétique
+est une **sonde non bloquante** » **et** « tout faux positif est interdit **sur les deux
+corpus** ». La seconde clause **disqualifie les deux modèles** (FrogNano y a aussi 1 fp) —
+c'est exactement l'erreur que le même paragraphe dénonçait deux lignes plus haut : *un critère
+qui interdit de servir n'est pas un critère*.
+
+**Je n'ai pas rejoué avec une règle corrigée.** Trois fenêtres dans la même soirée, chacune
+avec des seuils déclarés **avant** le run ; une quatrième, lancée juste après avoir vu le
+refus, serait indiscernable d'une chasse au test qui passe. Le plan annoncé sur le dashboard
+était : *« si celle-ci échoue, Ornith ne promeut pas et la décision revient au user avec les
+chiffres »*. Il est tenu. **La décision de promotion est portée au registre des questions
+user** avec la matrice ci-dessus.
+
+### Artefacts de la fenêtre de promotion
+
+`.tmp/promote_ornith.sh` (lanceur, rollback par `trap`, `SUCCESS` pour distinguer succès et
+échec), `.tmp/final_gate.py` (v4, deux corpus), `.tmp/eval_corpus_honest.py` (rejoue le corpus
+de l'éval avec le seau manquant), `.tmp/promo_gate.py` (v3), `.tmp/promote_run{,2,3}.out`.
+
+**Leçon transposable** : un vérificateur ne se signale jamais par un faux négatif bruyant,
+il se signale par un **« 0 bruit » trop beau**. Les trois défauts trouvés ce soir poussaient
+tous dans le sens du résultat propre.
