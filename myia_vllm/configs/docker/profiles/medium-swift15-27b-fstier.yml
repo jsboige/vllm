@@ -94,7 +94,20 @@
 #   gpu-util 0.70 -> 0.73 (KV 750,747 -> ~831K tokens, +10.8%): queued minutes
 #   ran at 80-100% KV, i.e. concurrency is KV-bound (~3.7 conversations of
 #   200K); GPU 0 under load 21,471 MiB -> ~22,200, under the 23,000 alert line.
-#   Rollback: GPU_UTIL_SWIFT15=0.70.  Removed as inert (Q34): NCCL_P2P_DISABLE,
+# 2026-11-03 (decision user, Q55): gpu-util 0.73 -> 0.71.
+#   Trigger: GPU 0 read 23 115 / 23 175 / 23 297 MiB on three consecutive
+#   cycles, above the 23 000 alert line.  BUT the three readings also showed
+#   GPU 1 -- same engine, same load, NO Windows desktop -- perfectly FLAT at
+#   21 834 MiB: the engine is not growing, the desktop is (~1.46 GiB).  So the
+#   0.70 the line called for was over-correcting; the user chose 0.71 instead:
+#   +492 MiB of boot margin instead of +737, for -53 984 KV tokens instead of
+#   -80 976.  MEASURED AT BOOT: KV 776 824 tokens (interpolated 777 700, off
+#   by 0.1%), max concurrency 2.96, health 200 at T+230 s (recreate 16:06:51Z,
+#   announced on `global` beforehand), real decode proven by the watchdog
+#   (not a /health alone).  Rollback: GPU_UTIL_SWIFT15=0.73.
+#   NOTE the env var is baked at container CREATION -- a `docker restart` does
+#   NOT apply it, a recreate (`up -d --no-deps vllm-medium-swift15-27b`) does.
+#   Rollback (historical, pre-2026-11-03): GPU_UTIL_SWIFT15=0.70.  Removed as inert (Q34): NCCL_P2P_DISABLE,
 #   CUDA_DEVICE_MAX_CONNECTIONS, --disable-custom-all-reduce (CUDA reports no
 #   P2P between GPUs 0/1 under WSL2, so NCCL and custom all-reduce never use
 #   it), shm_size (ignored with ipc: host).  KEPT although inert:
@@ -155,7 +168,7 @@ services:
           --tensor-parallel-size 2 \
           --gdn-prefill-backend triton \
           --no-enable-flashinfer-autotune \
-          --gpu-memory-utilization ${GPU_UTIL_SWIFT15:-0.73} \
+          --gpu-memory-utilization ${GPU_UTIL_SWIFT15:-0.71} \
           --max-model-len 262144 \
           --kv-cache-dtype ${KV_DTYPE_SWIFT15:-nvfp4} \
           --dtype auto \
