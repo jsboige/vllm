@@ -6431,3 +6431,56 @@ Snapshot des sondes : `.tmp/probe_loopback3962.py`.
 **Pathologie fs-tier (dossier ouvert, non traitée)** : `lookup_async_delay_seconds{1:TouchOnHitFsTier}` = **72 950 appels / 370 718,63 s = 5,08 s de moyenne** (au 08:11Z : 67 007 / 5,15 s) ⇒ delta 5 943 appels / +25 932 s = **4,36 s sur les nouveaux appels**. Elle **persiste** et reste à instruire séparément (notre `lru_fs_tier`, PR #211).
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1012Z.txt`.
+
+## 04/11 11:45Z — Cycle : ★★ LE TIER fs ÉCRIT 15,5× PLUS QU'IL NE RELIT (réponse chiffrée à la question user du 03/11) ; ms#1646 : primaire 2/2 à 90,0 s, 3ᵉ cycle ; hit 80,9 %, préemptions +5
+
+**Prod saine** : health 200 en 7 ms, RC=0, `StartedAt` 03/11 16:06:57Z inchangé, 0 OOM sur 5 000 lignes lues, 3 conteneurs Up, `/dev/shm` 33G/63G = 51 % (aucun orphelin), G: 87 % écriture OK, marge commit **75,8 %** (96,9 Go libres, sous le seuil 85 %). Watchdog : **7 `WEDGE fail 1/2`** (10:26:24 → 11:35:34), **zéro 2/2**, zéro restart, 1 471 sondes OK / 1 662 lignes.
+
+**§5quater (93 min)** : hit **80,9 %** (82,4 → 80,9). Le **device retombe à 6,45 % du servi** (contre 15,3 % au 10:12Z) et le **host reprend 91,18 %** — le pic de device du cycle précédent était bien transitoire. Préemptions 106 → 111 (**+5**, retombée après le +23) ; hit 80,9 % >> 50 % ⇒ **triade non réunie**, pas d'alerte. KV 83,4 → **75,2 %**. ~4 751 t/s reçus / ~51,6 t/s decode.
+
+**VRAM** : GPU 0 **22 776** (+16) / GPU 1 **21 292, identique au MiB pour la 6ᵉ lecture** / GPU 2 157 MiB (libre, CoursIA). Marge **224 MiB** sous 23 000. 3ᵉ lecture dans la bande haute mais **+16 MiB seulement** : c'est un palier qui continue de glisser très lentement, pas le saut qui précéderait la pagination WDDM. **Watch maintenu, pas d'alerte, et surtout pas de hausse de gpu-util.**
+
+### ★★ Le tier fs écrit 15,5× plus qu'il ne relit — la question du user avait une réponse mesurable
+
+Le user demandait le 03/11 : « ce qui m'étonne avec autant d'écriture, c'est que je me demande si tu n'écris pas souvent la même chose ». Les compteurs du tier répondent, sur l'âge complet du moteur (19,63 h depuis le boot) :
+
+| | Valeur | Débit |
+|---|---|---|
+| `write_bytes` tier fs | **653,90 GB** | 33,3 GB/h — `write_time` 3 503,1 s = **5,0 % du temps mural** |
+| `read_bytes` tier fs | **42,31 GB** | 2,16 GB/h — `read_time` 26,05 s, 1,62 GB/s |
+
+**Ratio écriture:lecture = 15,5 : 1.** Et ce n'est pas un artefact de compteur : `chunk_hits{tier=1:fs}` = **1 606 / 83 234 requêtes = 1,93 %**, contre **29,8 %** pour le tier RAM (`tier=0:primary`, 222 093 / 745 155). Le tier fs sert au total **1,4 % des tokens de prompt** (`disk` 4,99 M sur 357,25 M) — soit ~512 K tokens sur cet intervalle, ≈ **108 s de prefill évité sur 93 min (1,9 % du temps moteur)**.
+
+Lecture honnête : le gain est réel mais modeste, et il coûte 5 % de duty-cycle disque pour écrire des blocs qui, à 98 %, ne sont jamais relus. Avec le cap à 250 GiB et 33,3 GB/h, le tier se remplit en ~8 h puis churnne en LRU en permanence. **Ce n'est pas encore une recommandation de changement** — mais c'est la première mesure qui chiffre le déséquilibre, et elle donne au dossier sa question : *que fait-on écrire qu'on ne relira pas ?*
+
+### ★★ Pathologie du lookup async — le contraste qui donne la direction
+
+Le nouvel élément du cycle n'est pas la moyenne (elle s'aggrave) mais la **comparaison des deux voies sur le MÊME tier et les MÊMES chunks** :
+
+| Voie | Appels | Temps total | Moyenne |
+|---|---|---|---|
+| `lookup_sync` tier fs | 83 234 | 0,2431 s | **2,92 µs** |
+| `lookup_async` tier fs | 79 657 | 413 185 s | **5,19 s** |
+| `kv_offload_lookup_async` (sans tier) | 2 588 | 37 273 s | **14,40 s** |
+
+La voie synchrone répond en **microsecondes** ; la voie asynchrone met des **secondes** — **1,78 million de fois plus lent**. Un prefetch KV asynchrone qui répond en 5,19 s est structurellement inutilisable (un pas de décodage dure 20-40 ms) : il ne peut pas alimenter le step qui l'a demandé. Et la tendance **s'aggrave** : delta de **6,33 s par nouvel appel** depuis 10:12Z (contre 4,36 s au cycle précédent). Dossier ouvert (notre `lru_fs_tier`, PR #211) ; direction d'instruction désormais claire = **pourquoi deux chemins d'accès au même store diffèrent de six ordres de grandeur**.
+
+### ★★ ms#1646 — 3 nouvelles passes, primaire toujours 2/2 à 90,0 s pile
+
+Troisième cycle consécutif de re-mesure sur `dd67ab38` (servi depuis 09:14:20Z). **Trois** nouvelles passes réelles :
+
+| Passe | Déclencheur | Primaire | Suite |
+|---|---|---|---|
+| C 10:15:58 → 10:17:49 | `append-first` 10:15:58 | timeouts à **10:17:28 = 90,0 s pile** | cloud ×2 → completed + `circuit breaker OPENED` |
+| D 10:25:18 → 10:27:09 | breaker **OPEN** → `primary skipped, trying cloud tier before truncation` | — (primaire sauté) ; 10:26:48 `attempt 1 failed` + `primary attempt refused — pass deadline reached the cloud reserve (#3962)` | cloud ×2 → 10:27:09 **`did not converge under 15KB, deterministic truncation`** |
+| E 10:48:35 → 10:50:26 | breaker **HALF-OPEN (cooldown elapsed), retrying LLM** | timeouts à **10:50:05 = 90,0 s pile** | cloud ×2 → completed |
+
+Le **mécanisme** marche : 3/3 passes déclenchées, et la machine d'états du disjoncteur (OPEN → HALF-OPEN → retry) joue correctement. **Ce qui ne marche pas** : la demi-ouverture échoue **2/2 à 90,0 s pile**, donc le primaire est à **0 % de succès sur l'ensemble de la journée** et **100 % du coût LLM de condensation part sur le cloud**, 3ᵉ cycle de suite. Plus une **perte de contenu** (`did not converge under 15KB`) à 10:27:09 — ms#1649/#4434.
+
+Note d'instrument : le champ `elapsed` de l'append n'apparaît plus au niveau INFO dans ces rotations ; la mesure d'append de ce cycle vient donc de **mon propre `[DONE]`** (même méthode que les 110 ms du cycle précédent), pas d'une relecture de log tierce.
+
+**Sécurité (census 3 h, 679 req à 3,79/min)** : `90.65.170.144` 373×200 (hairpin site) ; 275 sans XFF (loopback hub/sondes, dont 273 en 200) ; `92.150.81.115` 2×200 (po-2027). **Aucune `31.77.x`, aucune IP inconnue avec 200, zéro 400/500.** Clés : `fp=be312daf7c1c` (MEDIUM `auth_prefix`) 646×200, `fp=1f7f6080cb65` (nanoclaw morte) 29×401, `NONE` 2×401 — **aucune clé inconnue**. Corps : **46 % en 100K-1M**.
+
+**Autres** : nbaudit `ok:true` 11:05:51Z (5 séries, `19451:Image/`, `consecutive_failures: 0`). Coordination : inbox 4 non-lus, **aucun adressé à `myia-ai-01:vllm`** qui demande un geste (roo-extensions = correction ms#1646 déjà traitée, po-2023 = Q54 close, po-2025 = G4 #682 close, po-2028 = mention machine-only d'un grain roo-extensions, hors périmètre). Global : uniquement des restitutions de registres d'autres lanes.
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1145Z.txt`.
