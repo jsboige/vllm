@@ -6402,3 +6402,32 @@ Déclencheur : mandat user (« relance roo-extensions et son issue dédiée RSM 
 **Leviers (aucun exécuté — décision user)** : la capacité est le seul levier moteur (NVFP4 déjà au max ; gpu-util baissé à 0.71 volontairement). Le levier réaliste est **côté hub** : politique d'admission / plafond de contextes géants concurrents (déjà discuté claudish côté capacité), ou accepter que condensation + sondes passent par le fallback cloud (c'est le comportement actuel, gracieux depuis ms#1646).
 
 Snapshot des sondes : `.tmp/probe_loopback3962.py`.
+
+## 04/11 10:12Z — Cycle : ★★ ms#1646 RE-MESURÉ SUR LE BON BUILD (append 54/69 ms pendant une passe réelle) et RÉTRACTATION des 35 ms publiés ; hit 82,4 %, préemptions +23 ; Q54 et G4 #682 FERMÉS
+
+**§5quater — amortissement** : intervalle 08:11→10:12Z (121 min) : queries +34 689 516, cached +28 574 848 (device 4,38 M / host 23,43 M / disk 0,76 M) ⇒ **HIT 82,4 %** (81,0 → 82,4, légère remontée). Le **device** reprend **15,3 %** du servi (contre 2,6 % au 08:11Z) et le host 82,0 % — le pic de 91,6 % du matin reste un régime, pas une tendance. KV 85,7 → **83,4 %**. Prefill reçu ~4 802 t/s, décodage ~49 t/s.
+
+**Préemptions 83 → 106 = +23** : c'est le **plus fort intervalle depuis le +19 du 03/11 22:11Z**, mais le hit est à 82,4 %, très au-dessus du seuil de ~50 % ⇒ **triade NON réunie**, pas d'alerte registre. À surveiller : deux intervalles hauts consécutifs (+23 puis ?) avec un hit qui resterait haut = saturation KV réelle sans perte d'amortissement, ce qui est le régime attendu, pas une panne.
+
+**VRAM — 5ᵉ lecture, et un fait nouveau** : GPU 0 **22 760 MiB** (+232 vs 22 528), la **plus haute lecture depuis le passage à 0,71** ; GPU 1 **21 292 MiB, identique au MiB pour la 5ᵉ fois** (allocateur stabilisé). Marge sous 23 000 : **240 MiB**. Pas d'alerte (seuil non franchi) mais la marge se réduit — si une 3ᵉ lecture monte encore, c'est le signal qui précède la pagination WDDM.
+
+**★★ ms#1646 — la re-mesure demandée par roo-extensions, et une rétractation publique.** roo-extensions a corrigé ma chronologie (msg-20261104T091701) : ms#1646 a été mergée à **08:45:28Z** (`dd67ab38`), et le RSM d'ai-01 ne sert ce build que **depuis le rebuild de 09:14:20Z**. Mon append de 35 ms (publié le 04/11 matin, [#4527 c.6626031100](https://github.com/jsboige/roo-extensions/issues/4527#issuecomment-6626031100)) tournait sur **`f63cfbaf`**, build **sans** le mode détaché : il mesurait un append qui n'a **pas** déclenché de passe. **Ce n'était donc pas une preuve de déploiement.** Deux passes réelles ont eu lieu depuis, sur `dd67ab38` :
+
+| Passe | Append au déclencheur | Primaire | Repli cloud | Fin |
+|---|---|---|---|---|
+| A — 09:38:09 → 09:40:18 (129 s) | **54 ms** (+ un 2ᵉ append à 141 ms) | `LLM status update timeout` + `LLM summary timeout` à 09:39:39 = **90,0 s pile** | 09:39:46 / 09:40:00 / 09:40:18, 3 succès | `Condensation completed` |
+| B — 10:02:41 → 10:05:01 (140 s) | **69 ms** | `LLM status update timeout` à 10:04:11 = **90,0 s pile** | 10:04:38 / 10:05:01, 2 succès | `Condensation completed` |
+
+**Verdict** : l'append rend **54 / 69 ms pendant qu'une passe réelle tourne 129-140 s** ⇒ le critère #4527 (« append < 5 s même pendant repli cloud ») est **tenu, sur le bon build, avec la preuve que la passe est bien déclenchée** (marqueur `Post-append condensation triggered (append-first)` à la même seconde). Le symptôme à 108,5 s ne peut plus se reproduire. **Ce que ça ne règle pas** : le primaire échoue **2/2 passes, à 90,0 s pile** ⇒ 100 % du coût LLM de condensation part sur le cloud ; et à 10:05:01 s'ajoute `LLM did not converge under 15KB, applying deterministic truncation` = **perte de contenu** côté statut (correctif en PR ms#1649, #4434).
+
+**Autres** : 12 `WEDGE fail 1/2` sur la fenêtre (06:11 → 09:41), **zéro 2/2, zéro restart**, 1 396 sondes OK / 1 573 lignes lues. `/dev/shm` **33G/63G = 51 %** (7 fichiers ; un seul `psm_*` récent à 160 MB = blocs de génération, normal — pas d'orphelin). G: 87 %, écriture OK. Marge commit **75,4 %**. nbaudit `ok:true` 09:26Z, 5 séries, `19451:Image/`, `consecutive_failures: 0`.
+
+**Sécurité (census 3 h, 734 req à 4,08/min)** : `90.65.170.144` 422×200 (hairpin site) · 283 requêtes sans `X-Forwarded-For` (loopback hub/sondes : curl 185, python-requests 53, OpenAI/JS 18, urllib 15) · `37.230.119.250` 31×401 = **poller nanoclaw clé morte, déjà identifié, non re-signalé**. **Aucune 31.77.x, aucune IP inconnue avec 200, zéro 400/500.** Clés : `fp=be312daf7c1c` (≈ MEDIUM `auth_prefix`) sur 701, `fp=1f7f6080cb65` (morte) sur 31. Corps : **310 requêtes (42 %) en 100K-1M** — le long contexte reste le régime dominant, cohérent avec l'attribution de #3962.
+
+**Q54 — FERMÉE.** po-2023 a **appliqué** le blocage pare-feu le 04/11 **09:55:13-19Z** : `Block-ZOLTRAAK-31.77.203.199` et `-31.77.254.4`, **Block | enabled=True**, TCP Inbound 80/443, profile=Any, vérifié par relecture **non élevée** indépendante — c'est exactement le critère de retrait du registre. Calibrage donné par po-2023 et à respecter dans mes prochains relevés : **les salves étaient espacées de 8-16 h, une absence de quelques heures ne prouve rien** (ni dans un sens ni dans l'autre) ; une requête qui passerait malgré la règle serait l'information (elle dirait que la connexion n'entre pas par 80/443). Engagement pris par po-2023 : un 3ᵉ sibling dans `31.77.x` ⇒ passage au `/16` **sans nouvelle demande**.
+
+**G4 #682 — FERMÉ.** po-2025 (msg-20261104T094527) : `workspace: unknown` à 100 % est l'**état attendu pré-campagne** — le hub compose `machine:workspace` depuis `x-claudish-machine` (envoyé par toute la flotte, d'où notre moitié fiable) et `x-claudish-workspace` (**envoyé par aucun siège** : la campaign settings roo-extensions n'est pas déployée). Le levier est **100 % client-side** ; rien à armer ni corriger hub-side, et dès qu'un siège enverra le header notre grep le verra sans changement. Pas de suite pour vllm.
+
+**Pathologie fs-tier (dossier ouvert, non traitée)** : `lookup_async_delay_seconds{1:TouchOnHitFsTier}` = **72 950 appels / 370 718,63 s = 5,08 s de moyenne** (au 08:11Z : 67 007 / 5,15 s) ⇒ delta 5 943 appels / +25 932 s = **4,36 s sur les nouveaux appels**. Elle **persiste** et reste à instruire séparément (notre `lru_fs_tier`, PR #211).
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1012Z.txt`.
