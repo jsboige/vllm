@@ -6592,3 +6592,79 @@ Les 4 non-lus de l'inbox sont des notifications `[MENTION]` (po-2023 IIS, po-202
 L'`[ASK]` de **roo-extensions (11:50Z, #4434)** demande exactement ce que la sonde du jour mesure : **réponse apportée** (voir ci-dessus).
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1350Z.txt`.
+
+---
+
+## 04/11 16:03Z — Cycle : ★★★ le cloud-first #4434 est DÉPLOYÉ et sa première passe est PROPRE ; la queue async RESPIRE avec la charge (16,07 → 3,08 s, décomposition par seau désormais possible) ; hit 88,2 % ; le tier fs tombe à 24:1 sur l'intervalle ; Q57 = clé inconnue rejetée
+
+### Prod
+
+`/health` 200 en 2,8 ms, `RC=0`, `StartedAt` inchangé (**24 h**), 3 conteneurs Up, 0 OOM sur 5 000 lignes. Watchdog : **10 `WEDGE fail 1/2`** nouveaux (13:51 → 15:39), **zéro 2/2**, zéro restart, 1 703 OK / 1 924 lignes. `/dev/shm` 51 %, G: écriture OK, commit 76,7 % (93,0 GB libres), nbaudit `ok:true` 15:05:58Z.
+
+**VRAM 22 652 / 21 292 / 176** — GPU 0 **+13 MiB** vs 22 639. Trois cycles, trois lectures dans la bande 22 200-22 800 avec deux sens différents : **l'oscillation est confirmée, il n'y a ni dérive ni pente**. GPU 1 identique au MiB pour la **8ᵉ** lecture.
+
+### §5quater — hit 88,2 % (le plus haut depuis 06:11Z)
+
+| | intervalle 13:51 → 16:03 (7 969 s) |
+|---|---|
+| requêtes de préfixe | +52 439 781 |
+| servis par le cache | +46 224 592 (**88,2 %**) |
+| dont device / host / disk | 18,32 % / 80,03 % / 1,64 % |
+| préemptions | 116 → 128 (**+12**) |
+| prefill / décode | ~6 547 t/s / ~65,8 t/s |
+
+Fenêtre plus chargée **et** mieux servie : le hit remonte parce que les mêmes sessions reviennent (device 7,49 → 18,32 % du servi : le cache GPU sert à nouveau). **Triade non réunie** (+12 < +15 et hit 88 % ≫ 50 %) — mais c'est le plus fort intervalle depuis le +23 de 10:12Z, à garder dans l'historique.
+
+### ★★★ Cloud-first #4434 déployé — première passe propre depuis ~10:15
+
+Chronologie du cycle :
+
+- **Passe L** (~13:56 → 13:58:43) : deux dashboards condensent en parallèle, breaker OPEN ×2, `primary attempt refused` ×2 → **5ᵉ troncature** de la journée (13:58:34).
+- **Passe M** (15:05:48 → 15:07:40) : HALF-OPEN retry → `primary attempt refused` à 15:07:18 = **90,0 s pile** → **6ᵉ troncature** (15:07:40).
+- **15:43:22** (dashboard global) : *« Statut mis à jour via cloud (cloud-first #4434) (14.9 KB), résumé LLM généré (2.3 KB) »* — durée 112 s, **aucune troncature, aucun événement breaker, aucun `primary refused`**.
+
+roo-extensions a donc déployé `CONDENSE_STATUS_CLOUD_FIRST` (#1652/#4434) entre 15:07 et 15:43 — **la réponse mesurée du 13:50Z (8 tokens = 112 s) a été reçue et actée dans les deux heures**.
+
+**Mon avertissement du cycle précédent ne se matérialise pas sur cette première passe** : la jambe résumé rend 2,3 KB sans troncature, alors que je craignais qu'elle hérite d'un budget de temps raccourci. Nuance honnête : la ligne du dashboard ne dit pas si ce résumé est venu du primaire ou du cloud (*« résumé LLM généré »*, sans mention de tier, contre *« via fallback cloud »* les fois précédentes). **Une passe ne fait pas une tendance** — c'est le premier point de données du nouveau régime.
+
+### ★★ La queue async respire avec la charge — la « dérive » 4,36 → 6,33 → 16,07 s était un artefact d'intervalle
+
+Deux snapshots de buckets existent désormais (13:50Z et 16:03Z), donc **l'intervalle se décompose par seau pour la première fois** :
+
+| | cumul 13:50Z | cumul 16:03Z | intervalle |
+|---|---:|---:|---:|
+| appels async fs | 87 806 | 95 796 | **+7 990** |
+| dont ≤ 10 s | 78 211 | 85 682 | +7 471 (**93,5 %** des nouveaux) |
+| dont > 10 s | 9 595 | 10 114 | **+519 (6,5 %)** |
+| somme (s) | 544 170 | 568 757 | +24 587 |
+| moyenne par nouvel appel | — | 5,94 s (cumul) | **3,08 s** |
+
+La moyenne par nouvel appel **tombe de 16,07 à 3,08 s**, et la part des nouveaux appels qui tombent dans la queue >10 s descend de ~10,9 % (cumul) à **6,5 %**. Si les ≤10 s pèsent au plus 1,0 s chacun, la queue de l'intervalle moyenne **~33 s par appel** (contre ~50 s au cumul précédent).
+
+⇒ **La bimodalité est stable, la masse de la queue fluctue avec la charge.** La série ascendante du cycle précédent (4,36 → 6,33 → 16,07 s) n'était pas une dérive mais la signature d'intervalles chargés. Le dossier garde sa question — *pourquoi 11 % (6,5 % ce cycle) prennent des dizaines de secondes quand 93 % passent en ≤10 s* — mais **le « ça s'aggrave monotone » est retiré**. Concurrency stall moyenne : 568 757 s / 86 212 s = **6,6 lookups stallés en moyenne** depuis le boot.
+
+`kv_offload_lookup_async` (sans tier) : 13,67 s cumul ; intervalle 387 appels / 2 533 s = 6,54 s chacun. Sync fs inchangé : **2,93 µs**.
+
+### ★★ Tier fs — l'intervalle le plus déséquilibré de la mesure : 24:1
+
+| | boot (23,95 h) | intervalle |
+|---|---|---|
+| écrit | 816,84 GB (34,1 GB/h) | **+102,10 GB = 46,1 GB/h** |
+| relu | 50,58 GB (2,11 GB/h) | +4,25 GB (1,92 GB/h) |
+| **ratio** | **16,15 : 1** | **24,0 : 1** |
+| duty-cycle écriture | 5,30 % | **8,79 %** |
+| `chunk_hits` | fs 1,92 % / RAM 30,07 % | — |
+
+Trois intervalles : **15,1 → 15,1 → 24,0**. La cohérence est nette : la fenêtre à hit élevé (88 %) est une fenêtre de **réutilisation massive, donc de churn d'éviction élevé** — le tier écrit d'autant plus de blocs qui ne seront pas relus que le traffic réutilise le cache. `disk` ne sert toujours que **1,41 %** des tokens de prompt. Toujours pas de recommandation de changement.
+
+### ★ Q57 — clé inconnue rejetée (401)
+
+Nouvelle empreinte `fp=8d3d44818b2a`, **une** requête, **401**. Vérifiée contre les trois clés de `.env` et toutes les empreintes connues : **aucune correspondance**. Aucune brèche — c'est le rejet prévu. Entrée **Q57** au registre (attribution user ; **escalade immédiate si elle obtient un 200**).
+
+Reste du census : aucune `31.77.x`, aucune IP inconnue avec 200, zéro 400/500, 53 % des corps en 100K-1M.
+
+### Coordination
+
+1 non-lu (mention po-2024 = le `[ASK-USER]` claudish, pas vllm) ; 2 ASK sur global (CoursIA-2, po-2024:claudish), aucun adressé à vllm. Le déploiement cloud-first de roo-extensions est l'effet direct de l'échange #4434 du cycle précédent.
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1603Z.txt`.
