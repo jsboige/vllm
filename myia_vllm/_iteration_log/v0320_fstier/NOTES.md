@@ -6314,3 +6314,23 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **Autres** : nbaudit `ok:true` 02:05Z (vague 2) · G: write OK (87 %) · marge commit **70,3 %** · condensation : repli cloud 01:20Z (primaire re-timeout sous KV 90 %, #4527 en cours chez roo-extensions) · roo-extensions a livré ms#1644 (`f7eb1486`, rejet des résumés coupés) + bump PR #4526 + mes 2 demandes versées dans **#4527** · global : 1 ERROR = condensation tronquée de **po-2028** sur workspace-CoursIA (hors périmètre).
 
 **⚠ Erreur d'instrument (déclarée)** : `bulk_mark_read` avec filtres vides a marqué **les 84 non-lus** au lieu des 4 adressés à la lane — RSM n'a pas de `mark_unread`. Les ~80 autres sont des dispatchs machine d'autres lanes en souffrance depuis des jours (aucune perte opérationnelle constatée), mais le marqueur est perdu. Leçon : ne plus appeler `bulk_mark_read` du tout sur cette lane, `mark_read` ciblé uniquement. · G: write OK · marge commit **70,0 %** (119,9 Go libres — la pression WSL est retombée) · condensation nominale (WARN BaselineManager horaires = périmètre RSM connu). · G: write OK · marge commit **68,7 %** · condensation : reconstructions de client 21:06-21:34 (2 fallback + 2 primaires), pas d'échec.
+
+## 04/11 03:56Z — Cycle : hit 78,0 % (le déclin S'ARRÊTE), préemptions +7 (l'intervalle haut ne répète pas), VRAM stabilisée au nouveau plateau ; `37.230.119.250` = poller nanoclaw à clé morte (936×401, pas un scanner) ; #4527 levier 1 livré (append détaché 621 ms)
+
+**Prod** : health 200 / 3,4 ms · RC=0 · `StartedAt` 03/11 16:06:57Z (11,8 h, zéro restart) · OOM 0/5 000 · 974 sondes OK · shm 33G/63G = 51 % (plancher tier, pas de fuite) · 3 conteneurs Up.
+
+**§5quater (105 min)** : hit intervalle **78,0 %** (19,67 M/25,23 M) — la série de déclin 90,6→78,9→79,5→75,6 **s'inverse**. Préemptions 61→68 (**+7**) : la série 0→9→+5→+19→+11→+17→**+7** — le double intervalle haut ( +11, +17) **ne répète pas**, la triade §5quater s'éloigne. KV 94,9 % (plancher haut maintenu). Régime ~4 019 t/s prefill reçus / ~56 t/s decode.
+
+**VRAM : le « plateau cassé » de 02:11Z était un PALIER, pas une pente** — GPU 0 **22 554** (−7) / GPU 1 **21 292** (identique au MiB près). Stabilisation au nouveau niveau en une lecture : high-water d'allocateur, marge **446 MiB** sous 23 000. Leçon confirmée : deux points ne font pas une pente (2ᵈ fois sur ce compteur).
+
+**WEDGE-BUSY en série** : 5 × `fail 1/2` (02:55→03:28), chacun **avec compteurs avançant** (p=189.0M→195.0M, g=1.95M→2.04M sur la fenêtre) = sondes qui expirent derrière les gros prefills, jamais 2/2, zéro restart. Comportement attendu du régime documenté (28/10 : saturation = la file domine).
+
+**Sécurité** : **aucune 200 de `31.77.x`** (Q54 : scanner dans son intervalle de salves 8-16 h, prochaine fenêtre probable ~18:35Z) · `92.184.113.170` ×2 200 (SUPPOSÉ-po-2027, connu) · **`37.230.119.250` NOUVEAU dans les records mais PAS un scanner** : 936 req / ~4 j, toutes `/v1/models`, UA `Go-http-client/1.1`, **toutes 401 avec la clé morte nanoclaw `1f7f6080cb65`** — c'est le poller Go nanoclaw (visible au census depuis ~4 j sous cette IP, ~9 requêtes/h). Zéro 200, zéro inférence, aucune action. · zéro 400 dans la fenêtre (signature #431 muette) · les 2×500 du census = les historiques (recreate 16:06Z 03/11 à 712 min ; mort 01/11 au-delà) · 1×404 `curl` sur `/v1/embeddings` à :5002 (route inexistante — client embeddings mal pointé, sans gravité).
+
+**#4527 levier 1 LIVRÉ** (worker po-2024, `ms#1646` MERGEABLE) : `handleAppend` rend la main dès persistance du message (621 ms mesurés LLM bloqué, vs 108,5 s vécus), condensation **détachée** single-flight (`lock-held` au 2ᵉ franchissement), échec de passe sans perte, rollback `CONDENSE_DETACHED=0`, + **WARN franchissement 85 %** (nos 2 asks). 2 062 tests verts, témoin négatif prouvé. Reste : merge → bump pointeur → rebuild flotte → mesure terrain (siège ai-01 = candidat naturel, ACK envoyé). Doc : `roo-extensions#4529`.
+
+**Condensation** : 1 échec primaire ~03:05Z (circuit breaker HALF-OPEN) **rattrapé par le cloud fallback ×3**, complétée 03:08Z = dégradation gracieuse nominale sous KV 95 %. Nouveaux WARN RSM (03:37-03:46, périmètre RSM, pas vllm) : `[DASHBOARD-FORK] #3482`, `[NUL-HEAD] #3782`, `Message not found: r1140-dispatch-*`.
+
+**Autres** : nbaudit `ok:true` 03:05Z (vague 2 `Image/`, rc 0/0, 0 échec consécutif) · G: write OK (87 %) · marge commit **71,7 %** (113,0 Go) · inbox traité ciblé (1 non-lu = le worker report #4527, ACK + `mark_read` ciblé — la règle post-incident est tenue).
+
+Snapshot : `.tmp/metrics_snapshot_20261104T0356Z.txt`.
