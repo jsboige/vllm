@@ -6334,3 +6334,25 @@ Moteur au maximum sûr (0,73, pic GPU 0 22,5-22,6 K < ligne 23 K) ; batch 8192/4
 **Autres** : nbaudit `ok:true` 03:05Z (vague 2 `Image/`, rc 0/0, 0 échec consécutif) · G: write OK (87 %) · marge commit **71,7 %** (113,0 Go) · inbox traité ciblé (1 non-lu = le worker report #4527, ACK + `mark_read` ciblé — la règle post-incident est tenue).
 
 Snapshot : `.tmp/metrics_snapshot_20261104T0356Z.txt`.
+
+## 04/11 06:11Z — Cycle : hit 91,6 % (fort rebond, device ressert 35 % du servi), préemptions +4 (décrue confirmée), palier VRAM tenu ; ★ G4 #682 AC fermé — `x-claudish-*` capturés par le middleware, mais workspace TOUJOURS `unknown`
+
+**Prod** : health 200 / 3,6 ms · RC=0 · `StartedAt` 03/11 16:06:57Z (14 h, zéro restart) · OOM 0/5 000 · 1 171 sondes OK · shm 33G/63G = 51 % · 3 conteneurs Up.
+
+**§5quater (135 min)** : hit intervalle **91,6 %** (49,49 M/54,05 M) — fort rebond depuis 78,0 %. Ce n'est pas le tier qui fait le travail ici mais le **device** : +17,5 M tokens servis depuis le GPU (35 % du servi, contre ~15 % aux cycles précédents) = régime du matin où les sessions récurrentes retombent sur des préfixes encore chauds en VRAM. Préemptions 68→72 (**+4**), décrue confirmée (série 0→9→+5→+19→+11→+17→+7→+4). KV 94,3 %. Régime ~6 692 t/s prefill reçus / ~80 t/s decode.
+
+**VRAM** : palier tenu — GPU 0 **22 542** (−12) / GPU 1 **21 292** (identique au MiB, 3ᵉ lecture consécutive). Marge 458 MiB sous 23 000.
+
+**WEDGE-BUSY ralenti** : 2 seulement (04:43, 05:55) sur 135 min, compteurs avançant à chacun, jamais 2/2.
+
+**★ G4 #682 — AC FERMÉ** (po-2025:claudish demandait le relevé moteur) : le middleware `error_source_capture` **capture bien `x_claudish_client` + `x_claudish_machine`**, et la fenêtre du fichier couvre **105,6 h** (≈ 28/10 → maintenant), soit exactement la fenêtre demandée. Depuis le restart hub 19:44:22Z : **1 159 requêtes porteuses sur 2 082** (po-2028 356 · po-2024 286 · po-2023 238 · po-2027 118 · ai-01 116 · unknown:unknown 45 · absent 923 = consommateurs directs hors hub). Fenêtre entière par machine : po-2024 4 609 · po-2023 3 227 · po-2027 2 562 · po-2028 2 062 · ai-01 971. **Finding à leur rendre : la partie workspace vaut `unknown` dans 100 % des cas** (1 159/1 159) — la granularité `machine:workspace` visée n'est pas atteinte, seul le niveau machine l'est. Relevé + ligne d'exemple postés en commentaire de [claudish#682](https://github.com/jsboige/claudish/issues/682#issuecomment-6624027911) (c'est l'AC qui ferme G4).
+
+**Census 7 h** : toutes les IP à 200 sont connues (site hairpin 833 · local sans XFF 535 · po-2027 8 · web1 2 · web2 `51.75.200.22` 2) · **31.77.x : aucun trafic** (salve suivante attendue ~18:35Z) · statuts 200×1 378 / 401×68 / 404×1 · **zéro 400, zéro 500**. Tailles : 773 corps 100K-1M sur 1 447 = régime gros corps inchangé.
+
+**Coordination** : po-2027 a fait sa chasse bornée (sidecar 0 trafic moteur, aucun customEndpoint, aucun credential) et **accepte l'attribution SUPPOSÉ-po-2027/hygiène** ; ils proposent un réflexe `Get-NetTCPConnection -RemotePort` à la prochaine paire ~19K/56K — accepté (réponse envoyée). Message machine-addressed `po-2024:CoursIA-2` demandant un `APPROVED` formel sur #24561 : **hors mandat de cette lane** (pas de revue, pas d'approbation à l'aveugle, leur registre réserve la levée au coordinateur) — réponse de cadrage envoyée, la demande reste pour `myia-ai-01:CoursIA`/user, signalée ici. Global : 2 `ASK-USER` d'autres lanes + embeddings po-2023 rétabli 05:26Z (72 min d'indispo, hors périmètre vllm).
+
+**§2 Condensation** : 2ᵈ échec primaire ~05:52Z rattrapé par le cloud fallback ×3 (complétée 05:53Z) — même motif qu'à 03:05Z, cadence ~3 h sous KV 94 %. WARN RSM nouveaux : `Append lock budget exhausted (PG held) — fail-open (#3205)` à 05:59:54 (précédé de `Tool call SLOW: roosync_dashboard`), `[STALE-FILE #3230]`, `[PG-PRIMARY #4131]` miroir GDrive échoué/expiré (PG porte seule) — **périmètre RSM**, notre probe d'écriture G: reste OK. Ces WARN renforcent l'intérêt de ms#1646 (append détaché) une fois déployé.
+
+**Autres** : nbaudit `ok:true` 05:06Z (vague 2 `Image/`, 0 échec) · G: OK 87 % · marge commit **73,9 %** (104,4 Go) · inbox soldée en ciblé (3 messages, 3 réponses, 3 `mark_read` — règle tenue).
+
+Snapshot : `.tmp/metrics_snapshot_20261104T0611Z.txt`.
