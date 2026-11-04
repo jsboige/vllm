@@ -6756,3 +6756,27 @@ Snapshot : `.tmp/metrics_snapshot_20261104T1800Z.txt`.
 **Registre : 2 ouvertes (Q57 2/3, Q58 réapparue), 1 en attente d'arbitrage (Q59 fenêtre Axion).**
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1943Z.txt`.
+
+---
+
+## 04/11 22:11Z — Cycle (cron :41) : hit 90,6 % (sommet du jour), 5ᵉ troncature puis 2 h 20 de silence, et PREMIÈRE 400 texte pur (cas #431)
+
+**Prod saine.** `/health` 200 en 5,4 ms, `RC=0`, boot inchangé (30,1 h), 3 conteneurs Up, **0 OOM**. Watchdog : **1 seul** `WEDGE fail 1/2` (21:01:54), zéro 2/2, zéro restart. shm 51 %, G: 86 % OK, commit 82,5 % (69,8 GB libres), nbaudit `ok:true` 22:05:49Z (vague 2 `Image/`).
+
+**§5quater — hit 90,6 %** (79,7 → 90,6, **sommet du jour** ; série 88,2/88,6/79,7/90,6), device 34,0 % du servi / host 64,8 % / disk 1,24 %. Préemptions 141 → 148 (**+7**, 4ᵉ intervalle < 15 consécutif ; triade non réunie). Prefill 5 706 t/s, décode 53,5 t/s. KV 59,3 % au scrape, **file d'admission VIDE** (`capacity=0`, `deferred=0` — elle se reformait à 18:00Z).
+
+**VRAM 22 944 / 21 292 / 18 364** — GPU 0 = **lecture la plus haute de la config** (bande 22 200-22 800 dépassée de 144 MiB, **56 MiB sous l'alerte 23 000** — pas une alerte, à watcher). GPU 1 identique au MiB (12ᵉ). GPU 2 = GRPO CoursIA.
+
+**★★★ Première 400 TEXTE PUR de la signature débordement de fenêtre (cas règle #431).** 20:40:52Z : `POST /v1/chat/completions` → 400, corps **925 935 octets** (~926 Ko ≈ 230K+ tokens), UA `Bun/1.3.14` (hub), `swift-1.5-27b`, IP hairpin, **aucun marqueur média** (prompt Claude Code pur) — la signature exacte que le discriminant resserré du 03/11 attendait. Côté moteur : comportement documenté (vLLM répond 400 sans rogner, PR #110). La question est hub-side : la règle #431 de claudish (router **cette** requête vers le cloud dans le même tour) a-t-elle tiré ? **DM po-2025:claudish 22:14Z** (`msg-20261104T221455-54rccx`) + **Q60 au registre** + rendu au user. Nota : une 2ᵉ ligne `400 Bad Request` existe dans le log moteur hors fenêtre census (>2 h) — non qualifiée ce cycle.
+
+**Condensation — 5ᵉ troncature (19:49:13, chaîne complète 19:48:33 → 19:49:13)**, 6 min après la fermeture du cycle précédent, **puis 2 h 20 de silence complet** — plus longue période propre sous cloud-first (les passes partaient toutes les 30-40 min). Le statut global 21:58Z affiche toujours « (15.2KB) » > cible 15 Ko : le mécanisme est intact, il n'a simplement pas été déclenché depuis 19:49. **À ne pas lire comme une correction.**
+
+**Async — le contre-point 5,64 s NE SE REPRODUIT PAS.** Intervalle +6 903 appels / +9 936 s = **1,44 s par nouvel appel** (série 16,07 → 3,08 → 2,56 → 5,64 → **1,44** = plus basse mesure) : le point 5,64 sur fenêtre légère était un point, pas une tendance — la queue respire, la corrélation charge/queue tient de nouveau. Cumul >10 s : **9,4 %** (10,9 % à l'origine). Sync inchangé (2,87 µs). Décomposition d'intervalle indisponible (buckets du cycle 19:43Z non archivés — échec du grep d'alors ; leçon : archiver les buckets à chaque cycle).
+
+**Tier fs — 19,4:1** (+90,48 Go écrits à 36,7 Go/h / +4,67 relus ; duty-cycle 6,2 %). 6ᵉ ratio : 15,1 → 15,1 → 24,0 → 25,8 → 25,0 → 19,4. Toujours pas une recommandation de changement.
+
+**Sécurité.** **Q57 `8d3d44818b2a` close (census 3/3)** — le scanner Oracle Cloud n'est jamais revenu depuis 15:28:14Z. Q58 `ccd500f719e4` absente de la fenêtre 2 h (dernière vue ~19:43Z, compte-gouttes — horloge en attente). IP `92.184.113.239` ×1 en 200 = famille CGNAT Free po-2027 documentée, pas d'alerte. Aucune IP inconnue avec 200.
+
+**Axion watch : aucun wake** (GGUF seul + repo officiel BF16). **Registre : 2 ouvertes (Q58, Q60 nouvelle), Q57 close.**
+
+Snapshot : `.tmp/metrics_snapshot_20261104T2211Z.txt`.
