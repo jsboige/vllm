@@ -6484,3 +6484,111 @@ Note d'instrument : le champ `elapsed` de l'append n'apparaît plus au niveau IN
 **Autres** : nbaudit `ok:true` 11:05:51Z (5 séries, `19451:Image/`, `consecutive_failures: 0`). Coordination : inbox 4 non-lus, **aucun adressé à `myia-ai-01:vllm`** qui demande un geste (roo-extensions = correction ms#1646 déjà traitée, po-2023 = Q54 close, po-2025 = G4 #682 close, po-2028 = mention machine-only d'un grain roo-extensions, hors périmètre). Global : uniquement des restitutions de registres d'autres lanes.
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1145Z.txt`.
+
+---
+
+## 04/11 13:50Z — Cycle : ★★★ le lookup async est **BIMODAL** (43 % à ≤50 ms, 11 % à ~50 s) — le dossier change de question ; latence d'admission **mesurée à 112 s pour 8 tokens** ; 6 passes ms#1646, 0/6 primaire, **4 troncatures** ; hit 79,4 %
+
+### Prod
+
+`/health` 200 en 3,1 ms, `RC=0`, `StartedAt` 03/11 16:06:57Z inchangé (**22 h** d'uptime), 3 conteneurs Up, 0 OOM sur 5 000 lignes lues. Watchdog : **20 `WEDGE fail 1/2`** sur 24 h de fenêtre (07:53 → 13:34), **zéro 2/2**, zéro restart, 1 575 OK / 1 776 lignes.
+
+**VRAM : 22 639 / 21 292 / 176.** GPU 0 est **en baisse de −137 MiB** vs 22 776. ⚠️ **Le « palier qui glisse de +16 MiB/cycle » ne glisse pas : il oscille.** Trois lectures en hausse avaient été lues comme une tendance ; la quatrième la défait. C'est exactement la leçon déjà consignée le 09/10 (« deux points ne font pas une pente ») — elle vaut aussi pour trois. GPU 1 **identique au MiB pour la 7ᵉ lecture** (stabilisation d'allocateur, pas une mesure de charge). Marge 361 MiB sous 23 000 : watch, pas d'alerte, **pas de hausse de gpu-util**.
+
+`/dev/shm` 33 G/63 G = **51 %** (aucun orphelin) ; G: 87 %, **écriture OK** ; commit hôte **75,6 %** (97,6 GB libres) ; nbaudit `ok:true` 13:05:55Z.
+
+### §5quater — hit 79,4 %
+
+| | intervalle 11:45 → 13:50 (~2 h 06 = 7 555 s) |
+|---|---|
+| requêtes de préfixe | +30 174 986 |
+| tokens servis par le cache | +23 965 440 (**79,4 %**) |
+| dont device | 1 795 168 (**7,49 %** du servi) |
+| dont host | 21 716 880 (**90,62 %**) |
+| dont disk | 453 392 (**1,89 %**) |
+| préemptions | 111 → 116 (**+5**) |
+| prefill / décode | ~4 016 t/s / ~53,6 t/s |
+
+**Triade non réunie** : +5 préemptions (2ᵉ intervalle calme d'affilée, après le +23 de 10:12Z) et hit 79,4 % très au-dessus du seuil de ~50 %. Le prefill tombe à 4 016 t/s contre 4 751 au cycle précédent (−15 %), cohérent avec une contention plus forte.
+
+### ★★★ Le lookup async n'est pas lent — il est **bimodal**
+
+L'histogramme existait depuis le début et n'avait jamais été lu (seuls `_count` et `_sum` l'avaient été). Sur le tier fs, cumulé sur 87 806 appels :
+
+| seuil | appels | cumul |
+|---|---:|---:|
+| ≤ 0,05 s | 37 735 | **43,0 %** |
+| ≤ 0,1 s | 40 482 | 46,1 % |
+| ≤ 0,5 s | 50 736 | 57,8 % |
+| ≤ 1,0 s | 54 361 | 61,9 % |
+| ≤ 5,0 s | 67 238 | 76,6 % |
+| ≤ 10,0 s | 78 211 | 89,1 % |
+| **> 10 s** | **9 595** | **10,9 %** |
+
+Le synchrone, sur le **même** tier : 88 748 / 92 048 = **96,4 % sous 10 µs** — distribution serrée, uniformément rapide.
+
+**La moyenne de 6,20 s est un artefact de la queue.** Somme totale 544 169,92 s ; les 78 211 appels ≤10 s, même en les supposant à 1,0 s chacun, ne pèsent que 78 211 s. Il reste **465 959 s pour 9 595 appels, soit 48,6 à 54,7 s chacun**. Cela fait ~466 000 s = **129 h de temps mural dans 21,7 h d'uptime**, donc **~6 lookups async stallés en permanence** en tâche de fond.
+
+⇒ **La question du dossier se reformule.** Ce n'était pas « pourquoi deux chemins d'accès au même store diffèrent de six ordres de grandeur » : **43 % du même store répond en moins de 50 ms**, ce qui est parfaitement utilisable. La vraie question est *qu'est-ce qui fait que **11 %** des lookups prennent **~50 s** quand les autres prennent des dizaines de millisecondes*. Un chemin lent uniforme ne produit pas une distribution bimodale. Pistes à instruire dans `lru_fs_tier` (PR #211) : contention de verrou, chemin froid, attente d'exécuteur.
+
+⚠️ **Limite d'instrument assumée** : on ne peut pas décomposer *l'intervalle* par seau (seule la somme cumulative est exposée). La moyenne par nouvel appel monte (4,36 → 6,33 → **16,07 s**, 3 intervalles consécutifs), mais **on ne sait pas si la queue grossit ou si de nouveaux appels y tombent**. Le cumul, lui, est sans ambiguïté.
+
+### ★★ Latence d'admission mesurée — 8 tokens = 112 s
+
+roo-extensions avait posé la question le 04/11 à 11:50Z (#4434) : « sous pression KV (`scheduler_reserve_full_isl`), une requête longue attend-elle son admission plusieurs dizaines de secondes avant son premier token ? »
+
+Sonde `"Reply with the single word: ok"`, `max_tokens 8`, `temperature 0`, état de file au même instant **`running=5`, `waiting=4` (1 `capacity` / 3 `deferred`), KV 91,7 %** :
+
+Trois sondes consécutives, même requête, toutes en `http=200` :
+
+| sonde | durée | contexte |
+|---|---:|---|
+| 1 | **112 359 ms** | KV **91,7 %**, `running=5`, `waiting=4` (1 `capacity` / 3 `deferred`) |
+| 2 | **63 854 ms** | KV en détente |
+| 3 | **40 697 ms** | KV **82,1 %** |
+
+**Décomposition** : 8 tokens à ~50 t/s = **0,16 s de décodage**. Donc **99,86 % de la latence est hors décodage** — le débit de génération ne peut pas expliquer 112 s. L'attente est en admission/file/prefill concurrent. **Réponse : oui, formellement, et le chiffre est 112 s.**
+
+**La décroissance 112 → 64 → 41 s suit la détente de la saturation KV** (91,7 → 82,1 %) : la latence des petites requêtes est une fonction de l'occupation, pas une propriété du chemin de service. C'est un pic de charge, pas un état installé — mais sous le régime de trafic actuel, le pic est atteint plusieurs fois par jour.
+
+### ★★ ms#1646 — six passes, zéro succès du primaire, **quatre troncatures**
+
+| passe | fenêtre | primaire | issue |
+|---|---|---|---|
+| F | ~12:0x → 12:08:52 | `LLM summary timeout` 12:07:21 → `primary attempt refused (#3962)` 12:07:46 | breaker OPENED → **`did not converge under 15KB`** 12:08:08 |
+| G | 12:17:32 → 12:17:47 | sauté (breaker OPEN) | completed, pas de troncature |
+| H | 12:30:38 → 12:32:33 | sauté (breaker OPEN) → `attempt refused` 12:32:08 | completed + **troncature** 12:32:33 |
+| I | 12:46:18 → 12:47:54 | **HALF-OPEN retry** → timeout **12:47:48 = 90,0 s pile** | completed, pas de troncature |
+| J | 13:04:27 → 13:06:50 | timeout **13:05:57 = 90,0 s pile** → `attempt refused` | completed + **troncature** 13:06:50 |
+| K | 13:47:58 → 13:49:56 | timeout **13:49:28 = 90,0 s pile** → `attempt refused` | breaker OPENED + **troncature** 13:49:56 |
+
+Le mécanisme append-first est intact ; le primaire est à **0/6**. Les **trois** tentatives réelles échouent à **90,0 s pile**, c'est-à-dire au timeout client, pas sur une réponse lente — cohérent avec la mesure d'admission ci-dessus : une requête de condensation de ~4-15 Ko n'obtient pas son premier token en 90 s sous saturation.
+
+**★ Escalade du symptôme secondaire : 4 troncatures déterministes en 1 h 45, contre 1 sur le cycle précédent** — donc **4 trous de contenu** dans le dashboard au lieu d'un, dans un rapport de 4:1 avec les échecs du primaire. Ms#1649/#4434 n'est plus un cas isolé, c'est le mode de défaillance nominal.
+
+### ★★ Tier fs — le déséquilibre se reproduit (ce n'est pas un artefact d'un cycle)
+
+| Depuis le boot (21,73 h) | |
+|---|---|
+| écrit | **714,74 GB** (32,9 GB/h ; `write_time` 3 872,27 s = **4,95 % du temps mural**) |
+| relu | **46,33 GB** (2,13 GB/h ; `read_time` 27,49 s) |
+| **ratio** | **15,4 : 1** (intervalle seul : +60,84 GB / +4,02 GB = **15,1 : 1**) |
+| `chunk_hits` fs | **1 759 / 92 048 = 1,91 %** |
+| `chunk_hits` RAM | **242 999 / 811 322 = 29,95 %** |
+| part des tokens de prompt | **1,41 %** |
+
+Le ratio du cycle précédent était 15,5:1 sur l'âge et 15,1:1 sur son intervalle : **il se reproduit à l'identique**. Le déséquilibre est structurel, pas conjoncturel — mais toujours **pas une recommandation de changement** (le cap et le prunage bornent le coût).
+
+### Sécurité
+
+Census 3 h, 571 req à 3,2/min : `90.65.170.144` 328×200 (hairpin site) ; 179 sans XFF (loopback hub/sondes) ; `92.150.81.115` 4×200 (po-2027) ; `51.75.200.22` 2×200 (web2).
+
+**Aucune `31.77.x`, aucune IP inconnue avec 200, zéro 400/500.** Croisement clé × statut : `fp=be312daf7c1c` **200×513** · `fp=1f7f6080cb65` **401×30** · `fp=b2082455ef36` **401×23** (clé **web2 morte**, 100 % en 401) · `NONE` 401×5. **Aucune clé inconnue ; aucune clé morte ne passe.** Corps : 47 % en 100K-1M, 0 en >1M.
+
+### Coordination
+
+Les 4 non-lus de l'inbox sont des notifications `[MENTION]` (po-2023 IIS, po-2028, web1, CoursIA) — **aucune n'appelle un geste vllm**. La mention po-2023 `[INFO] Dix vhosts IIS` désigne six vhosts pointant des moteurs **d'ai-01 mais d'un autre workspace** (`.47:4001` sillytavern, `.47:6080` dify, famille legacy `*.text-generation-webui` 7860/7861/7862) — **hors mandat vllm**, le workspace `myia-open-webui` en est propriétaire ; relayé, pas exécuté.
+
+L'`[ASK]` de **roo-extensions (11:50Z, #4434)** demande exactement ce que la sonde du jour mesure : **réponse apportée** (voir ci-dessus).
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1350Z.txt`.
