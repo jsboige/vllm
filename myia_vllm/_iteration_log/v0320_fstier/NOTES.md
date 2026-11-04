@@ -6378,3 +6378,27 @@ Snapshot : `.tmp/metrics_snapshot_20261104T0611Z.txt`.
 **Autres** : nbaudit `ok:true` 07:26Z (5 séries, vague 2 `Image/`, `consecutive_failures: 0`) · G: OK 87 % · marge commit **75,9 %** (96,3 Go libres — sous le seuil 85 %).
 
 Snapshot : `.tmp/metrics_snapshot_20261104T0811Z.txt`.
+
+## 04/11 08:2x→09:0xZ — ADDENDUM au cycle : le « hang du loopback » #3962 REPRODUIT et ATTRIBUÉ — une requête de 17 tokens met 12-108 s, la cause est la file d'admission (pas le fs-tier, pas le CPU)
+
+Déclencheur : mandat user (« relance roo-extensions et son issue dédiée RSM »). Avant de relancer, mesurer — ce qui suit remplace l'hypothèse « régime de famine derrière les prefills » publiée au [DONE] de 08:11Z par une attribution par compteurs.
+
+**Sondes (hôte → :5002, `python -I`, la forme exacte des appels du condenseur RSM)** :
+
+| Requête | latences mesurées |
+|---|---|
+| 17 tok in / 8 out (forme sonde watchdog) | 23,6 s · 2,7 s · 49,5 s |
+| idem ×6 avec compteurs avant/après | 12,3 · 30,9 · 60,2 · 53,8 · 62,4 · **108,2 s** |
+| 3 097 tok in / ~200 out (forme condensation) | 19,2 · 41,0 · 55,2 · 65,1 · 92,3 s |
+
+**Attribution (pendant les sondes lentes)** : `num_requests_running=3`, **`num_requests_waiting=6` dont 4 `reason=capacity`**, 2 `deferred`, KV 81 %. Trois sessions long-contexte en vol tiennent ~81 % du KV (776 824 tok @0.71) ; avec `scheduler_reserve_full_isl=True`, une requête n'est admise que si son prompt ENTIER tient dans le KV libre — les 4 attentes « capacity » sont des prompts ~100-260K (profil hub documenté : médiane 121K/103K, un tiers >100K). **Les petites requêtes (sondes watchdog, condensation, complétions courtes) attendent le même sas.**
+
+**Réfutations mesurées au passage** : CPU hôte **24 %** sur fenêtre 3 s (le compteur `Win32_Processor.LoadPercentage` qui rendait « 99 % » est inutilisable — la 2ᵉ fausse piste évitée de la journée, et l'inverse de la règle habituelle : ici l'instrument disait pire que la réalité). Les 6 sondes lentes ont déclenché **0 lookup asynchrone fs-tier** — la pathologie fs ci-dessous n'est PAS la cause de ces latences.
+
+**Pathologie réelle mais distincte, découverte en chemin** : `kv_offload_tiering_lookup_async_delay_seconds{tier="1:TouchOnHitFsTier"}` = **344 787 s / 67 007 appels = 5,15 s moyens, 6 426 appels > 10 s** sur 16 h (le lookup SYNCHRONE du même tier : 2,8 µs — 6 ordres de grandeur d'écart). Le tier fs pèse 270 Go / 10 957 fichiers (ext4 WSL, au-dessus du cap 250 GiB — connu, le pruneur est muet depuis le 26/10 en attente du hotfix VBS). À instruire séparément côté vllm (`lru_fs_tier`, PR #211).
+
+**Ce que ça change pour #3962** (fermé le 27/10 sur RX107 « `fallback-truncated` ≤ 5 % sur 48 h ») : le critère est respecté CE JOUR (41 archives, 0 truncated, 1 fallback) **pendant que le primaire échoue à 100 % des passes** — depuis ms#1646 la jambe cloud réussit toujours, donc la métrique de clôture ne voit plus le hang. Relevé + 2 gestes RSM proposés (compteur `condensation_primary_timeout_total`, `primary_latency_ms` dans le `durationBreakdown`) postés : [roo-extensions#3962 c.6626832009](https://github.com/jsboige/roo-extensions/issues/3962#issuecomment-6626832009). Mesure ms#1646 (append 35 ms en repli cloud réel) postée : [#4527 c.6626031100](https://github.com/jsboige/roo-extensions/issues/4527#issuecomment-6626031100). Relance DM envoyée à `myia-ai-01:roo-extensions` (mandat user).
+
+**Leviers (aucun exécuté — décision user)** : la capacité est le seul levier moteur (NVFP4 déjà au max ; gpu-util baissé à 0.71 volontairement). Le levier réaliste est **côté hub** : politique d'admission / plafond de contextes géants concurrents (déjà discuté claudish côté capacité), ou accepter que condensation + sondes passent par le fallback cloud (c'est le comportement actuel, gracieux depuis ms#1646).
+
+Snapshot des sondes : `.tmp/probe_loopback3962.py`.
