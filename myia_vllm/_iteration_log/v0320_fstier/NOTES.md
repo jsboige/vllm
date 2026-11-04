@@ -6734,3 +6734,25 @@ Census 4 h, 1 062 requêtes (4,5/min) : `90.65.170.144` 710×200 (hairpin), sans
 **Registre : 2 questions ouvertes (Q57, Q58).**
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1800Z.txt`.
+
+---
+
+## 04/11 19:43Z — Cycle court (cron :41) : hit 79,7 %, 4ᵉ troncature cloud-first, et Q58 réapparaît au compte-goutte
+
+**Prod saine.** `/health` 200 en 5,8 ms, `RC=0`, boot inchangé (27,6 h), 3 conteneurs Up, **0 OOM**. Watchdog : 4 `WEDGE fail 1/2` (18:06, 18:31, 18:48, 19:32), **zéro 2/2**, zéro restart. shm 51 %, G: 86 % OK, commit 83,3 % (< 85), nbaudit `ok:true` 19:05:55Z (vague 2 `Image/` active).
+
+**§5quater — hit 79,7 %** (88,6 → 79,7, retour au plateau des 79-80 %), device 3,75 % du servi / host 73,4 % / disk 1,74 %. Préemptions 137 → 141 (**+4**). Prefill 4 013 t/s (−35 %), décode 46,4 t/s : fenêtre plus légère du soir. KV 65,5 % au scrape — le pic de 97,3 % ne s'est pas reproduit.
+
+**VRAM 22 786 / 21 292 / 18 474** — GPU 0 +187 (dans la bande, près du haut), GPU 1 identique au MiB (10ᵉ), GPU 2 = **GRPO CoursIA en cours** (admission publiée par CoursIA-2, Q-006).
+
+**Condensation — 1 nouvelle troncature (18:24:11, process `-537`) = la 4ᵉ sous cloud-first.** Sur la fenêtre : 3 `primary attempt refused (#3962)` de plus (18:10:44, 18:23:49, 19:40:13) dont une seule a fini en troncature, 2 passes complétées sans troncature. Le mécanisme du cycle précédent continue mais **moins souvent sur fenêtre légère**.
+
+**Async — contre-point honnête.** +5 783 appels / +32 617 s = **5,64 s par nouvel appel** (contre 2,56 au cycle précédent) alors que la fenêtre était **plus légère** (prefill −35 %). La corrélation « queue respire avec la charge » ne tient pas sur ce point. Un point, pas une tendance — à revoir.
+
+**Tier fs — 25,0:1** (+37,48 Go écrits / +1,50 relu, duty-cycle **2,18 %** : le disque respire avec la charge, lui). 5ᵉ ratio : 15,1 → 15,1 → 24,0 → 25,8 → 25,0.
+
+**Sécurité.** **Q58 `ccd500f719e4` RÉAPPARAÎT** : 1 nouvelle requête 401 après 17:43, après l'arrêt de 17:26 — le consommateur à clé erronée essaie toujours, au compte-goutte. Horloge de mort **remise à zéro**. Q57 absente (census 2/3). IP `92.184.113.198` ×1 en 200 = famille mobile Free `92.184.113.x` déjà documentée (rotation CGNAT po-2027) — pas une alerte. Zéro 400/500.
+
+**Registre : 2 ouvertes (Q57 2/3, Q58 réapparue), 1 en attente d'arbitrage (Q59 fenêtre Axion).**
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1943Z.txt`.
