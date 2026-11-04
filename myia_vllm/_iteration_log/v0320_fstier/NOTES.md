@@ -6780,3 +6780,23 @@ Snapshot : `.tmp/metrics_snapshot_20261104T1943Z.txt`.
 **Axion watch : aucun wake** (GGUF seul + repo officiel BF16). **Registre : 2 ouvertes (Q58, Q60 nouvelle), Q57 close.**
 
 Snapshot : `.tmp/metrics_snapshot_20261104T2211Z.txt`.
+
+---
+
+## 05/11 00:0xZ — FENÊTRE MTP : l'overlay #58813 débloque MTP sur Swift-1.5 (acceptation 58,3 %, prod restaurée)
+
+**Déclencheur** : le user demande si j'ai lu le commentaire de #58807, le PR #58813 et le PR #59040 — non, et c'était un trou de veille (aucun volet « veille amont » dans la spec). Lecture REST : le correctif de notre crash existe, il est rebasé et testé, **aucune review humaine en 6 semaines**, et son corps nomme la preuve manquante — *« the reporter offered to test a fix branch »*, c'est-à-dire nous (dernier commentaire de l'issue = le nôtre, 29/09, sans réponse).
+
+**Faisabilité mesurée avant de toucher quoi que ce soit** : `qwen3_5_mtp.py` de l'image prod **identique au bit près** au tag v0.32.0 (`fbf31b1d…`), diff du PR = 81 lignes nettes, dépendance nouvelle (`try_get_local_file`) déjà présente (`repo_utils.py:434`). Overlay = `overlay_v0320_s58813/`, base **notre tierpin** (pas stock v0.32.0 : sans le correctif tiering, le profil fs crash-loope).
+
+**Fenêtre** (annoncée sur `global` 23:43Z, GO user) : 23:46:04→23:54:06Z = **8 min 2 s** de moteur d'éval, `--speculative-config {"method":"mtp","num_speculative_tokens":3}`, aucune autre modification de profil (la variable `VLLM_SPEC_CONFIG_SWIFT15` existait déjà).
+
+**Résultat** : boot + service OK, le crash `no module or parameter named 'fc.weight'` a disparu (les deux TP workers chargent). Acceptation cumulée **1 303/2 235 = 58,3 %**, par position **77 / 56 / 41 %**, longueur moyenne **~2,75 tokens/pas**. **NVFP4 KV cohabite avec MTP** (pas d'équivalent connu au bug TurboQuant × spec-dec #53180). Lignes de log notables : `FLASHINFER cannot update draft decode metadata in place; falling back to rebuilding attention metadata eagerly` ; `num_speculative_tokens > 1 ... may result in lower acceptance rate`.
+
+**Canari** : même prompt glouton, spec ON vs OFF → divergence au caractère 81 (similarité 0,94) dans la formulation de la docstring, les deux sorties cohérentes. C'est le « near-tie flip » documenté du vérify batché ; **aucune revendication de lossless plus forte sans un contrôle token-à-token** (c'est exactement le *token forcing* de SpecPilot — noté comme emprunt de méthode).
+
+**Prod restaurée** 23:54:06Z : image tierpin, RC=0, health 200 en 3 ms, `spec_metrics_present=0`. **Spec-dec reste OFF** : l'acceptation ne dit rien du débit agrégé sous notre charge (DFlash −15 % à 5 flux dans notre historique) — un A/B de perf serait une seconde fenêtre, non demandée.
+
+**Preuve rendue à l'amont** : commentaire sur #58813 → https://github.com/vllm-project/vllm/pull/58813#issuecomment-6645607921 (environnement, chiffres, observations, offre de re-run k=1/2/4 ou sous concurrence).
+
+**Leçon de process** : cet écart de 6 semaines n'était pas un oubli de lecture mais **l'absence de tout volet « veille amont »** dans la spec de surveillance — aucun cycle ne polle les artefacts publics que nos propres commentaires créent. Correctif à porter dans la spec (REST, 1 appel/cycle, liste d'artefacts + critères de réveil).
