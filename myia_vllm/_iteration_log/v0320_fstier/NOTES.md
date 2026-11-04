@@ -6668,3 +6668,69 @@ Reste du census : aucune `31.77.x`, aucune IP inconnue avec 200, zéro 400/500, 
 1 non-lu (mention po-2024 = le `[ASK-USER]` claudish, pas vllm) ; 2 ASK sur global (CoursIA-2, po-2024:claudish), aucun adressé à vllm. Le déploiement cloud-first de roo-extensions est l'effet direct de l'échange #4434 du cycle précédent.
 
 Snapshot : `.tmp/metrics_snapshot_20261104T1603Z.txt`.
+
+---
+
+## 04/11 18:00Z — Cycle : ★★★ cloud-first NE TIENT PAS la troncature (3/3 même mécanisme) ; ★★ l'instrument de la condensation change de fichier
+
+**Prod saine.** `/health` 200 en 10,3 ms, `RC=0`, boot 03/11 16:06:57Z inchangé (25,9 h), 3 conteneurs Up, **0 OOM** (5 000 lignes lues — instrument non aveugle). Watchdog : **4 `WEDGE fail 1/2`** (16:13, 16:21, 16:28, 17:28), **zéro 2/2**, zéro restart, 1 835 sondes OK sur 2 064 lignes. shm 51 %, G: 86 % écriture OK, commit hôte 81,8 % (72,6 GB libres, GPU 2 en training CoursIA), nbaudit `ok:true` 17:05:51Z.
+
+**§5quater — hit 88,6 %** (88,2 → 88,6, deuxième hausse consécutive), device 11,51 % du servi / host 75,96 % / disk 1,41 %. Préemptions 128 → 137 (**+9**), troisième intervalle sous +15 d'affilée ⇒ **triade non réunie**. Prefill 6 188 t/s, décode 60,4 t/s.
+
+**VRAM 22 599 / 21 292 / 9 288** — GPU 0 en baisse de −53, **4ᵉ lecture dans la bande 22 200-22 800, dans les deux sens**. GPU 1 identique au MiB pour la **9ᵉ** lecture. Marge 401 MiB sous 23 000.
+
+### ★★ KV : pic à 97,3 % au scrape — un pic, pas un plateau
+
+Le scrape de 18:00Z a relevé `kv_cache_usage_perc` à **97,3 %**, le plus haut mesuré sur cette config (précédent documenté : 91,7 % à 13:53Z). Quatre relectures à 15 s d'intervalle cinq minutes plus tard : **75,6 → 75,8 → 75,9 → 76,1 %**. Ce n'est donc pas une saturation installée. Mais `waiting_by_reason{capacity}` est passé de 0 à 1 et `deferred` reste à 2 avec `running=3` : la file d'admission se reforme, exactement la condition dans laquelle les 112 s d'admission ont été mesurées le 13:50Z. À suivre au prochain cycle ; **aucun geste**.
+
+### ★★★ Cloud-first #4434 : la jambe statut est réparée, la 2ᵉ étape tronque — 3/3 identique
+
+**D'abord une correction d'instrument, qui explique un faux « zéro ».** Les passes de condensation ne sont plus dans `roosync-20261104.log` (le fichier du jour, 10,6 Mo, mtime frais) mais dans des fichiers **par process** : `roosync-20261104-383.log`, `-386`, `-339`, `-438`, `-465`. Un `grep` sur le seul fichier du jour rend **« dernière troncature à 08:57 »** — un zéro qui ne mesurait rien, puisque les troncatures de 13:58 et 15:07 du cycle précédent n'y sont pas non plus. Il faut balayer **tous** les fichiers sur la fenêtre.
+
+Trois passes, **même chaîne, même ordre**, trois troncatures :
+
+| heure | déclencheur | 1ʳᵉ jambe | 2ᵉ étape | issue |
+| --- | --- | --- | --- | --- |
+| 16:46:03 → 16:47:54 | post-append (append-first) | cloud ok 16:46:27, `LLM summary generated`, breaker RESET | `Status exceeds size limit` → **`primary attempt refused — pass deadline reached the cloud reserve (#3962)`** 16:47:33 | cloud 16:47:54 → **troncature** + `[ERROR] Status contradictions detected (#1502/#3329)` |
+| 17:35:22 → 17:35:49 | `LLM summary timeout` | cloud ok 17:35:28 | idem, 17:35:28 | **troncature** |
+| 17:59:43 → 18:01:16 | `LLM summary timeout` 18:00:52 | cloud ok 18:00:57 | idem, 18:00:57 | **troncature** |
+
+**Le mécanisme est net et ce n'est pas celui que j'avais annoncé mot pour mot.** Cloud-first **accélère la jambe statut**, ce qui fait que la passe **atteint** la deuxième étape (`Status exceeds size limit, auto-condensing`). Cette deuxième étape — la réduction sous 15 Ko — **ne tente jamais le primaire** : elle est refusée d'office (`pass deadline reached the cloud reserve`, #3962), puis son repli cloud **ne converge pas sous 15 Ko**. Mesure corroborante côté `global` au même moment (18:02:41) : *« Statut mis à jour via cloud (cloud-first #4434) (15.2KB), résumé généré via fallback cloud (3.1KB, modèle primaire en échec). Durée: 200s »* — **15,2 Ko pour une cible de 15 Ko**.
+
+Ma prédiction du 16:03Z (« le résumé hériterait d'un budget raccourci et tronquerait davantage ») **se matérialise dans son effet, pas dans sa cause** : ce n'est pas le budget du résumé qui manque, c'est la 2ᵉ étape qui n'a plus de primaire du tout. Rendu à roo-extensions immédiatement. Coût mesuré : **3 trous de contenu en 2 h**, chacun accompagné d'une **contradiction de statut signalée en ERROR** — le symptôme secondaire est devenu le mode de défaillance nominal, pas l'exception.
+
+### ★★★ Lookup async — 3ᵉ point, la queue respire encore
+
+| grandeur | cumul | intervalle |
+|---|---|---|
+| appels | 104 695 | **+8 899** |
+| moyenne / nouvel appel | 5,65 s | **2,56 s** (16,07 → 3,08 → 2,56) |
+| part > 10 s | 10,09 % | **5,03 %** (10,9 % cumul d'origine → 6,5 % → 5,0 %) |
+| queue > 10 s | ~50 s/appel | **~31,9 s/appel** |
+| concurrency stall | **6,35** (vs 6,60) | — |
+| synchrone, même tier | 2,88 µs | — |
+
+95,0 % des nouveaux appels répondent en ≤10 s. **La bimodalité est stable et sa masse de queue baisse de façon continue sur trois intervalles.** La question du dossier PR #211 ne bouge pas — *pourquoi 5 % prennent des dizaines de secondes* — mais aucune aggravation.
+
+### ★★ Tier fs — 25,8:1, le débit d'écriture baisse
+
+Cumul (25,89 h) : **889,96 GB écrits / 53,41 GB relus = 16,66:1**, `write_time` 5 164,66 s = 5,54 % du temps mural. Intervalle : **+73,12 GB (37,5 GB/h, contre 46,1) / +2,83 GB ⇒ 25,8:1**, duty-cycle 8,44 %. `chunk_hits` fs 1,85 % / RAM 30,03 %, `disk` 1,41 % des tokens de prompt.
+
+Série des ratios d'intervalle : **15,1 → 15,1 → 24,0 → 25,8**. Le débit d'écriture baisse, mais le minimum de lecture baisse plus vite — le tier est plein et ne sert plus que sa petite fraction chaude. **Toujours pas une recommandation de changement.**
+
+### ★ Deux empreintes inconnues, deux acteurs, toutes deux rejetées
+
+- **`fp=8d3d44818b2a` (Q57)** — 1 requête à **15:28:14Z** (et non « ~16:00Z » comme estimé au cycle précédent), IP **129.80.213.237** (Oracle Cloud), UA **navigateur X11/Linux**, chemin `/v1/models`, corps 0. Signature de **scanner**. Aucune correspondance `.env` (`db2738ab1328` / `8ee6a13f65bd` / `4064afc9aa51`). Pas de nouvelle occurrence : census 1/3.
+- **`fp=ccd500f719e4` (NOUVELLE, Q58)** — **6 requêtes**, 17:13:04Z → 17:26:14Z, IP **90.65.170.144** (hairpin site), UA **`AsyncOpenAI/Python 3.31.0`** (3) + **`curl/8.14.1`** (3), chemins `/v1/chat/completions` (4) et `/v1/models` (2), **401 ×6, aucun 200**, corps 0. Aucune correspondance `.env`. Profil d'un **consommateur réel avec une clé erronée**, pas d'un scanner (SDK OpenAI + cadence courte puis arrêt).
+
+Census 4 h, 1 062 requêtes (4,5/min) : `90.65.170.144` 710×200 (hairpin), sans XFF 301×200, `92.150.81.115` 2×200 (po-2027). `be312daf7c1c` 200×1 013 ; `1f7f6080cb65` 401×41. **Aucune `31.77.x`, aucune IP inconnue avec 200, zéro 400/500.**
+
+### Coordination
+
+2 non-lus = `[MENTION]` **machine-level** visant `myia-ai-01:roo-extensions` (PR #4546, TASK #3898) ⇒ hors lane par la règle #3960, lus au ciblé. Sur `global` : 2 `[ASK-USER]` (CoursIA-2 ×2, po-2023:CoursIA), **aucun pour vllm**. Relais po-2027 sur le lien facturé — sans effet vllm.
+
+**nbaudit** : `ok:true` 17:05:51Z, 0 échec consécutif, 5 séries × 3 — mais `subpath = ["19451:Image/"]`, donc **la vague 2 (Image/) est armée** (elle était sur `Audio/` au cycle précédent). Le basculement est fait et tourne proprement.
+
+**Registre : 2 questions ouvertes (Q57, Q58).**
+
+Snapshot : `.tmp/metrics_snapshot_20261104T1800Z.txt`.
