@@ -78,6 +78,21 @@ services:
 
     ipc: host
 
+    # NOTE (leçon boot-blocking) : JAMAIS de ligne # dans le scalaire replié
+    # command:> — elle devient du TEXTE de commande (compose: "invalid command
+    # line string"). Les commentaires restent ici, au-dessus.
+    #
+    # gpu-memory-utilization 0.90 TEMPORAIRE (04/11 ~05:15Z, incident GPU 0) :
+    # six contexts CUDA de conteneurs d'autres lanes (comfyui-qwen/video + pile
+    # TTS, isolation --gpus device=1 HS sous WSL2 — régression ai-01 30/10)
+    # tiennent ~11 Go sur GPU 0. vLLM compte la mémoire étrangère dans le
+    # budget X*total : boot impossible tant que X < ~0.85. 0.90 => KV ~0,4 Go
+    # (dégradé mais service debout). RETOUR À 0.75 dès que GPU 0 est libéré
+    # (ask ComfyUI 04/11 ~05:10Z) — fenêtre calme suivante.
+    #
+    # --api-key RETIRÉ (Q-P2023-10 (a), arbitrage user 01/11) : la clé vit déjà
+    # dans l'env VLLM_API_KEY du conteneur — plus de duplication en ligne de
+    # commande lisible par docker inspect / ps --no-trunc.
     command: >
       boboliu/Qwen3-Embedding-4B-W4A16-G128
       --quantization compressed-tensors
@@ -86,13 +101,12 @@ services:
       --served-model-name qwen3-4b-awq-embedding
       --host 0.0.0.0
       --port 8000
-      --gpu-memory-utilization 0.75
+      --gpu-memory-utilization 0.90
       --kv-cache-dtype auto
       --max-model-len 2048
       --max-num-seqs 672
       --max-num-batched-tokens 86016
       --runner pooling
-      --api-key ${VLLM_API_KEY}
       --disable-log-stats
 
     deploy:
