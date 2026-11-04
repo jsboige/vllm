@@ -1,0 +1,82 @@
+# Profil d'ÉVALUATION — FrogNano-4B-2609 BF16 sur l'image de PRODUCTION v0.32.0
+# ============================================================================
+# But : comparer le checkpoint servi (NVFP4 + KV fp8) à la RÉFÉRENCE BF16 sur la
+# MÊME version moteur, pour la question Q5 du registre (profondeur de la preuve
+# qualité du tier mini). Record : `_iteration_log/q5_quality_bench_po2025/NOTES.md`.
+#
+# Pourquoi ce profil existe alors que `mini-frognano-4b-po2025-bf16-rollback.yml`
+# existe déjà : le rollback est resté sur l'image **v0.31.0**. L'utiliser pour un
+# A/B aurait changé DEUX facteurs (modèle ET version moteur) — un résultat non
+# attribuable. Ici : BF16 sur v0.32.0, même container_name, même port, même
+# volume HF, cache de compilation DÉDIÉ (le cache v0320 de la prod ne doit pas
+# être pollué par une autre config).
+#
+# USAGE (fenêtre de mesure, moteur indisponible pendant le swap) :
+#   docker compose -f mini-frognano-4b-po2025.yml --env-file myia_vllm/.env down
+#   # ≥ 15 s entre down et up (règle siège : un moteur relancé trop vite fige)
+#   docker compose -f mini-frognano-bf16-eval-v0320.yml --env-file myia_vllm/.env up -d
+#   python myia_vllm/scripts/testing/quality_bench_po2025.py --label bf16
+#   docker compose -f mini-frognano-bf16-eval-v0320.yml --env-file myia_vllm/.env down
+#   docker compose -f mini-frognano-4b-po2025.yml --env-file myia_vllm/.env up -d
+#
+# MESURÉ 04/11/2026 : boot 360 s (cache froid) · banc 120 tâches 87/120 = 0,725 en
+# 44,1 s (contre 82/120 = 0,683 en 24,9 s pour NVFP4+fp8 KV) · écart dans le bruit.
+# `restart: "no"` est volontaire : un profil d'éval ne doit pas ressusciter tout
+# seul après un reboot de l'hôte.
+# ----------------------------------------------------------------------------
+services:
+  mini_frognano_4b:
+    image: vllm/vllm-openai:v0.32.0
+    container_name: myia_vllm-mini-frognano-4b
+    runtime: nvidia
+    labels:
+      - "autoheal=False"
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - OMP_NUM_THREADS=4
+      - VLLM_LOGGING_LEVEL=INFO
+      - VLLM_API_KEY=${VLLM_API_KEY_MINI}
+
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - vllm-compile-cache-frognano-bf16-eval-v0320:/root/.cache/vllm
+
+    ports:
+      - "5003:8000"
+
+    ipc: host
+
+    command: >
+      microsoft/FrogNano-4B-2609
+      --served-model-name frognano-4b mini
+      --host 0.0.0.0
+      --port 8000
+      --dtype auto
+      --gpu-memory-utilization 0.78
+      --max-model-len 32768
+      --max-num-seqs 32
+      --max-num-batched-tokens 8192
+      --mamba-ssm-cache-dtype float16
+      --skip-mm-profiling
+      --limit-mm-per-prompt '{"image":0,"video":0}'
+      --enable-prefix-caching
+      --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
+      --reasoning-parser qwen3
+      --default-chat-template-kwargs '{"enable_thinking": false}'
+
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    restart: "no"
+
+volumes:
+  vllm-compile-cache-frognano-bf16-eval-v0320:
