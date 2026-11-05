@@ -6870,3 +6870,26 @@ Moteur sain partout par ailleurs : 200/2,8 ms, RC=0 (même boot 23:54:05Z, Up 6 
 7. **Veille amont** : 5/5 artefacts inchangés (les updates = toujours nos commentaires). G: 86 % probe OK. nbaudit vague 2 propre (05:05Z). Watchdog : 4 nouveaux `fail 1/2` jamais 2/2, compteurs en avance (p 84,5→91,6 M) = attendu.
 
 Aucun geste moteur. Registre inchangé (Q58 census 2/3). La recommandation MTP-after-reset part au user par le rapport claudish 07:37.
+
+
+## 05/11 09:11Z (cycle :41) — CONCURRENCE 12→10 : LE GENOU SE DESSERRE (decode 34→73,6 t/s), 75k NO-GO DÉFINITIF, MTP POST-RESET
+
+Contexte : claudish a appliqué la concurrence vllm-myia **12→10** à **08:09:35Z** (restart drainé, `config.json.bak-20261105T0758Z-maxconc10`, OUTCOME success, nouveau process). Il demandait une mesure post-changement comparée à la fenêtre 03:00-06:53Z. Elle est faite.
+
+1. **Fenêtre post-changement 08:15→09:17Z (62 min, purement après le geste hub)** : **hit 80,0 %** (15,0 M / 18,7 M — contre 73,6 % sur la mauvaise fenêtre, 88,3 % sur la première) ; **préemptions +7 ⇒ ~7/h** (contre +18/h sur la mauvaise heure, +3/h sur la première) ; **décodage agrégé 73,6 t/s** (273 715 tok / 62 min — contre 34 t/s sur la mauvaise fenêtre et ~50 t/s sur la première : **le meilleur chiffre de la nuit**) ; prefill soutenu **5 078 tok/s** ; file 4 running / 2 waiting. Lecture : **à 10 slots le genou se desserre** — la réponse à la question de claudish (« si le genou ne se desserre pas à 10, c'est l'admission qu'il faut revoir ») est **oui, il se desserre**, sur les trois axes à la fois. Mesure jeune (62 min) : à confirmer aux deux cycles suivants, mais la direction est nette.
+
+2. **Auto-compact 75k = NO-GO DÉFINITIF user** (verbatim relayé par claudish : « les lanes ont besoin de plus de mémoire pour pouvoir travailler confortablement »). Conséquence : **le seul levier qui ajoutait de la capacité swift disparaît**, avec lui toute réouverture de l'exclusion ai-01 — **ne plus le proposer sous aucune forme**. **Objectif user redit** : le **débit de tokens/s du moteur**, pas la vitesse perçue par lane ; **la file vllm comme régulateur est assumée**. Ma grille de lecture s'aligne : l'indicateur principal devient decode t/s agrégé + hit, l'attente n'est pas un défaut.
+
+3. **Santé moteur** : health 200/4,9 ms, **RC=0, Up 9 h** (même boot 23:54:05Z), OOM 0 sur 5 000 lignes, VRAM **22 431/21 148** (GPU 0 sous la ligne 23 000), `/dev/shm` **51 %** (plancher, purge #318 tenant), GPU 2 **56 MiB** (libre), 3 conteneurs Up, **2 755 sondes OK**, 8 `WEDGE fail 1/2` entre 06:11 et 08:50Z **jamais 2/2** avec compteurs en avance (p 100→142 M, g 0,93→1,37 M) = motif attendu sous charge longue, à surveiller par la cadence seulement.
+
+4. **Census 12 h** : 2 366 req, **198/h moyens**, **52,5 % des corps 100K-1M**, **zéro 400**, 200×2241 / 401×125 (les 401 = clé morte nanoclaw `fp=1f7f6080cb65` ×121 + 4 sans clé). Clé servie `fp=be312daf7c1c` = `auth_prefix` de MEDIUM (connue). UA : Bun 1 373 (sessions agent), curl 787 (sondes), Go-http 120 (poller nanoclaw), OpenAI/JS 70.
+
+5. **Sécurité 7 h** : hairpin du site `90.65.170.144` (638×200, nous), 371 requêtes **sans XFF** (consommateurs locaux), po-2027 `92.150.81.115` ×2, web2 `51.75.200.22` ×1, et **`92.184.113.132` ×1 (200)** — IP exacte nouvelle mais **famille Free 92.184.x connue, même /24 que le .198 en attente de qualification** ⇒ **pas une alerte**, à qualifier avec lui.
+
+6. **Condensation : nominale, avec une bonne nouvelle** — `cloud fallback condensation succeeded` 08:56:07 puis **`Condensation circuit breaker RESET (LLM success)` 08:57:13**, passe complétée, detached fini (#4527). Les WARN restants sont des `MessageManager: Message not found` (périmètre RSM, bénins).
+
+7. **nbaudit** : `ok:true` 09:05:51Z, `consecutive_failures:0`, **`subpath 19451:Image/` ⇒ la vague 2 est armée** (bascule depuis `Audio/`).
+
+8. Environnement : G: 86 %, sonde OK ; **commit hôte 81,2 %** (seuil 85 % non franchi). Veille amont : **8/8 artefacts inchangés** (les deux updates récents sont nos propres commentaires d'hier soir). Inbox : le DM claudish 12→10 + 75k NO-GO lu et traité ; po-2023:CoursIA a rejoué ms#1656 (#4434) en vert (review COMMENTED postée, l'approbation « classe Opus » relève de ai-01:roo-extensions, pas de cette lane).
+
+Aucun geste moteur. Registre inchangé (Q58 census 2/3). MTP : GO user, reporté après le reset 08/11 23:45Z, annonce AVANT sur `global` inchangée.
