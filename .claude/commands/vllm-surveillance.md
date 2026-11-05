@@ -225,6 +225,37 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 4. **Wedge watch renforcé** : les prefills géants affament les sondes (GEN_TIMEOUT 90 s) ; `WEDGE fail 1/2` pendant un gros prefill = attendu ; `2/2` → vérifier d'abord que des sessions longues sont en vol avant de conclure à une panne.
 5. **Escalade = décision user, jamais auto** : si préemptions récurrentes + hit rate cassé + re-prefill massifs → (a) **marge commit d'abord** (§3 — le tier 24 GiB peut monter 32-48 GiB SI marge < 85 %), (b) **ré-éval NVFP4** (re-commande 1 var `KV_DTYPE_SWIFT15=nvfp4`, record PR #123 : KV 750K mais −13/−17 % débit). **TQ k8v4 dominé par nvfp4 sur chaque métrique mesurée — ne jamais re-tester.**
 
+## (5quinquies) Veille amont — UN appel REST par cycle (ajouté 05/11, mandat user)
+
+**Pourquoi cette section existe.** Le 04/11 le user a trouvé en ouvrant une issue que le fix de notre propre bug MTP ([vllm#58813](https://github.com/vllm-project/vllm/pull/58813)) attendait une validation de notre part **depuis six semaines**, et que la PR amont de notre correctif de tiering ([#63551](https://github.com/vllm-project/vllm/pull/63551)) avait une réponse d'un mainteneur **depuis dix jours**. Ce n'était pas un oubli de lecture : **la spec n'avait aucun volet de veille amont**. Un cycle de surveillance vérifie la prod, pas le monde extérieur — et nos propres commentaires créent des artefacts publics que personne ne relit.
+
+**Règle** : une seule passe, **REST uniquement** (jamais GraphQL — seau partagé 5000/h par utilisateur), **1 requête par artefact**, en fin de cycle. Un artefact qui a bougé depuis le dernier relevé = un événement à qualifier dans le rapport ; un artefact inchangé = **une ligne, pas d'analyse**.
+
+```bash
+# 1 seul appel par artefact, sortie compacte. `updated_at` change sur commentaire/review/label.
+for a in vllm-project/vllm/pulls/63551 vllm-project/vllm/pulls/58813 \
+         vllm-project/vllm/issues/58807 vllm-project/vllm/pulls/53414; do
+  gh api "repos/$a" --jq '"\(.number)\t\(.state)\tmerged=\(.merged_at // "-")\tupdated=\(.updated_at)\tcomments=\(.comments)"'
+done
+```
+
+**Liste fermée** (élargir = un commit sur ce fichier, pas une improvisation) — critère de réveil entre parenthèses :
+
+| Artefact | Ce qu'on attend | Réveil |
+|---|---|---|
+| `vllm#63551` (nôtre) | review de `orozery` sur la forme révisée | review → lire le thread complet, reworker, répondre |
+| `vllm#58813` | merge | **merge → planifier le retrait de l'overlay `s58813`, MTP redevient candidat** |
+| `vllm#58807` (nôtre) | réponse après notre preuve du 05/11 | réponse → répondre, jamais laisser sans suite |
+| `vllm#59040` / `#53414` | merge (contournements `mtp.fc`) | merge → comparer au #58813 pendant le retrait d'overlay |
+| `vllm#60229` | déjà mergée 29/10 — **re-test DSpark** possible | release qui la porte + GO user = fenêtre |
+| `vllm#62615` | équivalent upstream de notre correctif tiering | merge → **retirer `vllm-openai-v0320-tierpin:v1`** |
+| `vllm#53180` (nôtre, TQ×spec-dec) | toute activité | activité → relire (famille CLOSE, veille seule) |
+| `jsboige/vllm` PR ouvertes | review humaine | review/CI rouge → traiter |
+
+**Ce qui n'est PAS de la veille amont** : re-tester la famille spec-dec (CLOSE 0/4, GO user requis), merger/approuver les PR d'autres lanes (hors mandat, relayer), ni relancer un test dont le critère est mort (`#40798` fermée sans merge le 2026-05-30).
+
+**Un « zéro » doit être mesuré** : si `gh` échoue (quota, auth), l'écrire **comme une panne d'instrument**, jamais comme « rien de neuf ». Vérifier `gh api user` avant si un doute existe sur le compte (`gh` dérive entre les lanes).
+
 ## (6) Triage coordination
 
 Inbox `roosync_messages` : lire l'adressé `myia-ai-01:vllm`, répondre/ack, `mark_read` ciblé (**`bulk_mark_read` exige un filtre `from`/`subject` — sans filtre il marque TOUT l'inbox**). Adressage machine-only = bug #3960 : ignorer les dispatchs d'autres workspaces. Dashboards : lire global + workspace-vllm ; rendre les lignes demandées (split-brain, matrices, etc.) ; relayer à l'user les réponses aux issues ouvertes par la lane.
