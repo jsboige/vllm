@@ -6916,3 +6916,32 @@ Contexte : deuxième cycle de confirmation post-12→10 promis à claudish, plus
 8. Environnement : G: 86 %, sonde OK ; **commit hôte 82,5 %** (marge 70 GB, sous le seuil 85 %). **Veille amont 8/8 inchangée** (les `updated_at` 04-05/11 sur #63551/#58813 sont nos propres commentaires). Coordination : **ACK moteur envoyé pour le recreate code-only du sidecar po-2027** (claudish exécute en fin de tour, créneau libre avant MTP) ; rien pour la lane vllm sur global (deux entrées RSM/IIS voisines).
 
 Aucun geste moteur. Registre inchangé (Q58 census 2/3). MTP : GO user, après le reset 08/11 23:45Z, annonce AVANT sur `global`.
+
+
+## 05/11 15:13Z (cycle :43) — régime 10 slots en plateau (hit 84,9 %, préemptions 4,3/h), et la mesure demandée par claudish sur les compactions × cache de préfixe
+
+Contexte : troisième cycle post-12→10. Fenêtre 12:13:36→15:13:30Z (3 h pleines).
+
+1. **Fenêtre** : **hit 84,9 %** (45,42 M/53,50 M — contre 89,5 % sur la fenêtre précédente), **préemptions +13 = 4,3/h** (contre 5,7/h : elles baissent encore), **decode 61,9 t/s** (668 150 tok ; contre 70,1), **prefill 4 957 t/s** (contre 5 944). Volume en hausse côté requêtes (census : 207 req/h sur les 3 dernières heures vs 190/h sur 12 h) et instantané plus calme (running 3 / waiting 1, KV 70,6 %). Lecture : le régime tient, le hit recule de 4,6 points **sans** hausse des préemptions — signature d'un working set un peu plus dispersé (tours de delta plus longs), pas d'une saturation. Cumulé boot 84,2 %.
+
+2. **★ Réponse à la [ASK] claudish du 14:14Z — les compactions Claude Code touchent-elles le cache de préfixe ?** Question outillée de 17 horodatages (08:14→12:21Z). Mesures produites :
+   - **17/17 retrouvées dans le census** (`error_sources.jsonl`, qui couvre désormais 30/10→aujourd'hui, 33 598 lignes) : corps **607-830 Ko** ≈ 150-207k tokens, toutes 200. Deux attributions à faire vérifier chez lui (10:07:27 → la plus grosse requête voisine est étiquetée po-2024 à ±22 s ; 10:53:27 → po-2023 à ±6 s).
+   - **`usage.prompt_tokens_details` = `null`** sur une réponse réelle : **le build ne publie AUCUN hit par requête**. Son `cache_read_input_tokens: 0` est une **absence d'instrumentation**, pas un miss — et ce n'est pas le pont Anthropic qui le jette.
+   - **Preuve structurelle** : chaque tour Claude Code renvoie déjà toute la conversation (po-2023 : 12:01:52 677 734 o → 12:04:13 683 176 → 12:06:17 689 540 → 12:07:42 699 271, même `body_head`, +5-10 Ko/tour). Une compaction n'est pas une forme différente : c'est un tour de plus avec une consigne. Son préfixe est celui du tour précédent, divergence au dernier message.
+   - **Plafond du cache mesuré en direct** : même prompt de 3 264 tokens envoyé deux fois → **105,85 s puis 0,25 s**. Réserve écrite au destinataire : le premier appel a attendu derrière des sessions longues (pas un cold pur), mais 0,25 s pour 3 264 tokens + 4 générés ne s'explique que par un hit quasi total.
+   - **Instrument armé** : échantillonneur `/metrics` 10 s (`.tmp/metrics_track.sh`, tâche de fond, 6 h max, sortie `.tmp/metrics_track.jsonl`) pour donner le **split exact caché/recalculé des 2-3 prochaines compactions** — les compteurs étant cumulatifs, le passé ne se tranche pas.
+   - **Renvoyé à son propre instrument** : TTFT hub-side des 17 (cold 200k ≈ 30-40 s à 5-6k tok/s ; hit ≈ 1-3 s). **Conséquence Q-85** : si le TTFT est court, les compactions ne coûtent que leur sortie et abaisser le seuil est une question de qualité de contexte, pas de prefill.
+
+3. **Santé moteur** : health 200/3,7 ms, **RC=0, Up 15 h** (même boot), OOM 0, VRAM **22 239/21 148** (bande, sous 23 000), `/dev/shm` **33G = 51 %**, GPU 2 **108 MiB**, 3 conteneurs Up, **3 191 sondes OK**, 8 `WEDGE fail 1/2` dans la fenêtre (jusqu'à 14:27) **jamais 2/2**, compteurs en avance (p 201,6 M→250,4 M). `docker ps | grep -i heal` : **aucun** redémarreur concurrent sur le conteneur moteur.
+
+4. **Census 12 h** : 2 279 req = **190/h**, **51,2 % des corps 100K-1M**, **zéro 400**, 200×2 151 / 401×128 (clé morte `fp=1f7f6080cb65` ×123 + 5 sans clé). Dernières 3 h : 620 req = 207/h.
+
+5. **Sécurité 7 h** : hairpin `90.65.170.144` ×919, 516 sans XFF (locaux), po-2027 `92.150.81.115` ×2, et la famille Free mobile `92.184.113.x` continue de **rotate** : .125 ×5, .132 ×2, .173 ×2, **.68 ×1 (IP exacte nouvelle, 1 requête 200)** — même famille connue (mobile DHCP), pas une alerte.
+
+6. **Condensation** : passes 13:36 (complétée) et 14:42-14:43 (**cloud fallback réussi** puis complétée) ⇒ primaire toujours en échec, repli couvre. Périmètre RSM, relayé non traité : `[WARN #4527] above fill warning level` répété (14:25/14:51/14:55), `[NUL-HEAD #3782] tête illisible` (14:46, auto-réparé depuis la vue PG), `[ERROR] roosync_read` (14:28), et **`[WARN] IdentityManager: Recent heartbeat found for myia-ai-01 (0s ago) — concurrent instance possible but not blocking` (14:46:14)** — signal de split-brain machine à porter à l'owner RSM, sans action de cette lane ; le worker report po-2024 sur #4527 (append bloquant ~108 s sous saturation du primaire) va dans le même dossier.
+
+7. **nbaudit** : `ok:true` 15:05:55Z, `consecutive_failures:0`, vague 2 `Image/` en cours.
+
+8. Environnement : G: **87 %**, sonde OK ; **commit hôte 82,0 %** (marge 72 GB). **Veille amont 8/8 inchangée.** Coordination : les deux [MENTION] du 13:20 sont le fil Q74 de ai-01:roo-extensions (déjà lu par roo-extensions/qdrant/CoursIA), hors périmètre vllm ; le DM erreur de claude du matin reste le seul fil vllm.
+
+Aucun geste moteur. Registre inchangé (Q58 census 2/3). MTP : GO user, après le reset 08/11 23:45Z, annonce AVANT sur `global`.
