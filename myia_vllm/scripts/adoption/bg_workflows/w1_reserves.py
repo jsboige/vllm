@@ -70,6 +70,7 @@ class Candidate:
     verdict: str = "?"          # n/m jetons cités encore présents — fait brut
     verdict_reason: str = ""
     where_head: str = ""        # fichier(s) @ sha où ils sont présents
+    body_pr: str = ""           # jetons cités dans la description de PR (vs tête)
     lane_reply: str = ""
     lane_body: str = ""
     lifted: str = ""
@@ -284,7 +285,8 @@ def pull_files(repo: str, pr: int, limit: int = 8) -> list[str]:
 
 
 def mechanical_verdict(c: Candidate, repo: str, sha: str, cache: dict,
-                       fallback: list[str] | None = None) -> tuple[str, str, str]:
+                       fallback: list[str] | None = None,
+                       pr_body: str = "") -> tuple[str, str, str, str]:
     """Colonnes purement FACTUELLES — aucune polarité supposée.
 
     Mesuré le 05/11 sur 3 PRs : un même lot de réserves cite tantôt le texte DU DÉFAUT
@@ -310,10 +312,21 @@ def mechanical_verdict(c: Candidate, repo: str, sha: str, cache: dict,
                 where.setdefault(t, []).append(p)
     found = sorted(where)
 
+    # Colonne demandée par ai-01:CoursIA (#24599 : « les carnets étaient corrigés mais le
+    # body citait encore l'ancien run ») — c'est la DESCRIPTION DE LA PR, pas le texte du
+    # commentaire. Le fait utile est le CROISEMENT : jeton encore dans la description alors
+    # qu'il a disparu de la tête = description périmée.
+    in_body = [t for t in toks if pr_body and t in pr_body]
+    stale = [t for t in in_body if t not in where]
+    body_col = (f"{len(in_body)}/{len(toks)} jeton(s) dans le body de PR, "
+                f"dont {len(stale)} absent(s) de la tête"
+                + (f" ; ex. `{max(stale, key=len)[:60]}`" if stale else "")
+                if toks else "—")
+
     if not toks:
-        return "—", "aucun jeton cité : rien de vérifiable mécaniquement", "—"
+        return "—", "aucun jeton cité : rien de vérifiable mécaniquement", "—", body_col
     if not checked:
-        return "?", "aucun fichier de la tête lisible pour ce point", "—"
+        return "?", "aucun fichier de la tête lisible pour ce point", "—", body_col
 
     n = f"{len(found)}/{len(toks)}"
     # Le jeton le plus long est le plus discriminant (un identifiant court du body —
@@ -321,9 +334,10 @@ def mechanical_verdict(c: Candidate, repo: str, sha: str, cache: dict,
     ex = f" ; ex. `{max(found, key=len)[:60]}`" if found else ""
     proof = f"jetons cités encore présents à la tête : {n} ({checked} fichier(s) lus){ex}"
     if not found:
-        return n, proof, "aucun"
+        return n, proof, "aucun", body_col
     files = sorted({p for ps in where.values() for p in ps})
-    return n, proof, ", ".join(p.rsplit("/", 1)[-1] for p in files[:3]) + f" @ {sha[:7]}"
+    return (n, proof, ", ".join(p.rsplit("/", 1)[-1] for p in files[:3]) + f" @ {sha[:7]}",
+            body_col)
 
 
 # --------------------------------------------------------------------------- rendu
@@ -346,8 +360,8 @@ def render(rows: list[Candidate], meta: dict) -> str:
         sub = [r for r in rows if r.pr == pr]
         out.append(f"\n## PR #{pr} — {len(sub)} point(s) — tête `{meta['heads'].get(pr, '?')[:12]}`\n")
         out.append("| point (verbatim + id) | auteur (login) | réponse lane (id, date) | "
-                   "jetons cités encore présents à la tête | où | levée (fait) |")
-        out.append("|---|---|---|---|---|---|")
+                   "jetons cités encore présents à la tête | où | body de PR | levée (fait) |")
+        out.append("|---|---|---|---|---|---|---|")
         for r in sub:
             pt = r.body.replace("|", "\\|").replace("\n", " ")[:220]
             # Une fiche qui a échoué la porte verbatim se SIGNALE : le lecteur doit voir
@@ -357,7 +371,8 @@ def render(rows: list[Candidate], meta: dict) -> str:
                 pt = (f"⚠️ PORTE ÉCHUE {r.gate.get('verbatim')}/{r.gate.get('verbatim_total')} "
                       f"champ {r.gate.get('missing')} — " + pt)
             out.append(f"| {pt} ({r.comment_id}) | {r.auteur} | {r.lane_reply or '—'} | "
-                       f"{r.verdict_reason or '—'} | {r.where_head or '—'} | {r.lifted or 'non levée'} |")
+                       f"{r.verdict_reason or '—'} | {r.where_head or '—'} | {r.body_pr or '—'} | "
+                       f"{r.lifted or 'non levée'} |")
     out.append("\n---\n*Livrable mécanique : chaque valeur est un extrait de la source, provenance "
                "citée. La colonne « jetons cités » est un FAIT (présence à la tête), pas un statut : "
                "une réserve cite tantôt le défaut, tantôt la preuve que c'est bon — la lane seule "
@@ -431,10 +446,11 @@ def main() -> int:
                         n_ok += 1
                     else:
                         skipped.append(f"#{pr} {c.comment_id} portes={c.gate}")
-                v, why, wh = mechanical_verdict(c, a.repo, sha, cache, fbk)
-                c.verdict, c.verdict_reason, c.where_head = v, why, wh
+                v, why, wh, bp = mechanical_verdict(c, a.repo, sha, cache, fbk,
+                                                    pull.get("body") or "")
+                c.verdict, c.verdict_reason, c.where_head, c.body_pr = v, why, wh, bp
             except Exception as e:
-                c.verdict, c.verdict_reason, c.where_head = "échec", str(e)[:160], "—"
+                c.verdict, c.verdict_reason, c.where_head, c.body_pr = "échec", str(e)[:160], "—", "—"
                 skipped.append(f"#{pr} {c.comment_id} {str(e)[:120]}")
             rows.append(c)
 
