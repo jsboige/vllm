@@ -175,3 +175,27 @@ DM `msg-20261105T00*` (threads `spec-bgwf-*-20261104`), résumées ici.
 `workspace-CoursIA`), validation d'abord sur les 2-3 cas réels offerts par po-2023:CoursIA-2,
 puis fenêtre pilote avec le coordinateur (lecture seule GitHub, charge horde ≈ négligeable,
 aucune fenêtre moteur à annoncer).
+
+### 10.1 Driver W1 — premier livrable mesuré (05/11 11:07 locale) et sa correction de conception
+
+`myia_vllm/scripts/adoption/bg_workflows/w1_reserves.py` sur `jsboige/CoursIA`
+(#24457, #24640, #24599) : **13/14 fiches PASS** la porte verbatim, **34 s** pour 14 points
+contre 471 s / ~160 k tokens pour 7 PRs côté coordinateur. La fiche écartée est **signalée dans
+la table** (`⚠️ PORTE ÉCHUE 4/5 champ ['extrait']`), plus seulement dans le compte d'en-tête.
+
+**Défaut de conception trouvé et corrigé avant livraison — la colonne de statut était fausse.**
+La v1 prévoyait `TRAITÉ / NON TRAITÉ` calculé sur « le texte cité par la réserve est-il encore
+présent à la tête ? ». Mesure sur les 3 PRs : **9 alertes produites, 9 fausses**, pour une raison
+structurelle et non réglable — **la polarité d'une réserve varie d'un point à l'autre du même
+lot**. #24640 p1 cite `csharp_sha` comme *preuve que c'est bon* (« reproduits byte-exact »), p2
+cite `HttpPort 86660` comme *le défaut*. Un jeton présent à la tête ne prouve donc rien dans un
+sens ni dans l'autre ; en tirer un statut fabrique des faux drapeaux symétriques.
+
+Correction (soustraction, pas inversion) : la colonne devient un **fait** — `n/m jetons cités
+encore présents à la tête`, avec l'exemple **le plus long** (le plus discriminant) et les
+fichiers `@sha`. Aucun statut, aucune alerte. C'est cohérent avec le footer du livrable (« le BG
+ne juge pas la levée ») et avec §5-interdits (jugement de fond). **La spec §5 est corrigée par
+la mesure** : `TRAITÉ / NON TRAITÉ` n'est pas mécanisable sur ce corpus ; la ligne de statut
+revient à la lane, le BG livre le fait et son emplacement.
+
+Reste à mesurer : le directeur (rangement oldest-first) et la livraison sur `workspace-CoursIA`.
