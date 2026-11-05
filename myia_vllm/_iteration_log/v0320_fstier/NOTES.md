@@ -6893,3 +6893,26 @@ Contexte : claudish a appliqué la concurrence vllm-myia **12→10** à **08:09:
 8. Environnement : G: 86 %, sonde OK ; **commit hôte 81,2 %** (seuil 85 % non franchi). Veille amont : **8/8 artefacts inchangés** (les deux updates récents sont nos propres commentaires d'hier soir). Inbox : le DM claudish 12→10 + 75k NO-GO lu et traité ; po-2023:CoursIA a rejoué ms#1656 (#4434) en vert (review COMMENTED postée, l'approbation « classe Opus » relève de ai-01:roo-extensions, pas de cette lane).
 
 Aucun geste moteur. Registre inchangé (Q58 census 2/3). MTP : GO user, reporté après le reset 08/11 23:45Z, annonce AVANT sur `global` inchangée.
+
+
+## 05/11 12:13Z (cycle :43) — LE GENOU RESTE DESSERRÉ : confirmation 2 ET 3 sur 3 h pleines (hit 89,5 %, decode 70 t/s), CORRECTION 75k reçue de claudish
+
+Contexte : deuxième cycle de confirmation post-12→10 promis à claudish, plus un point hors-cycle à 11:24Z. Le régime 10 slots tient.
+
+1. **Fenêtre post-changement complète 09:15:36→12:13:36Z (2 h 58)** : **hit 89,5 %** (56,96 M/63,67 M — meilleur chiffre soutenu du régime), **préemptions +17 = 5,7/h** (vs 18/h à 12 slots, 7/h sur la première heure), **decode 70,1 t/s agrégé** (748 419 tok/10 680 s ; bande 68-76 selon la mixité), **prefill 5 944 t/s soutenus**. Sous-fenêtre 11:25→12:13 cohérente (hit 89,3 %, 6,1/h, 75,9 t/s). **Les deuxième et troisième confirmations sont en main : à 10 slots le genou se desserre et y reste.** Cumulé boot : 84,1 %. Instantané : running 7 / waiting 3 (tous `deferred`, `capacity` 0) / KV 80,5 %.
+
+2. **★ CORRECTION 12:43Z de claudish sur le 75k (DM `po2025-claudish-correction-xrj46j-20261105`)** : le « ne plus le proposer sous aucune forme » enregistré au cycle 09:11Z était **une sur-écriture de claudish, pas les mots du user**. Ce qui reste vrai : 75k = NO-GO. Ce que le user a dit (08:10Z puis 08:41Z) : le seuil peut redescendre « sur les bases d'une baisse mesurée de l'empreinte de notre harnais » ; **geste de bonne volonté accordé : 230k workers / 300k ai-01** (appliqué et relu sur po-2025, snapshot 11:42Z, preserve-local ⇒ chaque siège édite sa valeur) ; toute baisse au-delà passe par **jsboige/claudish#874** (animé par claudish). Mesure associée : à 230k la compaction avance pour ~1-3 % des requêtes workers (14 190 req) ; l'effet swift se lit dans la **queue des prompts longs, pas la médiane**, et seulement sur les sessions démarrées après l'edit. **Fiche mandat corrigée en conséquence** (ce cycle) ; réponse DM envoyée (`vllm-ack-correction-75k-1243Z`). Inchangés : exclusion ai-01 (tient sur le seuil de condensation), MTP post-reset 08/11, concurrence 10.
+
+3. **Santé moteur** : health 200/5,5 ms, **RC=0, Up 12 h** (même boot 23:54:05Z), OOM 0 (5 000 lignes), VRAM **22 424/21 148** (bande attendue, GPU 0 sous 23 000), `/dev/shm` **33G = 51 %** (plancher tenu), GPU 2 **56 MiB** (libre), 3 conteneurs Up, **2 986 sondes OK**, 8 `WEDGE fail 1/2` (08:00→11:44Z) **jamais 2/2** avec compteurs en avance (p 133,7 M→201,6 M) = motif attendu.
+
+4. **Census 12 h** : 2 393 req = **200/h**, **51,2 % des corps 100K-1M**, **zéro 400**, 200×2 265 / 401×128 (clé morte nanoclaw `fp=1f7f6080cb65` ×122 + 6 sans clé). Clé servie `fp=be312daf7c1c` (MEDIUM auth_prefix, connue).
+
+5. **Sécurité 7 h** : hairpin `90.65.170.144` ×824, 463 sans XFF (locaux), po-2027 `92.150.81.115` ×4, et **famille Free mobile `92.184.113.x` qui ROTATE ses IP exactes** : .125 ×5, .132 ×2, .173 ×2 (toutes 200) — famille connue de la carte (mobile DHCP, même poster que le .103 auto-signalé de po-2027) ⇒ **pas des alertes** ; à noter dans le census que la famille change d'IP exacte d'heure en heure.
+
+6. **Condensation** : nominale — passes 10:51 (cloud fallback + **breaker RESET**) et 11:18 ; le WARN « dashboard #4527 above fill warning » a bien déclenché l'auto-condensation 11:18 = le mécanisme travaille. Périmètre RSM (relayé, non traité ici) : 6× `[ERROR] Invalid args for roosync_dashboard` 12:06-12:11Z (appels d'essai d'une lane, probablement les mesures roosync_search de ai-01:roo-extensions) + STALE-FILE #3230.
+
+7. **nbaudit** : `ok:true` 12:05:54Z, `consecutive_failures:0`, **vague 2 `19451:Image/` en cours**.
+
+8. Environnement : G: 86 %, sonde OK ; **commit hôte 82,5 %** (marge 70 GB, sous le seuil 85 %). **Veille amont 8/8 inchangée** (les `updated_at` 04-05/11 sur #63551/#58813 sont nos propres commentaires). Coordination : **ACK moteur envoyé pour le recreate code-only du sidecar po-2027** (claudish exécute en fin de tour, créneau libre avant MTP) ; rien pour la lane vllm sur global (deux entrées RSM/IIS voisines).
+
+Aucun geste moteur. Registre inchangé (Q58 census 2/3). MTP : GO user, après le reset 08/11 23:45Z, annonce AVANT sur `global`.
