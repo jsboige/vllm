@@ -6849,3 +6849,24 @@ Contexte de cycle : l'annonce claudish 00:44:58Z (global) — mandat user in-thr
 8. **Instrument** : le one-shot M+30 (01:29Z) n'a **jamais tiré** (session occupée) — supprimé, son rôle est couvert par ce cycle ; le moniteur d'absorption en fond de session avait une **cécité préemption** (baseline pré-boot 153 > compteur post-boot 9 ⇒ alerte structurellement muette) — relancé avec baseline fraîche (tâche `bzuutojvf`).
 
 Aucun geste moteur ce cycle. Le registre ne gagne rien : Q58 (clé morte) absente du census → census 2/3 inchangé ; aucune question ouverte au user.
+
+
+## 05/11 05:51Z (cycle :41) — LA SECONDE MOITIÉ DE LA NUIT DÉGRADE : préemptions ×4, hit −15 pts, MTP reporté à après le reset
+
+Moteur sain partout par ailleurs : 200/2,8 ms, RC=0 (même boot 23:54:05Z, Up 6 h), OOM 0, VRAM 22 145/21 148 (bande), `/dev/shm` 51 % plancher, **GPU 2 libéré** (128 MiB — le training CoursIA est fini), commit hôte **79,8 %** (87,6→82,4→79,8 : la bouffée est entièrement passée).
+
+1. **Le virage, mesuré par le moniteur d'absorption (baseline fraîche posée à 04:06Z)** : préemptions **9→35** avec taux **ACCÉLÉRANT** (+18 sur la dernière heure = ×4 le rythme du début de nuit) — le critère « préemptions en hausse continue » de la liste de contre-mesures claudish est désormais **rencontré côté moteur**. KV en oscillation 74-99 %, waiting jusqu'à 6. Decode agrégé **50→34 t/s**. **28-31 % des complétions > 240 s** (3 alertes : 04:41, 05:11, 05:41Z) — la barre hub reste 540 s, mais la queue s'allonge.
+
+2. **L'amortissement recule** : hit depuis boot 82,2 % (78,9 M/96,1 M) mais **fenêtre 3 h = 73,6 %** (contre 88,3 % sur la fenêtre précédente) — le recompute de préemption mange le gain (chaque préempté re-paie son prefill). Le tier host porte toujours (63,7 M = 81 % du servi), le **fs tier monte** (166 K→483 K relus). Prefill soutenu **4 048 t/s** (7 020 sur la fenêtre précédente). Census : **150 req/h** (250 au cycle précédent) à concurrence fixe = la latence qui étale le débit, la formule claudish à l'œuvre ; **52 % des corps 100K-1M** ; **zéro 400** ; aucune nouvelle IP ; Q58 absente (census 2/3).
+
+3. **Conjonction M+107 de claudish (04:35Z, join reqN→machine sur 6 791 envelopes 00:54→02:56Z)** : régime conforme au design — 247 swift sur les 4 postes actifs (po-2028 99 · po-2024 70 · po-2023 56 · po-2027 22), **0 MiniMax, 0 PAYG** côté armé ; le trafic MiniMax restant = ai-01 seul (exclusion respectée) ; les 9 ai-01→swift = mes consommateurs locaux directs, pas une violation. Ses `[resp]` flotte = le chiffre Gate C : **p50 33 s / p90 181 s / max 1 003 s** (ttft max 286 s). **Palier 16 : NO-GO conjoint.** Quota : hebdo 64 %, pace ai-01-seul ≈ 0,40 %/h contre 0,39 visés — **knife-edge**, la lecture du matin tranche.
+
+4. **Ma réponse (DM 05:53Z, avant son rapport 07:37)** : sa fenêtre s'arrête à 02:56Z, juste avant le virage — ses percentiles décrivent la première moitié de la nuit. Verdict engine-side : **le régime 12 slots est passé le genou KV** — le moteur échange du recompute contre de l'admission ; doctrine user inchangée (l'attente est du service) mais l'efficacité par token servi baisse (hit −15 pts, decode −30 %). Si le quota bascule, **le levier d'appoint est SA concurrence 12→10**, pas ma config moteur.
+
+5. **★★ MTP reporté à après le reset — recommandation au user via son rapport.** Sa demande d'annonce de fenêtre acceptée (règle déjà dans ma spec) ET son chiffrage de ma fenêtre MTP du 04/11 vue hub-side : les 27×502 ont été absorbés par STEP-ADVANCE, MAIS GLM était 429-muré et MiniMax au mur dans le même temps ⇒ **1 065 réponses PAYG deepseek en ~20 min (~1,70 $)**. Sous le régime d'entrée, une fenêtre swift envoie TOUT le haiku armé sur un MiniMax au couteau (pace 0,40 vs 0,39). La mesure MTP n'a de valeur que sur le régime établi — le régime est établi ; ce qui manque n'est pas la charge, c'est **la marge de quota pour l'indispo** ⇒ après le reset 08/11 23:45Z.
+
+6. Condensation : **aucune nouvelle passe depuis le breaker 01:44:34Z** (workspace-vllm à 79,5 % après mon [DONE] — pas de seuil franchi). Côté voisin : workspace-CoursIA a eu une passe **tronquée à 01:16Z avec TOUS les modèles en timeout** (deepseek-v4-flash + claude-sonnet-5-5 + frognano-4b, breaker 3/3 OPEN) — escalade #4095 ouverte, périmètre RSM, mais c'est un second point de données sur la dégradation de chaîne sous charge.
+
+7. **Veille amont** : 5/5 artefacts inchangés (les updates = toujours nos commentaires). G: 86 % probe OK. nbaudit vague 2 propre (05:05Z). Watchdog : 4 nouveaux `fail 1/2` jamais 2/2, compteurs en avance (p 84,5→91,6 M) = attendu.
+
+Aucun geste moteur. Registre inchangé (Q58 census 2/3). La recommandation MTP-after-reset part au user par le rapport claudish 07:37.
