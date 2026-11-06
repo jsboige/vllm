@@ -7040,3 +7040,18 @@ Contexte : neuvième cycle post-12→10, fenêtre 06:13:30→09:13:16Z (3 h), bo
 7. **Veille amont 8/8 inchangés.** ⚠️ **Compte gh re-dérivé vers `myia-ai-01`** (4ᵉ occurrence en 4 cycles) — re-switché jsboige AVANT la PR, gotcha confirmé actif.
 
 Aucun geste moteur. MTP : GO user, après le reset 08/11 23:45Z, annonce AVANT sur `global`. Cron : un seul job récurrent, prochain feu ~12:13Z.
+
+
+## 06/11 12:13Z (cycle :43) — ★ point de midi : la charge diurne est arrivée (451 req/h, préemptions 7,0/h, KV 76,3 %) ; énigme nbaudit résolue par le log du runner ; marge commit 86,2 %
+
+Contexte : dixième cycle post-12→10, fenêtre 09:13:16→12:13:07Z (3 h), bornes exactes (snapshots 1793956396/1793967187). C'est le « point de midi » attendu par myia-open-webui (3ᵉ jour du motif de saturation diurne).
+
+1. **Fenêtre** : **hit 87,8 %** (61,24 M/69,77 M), **préemptions +21 (86→107) = 7,0/h** — la pression KV est revenue avec la charge (trajectoire 0→0→0→0,3→**7,0**/h). Decode **76,1 t/s**, prefill calculé 791 t/s. **KV 76,3 %** à la mesure, file running 6 / waiting 0 / deferred 0. Trafic **451 req/h sur 3 h / 419 req/h sur 90 min** — le plus haut depuis le passage 12→10 ; corps 10-100K **44-46 %** (vague de requêtes moyennes), 100K-1M 31-32 %. **Ce n'est pas le genou 12-slots** (qui donnait 9→35 préemptions/h, hit 73,6 %, decode 34 t/s) : le régime tient, sous tension.
+2. **★ Point de midi pour myia-open-webui : CONFIRMÉ par nos compteurs** — la saturation diurne est bien liée à la charge (KV 76,3 %, 7 préemptions/h), pas à une fuite ; leur conclusion « le levier recréer est mort » tient, et le correctif reste capacité/admission. **4 WEDGE `fail 1/2` en 1 h** (11:27→11:51Z, jamais 2/2) = signature de famine des gros prefills sous 451 req/h, comportement documenté, moteur sain (health 200/8,9 ms, RC=0, Up 36 h).
+3. **★ Énigme « 3 fresh ahead, 0 picked » RÉSOLUE** : le log du runner l'explicite désormais — `1 open-PR skip [('science-diagrams.ipynb', [24482])]` sur #19451. Les « 0 picked » sont le **calcul normal** (2 fresh ahead − 1 PR-skip − 1 unresolved), **pas une panne** ; le suivi « lire le runner au source » du cycle précédent est clos sans action.
+4. **400** : toujours seulement les deux connus (11,1 h / 9,9 h) — aucun nouveau. Census 12 h : 3 096 lignes, 258 req/h ; 200×2 953 / 401×141 / 400×2. 1 trou de 120 s.
+5. **Sécurité 7 h** : hairpin ×1 286 (200), sondes locales sans XFF ×706 (toutes 200, SUPPOSÉ watchdog), Free `92.184.113.226` ×1, web1/web2 ×1 chacun. **Rien d'inconnu avec 200 → pas d'alerte.** Clés 12 h : MEDIUM 2 958, nanoclaw morte 122, `87716e486341` toujours 11 (aucune récidive), Q58 absente.
+6. **⚠ Marge commit hôte 86,2 % (344,7/399,8 Go, marge 55,0 GB) — AU-DESSUS du seuil 85 %.** Pression WSL diurne + charge moteur ; **aucun travail lourd n'est lancé** (aucune passe prouveur armée, MTP après le 08/11) — signal seulement. G: 85 % sonde OK.
+7. **Environnement** : VRAM **22 319/21 148** (<23 000), shm 33G=51 %, OOM 0, GPU 2 108 MiB, 3 conteneurs. nbaudit `ok:true` 12:06:13Z. **Veille amont 8/8 inchangés.** Inbox : réponse de po-2028:Maintenance (compréhension confirmée — la garde famine vit dans `jsboige/Maintenance`, leur DM visait `myia-ai-01:Maintenance`) lue et marquée ; thread clos.
+
+Aucun geste moteur. **Watch ouvert** : si le hit recule sous ~80 % avec préemptions >10/h aux cycles suivants, c'est le genou de capacité à documenter (escalade = décision user, jamais auto). MTP : GO user, après le reset 08/11 23:45Z, annonce AVANT sur `global`. Cron : un seul job récurrent, prochain feu ~15:13Z.
