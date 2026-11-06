@@ -39,9 +39,12 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
 - Commits conventionnels, PR vers `jsboige/vllm`, `Closes #NN` dans le corps.
 - Un chiffre cité est **mesuré**, avec sa source ; qualifier VERIFIE / RAPPORTE / SUPPOSE.
 - Jamais de secret dans un commit ; jamais de suppression sans preuve de préservation.
-- Point d'entrée **sk-agent** (`:8010`, streamable-http, container `mcp-tools` sur ai-01) :
-  à câbler dans l'init du workspace — télémétrie d'usage encore absente (à porter par
-  roo-extensions).
+- Point d'entrée **sk-agent** (`:8100`, streamable-http, container `mcp-tools` sur ai-01 —
+  **RAPPORTE** par ai-01, annonces 06/10 11:39Z puis 18:48Z post-redémarrage ; le `:8010`
+  de la note initiale du matin précédait l'annonce du catalogue). À câbler dans l'init
+  du workspace. Télémétrie d'usage **en place** depuis ms#1387 (`SK_AGENT_USAGE_LOG`,
+  bumps parents #4080/#4089, volume mesuré #4085) ; conteneur redémarré le 06/10 18:47Z,
+  catalogue à jour (**Swift-1.5-27B**, remplace Qwen3.6 35B MoE retiré le 25/09).
 - Le harnais partagé (règles, skills) vit dans `jsboige/roo-extensions` — s'y référer plutôt
   que dupliquer.
 
@@ -90,3 +93,8 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
   sur workspace-vllm : **le démarrage d'un siège génère une vague d'indexation
   one-shot de son clone** (~150 k pts/h mesuré, latence co-tenants dégradée
   temporairement) — valable pour le siège po-2025 à venir.
+- 2026-10-06 soir — PR doc (lane `po-2025:roo-extensions`, mandat user 06/10) :
+  endpoint sk-agent corrigé `:8100` (qualifié RAPPORTE, source ai-01) et télémétrie
+  d'usage marquée en place — le volet « à porter par roo-extensions » est couvert par
+  ms#1387 + bumps #4080/#4089. Prochaine étape volet C : preset mini FrogNano +
+  gardes récursion (#70, #4085).
