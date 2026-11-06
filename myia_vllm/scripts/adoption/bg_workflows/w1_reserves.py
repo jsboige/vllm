@@ -43,6 +43,11 @@ from pathlib import Path
 
 DEFAULT_REPO = "jsboige/CoursIA"
 ENGINE = "http://localhost:5003"
+HUB = os.environ.get("CLAUDISH_HUB", "http://localhost:3000")
+# Le directeur (tier au-dessus du mini, spec §3) passe par le hub claudish — standard de
+# consommation flotte. La clé proxy vient de l'env, JAMAIS du dépôt (demande à po-2025:claudish).
+HUB_KEY_ENV = "CLAUDISH_PROXY_KEY"
+DIRECTEUR_MODEL = os.environ.get("DIRECTEUR_MODEL", "qwen3.6-35b-a3b")
 ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 LANE_MARKERS = ("myia-", "[Hermes]", "[RooSync]", "[OVERRIDE]")
 RESERVE_STATES = {"CHANGES_REQUESTED"}
@@ -340,6 +345,157 @@ def mechanical_verdict(c: Candidate, repo: str, sha: str, cache: dict,
             body_col)
 
 
+# --------------------------------------------------------------------------- directeur
+# Spec §3 : le directeur RANGE ET PRIORISE SEULEMENT (oldest-first, « à lire en premier »),
+# sur fiches déjà passées par les portes. Interdits : verdict de fond, décision de levée.
+# Le driver porte les portes DU directeur (producteur mini ≠ directeur ≠ portes = driver).
+
+# Routage mécanique par point — FAITS (existence + dates), aucune polarité (leçon §10.1) :
+#   levée posée        -> FERMÉ        (le coordinateur a tranché ; rien en attente)
+#   réponse lane posée -> COORDINATEUR (arbitrage/levée formelle attendus de lui)
+#   sinon              -> LANE         (réponse/correction attendue de la lane)
+BALL_PRIORITY = {"LANE": 0, "COORDINATEUR": 1, "FERMÉ": 2}
+
+
+def balle_point(c: Candidate) -> str:
+    if c.lifted:
+        return "FERMÉ"
+    if c.lane_reply:
+        return "COORDINATEUR"
+    return "LANE"
+
+
+def balle_pr(rows: list[Candidate]) -> str:
+    """Pire balle de la PR (celle qui bloque : LANE > COORDINATEUR > FERMÉ)."""
+    return min((balle_point(r) for r in rows), key=lambda b: BALL_PRIORITY[b])
+
+
+def facts_table(rows: list[Candidate], heads: dict) -> str:
+    """Table de faits compacte, une ligne par PR — le SEUL texte donné au directeur."""
+    lines = []
+    for pr in sorted({r.pr for r in rows}):
+        sub = [r for r in rows if r.pr == pr]
+        oldest = min((r.date for r in sub if r.date), default="?")
+        n_fermes = sum(1 for r in sub if balle_point(r) == "FERMÉ")
+        gate_ok = sum(1 for r in sub if r.gate and r.gate.get("schema")
+                      and r.gate.get("verbatim") == r.gate.get("verbatim_total"))
+        worst = next((r.verdict for r in sub if r.verdict and r.verdict not in ("—", "?", "échec")), "—")
+        lines.append(f"PR {pr} | tête {heads.get(pr, '?')[:7]} | points {len(sub)} "
+                     f"(fiches {gate_ok} PASS) | balle {balle_pr(sub)} | "
+                     f"levées {n_fermes}/{len(sub)} | plus ancien {oldest[:10]} | "
+                     f"jetons pire point {worst}")
+    return "\n".join(lines)
+
+
+# Définition versionnée du directeur — l'empreinte sha256 est tracée dans chaque run (PO, §3c).
+DIRECTEUR_DEF = (
+    "Tu es le directeur de lecture d'un coordinateur pressé. On te donne une table de FAITS, "
+    "une ligne par pull request. Ta seule mission : produire l'ORDRE DE LECTURE (« à lire en "
+    "premier »), en citant un fait de la ligne. Règles : (1) tu couvres TOUTES les PRs, chacune "
+    "exactement une fois, aucune inventée ; (2) chaque raison est courte et CITE un fait de la "
+    "ligne entre backticks ; (3) tu ne juges PAS le fond (pédagogie, preuve, honnêteté), tu ne "
+    "décides PAS d'une levée de réserve, tu ne donnes AUCUN statut du type prêt/bloqué/traité — "
+    "seulement l'ordre et le fait qui le motive. Réponds UNIQUEMENT un JSON strict : "
+    '{"ordre": [{"pr": <nombre>, "raison": "<texte>"}]}'
+)
+
+
+def directeur_gates(reply: str, prs: set[int], facts: str) -> dict:
+    """Portes DU directeur (mécaniques, dans le driver) :
+    G1 JSON strict à clés exactes ; G2 permutation exacte de l'entrée (ni inventé, ni oublié) ;
+    G3 chaque raison cite ≥1 fait verbatim (sous-chaîne ≥8 car. de la table) ;
+    G4 aucun mot de décision (le directeur range, il ne tranche pas)."""
+    rep = {"json": False, "permutation": False, "verbatim": 0, "verbatim_total": 0,
+           "interdits": [], "ordre": []}
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    if not m:
+        return rep
+    try:
+        obj = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return rep
+    rep["json"] = sorted(obj.keys()) == ["ordre"] and isinstance(obj["ordre"], list)
+    if not rep["json"]:
+        return rep
+    seen: list[int] = []
+    for it in obj["ordre"]:
+        if not isinstance(it, dict) or sorted(it.keys()) != ["pr", "raison"]:
+            return rep
+        pr, raison = it["pr"], str(it["raison"])
+        rep["verbatim_total"] += 1
+        # G3 : un segment citation `` … `` (ou une sous-chaîne ≥8 car.) repris de la table.
+        cited = re.findall(r"`([^`\n]{8,80})`", raison) or [s for s in (raison,) if len(s) >= 8]
+        if any(seg in facts for seg in cited):
+            rep["verbatim"] += 1
+        low = raison.lower()
+        for bad in ("à lever", "à lever.", "doit être levée", "levable", "prêt pour merge",
+                    "ready", "blocked", "traité", "non traité", "approuve"):
+            if bad in low:
+                rep["interdits"].append(bad)
+        seen.append(pr)
+    rep["permutation"] = sorted(seen) == sorted(prs) and len(seen) == len(prs)
+    rep["ordre"] = seen
+    return rep
+
+
+def directeur_passes(rep: dict) -> bool:
+    return (rep["json"] and rep["permutation"]
+            and rep["verbatim"] == rep["verbatim_total"] == max(1, rep["verbatim_total"])
+            and not rep["interdits"])
+
+
+def directeur_llm(facts: str) -> tuple[str, dict]:
+    """Appel hub (OpenAI /v1) — swift alias par défaut, DIRECTEUR_MODEL sinon."""
+    key = os.environ.get(HUB_KEY_ENV, "")
+    if not key:
+        raise RuntimeError(f"{HUB_KEY_ENV} absent de l'environnement (clé proxy claudish)")
+    body = json.dumps({"model": DIRECTEUR_MODEL, "temperature": 0, "max_tokens": 600,
+                       "messages": [{"role": "user", "content": DIRECTEUR_DEF + "\n\n" + facts}]}
+                      ).encode()
+    req = urllib.request.Request(f"{HUB}/v1/chat/completions", data=body,
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {key}"})
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=400) as r:   # swift : ≥400 s (mandat user 03/11)
+        payload = json.loads(r.read())
+    return payload["choices"][0]["message"]["content"], {
+        "model_used": payload.get("model", DIRECTEUR_MODEL), "lat_s": round(time.time() - t0, 1),
+        "usage": payload.get("usage", {}), "hub": HUB,
+        "def_sha256": __import__("hashlib").sha256(DIRECTEUR_DEF.encode()).hexdigest()[:12],
+    }
+
+
+def directeur_order(rows: list[Candidate], heads: dict, mode: str) -> tuple[list[int], str]:
+    """Rend (ordre des PRs, rapport). mode: off | mock | llm.
+    mock = ordre mécanique déterministe (balle bloquante puis plus ancien), SANS modèle ;
+    llm   = le directeur range, puis ses portes ; toute échec → fallback mécanique, signalé."""
+    import hashlib
+    sha = hashlib.sha256(DIRECTEUR_DEF.encode()).hexdigest()[:12]
+    prs = sorted({r.pr for r in rows})
+    by_pr = {p: [r for r in rows if r.pr == p] for p in prs}
+    mech = sorted(prs, key=lambda p: (BALL_PRIORITY[balle_pr(by_pr[p])],
+                                      min((r.date for r in by_pr[p] if r.date), default="")))
+    if mode == "off":
+        return [], "off"
+    if mode == "mock":
+        return mech, (f"directeur=mock def_sha256={sha} ordre=mécanique "
+                      f"(balle bloquante puis oldest-first)")
+    facts = facts_table(rows, heads)
+    try:
+        reply, meta = directeur_llm(facts)
+    except Exception as e:
+        return mech, f"⚠️ DIRECTEUR INDISPONIBLE ({str(e)[:120]}) — fallback ordre mécanique. def_sha256={sha}"
+    rep = directeur_gates(reply, set(prs), facts)
+    ok = directeur_passes(rep)
+    if ok:
+        return rep["ordre"], (f"directeur: model={meta['model_used']} hub={meta['hub']} "
+                              f"def_sha256={meta['def_sha256']} lat={meta['lat_s']}s "
+                              f"tokens={meta['usage'].get('total_token', meta['usage'])} "
+                              f"portes=PASS")
+    return mech, (f"⚠️ DIRECTEUR ÉCHUE portes={rep} — fallback ordre mécanique. "
+                  f"model={meta['model_used']} def_sha256={meta['def_sha256']} lat={meta['lat_s']}s")
+
+
 # --------------------------------------------------------------------------- rendu
 def fiche_prompt(c: Candidate) -> str:
     rec = json.dumps({"pr": c.pr, "comment_id": c.comment_id, "auteur": c.auteur,
@@ -356,12 +512,26 @@ def render(rows: list[Candidate], meta: dict) -> str:
     out.append(f"# W1 — Réserves par PR — {meta['repo']} — {meta['stamp']}\n")
     out.append(f"Portes : {meta['gate_pass']}/{meta['n']} fiches PASS (schéma+verbatim). "
                f"Rappel mesuré : {meta['recall']}. Aucune décision de levée (hors périmètre BG).\n")
+
+    # À lire en premier (directeur) — ordre seul, faits recopiés, aucun statut (spec §3).
+    if meta.get("directeur_order"):
+        by_pr = {p: [r for r in rows if r.pr == p] for p in {r.pr for r in rows}}
+        out.append("## À lire en premier (directeur — rangement seul, la balle est mécanique)\n")
+        out.append("| rang | PR | balle (mécanique) | points | plus ancien |")
+        out.append("|---|---|---|---|---|")
+        for i, pr in enumerate(meta["directeur_order"], 1):
+            sub = by_pr[pr]
+            oldest = min((r.date for r in sub if r.date), default="?")[:10]
+            out.append(f"| {i} | #{pr} | {balle_pr(sub)} | {len(sub)} | {oldest} |")
+        out.append(f"\n{meta['directeur_report']}\n")
+
     for pr in sorted({r.pr for r in rows}):
         sub = [r for r in rows if r.pr == pr]
         out.append(f"\n## PR #{pr} — {len(sub)} point(s) — tête `{meta['heads'].get(pr, '?')[:12]}`\n")
         out.append("| point (verbatim + id) | auteur (login) | réponse lane (id, date) | "
-                   "jetons cités encore présents à la tête | où | body de PR | levée (fait) |")
-        out.append("|---|---|---|---|---|---|---|")
+                   "jetons cités encore présents à la tête | où | body de PR | levée (fait) | "
+                   "balle (mécanique) |")
+        out.append("|---|---|---|---|---|---|---|---|")
         for r in sub:
             pt = r.body.replace("|", "\\|").replace("\n", " ")[:220]
             # Une fiche qui a échoué la porte verbatim se SIGNALE : le lecteur doit voir
@@ -372,17 +542,19 @@ def render(rows: list[Candidate], meta: dict) -> str:
                       f"champ {r.gate.get('missing')} — " + pt)
             out.append(f"| {pt} ({r.comment_id}) | {r.auteur} | {r.lane_reply or '—'} | "
                        f"{r.verdict_reason or '—'} | {r.where_head or '—'} | {r.body_pr or '—'} | "
-                       f"{r.lifted or 'non levée'} |")
+                       f"{r.lifted or 'non levée'} | {balle_point(r)} |")
     out.append("\n---\n*Livrable mécanique : chaque valeur est un extrait de la source, provenance "
                "citée. La colonne « jetons cités » est un FAIT (présence à la tête), pas un statut : "
                "une réserve cite tantôt le défaut, tantôt la preuve que c'est bon — la lane seule "
-               "sait ce qu'elle a corrigé. Le BG ne juge pas la levée.*\n")
+               "sait ce qu'elle a corrigé. La colonne « balle » est un routage par dates/auteurs "
+               "(levée→FERMÉ, réponse posée→COORDINATEUR, sinon→LANE), pas un jugement. "
+               "Le BG ne juge pas la levée.*\n")
     return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- main
 def self_test() -> int:
-    """Portes 1+2 sur fixtures, hors réseau."""
+    """Portes 1+2 et portes du directeur sur fixtures, hors réseau."""
     good = Candidate(pr=1, kind="comment", comment_id="issue:1", auteur="alice",
                      date="2026-11-05T00:00:00Z", body="Le carnet cite `execution_count: 12`.")
     ok = gate(good, {"raw": json.dumps({"pr": 1, "comment_id": "issue:1", "auteur": "alice",
@@ -400,6 +572,45 @@ def self_test() -> int:
         rc |= 0 if verdict == "PASS" else 1
         print(f"[{verdict}] {name}: schema={rep['schema']} verbatim={rep['verbatim']}/{rep['verbatim_total']} "
               f"missing={rep['missing']} (attendu {'accepté' if want else 'rejeté'})")
+
+    # Portes du directeur (G1-G4) — fixtures hors réseau.
+    facts = ("PR 24442 | tête abc1234 | points 1 (fiches 1 PASS) | balle LANE | "
+             "levées 0/1 | plus ancien 2026-11-03 | jetons pire point 0/2\n"
+             "PR 24755 | tête def5678 | points 1 (fiches 1 PASS) | balle FERMÉ | "
+             "levées 1/1 | plus ancien 2026-11-04 | jetons pire point 4/6")
+    d_ok = json.dumps({"ordre": [{"pr": 24442, "raison": "à lire en premier : `balle LANE`"},
+                                 {"pr": 24755, "raison": "ensuite : `levées 1/1`"}]})
+    d_invented = json.dumps({"ordre": [{"pr": 24442, "raison": "`balle LANE`"},
+                                       {"pr": 99999, "raison": "`levées 1/1`"}]})
+    d_dropped = json.dumps({"ordre": [{"pr": 24442, "raison": "`balle LANE`"}]})
+    d_fab = json.dumps({"ordre": [{"pr": 24442, "raison": "le carnet est correct selon moi"},
+                                  {"pr": 24755, "raison": "`levées 1/1`"}]})
+    d_verdict = json.dumps({"ordre": [{"pr": 24442, "raison": "`balle LANE` — doit être levée"},
+                                      {"pr": 24755, "raison": "`levées 1/1`"}]})
+    d_cases = [("permutation+verbatim", d_ok, True), ("PR inventée", d_invented, False),
+               ("PR oubliée", d_dropped, False), ("raison non verbatim", d_fab, False),
+               ("mot de décision", d_verdict, False)]
+    for name, reply, want in d_cases:
+        rep = directeur_gates(reply, {24442, 24755}, facts)
+        passed = directeur_passes(rep)
+        verdict = "PASS" if passed == want else "FAIL"
+        rc |= 0 if verdict == "PASS" else 1
+        print(f"[{verdict}] directeur {name}: json={rep['json']} perm={rep['permutation']} "
+              f"verbatim={rep['verbatim']}/{rep['verbatim_total']} interdits={rep['interdits']} "
+              f"(attendu {'accepté' if want else 'rejeté'})")
+
+    # Ordre mécanique (mock) : LANE avant FERMÉ, puis oldest-first.
+    m_rows = [
+        Candidate(pr=24755, kind="review:LGTM", comment_id="r:1", auteur="bot", date="2026-11-04T10:00:00Z",
+                  body="point", lifted="LEVÉE 2026-11-05 (comment 1)"),
+        Candidate(pr=24442, kind="review:LGTM", comment_id="r:2", auteur="bot", date="2026-11-03T09:00:00Z",
+                  body="point"),
+    ]
+    order, report = directeur_order(m_rows, {24442: "a", 24755: "b"}, "mock")
+    want_order = [24442, 24755]
+    verdict = "PASS" if order == want_order else "FAIL"
+    rc |= 0 if verdict == "PASS" else 1
+    print(f"[{verdict}] directeur mock: ordre={order} (attendu {want_order}) — {report[:60]}")
     return rc
 
 
@@ -409,6 +620,9 @@ def main() -> int:
     ap.add_argument("--prs", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--no-mini", action="store_true", help="portes 1+2 désactivées (colonnes mécaniques seules)")
+    ap.add_argument("--directeur", choices=("off", "mock", "llm"), default="off",
+                    help="off=absent ; mock=ordre mécanique (balle puis oldest-first) ; "
+                         "llm=directeur hub (exige CLAUDISH_PROXY_KEY), portes + fallback mock")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
 
@@ -455,8 +669,10 @@ def main() -> int:
             rows.append(c)
 
     stamp = time.strftime("%Y-%m-%d %H:%M local", time.localtime())
+    d_order, d_report = directeur_order(rows, heads, a.directeur)
     meta = {"repo": a.repo, "stamp": stamp, "n": n_tot, "gate_pass": n_ok, "heads": heads,
-            "recall": f"{len(rows)} points retenus" + (f", {len(skipped)} écartés" if skipped else "")}
+            "recall": f"{len(rows)} points retenus" + (f", {len(skipped)} écartés" if skipped else ""),
+            "directeur_order": d_order, "directeur_report": d_report}
     md = render(rows, meta)
     if a.out:
         Path(a.out).write_text(md, encoding="utf-8")

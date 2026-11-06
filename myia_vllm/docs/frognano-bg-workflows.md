@@ -199,3 +199,32 @@ la mesure** : `TRAITÉ / NON TRAITÉ` n'est pas mécanisable sur ce corpus ; la 
 revient à la lane, le BG livre le fait et son emplacement.
 
 Reste à mesurer : le directeur (rangement oldest-first) et la livraison sur `workspace-CoursIA`.
+
+### 10.2 Directeur W1 — construit et mesuré en mode mock le 06/11 (oracle 2 cas po-2023:CoursIA-2)
+
+Trois pièces, la polarité reste nulle part (§10.1) :
+
+1. **« Balle » mécanique par point** (driver, dates/auteurs seulement) : levée posée →
+   `FERMÉ` ; réponse lane postérieure → `COORDINATEUR` (arbitrage/levée formels attendus) ;
+   sinon → `LANE` (réponse attendue). Par PR : la pire balle l'emporte.
+2. **Directeur LLM** (hub claudish, clé proxy `CLAUDISH_PROXY_KEY` — swift alias
+   `qwen3.6-35b-a3b` par défaut, `DIRECTEUR_MODEL` remplaçable : le user a suggéré Minimax
+   le 03/11, swift étant saturé par les contextes longs) : il rend **une permutation complète
+   des PRs + une raison qui cite un fait** — rien d'autre. **Ses portes, portées par le
+   driver** (producteur ≠ directeur ≠ portes) : G1 JSON strict ; G2 permutation exacte
+   (rien inventé, rien oublié) ; G3 chaque raison est sous-chaîne de la table de faits ;
+   G4 zéro mot de décision (levable/ready/blocked/traité…). Toute échec → **fallback
+   mécanique** (balle bloquante puis oldest-first), signalé dans le livrable. Chaque run
+   trace `model_used` + `def_sha256` + latence + tokens (condition PO §3c).
+3. **Mode `mock`** (aucun modèle) : l'ordre mécanique seul — pipeline complet validable
+   sans clé.
+
+**Mesuré (self-test 9/9 + oracle réel 06/11 08:06 locale, `--directeur mock`)** :
+PR #24755 → `FERMÉ` (levée 17:02Z du 05/11 — livré comme fait, aucune levée faite par le BG) ;
+PR #24442 → `COORDINATEUR` — l'oracle d'hier attendait `LANE`, mais la lane a posé sa réponse
+`[ACTION]` 6658517981 (05/11 12:55Z) *entre-temps* : le routage suit les dates, le cas a
+évolué, le routage LANE est couvert par le self-test. Le classement mock respecte
+balle-bloquante-puis-oldest (#24442 avant #24755).
+
+**En attente** : clé proxy claudish (demandée à po-2025:claudish) pour la première passe
+LLM du directeur ; puis livraison sur `workspace-CoursIA` et fenêtre pilote coordinateur.
