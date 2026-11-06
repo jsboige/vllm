@@ -7072,3 +7072,19 @@ Contexte : onzième cycle post-12→10, fenêtre 12:13:07→15:14:49Z (3 h 01), 
 9. **MTP : GO user, après reset 08/11 23:45Z** — annonce `global` (heure + durée) + DM claudish AVANT le geste, et contrôle de la marge commit à ce moment-là.
 
 Aucun geste moteur. Cron : un seul job récurrent, prochain feu ~18:13Z.
+
+
+## 06/11 18:13Z (cycle :43) — reflux continue (hit 84,7 %, préemptions 3,4/h) ; KV 98 % à la capture SANS file (discriminant open-webui appliqué) ; commit hôte 89,7 % = 4ᵉ hausse, précondition MTP menacée ; 2ᵉ empreinte locale 401-only
+
+Contexte : douzième cycle post-12→10, fenêtre 15:14:49→18:13:22Z (2 h 58), bornes exactes (snapshots 1793978089/1793988802).
+
+1. **Fenêtre** : **hit 84,7 %** (33,74 M/39,84 M), **préemptions +10 (123→133) = 3,4/h** (reflux confirmé : 7,0→5,3→3,4/h), decode 46,3 t/s, prefill calculé 570 t/s. **KV 98,05 % à la capture MAIS running 5 / waiting 0 / deferred 0 / kv_fetch 0** — le discriminant open-webui (Waiting/Deferred + débit gen, pas le % KV) dit : pas de souffrance user, le moteur traverse des contextes pleins. **Genou PAS déclenché** (hit > 80 % et préemptions < 10/h).
+2. **4 nouveaux WEDGE `fail 1/2`** (16:02, 16:22, 16:44, 18:04Z — toujours jamais 2/2 ; 3 serrés dans l'heure 16:00 = le trafic du soir monte). Moteur sain : 200/4,2 ms, RC=0, **Up 42 h même boot**, OOM 0, VRAM 22 594/21 148 (bande documentée), shm 33G=51 %, GPU 2 56 MiB, 3 conteneurs.
+3. **⚠ Commit hôte 89,7 % (358,6/399,8 Go, marge 41,1 GB) = 4ᵉ hausse consécutive** (82,3 → 86,2 → 88,3 → 89,7 %) — pente du soir installée, premier consommateur vmmemWSL (même famille que le WARN po-2023 à 89 %). Aucun travail lourd ici. **La précondition MTP (< 85 % au reset 08/11 23:45Z) est menacée** : si la pente ne reflue pas cette nuit, la fenêtre glisse (GO user ou pas — la marge commande). G: 85 % sonde OK.
+4. **Nouvelle empreinte `fp=50829b227a2a` : 6 requêtes TOUTES 401** (salves locales 14:42Z ×4 et 16:47Z ×2, `/v1/models` ×5 + `/v1/chat/completions` ×1, sans XFF = poste local) — jamais servie, même classe que `87716e486341` (roté hors fenêtre) : sondeur local à clé invalide, consignée **sans alerte**. Deux empreintes inconnues locales en un jour = possiblement une lane testant avec une clé périmée — sans 200, pas d'escalade.
+5. Census 12 h : 3 310 lignes = **276 req/h** ; 200×3 177 / 401×133 (= 123 nanoclaw + 6 nouvelle + 4 NONE, arithmétique exacte) ; **zéro 400**. Corps 100K-1M **35,6 %** (en hausse 30,5→35,6 % = sessions longues du soir). **Sécurité 7 h : hairpin ×999, sondes locales ×697, web1/poste Paris ×1 — rien d'inconnu avec 200, Q58 absente.**
+6. nbaudit `ok:true` 18:06:51Z, vague 2 Image/ active, 0 échec consécutif. Condensation : **silence d'erreur depuis le reset du disjoncteur 14:49:12Z** ; NonNominative en salve 18:08Z (intermittente connue, périmètre RSM).
+7. **⚠ gh re-dérivé `myia-ai-01` (5ᵉ fois)** — attrapé par le contrôle AVANT écriture cette fois (`gh api user` en tête de passe) ; re-switché jsboige avant la PR. Tournée FLEET : rien de notre cru dormant (PR #410 mergée dans le cycle ; #182/#161/#146/#144 restantes ouvertes = lanes po-2025/po-2023, pas à nous à merger). Veille amont 8/8 inchangés. Inbox 0 non-lu.
+8. **MTP GO après reset 08/11 23:45Z** — annonce `global` + DM claudish AVANT, et **marge commit comme précondition** (voir point 3 : à 89,7 % ce soir, la fenêtre ne peut PAS se tenir sans reflux nocturne).
+
+Aucun geste moteur. Cron : un seul job récurrent, prochain feu ~21:13Z.
