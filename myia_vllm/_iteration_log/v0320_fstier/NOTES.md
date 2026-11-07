@@ -7133,3 +7133,15 @@ Aucun geste moteur. Cron `afdf4439` unique (3 h à :43), prochain feu ~18:13Z.
 Plan fenêtre 08/11 23:45Z (annonce `global` + DM claudish AVANT) : (a) bornes compose #414, (b) swap image `vllm-openai-v0320-s58813:v1` + config MTP, mesure acceptance, retour prod selon verdict. Un seul down/up.
 
 Aucun geste moteur ce cycle. Cron re-armé 3 h à :43.
+
+
+## 07/11 21:13Z (cycle :43) — hit 86,6 % sous régime du soir (213 req/h) ; préemptions 2→7 (~1,7/h, genou PAS déclenché) ; KV 84 % file 4/1
+
+1. Fenêtre 3 h (18:13:24→21:13:15Z, snapshots 1794075204/1794085995) : **hit 86,6 %** (46,94 M/54,21 M) — le trafic du soir monte (+66 % de queries vs cycle précédent, 213 req/h census, corps 100K-1M à 52,7 %) et l'amortissement tient (host = 69 % du cache servi de la fenêtre). **Préemptions 2,0→7,0** (≈1,7/h, première montée depuis le boot) — **genou PAS déclenché** (critère : hit<80 % ET >10/h cumulées ; hit à 86,6 %). **KV 84,1 % avec file 4/1** : régime diurne/soirée connu, le discriminant reste Waiting/Deferred + débit gen, pas le % KV. À resurveiller au cycle de nuit : une trajectoire préemptions qui reprend (>5/h soutenus) avec hit qui glisse sous 80 % = signal d'escalade.
+2. Moteur sain : 200/3,4 ms, RC=0, même boot (12:33:55Z), OOM 0 (5 000 lignes), VRAM 22 578/21 796 (bande @0.71), shm 33G = 51 % (plancher), GPU 2 libre. 2 WEDGE fail-1/2 nouveaux (18:57:32, 20:17:19, jamais 2/2), 3 863 sondes OK.
+3. Census (3 h) : 640 req, 608×200 **toutes MEDIUM** (`be312daf7c1c`, identité vérifiée au cycle précédent), **400s = 0 — 3ᵉ cycle d'affilée sans 400**, la série des 12×400 du matin reste isolée (corrélation claudish en attente, DM toujours non lu po-2025). 401×31 nanoclaw + ×1 web2 (clés mortes connues). xff 200 : hairpin 90.65.170.144 (x356) + web1 37.187.180.135 (x2, connu).
+4. nbaudit `ok:true` 21:05Z (vague Image/). Condensation nominale (complétée 19:02Z, fallbacks cloud #2719 isolés). WARN RSM = FORK messages continu (`c2785-q-po2023`, `ai01-c2785-vibe-contract-25127`, `ai01-c2785-14238-conditions` 20:33→20:53Z) + « dashboard above fill warning level » + heartbeat concurrent — symptômes du store dégradé, périmètre roo-extensions.
+5. G: OK, **commit hôte 66,6 %** (marge 128,2 GB) — **précondition MTP (<85 %) passante** à J-1 de la fenêtre 08/11 23:45Z. Veille amont **8/8 inchangés** (aucun updated_at bougé depuis 18:13Z). Inbox 0 non-lu. gh contrôlé (switch + `gh api user` avant la passe).
+6. Bornes conteneurs (#303) : posées dans le compose (PR #414), application toujours planifiée à la fenêtre MTP demain — rien de nouveau côté Maintenance (ACK reçu, pas de re-mesure demandée avant la fenêtre).
+
+Aucun geste moteur. Cron re-armé 3 h à :43.
