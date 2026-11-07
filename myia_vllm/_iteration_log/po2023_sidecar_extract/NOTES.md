@@ -108,6 +108,46 @@ La formulation publique doit donc dire « comptage **catégoriel** », pas « co
 - `results_extract_po2023.json` — les chiffres ci-dessus, en machine-lisible.
 - Extrait source : reçu par DM, conservé hors dépôt (scratchpad de session).
 
+## 4 bis. Livrable 3 — variante horodatée reçue le 24/10 19:00Z, et **la timeline n'est toujours pas dérivable**
+
+po-2023 a joint `sidecar-stdout-ts-3000-20261024.txt` (397 793 B, 3 000 lignes,
+SHA256 `F471D172…`, scan secret **0 hit**). Composition : **2 785 forwards**,
+200 lignes de traceback, **9** `Error handling request`, **6** `RETRY`.
+Span 23/10 16:06:24Z → 24/10 18:47:57Z. Ordre du fichier **non monotone**, comme annoncé.
+
+**Le résultat, et il vaut mieux que la timeline demandée** : les horodatages de
+`docker logs --timestamps` **datent le vidage du tampon stdout, pas la requête**.
+
+- Les 2 785 forwards tombent sur **36 secondes distinctes** (2 593 horodatages
+  distincts à 100 ns près, mais groupés) ;
+- **médiane 78 lignes par seconde**, max 96, et **35 des 36 secondes en portent ≥ 50** ;
+- trois « bunches » mono-instant : 17 lignes à 16:06:24, **96** à 23:29:58, **78** à 18:47:57.
+
+96 requêtes HTTP ne peuvent pas aboutir dans le même instant. ~78 lignes × ~130 octets
+≈ 10 KB = **un vidage de tampon par blocs de Python**. Toute cadence à la minute tirée
+de ce fichier serait donc une cadence de vidage.
+
+**Ce qui reste lisible** : les volumes par vidage (un seul intervalle porte 2 594 des
+2 785 forwards, 93 %, entre 14:37:19 et 15:14:44Z), les trois trous (907, 443 et 213 min),
+et le taux de rejeu — **57 signatures dupliquées / 377 lignes (13,5 %)**, à comparer aux
+**997 / 2 654 (33,4 %)** de l'extrait précédent. Écart qui corrige une lecture que
+j'allais publier : le taux de duplication **dépend de la fenêtre**. L'ancien extrait
+tombait dans un burst de rejeux ; `997 / 2 654` n'est pas un taux structurel.
+
+**Correctif proposé, un mot** : `PYTHONUNBUFFERED=1` (ou `python -u`) sur le sidecar →
+chaque ligne est écrite à l'instant de la requête, les horodatages de Docker deviennent
+des horodatages de requête, et le livrable 3 devient dérivable **sans changer le format
+de log**. Variante sans redémarrage : préfixer la ligne applicative par son propre
+horodatage.
+
+**Limite maintenue** : `Error handling request` ×9 (5 instants, tous hors des vidages de
+travail) et `RETRY` ×6 (3 paires, aux frontières de vidage : dernier avant un trou,
+pendant la fenêtre d'erreurs, premier après un trou). Comme les horodatages sont des
+vidages, « les erreurs arrivent pendant les fenêtres creuses » est **compatible, non
+prouvé** — je ne le publie pas comme un fait.
+
+Fichier machine-lisible : `results_timeline_po2023_ts.json`.
+
 ## 5. Rollback / suite
 
 Aucun changement de production. Rien n'a été installé chez po-2023. Si po-2023 veut la
