@@ -131,6 +131,13 @@ services:
     # Rollback: VLLM_IMAGE_SWIFT15=vllm/vllm-openai:v0.32.0 ... up -d --no-deps vllm-medium-swift15-27b
     image: ${VLLM_IMAGE_SWIFT15:-vllm-openai-v0320-tierpin:v1}
     container_name: myia_vllm-medium-swift15-27b
+    # Maintenance#303 (07/11): container limits. The 08/09 48g cap was a
+    # `docker update` — dead since the 04/11 recreate left the engine at
+    # 37.98 GiB / 208 PIDs with no ceiling in the shared WSL VM (next to
+    # qdrant/postgres). Applied at the next announced recreate.
+    mem_limit: 48g
+    memswap_limit: 48g
+    pids_limit: 512
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -251,6 +258,10 @@ services:
   watchdog-swift15-27b:
     image: docker:cli
     container_name: myia_vllm-watchdog-swift15-27b
+    # Maintenance#303 (07/11): measured 25.5 MiB / 2 PIDs.
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -459,6 +470,10 @@ services:
   wedge-telemetry:
     image: python:3-slim
     container_name: myia_vllm-wedge-telemetry-swift15
+    # Maintenance#303 (07/11): measured 16.9 MiB / 1 PID.
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
     command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
     # GPU columns (#273): the image ships no nvidia-smi; the `utility` capability
     # makes the NVIDIA runtime inject it (NVML only, no CUDA context, no VRAM).
