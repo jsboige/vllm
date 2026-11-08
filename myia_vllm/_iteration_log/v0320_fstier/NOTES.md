@@ -7145,3 +7145,15 @@ Aucun geste moteur ce cycle. Cron re-armé 3 h à :43.
 6. Bornes conteneurs (#303) : posées dans le compose (PR #414), application toujours planifiée à la fenêtre MTP demain — rien de nouveau côté Maintenance (ACK reçu, pas de re-mesure demandée avant la fenêtre).
 
 Aucun geste moteur. Cron re-armé 3 h à :43.
+
+
+## 08/11 00:13Z (cycle :43, nuit) — régime pilote nocturne absorbé (hit 85,8 % à 243 req/h) ; trajectoire préemptions 0,7→1,7→2,7/h (genou PAS déclenché) ; ★ ASK clé #25014 résolu par DM (le serveur n'avait PAS tourné de clé)
+
+1. Fenêtre 3 h (21:13:15→00:13:20Z, snapshots 1794085995/1794096800) : **hit 85,8 %** (54,55 M/63,58 M) au régime le plus chargé du boot (63,6 M queries/3 h, census **243 req/h**, corps 100K-1M 54,9 %) — l'amortissement tient, le tier RAM sert 77 % du cache de la fenêtre (host 41,8 M). **Préemptions 7→15** : trajectoire 0,7→1,7→2,7/h — **3 points réguliers, la pente est réelle mais le genou n'est PAS déclenché** (hit 85,8 % > 80 %, taux < 10/h ; KV 86,9 %, file 4/1). Lecture : c'est le régime pilote haiku attendu — admission en échange de recompute (pattern appris), la file est une capacité légitime tant que le timeout client tient (mandat 05/11). **Escalade si** : hit glisse sous 80 % ET préemptions >10/h — aucun des deux atteint.
+2. Moteur sain : 200/5,8 ms, RC=0, même boot (12:33:55Z), OOM 0, VRAM 22 460/21 796 (bande), shm 51 % (plancher), **zéro WEDGE nouveau depuis 20:17:19Z**, 3 871 sondes OK.
+3. **★ ASK #25014 (CoursIA po-2023 + NanoClaw relay) — 401 sur :5002 « clé serveur changée ? »** : tranché par la mesure — **le moteur n'a PAS tourné de clé** (StartedAt figé 12:33:55Z, zéro restart entre leur run réussi 18:19→20:07Z et leur 401 de 00:15Z ; la clé `db2738ab1328` sert 690×200/3 h). Cause probable : re-provisionnement du worktree ~23:xxZ depuis un master.env po-2023 antérieur à la rotation du 30/09. **Geste : DM `dm-vllm-key-25014-20261108`** (clé en attachement, destruct 2h, canal établi rotation 30/09) + empreinte pour auto-vérif + replies aux 2 ASK + scratch purgé. Leurs probes 401 absents du log moteur (seuls poller nanoclaw + 2 sans-clé) — l'empreinte du DM leur permet de trancher sans nous re-pinguer. La ligne status machine « 401 persistants ≥23/10 » signalée obsolète pour ce cas à roo-extensions.
+4. Census : 730 req/3 h, 690×200 toutes MEDIUM, **400s = 0 (4ᵉ cycle d'affilée)**, 401 toutes clés mortes connues (nanoclaw 31, 50829b227a2a /v1/models 3, b72157f4bb61 1, NONE 5), xff = hairpin seul. Sécurité propre, aucune IP inconnue.
+5. nbaudit ok 00:05Z (Image/). Condensation nominale (complétée 22:04Z). **Store : `workspace-vllm (1).md` RÉAPPARU « AHEAD of PG »** (reconcile 00:09:56Z) malgré le merge po-2028 de 15:22Z — la réserve de résurrection #3782 qu'ils avaient annoncée se matérialise probablement ; périmètre roo-extensions, consigné ici pour la trace.
+6. G: OK. **Commit hôte 65,6 % (marge 131,9 GB) — précondition MTP (<85 %) PASSANTE à J-0** de la fenêtre 23:45Z (bornes #414 + image MTP en un recreate ; annonce global + DM claudish avant le geste). Veille amont 8/8 inchangés. gh contrôlé.
+
+Aucun geste moteur. Cron re-armé 3 h à :43.
