@@ -7219,3 +7219,14 @@ Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
 6. Inbox 0, registre inchangé (Q58 seule).
 
 Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
+
+
+## 08/11 18:13Z (cycle :43) — préemptions 5/h en montée du soir (genou NON déclenché, hit 90,7 % sain) ; commit 76,0 % DÉCÉLÈRE → GO MTP attendu à 21:13Z ; nbaudit 4ᵉ passage propre + 1ᵉʳ dossier Image/ livré et ACKé par NanoClaw
+
+1. Fenêtre 3 h (15:13:18→18:13:26Z, snapshots 1794150798/1794161606) : **hit 90,70 %** (59,97 M/66,12 M) — host 64,8 % (+38,85 M), device 32,7 % (+19,62 M), disk 2,5 %. **Préemptions 35→50 = 15/3 h = 5/h** — plus haut niveau depuis le 24/10, trajectoire 0,67→0,33→1,33→5,0 vers le régime du soir. **Genou NON déclenché** (conjonctif : hit<80 % requis, il est à 90,7 %) ; la file d'attente reste une capacité légitine (mandat haiku-max). Moteur sain : 200/5,4 ms, même boot (12:33:55Z, 30 h), OOM 0, VRAM 22 625/21 796 (bande oscillante, <23 000), `/dev/shm` 51 %, gauge KV 0,855. 3 WEDGE fail-1/2 (15:51, 16:52, 17:51 ~ horaires), jamais 2/2.
+2. **★ nbaudit : 4ᵉ passage propre consécutif ET 1ᵉʳ dossier de la vague Image/ livré** — NanoClaw ACK à 17:43Z la réception de `19451-GenAI / 03-1-Multi-Model-Comparison` (CONCERNS 3/3). Le producteur couvre donc bien le nouveau sous-chemin : bout en bout restauré.
+3. Census : 784 req/3 h = **261 req/h** (soir montant), 748×200 toutes MEDIUM, **400s = 0 (10ᵉ cycle)**, 401 = 31 nanoclaw morte + 5 keyless rejetés (4× curl/8.22.0 + 1 — aucun 200 sans clé, pas un signal sécurité). Corps 100K-1M = 53 %. IP avec 200 : hairpin 469, interne 284 — aucune inconnue.
+4. G: 86 % (535 G), sonde OK. **Commit hôte 76,0 %** (marge 92,1 GB ; trajectoire 69,2→71,9→73,6→75,2→76,0 = **décélération +0,8 pt ce cycle**) — projection ~77 % à 21:13Z : **précondition MTP (<85 %) confortable, GO attendu au cycle 21:13Z** qui portera l'annonce `global` + DM claudish avant le geste 23:45Z.
+5. Veille amont **7/7 inchangée**. Condensation nominale (heartbeats seuls). Inbox : 2 échos de mention CoursIA (files 08d internes, hors périmètre) + l'ACK NanoClaw ci-dessus — tous `mark_read` ciblé, inbox 0.
+
+Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
