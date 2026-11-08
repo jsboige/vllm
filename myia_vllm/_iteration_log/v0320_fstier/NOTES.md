@@ -7207,3 +7207,15 @@ Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
 6. Veille amont **7/7 inchangée** (zéro `updated_at` en mouvement). Condensation nominale. Second DM non lu = adressé à `ai-01:Maintenance` (routage machine-only #3960) — ignoré et `mark_read` ciblé. Inbox 0.
 
 Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
+
+
+## 08/11 15:13Z (cycle :43) — les 2 correctifs nbaudit tiennent (3ᵉ passage propre d'affilée sous forme VBS) ; hit 89,3 %, préemptions 1,33/h (oscillation, genou loin) ; commit 75,2 % → projection ~78-79 % à 21:13Z, GO/NO-GO MTP au cycle suivant
+
+1. Fenêtre 3 h (12:13:19→15:13:18Z, snapshots 1794139999/1794150798) : **hit 89,26 %** (57,60 M/64,53 M) — host re-dominant 58,7 % (+33,83 M), device 38,8 % (+22,34 M), disk 2,5 %. Queries 64,53 M/3 h (après-midi < matin). **Préemptions 31→35 = 1,33/h** — oscillation (0,67→0,33→1,33), genou non déclenché (≪10/h). Moteur sain : 200/4,4 ms, même boot (12:33:55Z, 27 h), OOM 0, VRAM 22 494/21 796 (identiques), `/dev/shm` 51 %, gauge KV 0,757. **5 WEDGE fail-1/2** (grappe 12:31-12:46 ×4 + 14:26), jamais 2/2, aucun restart — profil de famine prefill connu.
+2. **nbaudit : les DEUX correctifs tiennent** — 3ᵉ passage propre d'affilée sous la forme VBS (13:12, 14:12, 15:12 : `ok:true, consecutive_failures:0`), 13 records reclassés superseded. Le flicker #75 est côté compteur Maintenance (à leur tick), rien à ajouter tant qu'ils ne reviennent pas.
+3. Census : 744 req/3 h = **248 req/h** (après-midi), 713×200 toutes MEDIUM, **400s = 0 (9ᵉ cycle)**, 401 = 30 nanoclaw morte, **1×404 isolé** (route inexistante, trafic interne, pas un signal sécurité). Corps 100K-1M = 55 %. IP avec 200 : hairpin 452, interne 262 — aucune inconnue.
+4. G: 86 % (537 G), sonde OK. **Commit hôte 75,2 %** (marge 95,1 GB ; trajectoire régulière 69,2→71,9→73,6→75,2 = +1,7 pts/3 h) — **projection ~78-79 % à 21:13Z, sous le seuil 85 % : la précondition MTP devrait tenir, décision GO/NO-GO au cycle 21:13Z** (celui de l'annonce `global` + DM claudish, avant le geste 23:45Z).
+5. Veille amont **7/7 inchangée**. Condensation nominale (aucun échec ; burst WARN NonNominative 14:08 = périmètre RSM). Bandeau claudish reçu en début de cycle : cette lane a tourné un temps sur le repli DeepSeek Flash PAYG (5ᵉ marche) et est revenue sur Sonnet — le mur du WE consommé en PAYG comme prévu, aucune action moteur.
+6. Inbox 0, registre inchangé (Q58 seule).
+
+Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
