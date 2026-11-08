@@ -1,6 +1,10 @@
 # Register the hourly pre-audit task for the current user (no elevation). Dry-run by default:
 # prints the exact task XML and does nothing; -Apply registers it. -Remove unregisters it.
-param([switch]$Apply, [switch]$Remove, [string]$Name = 'nbaudit-hourly', [string]$Start = '00:05')
+# 2026-11-08: :05 -> :12. The GitHub REST bucket (5000/h per USER, shared fleet-wide)
+# rolls over around :06-:08Z; every :05Z pass since 05:05Z 08/11 died on "rate limit
+# exceeded" while the fresh window measured nearly empty minutes later. :12 lands
+# 4-6 min after the rollover. Re-register with -Apply -Start 00:12 (dry-run default).
+param([switch]$Apply, [switch]$Remove, [string]$Name = 'nbaudit-hourly', [string]$Start = '00:12')
 $wrapper = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'nb_audit_hourly.ps1'
 $pwsh = 'C:\Program Files\PowerShell\7\pwsh.exe'
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
