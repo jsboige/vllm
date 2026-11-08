@@ -6,7 +6,7 @@
 # 4-6 min after the rollover. Re-register with -Apply -Start 00:12 (dry-run default).
 param([switch]$Apply, [switch]$Remove, [string]$Name = 'nbaudit-hourly', [string]$Start = '00:12')
 $wrapper = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'nb_audit_hourly.ps1'
-$pwsh = 'C:\Program Files\PowerShell\7\pwsh.exe'
+$vbs = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'nb_audit_hourly.launcher.vbs'   # invisible launcher (flicker fix #44) - a direct pwsh action flashes a console hourly
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $begin = (Get-Date).Date.Add([TimeSpan]::Parse($Start)).ToString('s')
 $xml = @"
@@ -29,7 +29,7 @@ $xml = @"
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>$pwsh</Command><Arguments>-NoProfile -WindowStyle Hidden -File "$wrapper"</Arguments></Exec>
+    <Exec><Command>wscript.exe</Command><Arguments>"$vbs"</Arguments></Exec>
   </Actions>
 </Task>
 "@
