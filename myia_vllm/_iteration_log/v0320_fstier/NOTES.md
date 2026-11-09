@@ -7380,3 +7380,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). EPF : dossier v1.2 livré/exporté (clos au cycle précédent) — réunion direction mardi soir ; questions → #426.
 
 Aucun geste moteur. Registre : Q58 seule ouverte.
+
+
+## 09/11 21:13Z (cycle :43) — moteur sain, hit 95,7 %, 0×400 (5ᵉ cycle) ; commit hôte RESSUITE sous le seuil (84,8 %, plateau vmmemWSL 168,8 GB stable)
+
+1. **Moteur** : health 200 en 9,6 ms, RC=0, boot inchangé (`00:19:36Z`, Up 21 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 22 071 / GPU 1 21 168 MiB à 45/46 °C. `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 2 404 sondes OK ; seul `WEDGE fail 1/2` = celui de 00:46Z.
+
+2. **Marge commit hôte : 84,8 %** (325,4/383,8 Go, marge 58,3 GB) — **ressuite sous le seuil 85** après le franchissement de 18:13Z (85,2 %). `vmmemWSL` **stable à 168,8 GB** (identique au cycle précédent) : la pente s'est aplatie en plateau, pas de monotone croissant. Posture inchangée : aucun travail lourd, re-mesure au prochain cycle.
+
+3. **Charge (§5quater)** : **hit canonique 95,7 %** (device 389,3 M + host 20,8 M + disk 3,6 M / 432,1 M queries) ; **0 préemption** ; 432,1 M tokens prompt depuis le boot (+40,9 M en 3 h ≈ 13,6 M/h, déclin vespéral).
+
+4. **Census (7 h)** : ~411 req/h ; **statuts 2 800×200, 74×401, 0×400 — 5ᵉ cycle consécutif sans 400**. Corps : 10-100K 41,0 % / 100K-1M 26,1 %. IP : hairpin 1 968 · gateway 832 — **aucune IP externe en fenêtre, aucune inconnue avec 200**.
+
+5. **Condensation RSM** : **toujours 9 « pass deadline » au total, dernier 09:47:44Z** — ~11,4 h sans nouvel échec.
+
+6. **Plateforme** : nbaudit **ok:true 21:13:08Z** (0 échec, vague `Image/`). G: probe OK, 569 G libres.
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). EPF clos (v1.2 exportée ; réunion direction mardi 11/11 soir — questions → #426).
+
+Aucun geste moteur. Registre : Q58 seule ouverte.
