@@ -7323,3 +7323,22 @@ Aucun geste moteur. Cron `afdf4439` unique vérifié (3 h récurrent, prochain t
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). PR ouvertes du dépôt : #416 (infra embedder, créée 07/11) sans review — lane propriétaire, rien à traiter ici.
 
 Aucun geste moteur. Relevé §5ter complet (UA/clés) non refait ce cycle : census IP/statuts/tailles suffisant, aucune anomalie de clé détectée les cycles précédents.
+
+
+## 09/11 12:13Z (cycle :43) — moteur sain, hit 96,3 %, 0×400 (2ᵉ cycle : série éteinte) ; condensation 9ᵉ échec après le DM (refus voulu côté RSM) ; commit hôte 83,1 %
+
+1. **Moteur** : health 200 en 3,2 ms, RC=0, boot inchangé (`00:19:36Z`, Up 12 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 21 839 / GPU 1 21 168 MiB à 52/49 °C (bande en charge). `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 1 358 sondes OK ; seul `WEDGE fail 1/2` = celui de 00:46Z (attendu).
+
+2. **Charge (§5quater)** : **hit canonique 96,3 %** (device 249,1 M + host 12,5 M + disk 1,8 M / 273,5 M queries) ; **0 préemption** ; 273,5 M tokens prompt depuis le boot (+61,7 M en 3 h ≈ 20,6 M/h).
+
+3. **Census (7 h)** : ~323 req/h ; **statuts 2 181×200, 79×401, 0×400 — 2ᵉ cycle consécutif sans 400 : série éteinte confirmée**. Corps : 100K-1M = 1 032/2 260 (45,7 %) — régime long-contexte tenu.
+
+4. **Sécurité (§5)** : **aucune IP inconnue avec 200**. **Nouvelle `92.184.136.131` ×4 (10:06-10:22Z)** : fp `be312daf7c1c` (auth_prefix MEDIUM documenté), UA `OpenAI/JS 4.104.0`, corps 18-22 K — signature EXACTE du pool mobile Free tournant déjà mesuré (`.113.3`/`.113.170`/`.146.x`, census 20/10-04/11) : **non-alerte**, IP CGNAT du pool, attribut SUPPOSÉ flotte/po-2027. Hairpin 1 222 · flux sans `x_forwarded_for` 955 · poste Paris ×4. 401 = 79 (scanner clé morte).
+
+5. **Plateforme** : nbaudit **ok:true 12:13:11Z** (0 échec, vague `Image/` active). G: probe OK, 569 G libres. **Commit hôte 83,1 %** (319,0/383,8 Go, marge 64,7 GB) — en hausse (81,8 → 83,1), approche le seuil 85 : **aucun travail lourd** sans re-mesure au cycle suivant.
+
+6. **Condensation RSM** : **9ᵉ « pass deadline » à 09:47:44Z** — le silence de 3 h noté à 09:13Z n'était PAS une correction, la récidive continue après le DM du 07:15Z. Confirmation de la lecture : réponse roo-extensions 06:20Z — le refus du primaire est **voulu** (deadline protégeant la réserve cloud), la perte réelle vient du statut généré ~19,5 Ko vs plancher 15 Ko → troncature ; correctif côté RSM (#4434/#3962), **aucun geste moteur**. Nouveau WARN RSM 12:09:11Z : `NonNominativeBaselineService non disponible` ×9 — déjà listé « NonNominative intermittente » (dashboard, 06/11) ; périmètre RSM.
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414 ; `gh` sur jsboige vérifié). **EPF** : livrables du jour remis (fiches R1-R4 + TCO + break-even sur #426, section capacité sur #14, 6 corrections de relecture, DM HIGH à OWUI 10:18Z) ; `D:\EPF-dossier-IA\dossier-epf-ia.md` **inchangé depuis 01:13Z** — intégration OWUI attendue avant l'export de ce soir, plume chez eux. Inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte.
