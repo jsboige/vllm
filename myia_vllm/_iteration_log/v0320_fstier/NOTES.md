@@ -7361,3 +7361,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). Inbox traitée (0 non-lu après ACK).
 
 Aucun geste moteur. Registre : Q58 seule ouverte.
+
+
+## 09/11 18:13Z (cycle :43) — moteur sain, hit 95,8 %, 0×400 (4ᵉ cycle) ; ★ commit hôte 85,2 % = SEUIL 85 FRANCHI (vmmemWSL 168,8 GB mesuré)
+
+1. **Moteur** : health 200 en 2,9 ms, RC=0, boot inchangé (`00:19:36Z`, Up 18 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 22 004 / GPU 1 21 168 MiB à 35/34 °C (soirée, identiques au cycle précédent). `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 2 053 sondes OK ; seul `WEDGE fail 1/2` = celui de 00:46Z.
+
+2. **★ Marge commit hôte — SEUIL 85 % FRANCHI : 85,2 %** (326,8/383,8 Go, marge 56,9 GB). Pente mesurée sur 4 cycles : 81,8 (09:13Z) → 83,1 (12:13Z) → 83,8 (15:13Z) → 85,2 (18:13Z). **Premier consommateur mesuré : `vmmemWSL` = 168,8 GB** (processus Windows individuels ≤ 0,6 GB chacun — même famille que l'épisode du 09/10 à 90,1 %). Posture spec : **aucun travail lourd**, lever vllm impossible (`.wslconfig`/`wsl --shutdown` tuerait moteur ET hub = hors périmètre), signal + re-mesure au cycle suivant. Aucune extrapolation d'échéance publiée (la pente du 01/11 a été cassée par la purge shm ; deux points ne font pas une pente — mais 4 points montants, ça se suit).
+
+3. **Charge (§5quater)** : **hit canonique 95,8 %** (device 351,7 M + host 19,7 M + disk 3,5 M / 391,2 M queries) ; **0 préemption** ; 391,2 M tokens prompt depuis le boot (+51,0 M en 3 h ≈ 17,0 M/h, ralentissement vespéral).
+
+4. **Census (7 h)** : ~454 req/h (reprise du soir) ; **statuts 3 104×200, 76×401, 0×400 — 4ᵉ cycle consécutif sans 400**. Corps : 10-100K 41,7 % / 100K-1M 29,1 %. IP : hairpin 2 269 · gateway 835 — **aucune IP externe en fenêtre, aucune inconnue avec 200** (l'IP pool Free du matin a glissé hors fenêtre).
+
+5. **Condensation RSM** : **toujours 9 « pass deadline » au total, dernier 09:47:44Z** — ~8,5 h sans nouvel échec (le repli cloud tient, refus primaire voulu ; correctif #4434 côté RSM).
+
+6. **Plateforme** : nbaudit **ok:true 18:12:52Z** (0 échec, vague `Image/`). G: probe OK, 569 G libres.
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). EPF : dossier v1.2 livré/exporté (clos au cycle précédent) — réunion direction mardi soir ; questions → #426.
+
+Aucun geste moteur. Registre : Q58 seule ouverte.
