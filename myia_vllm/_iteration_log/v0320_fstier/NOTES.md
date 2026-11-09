@@ -7304,3 +7304,22 @@ Aucun geste moteur. Cron `afdf4439` unique, 3 h à :13Z effectif, prochain tir 0
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414 — aucun merge ni review depuis le 05/11, `gh` sur jsboige vérifié). Inbox 0 non-lu.
 
 Aucun geste moteur. Cron `afdf4439` unique vérifié (3 h récurrent, prochain tir 09:13Z). Registre : Q58 seule ouverte.
+
+
+## 09/11 09:13Z (cycle :43) — journée calme : hit 96,4 % stable, 0 préemption, 0×400 sur la fenêtre (série éteinte) ; condensation 8 échecs puis silence depuis le DM
+
+1. **Moteur** : health 200 en 4,3 ms, RC=0, boot inchangé (`00:19:36Z`, Up 9 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 21 833 / GPU 1 21 168 MiB à 45/46 °C (bande stable). `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 1 011 sondes OK ; seul `WEDGE fail 1/2` = celui de 00:46Z (attendu).
+
+2. **Charge (§5quater)** : **hit canonique 96,4 %** (device 192,0 M + host 10,8 M + disk 1,3 M / 211,8 M queries) — stable au plus haut ; **0 préemption** ; 211,8 M tokens prompt (+67,5 M en 3 h ≈ 22,5 M/h) / 2,57 M générés ; 2 en cours / 0 en attente.
+
+3. **Census (7 h)** : ~301 req/h ; **statuts 2 029×200, 76×401, 0×400 — la série de 400 est éteinte** (aucun nouveau, ceux du 08-09/11 sortis de fenêtre). Corps : **100K-1M = 51 %** (1 082/2 105). Watch item (a) : **clos en l'état** (pas de débordement observé), critère d'escalade inchangé si réapparition.
+
+4. **Sécurité (§5)** : **aucune IP inconnue avec 200** — hairpin 1 068 · flux sans `x_forwarded_for` 953 · poste Paris ×6 · web2 ×2. 401 = 76 (scanner clé morte, inchangé).
+
+5. **Plateforme** : nbaudit **ok:true 09:12:57Z** (0 échec, `19451:Image/`). G: probe OK, 570 G libres. **Commit hôte 81,8 %** (marge 69,7 GB — en hausse lente depuis 78,2 % ce matin, encore sous le seuil 85 ; à surveiller avant tout travail lourd).
+
+6. **Condensation RSM — tendance après le DM** : **8 échecs « pass deadline » aujourd'hui**, dernier à **06:24Z**, soit ~3 h sans nouvel échec après le DM roo-extensions de 07:15Z (`vllm-condense-recur-20261109`) ; 17 replis cloud réussis. **À confirmer au prochain cycle** — un silence de 3 h ne prouve pas une correction, il peut n'être qu'un régime de charge plus calme. WARN RSM autres : `Invalid args for roosync_dashboard` 09:01Z et `roosync_messages` 09:09Z (périmètre RSM, lane tierce), `Message not found: ai01-queue-po2025-20261109a`.
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). PR ouvertes du dépôt : #416 (infra embedder, créée 07/11) sans review — lane propriétaire, rien à traiter ici.
+
+Aucun geste moteur. Relevé §5ter complet (UA/clés) non refait ce cycle : census IP/statuts/tailles suffisant, aucune anomalie de clé détectée les cycles précédents.
