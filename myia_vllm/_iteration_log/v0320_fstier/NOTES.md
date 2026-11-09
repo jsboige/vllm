@@ -7342,3 +7342,22 @@ Aucun geste moteur. Relevé §5ter complet (UA/clés) non refait ce cycle : cens
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414 ; `gh` sur jsboige vérifié). **EPF** : livrables du jour remis (fiches R1-R4 + TCO + break-even sur #426, section capacité sur #14, 6 corrections de relecture, DM HIGH à OWUI 10:18Z) ; `D:\EPF-dossier-IA\dossier-epf-ia.md` **inchangé depuis 01:13Z** — intégration OWUI attendue avant l'export de ce soir, plume chez eux. Inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte.
+
+
+## 09/11 15:13Z (cycle :43) — moteur sain, hit 96,0 %, 0×400 (3ᵉ cycle) ; EPF volet capacité CLOSED (v1.2 intégrée+exportée par OWUI) ; commit hôte 83,8 %
+
+1. **Moteur** : health 200 en 5,0 ms, RC=0, boot inchangé (`00:19:36Z`, Up 15 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 22 004 / GPU 1 21 168 MiB à 47/48 °C (bande, oscille ne dérive pas). `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 1 704 sondes OK ; seul `WEDGE fail 1/2` = celui de 00:46Z.
+
+2. **Charge (§5quater)** : **hit canonique 96,0 %** (device 305,9 M + host 17,9 M + disk 2,8 M / 340,2 M queries) ; **0 préemption** ; 340,2 M tokens prompt depuis le boot (+66,7 M en 3 h ≈ 22,2 M/h).
+
+3. **Census (7 h)** : ~396 req/h (reprise diurne) ; **statuts 2 696×200, 77×401, 0×400 — 3ᵉ cycle consécutif sans 400**. Corps : 100K-1M 34,5 % / 10-100K 32,2 % (mix plus court qu'aux cycles précédents). IP : hairpin 1 863 · gateway 829 · `92.184.136.131` ×4 (les 4 de ce matin, pool Free, non-alerte) — **aucune IP inconnue avec 200**.
+
+4. **Condensation RSM** : **toujours 9 « pass deadline » au total, dernier 09:47:44Z** — ~5,5 h sans nouvel échec. WARN `NonNominativeBaselineService non disponible` récurrent ~horaire (12:09→14:51) : déjà suivi « NonNominative intermittente » (dashboard 06/11) ; périmètre RSM.
+
+5. **Plateforme** : nbaudit **ok:true 15:13:17Z** (0 échec, vague `Image/`). G: probe OK, 569 G libres. **Commit hôte 83,8 %** (321,5/383,8 Go, marge 62,3 GB) — pente continue (81,8 → 83,1 → 83,8) mais sous le seuil 85 ; aucun travail lourd lancé.
+
+6. **★ EPF — volet capacité CLOSED** : réponse OWUI 12:22Z « Intégré — tout » — dossier **v1.2 exporté .docx (6 pages)**, vérifié par extraction texte (6 corrections dedans, 7 anciennes formulations absentes, grep 0/7) ; fichier 14 601 → 17 307 octets (13:18Z). ACK renvoyé (`ack-epf-v12-integrated-20261109`). Fiche mémoire màj. Chaîne vllm terminée : livré → relu → intégré → exporté.
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). Inbox traitée (0 non-lu après ACK).
+
+Aucun geste moteur. Registre : Q58 seule ouverte.
