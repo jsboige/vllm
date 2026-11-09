@@ -7285,3 +7285,22 @@ Aucun geste moteur ce cycle. **Le cycle 00:13Z exécute la fenêtre MTP** (annon
 6. **Veille amont : 7/7 inchangés** (#63551, #58813, #58807, #59040, #53414, #62615-close, #53180 — aucun merge ni review nouveau, `gh` sur jsboige vérifié). Inbox 0 non-lu (message CoursIA machine-adressé lu, hors périmètre).
 
 Aucun geste moteur. Cron `afdf4439` unique, 3 h à :13Z effectif, prochain tir 06:13Z.
+
+
+## 09/11 06:13Z (cycle :43) — matinée calme : hit 96,4 %, 0 préemption, série 400 non montante ; condensation RSM récidivante (5 échecs « pass deadline ») → DM roo-extensions envoyé (watch item b tenu)
+
+1. **Moteur** : health 200 en 4,5 ms, RC=0, boot inchangé (`00:19:36Z`, Up 6 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 21 877 / GPU 1 21 168 MiB à 48/49 °C (bande de nuit, oscille ne dérive pas). `/dev/shm` 33G/63G = 51 % (plancher), 0 orphelin. Watchdog : 668 sondes OK, le seul `WEDGE fail 1/2` reste celui de 00:46Z (ruée post-fenêtre, attendu).
+
+2. **Charge (§5quater)** : **hit canonique 96,4 %** (device 135,0 M + host 3,4 M + disk 0,7 M / 144,3 M queries) — nouveau plus haut ; **préemptions 0** ; 144,3 M tokens prompt / 1,7 M générés depuis le boot (~6 h). Genou jamais déclenché.
+
+3. **Census (7 h, §5ter)** : ~299 req/h ; corps **100K-1M = 50 %** (1 049/2 094) — régime long-contexte tenu. Statuts : 2 017×200, 76×401, **1×400** (celui de 00:46Z déjà connu, 81 Ko texte pur — **la série ne monte pas**, celui de 22:17Z est sorti de fenêtre). Watch item (a) : toujours pas de débordement de fenêtre, critère d'escalade inchangé.
+
+4. **Sécurité (§5)** : **aucune IP inconnue avec 200** — hairpin 1 069 · flux sans `x_forwarded_for` 941 (passerelle/hub) · poste Paris `82.66.89.184` ×4 · web2 ×2 · web1 ×1. 401 = 76 (scanner clé morte, inchangé).
+
+5. **Plateforme** : nbaudit **ok:true 06:12:59Z** (0 échec) — **vague 2 `Image/` ARMÉE** (subpath `19451:Image/` dans last-result, fanion du 10/10 exécuté). G: **probe OK** (553 G libres). **Commit hôte 80,1 %** (marge 76,5 GB, sous seuil 85).
+
+6. **Condensation RSM — watch item (b) tenu** : échecs primaires **récidivants** (02:54, 03:19, 05:02, 05:13, 05:52Z = 5), tous `pass deadline → cloud reserve (#3962)` puis troncature déterministe ; repli cloud réussi chaque fois. Moteur health 200 en continu sur toute la fenêtre ⇒ panne côté appelant, pas moteur. **DM envoyé à roo-extensions** (`vllm-condense-recur-20261109`, 07:15Z) avec l'hypothèse latence-de-file derrière prefills long-contexte. Autres WARN RSM = périmètre RSM (EBUSY workspace-CoursIA = écriture lane concurrente, mirror repair global.md).
+
+7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414 — aucun merge ni review depuis le 05/11, `gh` sur jsboige vérifié). Inbox 0 non-lu.
+
+Aucun geste moteur. Cron `afdf4439` unique vérifié (3 h récurrent, prochain tir 09:13Z). Registre : Q58 seule ouverte.
