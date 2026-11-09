@@ -7241,3 +7241,31 @@ Aucun geste moteur. Cron re-armé 3 h à :43 (job existant `afdf4439`).
 5. Veille amont **7/7 inchangée** (63551, 58813, 58807, 53414, 60229-mergée, 62615-close, 53180). Inbox 0 non-lu. gh contrôlé (jsboige actif avant la passe).
 
 Aucun geste moteur ce cycle. **Le cycle 00:13Z exécute la fenêtre MTP** (annonce déjà posée). Cron re-armé 3 h à :43 (job existant `afdf4439`).
+
+## 09/11 00:13Z (cycle :43) — ★ FENÊTRE MTP EXÉCUTÉE : acceptance 62,4 % MAIS **−36 % de débit single-stream** → MTP REJETÉ, prod restaurée sans spec-dec
+
+1. **Pré-vol au geste** (00:13:09Z) : commit hôte **76,9 %** (295,3/383,8 GB, marge 88,5 GB — seuil 85 % non franchi, il était à 77,1 % au cycle 21:13Z), image `vllm-openai-v0320-s58813:v1` locale (4 j), dry-run `compose config` résolvant bien `image: vllm-openai-v0320-s58813:v1` + `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'` + bornes 48 GiB/512 pids. **Annonce `global` reposée juste avant le geste** (début, durée, rollback — leçon 01/11).
+
+2. **Boot MTP** : `up -d` 00:13:27Z → conteneur `Healthy` 00:17:31Z = **4 min 04 s**, **0 erreur** dans 237 lignes de boot. Chaîne MTP confirmée : `Resolved architecture: Qwen3_5MTP`, `SpeculativeConfig(method='mtp', num_spec_tokens=3)`, `speculator.py:318 FLASHINFER cannot update draft decode metadata in place; falling back to rebuilding attention metadata eagerly`, `scheduler.py:254 EAGLE/MTP draft attention groups [3] detected — trailing chunk excluded from offloading`. **KV 640 496 tokens vs 776 824 = −17,6 %** (drafter + chunk MTP exclu de l'offload) : le coût capacité est réel. La purge d'orphelins `/dev/shm` (PR #318) a tourné au boot et retiré 3 fichiers (251 MB + 167 MB + 2 sémaphores) — elle tient après deux recreates.
+
+3. **Mesure d'acceptance** (sonde 3 requêtes greedy, `temperature 0`, 700 max_tokens, prompts distincts) : **599 drafts / 1 797 draft tokens / 1 121 acceptés = 62,4 %** ; par position **81,1 % / 62,4 % / 43,6 %** ; **2,87 tokens acceptés par step** (05/11 : 58,3 % et 2,75). Le chemin spéculatif fonctionne et fait *mieux* que la fenêtre précédente.
+
+4. **★ A/B frais-vs-frais, même sonde, même machine, 3 min d'écart** :
+   | | MTP k=3 (s58813) | Prod (tierpin, spec=None) |
+   |---|---|---|
+   | req1 / req2 / req3 | 30,7 / 41,9 / 33,2 tok/s | **53,0 / 53,8 / 55,9 tok/s** |
+   | 1 711 tokens générés | **49,2 s = 34,8 tok/s** | **31,5 s = 54,4 tok/s** |
+   | KV | 640 496 | **776 824** |
+   ⇒ **MTP = −36 % de débit single-stream et −17,6 % de capacité KV**. L'acceptance ne se traduit pas en débit : le rebuild *eager* des métadonnées d'attention (FlashInfer) + les forwards répétés sur la même couche MTP (`num_speculative_tokens > 1`) mangent le gain. **Même motif que DFlash (−15 % à 5 users) et DSpark (−33 % à N=16) : 5ᵉ mesure de la famille, 0 adoption.** Verdict **REJETÉ**, pas de seconde fenêtre : le régime sous charge ne peut qu'aggraver (le spec-dec paie par step, pas par token utile, quand le lot est déjà plein).
+
+5. **Retour prod** : `up -d` sans les deux vars, 00:19:23Z → `Healthy` 00:22:59Z = **3 min 36 s** ; `image=vllm-openai-v0320-tierpin:v1`, `speculative_config=None`, **KV 776 824** (retour exact au baseline), health 200 en 3,8 ms, RC=0. **Indispo totale de la fenêtre : 9 min 32 s** (deux boots), conforme à l'annonce (≤ 8 min de boot + mesure, service rendu avant 00:40Z). Sidecars non recréés au retour (bornes déjà en place).
+
+6. **Réserve d'honnêteté** : la mesure A/B est **single-stream sur moteur frais** ; le trafic réel n'était pas revenu après le recreate (1 seul step de draft hors sonde, `request_success=5`), donc **aucune mesure d'agrégat sous charge réelle n'a été obtenue**. Ce n'est pas une limite du verdict — le sens de l'écart (−36 %) et l'historique de la famille vont dans le même sens — mais une affirmation « MTP dégrade aussi l'agrégat chez nous » reste **SUPPOSÉE**, pas mesurée. L'image `s58813:v1` reste locale : re-testable au merge de #58813 si un jour le rebuild eager est corrigé en amont.
+
+7. **Reste du cycle** (relevés 23:57Z, avant fenêtre) : health 200 en 3,3 ms, RC=0, boot de 35 h (`2026-11-07T12:33:55Z`), **hit canonique 87,3 %** (device 212,3 M + host 372,8 M + disque 11,3 M / 682,9 M queries), préemptions **83 cumulées = 2,3/h** de moyenne depuis le boot, KV 99,47 %, 8 en cours / 1-5 en attente, 7 646 `stop` + 49 `length` + **0 erreur / 0 abort**, VRAM 22 654 / 21 796 MiB, `/dev/shm` 51 % (plancher du tier, 0 orphelin). 20 `WEDGE fail 1/2` sur la fenêtre, jamais 2/2, tous pendant des prefill lourds ; 3 811 sondes OK.
+
+8. **Sécurité** : **aucune IP inconnue avec des 200**. 200 = hairpin `90.65.170.144` (901), flux sans `x_forwarded_for` (686, passerelle interne), `82.66.89.184` (3, poste Paris user, IP connue Q13). 401 = 76 sur `/v1/models` dont **69 depuis `37.230.119.250` (Go-http-client) avec la clé morte `1f7f6080cb65`** (nanoclaw, refusée comme prévu), `129.80.213.237` et `34.38.248.210` ×1, et **2 tentatives `Python-urllib/3.13` sans xff sur `/v1/models` avec `fp=50829b227a2a` (inconnue de nos `.env`, 401)**. ⚠️ **Un scan a aussi tenté `/v1/.env` — refusé 401** (la route n'existe pas, mais la tentative mérite d'être notée).
+
+9. **Coordination / plateforme** : nbaudit **ok:true 00:13:14Z** (`runner_rc 0`, `deliver_rc 0`, 0 échec, 5 séries, sous-chemin `19451:Image/`). G: **85 % (565 G libres), sonde d'écriture OK**. Condensation : **aucun événement hors bannière** (nominal) ; WARN RSM = `EBUSY` de réconciliation sur `workspace-Maintenance.md`/`workspace-Argumentum.md` et fork `#3482`/`#4439` — périmètre RSM, motif connu, non relayé comme panne. **Veille amont 7/7 inchangée** (#63551, #58813, #58807, #59040, #53414, #62615-close, #53180 — aucun merge, aucun review nouveau). Inbox : 1 non-lu `myia-po-2024:CoursIA` (file P0 de SES PRs, adressé machine, hors périmètre vllm — laissé aux lanes CoursIA qui l'ont lu).
+
+**Conclusion** : la fenêtre a coûté 9 min 32 s et a rendu un verdict net — **MTP k=3 porte l'acceptance à 62,4 % mais coûte 36 % de débit et 18 % de KV sur ce couple hôte/image**. Prod tourne sur l'image tierpin sans spec-dec, KV 776 824. La famille spec-dec reste **CLOSE (0/5)**. Cron re-armé 3 h à :43.
