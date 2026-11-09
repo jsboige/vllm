@@ -7399,3 +7399,6 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 7. **Veille amont : 4/4 inchangés** (#63551, #58813, #58807, #53414). EPF clos (v1.2 exportée ; réunion direction mardi 11/11 soir — questions → #426).
 
 Aucun geste moteur. Registre : Q58 seule ouverte.
+
+
+**Addendum 21:13Z (coordination, post-[DONE])** : demande roo-extensions (, 18:04Z) — solder #2433 avec le verdict MTP. **Fait** : verdict mesuré posté ([c.6751661308](https://github.com/jsboige/roo-extensions/issues/2433#issuecomment-6751661308)), checklist 7/7 cochée ✅/❌/N-A annotée (bench N=16 déclaré non mesuré, limite visible), #2433 fermée ; **jsboige/vllm#67 fermée avec le même verdict** (report amont stale → #58807 déposé-et-pris, fix #58813 testé par nous, A/B 09/11, rejeté). Re-check bot ≥5 min programmé (binalum9s) — état confirmé au cycle 00:13Z si réouverture.
