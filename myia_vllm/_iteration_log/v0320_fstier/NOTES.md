@@ -7402,3 +7402,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 
 
 **Addendum 21:13Z (coordination, post-[DONE])** : demande roo-extensions (message `req-2433-mtp-verdict-ai01-0911`, 18:04Z) — solder #2433 avec le verdict MTP. **Fait** : verdict mesuré posté ([c.6751661308](https://github.com/jsboige/roo-extensions/issues/2433#issuecomment-6751661308)), checklist 7/7 cochée ✅/❌/N-A annotée (bench N=16 déclaré non mesuré, limite visible), #2433 fermée ; **jsboige/vllm#67 fermée avec le même verdict** (report amont stale → #58807 déposé-et-pris, fix #58813 testé par nous, A/B 09/11, rejeté). Re-check bot ≥5 min programmé (binalum9s) — état confirmé au cycle 00:13Z si réouverture.
+
+
+## 09/11→10/11 00:13Z (cycle :43) — moteur sain, hit 95,5 %, 0×400 (6ᵉ cycle) ; préemptions 0→4 (pression KV ponctuelle) ; commit hôte 86,5 % REFRANCHI
+
+1. **Moteur** : health 200 en 3,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 24 h), **0 OOM, 0 traceback** sur 5 000 lignes. VRAM GPU 0 21 987 / GPU 1 21 168 MiB à 49/50 °C. `/dev/shm` 33G/63G = 51 % (plancher). Watchdog : 2 731 sondes OK ; seul `WEDGE fail 1/2` = celui de la veille 00:46Z.
+
+2. **⚠️ Préemptions 0 → 4** (compteur boot ; le cycle 21:13Z lisait 0) : survenues dans les ~3 dernières heures, **aucune ligne preempt dans les 5 000 dernières lignes moteur** (fenêtre ~2 h) — pression KV ponctuelle, le moteur préempte-reprend au lieu d'OOM, cohérent avec la part de corps 100K-1M (34 % sur 7 h) et la remontée de débit nocturne (+58,8 M tokens prompt en 3 h ≈ 19,6 M/h vs 13,6 M/h hier soir). Posture : watch au cycle suivant — alerte si la pente s'installe en continu.
+
+3. **Marge commit hôte : 86,5 %** (331,8/383,8 Go, marge 52,0 GB) — **refranchi au-dessus du seuil 85** (84,8 → 86,5 en 3 h). `vmmemWSL` **commit 167,8 GB stable** (plateau ; WS seul tombé à 103,3 GB) : la hausse vient de processus hôte mineurs multiples, pas d'un consommateur unique. Aucun travail lourd ; re-mesure au prochain cycle.
+
+4. **Charge (§5quater)** : **hit canonique 95,5 %** (device 433,0 M + host 31,6 M + disk 4,1 M / 490,9 M queries) ; **préemptions : voir point 2** ; 490,9 M tokens prompt depuis le boot.
+
+5. **Census (7 h)** : ~364 req/h (régime nocturne) ; **statuts 2 477×200, 69×401, 0×400 — 6ᵉ cycle consécutif sans 400**. Corps : 10-100K 37,0 % / 100K-1M 34,0 %. **IP externe nouvelle `37.230.119.250` : 68 req, 0×200 (toutes 401)** — sonde à clé morte rejetée, pas d'alerte (règle = 200 requis) ; entrée calme au census IP.
+
+6. **Condensation RSM** : **0 nouveau « pass deadline » aujourd'hui** (9 au total, dernier hier 09:47:44Z) — ~14,5 h propre.
+
+7. **Plateforme** : nbaudit **ok:true 00:13:24Z** (0 échec, vague `Image/`). G: probe OK, 562 G libres. **Veille amont 4/4 inchangés** (#63551, #58813, #58807, #53414). Coordination : inbox 0 ; global lu (plan CI CoursIA signé user, contrainte Lean po-2027, 2 vues ASK-USER d'autres sièges) — rien d'adressé vllm.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
