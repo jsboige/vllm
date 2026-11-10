@@ -7535,3 +7535,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 18:13:34Z** (vague `Image/`, 0 échec). G: probe OK, 537 G libres. **Veille amont 4/4 inchangés** (updated_at identiques ; compte `gh` = jsboige vérifié). Coordination : inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 21:13Z (cycle :43) — moteur sain, hit 94,9 % ; 6ᵉ occurrence 400 texte pur (19:04Z, po-2027 ×3) → post [ASK] sur workspace-claudish ; commit hôte 93,4 % — LA PENTE S'EST ARRÊTÉE (plateau)
+
+1. **Moteur** : health 200 en 4,6 ms, RC=0, boot inchangé (`00:19:36Z`, Up 45 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 454 / GPU 1 21 168 MiB à 44 °C (bande en charge, < 23 000). `/dev/shm` 51 % (33G). Watchdog : 3 990 sondes OK ; **4ᵉ WEDGE `fail 1/2` à 19:02:32Z** (snapshot p=856 M : compteurs qui avancent) + les 3 connus du jour ; tous isolés, jamais 2/2, aucun restart. Rythme légèrement accru (4 sur ~24 h) mais toujours le comportement attendu sous gros prefills.
+
+2. **400 (§2) : 6ᵉ occurrence texte pur à 19:04:27Z** (920 257 o, Bun, po-2027) — ~10 s après le WEDGE de 19:02Z, même gros prefill probable. Répartition du jour : ai-01 ×3 (nuit), **po-2027 ×3** (13:21, 14:35, 19:04). DM claudish toujours muet (~14 h depuis l'original, ~5 h depuis la relance HIGH) ⇒ **post `[ASK]` déposé sur le workspace dashboard de claudish** (myia-po-2025:claudish, décision annoncée au cycle précédent) : contexte, demande de qualification de la paire 03:57, pointeurs vers les 2 DM. Leur dashboard était à 86,9 % — l'auto-condensation est leur mécanisme, rien à faire de notre côté.
+
+3. **Marge commit hôte : 93,4 %** (358,5/383,8 Go, marge 25,2 GB) — **LA RAMPE S'EST ARRÊTÉE** : 91,6 → 93,3 → 93,4 = **plateau +0,1 pt en 3 h** (même pattern que le 09/10 : rampe puis plateau), `vmmemWSL` stable 168,8 GB. Toujours au-dessus du niveau d'alerte 90,1 % ⇒ posture inchangée : signalé, aucun travail lourd, aucun bricolage. Pas d'extrapolation : on re-mesure au prochain cycle.
+
+4. **Charge (§5quater)** : **hit canonique 94,9 %** (device 737,5 M + host 84,0 M + disk 8,6 M / 874,3 M queries — léger tassement 95,1 → 94,9) ; **préemptions 7 stables** (2ᵉ cycle à 7) ; 874,3 M tokens prompt depuis le boot (+23,7 M en 3 h ≈ 7,9 M/h, soirée calme) ; generation 15,8 M (+2,0 M).
+
+5. **Census (7 h)** : ~495 req/h ; statuts **3 373×200, 88×401, 2×400 (point 2)**. IP : web1 `37.187.180.135` 1×200, web2 `51.75.200.22` 1×200 — **toutes connues, aucune IP nouvelle avec 200**.
+
+6. **Condensation RSM** : **aucun nouveau « pass deadline »** (total 11, dernier 09:50Z — ~11,4 h propre) ; INFO nominaux (condense-health stall clock 20:50Z = mécanisme auto). WARN `NonNominativeBaselineService` récurrent horaire — connu, périmètre RSM.
+
+7. **Plateforme** : nbaudit **ok:true 21:12:56Z** (vague `Image/`, 0 échec). G: probe OK, 535 G libres. **Veille amont 4/4 inchangés** (updated_at identiques ; compte `gh` = jsboige vérifié). Coordination : 3 non-lus machine-only (CoursIA-2, po-2024 RSM, CoursIA-3) — hors périmètre workspace (bug #3960), marqués lus ciblés.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
