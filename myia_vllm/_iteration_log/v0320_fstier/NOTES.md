@@ -7421,3 +7421,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 7. **Plateforme** : nbaudit **ok:true 00:13:24Z** (0 échec, vague `Image/`). G: probe OK, 562 G libres. **Veille amont 4/4 inchangés** (#63551, #58813, #58807, #53414). Coordination : inbox 0 ; global lu (plan CI CoursIA signé user, contrainte Lean po-2027, 2 vues ASK-USER d'autres sièges) — rien d'adressé vllm.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 03:13Z (cycle :43) — moteur sain, hit 95,2 %, 0×400 (7ᵉ cycle) ; préemptions STABLES à 4 (pente non confirmée, watch refermé) ; commit 86,9 %
+
+1. **Moteur** : health 200 en 6,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 27 h), **0 OOM, 0 traceback, 0 ligne preempt** sur 5 000 lignes. VRAM GPU 0 21 970 / GPU 1 21 168 MiB à 50/51 °C. `/dev/shm` 33G/63G = 51 %. Watchdog : 3 040 sondes OK (+309 en 3 h ≈ 2/min, nominal) ; seul `WEDGE fail 1/2` = celui du 09/11 00:46Z.
+
+2. **⚠️→OK Préemptions : STABLES à 4** (identiques au cycle 00:13Z) — la pente 0→4 ne s'est pas confirmée, pression KV ponctuelle refermée sans suite. Aucune alerte.
+
+3. **Marge commit hôte : 86,9 %** (333,5/383,8 Go, marge 50,2 GB) — toujours au-dessus du seuil 85, rampe lente (86,5 → 86,9). `vmmemWSL` **commit 168,0 GB stable** (WS 112,2). Aucun travail lourd ; posture inchangée.
+
+4. **Charge (§5quater)** : **hit canonique 95,2 %** (device 476,1 M + host 50,4 M + disk 4,6 M / 558,0 M queries) ; **0 préemption nouvelle** ; 558,0 M tokens prompt depuis le boot (+67,1 M en 3 h ≈ 22,4 M/h, trafic nocturne soutenu) ; **host-tier +18,8 M tokens servis en 3 h** (31,6→50,4 M) — le tier RAM travaille fort sur les replays long-contexte (100K-1M = 43 % des corps).
+
+5. **Census (7 h)** : ~308 req/h (nuit profonde) ; **statuts 2 085×200, 72×401, 0×400 — 7ᵉ cycle consécutif sans 400**. Corps : 100K-1M 43,3 % / 10-100K 18,4 %. IP externe : uniquement le poller nanoclaw connu `37.230.119.250` (68 req, toutes 401, 0×200) — aucune nouvelle, aucune avec 200.
+
+6. **Condensation RSM** : **0 « pass deadline » sur TOUS les logs du jour** (y compris rotations -4/-5) — dernier échec hier 09:47Z, ~17,5 h propre.
+
+7. **Plateforme** : nbaudit **ok:true 03:13:13Z** (0 échec, vague `Image/`). G: probe OK, 504 G libres. **Veille amont 4/4 inchangés** (#63551, #58813, #58807, #53414). Coordination : inbox 0 ; global lu (vue registre po-2028, rien d'adressé vllm).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
