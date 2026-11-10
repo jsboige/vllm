@@ -7516,3 +7516,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 15:13:25Z** (vague `Image/`, 0 échec consécutif). G: probe OK, 537 G libres. **Veille amont 4/4 inchangés** (updated_at identiques : 63551 → 11-05, 58813 → 11-04, 58807 → 09-29, 53414 → 08-22 ; compte `gh` = jsboige vérifié). Coordination : 2 non-lus machine-only (CoursIA ACK dispatch, CoursIA-3 merge manuel #25625) — hors périmètre workspace (bug #3960), marqués lus ciblés.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 18:13Z (cycle :43) — moteur sain, hit 95,1 %, 0 NOUVEAU 400 (écart le plus long depuis 04:21Z) ; ⚠️ commit hôte 93,3 % (marge 25,7 GB, pente 4 points confirmée) ; 2 WEDGE fail 1/2 sous gros prefills
+
+1. **Moteur** : health 200 en 8,8 ms, RC=0, boot inchangé (`00:19:36Z`, Up 42 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 374 / GPU 1 21 168 MiB à 47 °C (bande en charge attendue @0.73, < 23 000). `/dev/shm` 51 % (33G). Watchdog : 3 992 sondes OK ; **2 WEDGE `fail 1/2` nouveaux** (15:49:10Z, 17:34:55Z — snapshots p=820 M/837 M : compteurs qui avancent) + celui de 06:32Z ; tous isolés, jamais 2/2, aucun restart = comportement attendu sous gros prefills, moteur sain-qui-travaille.
+
+2. **400 (§2)** : **0 nouvelle occurrence** — les 2 en fenêtre 7 h sont les mêmes que le cycle précédent (13:21Z, 14:35Z via po-2027). Épisode toujours à **5 occurrences sur 2 machines**, et **aucune depuis 14:35Z** (écart le plus long depuis le début). DM claudish : original 07:16Z non lu, **relance HIGH 16:15Z sans réponse à ~2 h** (silence total ~11 h). Au prochain cycle (~21:13Z) si toujours rien : passer au canal dashboard workspace de claudish (plus visible qu'un DM).
+
+3. **⚠️⚠️ Marge commit hôte : 93,3 %** (358,1/383,8 Go, **marge 25,7 GB**) — pente maintenant mesurée sur 4 points alignés : 89,5 → 90,9 → 91,6 → 93,3 (+6,5 GB en 3 h, croissance hors vmmemWSL qui reste stable à 168,9 GB). **Qualification top-12 processus** : vmmemWSL 168,9, Code 4,3 + 2,1, pwsh 3,2, VS ServiceHost 2,3, node 1,8, **lean 1,2 + lake 1,0 (builds CoursIA toujours résidents)**, claude ×2 2,0, msedge 1,0 — somme ≈ 189 GB : la croissance est **diffuse** (petits processus multiples), pas portée par un consommateur unique. Panne 24/09 = 97,8 % : à cette cadence il resterait ~3-4 cycles, MAIS la rampe s'était déjà arrêtée net une fois (09/10) — pente à re-mesurer, pas extrapolation. Posture inchangée : signal fort, aucun travail lourd, aucun bricolage.
+
+4. **Charge (§5quater)** : **hit canonique 95,1 %** (device 718,6 M + host 81,9 M + disk 8,2 M / 850,6 M queries) ; **préemptions 7 STABLES** (pente 4→6→7 arrêtée) ; 850,6 M tokens prompt depuis le boot (+37,7 M en 3 h ≈ 12,6 M/h, soirée) ; generation 13,8 M (+2,2 M — activité génération plus soutenue).
+
+5. **Census (7 h)** : ~480 req/h ; statuts **3 270×200, 86×401, 2×400 (point 2), 1×404**. IP : web1 connue 2×200, web2 connue `51.75.200.22` 1×200, Free mobile `92.184.136.17` 1×200 — **aucune IP nouvelle avec 200**.
+
+6. **Condensation RSM** : **aucun nouveau « pass deadline »** (total 11, dernier 09:50Z — ~8,4 h propre) ; INFO nominaux (condense-health stall clock 15:27Z = mécanisme auto). WARN `NonNominativeBaselineService` récurrent à cadence horaire (14:04 burst + 15:31/16:31/17:31) — connu, périmètre RSM.
+
+7. **Plateforme** : nbaudit **ok:true 18:13:34Z** (vague `Image/`, 0 échec). G: probe OK, 537 G libres. **Veille amont 4/4 inchangés** (updated_at identiques ; compte `gh` = jsboige vérifié). Coordination : inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
