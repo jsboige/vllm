@@ -7414,7 +7414,7 @@ Aucun geste moteur. Registre : Q58 seule ouverte.
 
 4. **Charge (§5quater)** : **hit canonique 95,5 %** (device 433,0 M + host 31,6 M + disk 4,1 M / 490,9 M queries) ; **préemptions : voir point 2** ; 490,9 M tokens prompt depuis le boot.
 
-5. **Census (7 h)** : ~364 req/h (régime nocturne) ; **statuts 2 477×200, 69×401, 0×400 — 6ᵉ cycle consécutif sans 400**. Corps : 10-100K 37,0 % / 100K-1M 34,0 %. **IP externe nouvelle `37.230.119.250` : 68 req, 0×200 (toutes 401)** — sonde à clé morte rejetée, pas d'alerte (règle = 200 requis) ; entrée calme au census IP.
+5. **Census (7 h)** : ~364 req/h (régime nocturne) ; **statuts 2 477×200, 69×401, 0×400 — 6ᵉ cycle consécutif sans 400**. Corps : 10-100K 37,0 % / 100K-1M 34,0 %. **IP externe `37.230.119.250` : 68 req, 0×200 (toutes 401)** — **le poller Go nanoclaw à clé morte (`1f7f6080cb65`), DÉJÀ documenté 03-04/11 au census** (corrigé : première rédaction disait « nouvelle » à tort — vérification mémoire faite après coup). Pas une alerte ; le signal de réveil reste un 200 sur ce path.
 
 6. **Condensation RSM** : **0 nouveau « pass deadline » aujourd'hui** (9 au total, dernier hier 09:47:44Z) — ~14,5 h propre.
 
