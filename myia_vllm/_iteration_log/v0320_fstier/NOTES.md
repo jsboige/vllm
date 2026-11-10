@@ -7459,3 +7459,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 06:13:09Z** (vague `Image/`). G: probe OK, 501 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0 ; DM claudish envoyé (point 1).
 
 Aucun geste moteur. Registre : Q58 seule ouverte (l'attente de qualification #431 porte chez claudish, pas au user). Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 09:13Z (cycle :43) — moteur sain, hit 95,2 % ; 400 = les mêmes 3 texte pur (pas de nouvelles) ; claudish pas encore répondu (3 h) ; commit 89,5 % stable
+
+1. **Moteur** : health 200 en 3,9 ms, RC=0, boot inchangé (`00:19:36Z`, Up 33 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 118 / GPU 1 21 168 MiB à 51/52 °C. `/dev/shm` 51 %. Watchdog : 3 715 sondes OK ; 1 `WEDGE fail 1/2` isolé à 06:32:24Z (comportement attendu sous gros prefill, pas de 2/2, pas de restart).
+
+2. **400 (§2)** : la fenêtre 7 h porte **exactement les 3 mêmes occurrences texte pur** du cycle 06:13Z (03:57×2 + 04:21, débordement 262K via hub) — **aucune nouvelle** depuis. DM claudish `vllm-400-textpure-20261110` **sans réponse à 3 h** : on attend la qualification hub-side de la paire 03:57 (retry local vs fallback #431). Rien d'autre à faire côté moteur.
+
+3. **Marge commit hôte : 89,5 %** (343,3/383,8 Go, marge 40,4 GB) — **stable** au niveau d'alerte du cycle précédent (la rampe s'arrête net). `vmmemWSL` commit **168,1 GB stable**. Aucun travail lourd.
+
+4. **Charge (§5quater)** : **hit canonique 95,2 %** (device 590,3 M + host 63,5 M + disk 6,3 M / 693,3 M queries) ; **préemptions 4 → 6** (+2 sur 3 h, pente lente — watch maintenu, pas le seuil « monte en continu » qui motiverait une escalade) ; 693,3 M tokens prompt depuis le boot (+71,3 M en 3 h ≈ 23,8 M/h).
+
+5. **Census (7 h)** : ~332 req/h ; **statuts 2 249×200, 73×401, 3×400** (point 2). Corps : 100K-1M 42,6 % / 10-100K 18,9 %. IP : hairpin + gateway ; web1 connue `37.187.180.135` (2×200) ; **`34.38.248.210` 1 req, 401** (rejetée, pas d'alerte) ; poller nanoclaw connu (70 req, 401).
+
+6. **Condensation RSM** : **toujours 1 « pass deadline »** (dernier 06:00:51Z) — ~3,2 h propre.
+
+7. **Plateforme** : nbaudit **ok:true 09:12:56Z** (vague `Image/`). G: probe OK, 542 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0 ; global lu (vue registre claudish-ai01, questions user Q76-Q80 — rien d'adressé vllm).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
