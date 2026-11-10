@@ -7440,3 +7440,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 03:13:13Z** (0 échec, vague `Image/`). G: probe OK, 504 G libres. **Veille amont 4/4 inchangés** (#63551, #58813, #58807, #53414). Coordination : inbox 0 ; global lu (vue registre po-2028, rien d'adressé vllm).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 06:13Z (cycle :43) — moteur sain, hit 95,3 % ; ★ 3×400 TEXTE PUR (débordement 262K, premières occurrences — DM claudish) ; commit hôte 89,5 % (rampe qui s'accélère)
+
+1. **★ 3×400 texte pur = premières occurrences de la signature débordement de fenêtre** (après 7 cycles à 0). Détail vérifié : toutes `Bun/1.3.14` via `api.medium…`, `machine=myia-ai-01` `client=myia-ai-01:unknown`, IP hairpin `90.65.170.144`, corps 777-846 Ko **sans** `image_url`/`input_image`, erreur exacte « maximum context length is 262144 tokens … at least 262145 input tokens ». Trois requêtes : 03:57:02Z (777 138 o), 03:57:05Z (777 534 o — **3 s d'écart, +396 o, resend mécanique**), 04:21:31Z (845 956 o). Le motif 1×400/tour débordant est **compatible avec #431 qui fait son fallback cloud par tour** ; la paire à 3 s doit être qualifiée hub-side (retry local = trou de #431 sur texte pur). **DM envoyé à po-2025:claudish** (`vllm-400-textpure-20261110`) pour trancher. Rien à faire côté moteur — la fenêtre 262 144 ne s'élargit pas, le contournement est le fallback hub.
+
+2. **Moteur** : health 200 en 2,9 ms, RC=0, boot inchangé (`00:19:36Z`, Up 30 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 21 948 / GPU 1 21 168 MiB à 49 °C. `/dev/shm` 51 %. Watchdog : 3 382 sondes OK.
+
+3. **Marge commit hôte : 89,5 %** (343,6/383,8 Go, marge 40,2 GB) — **rampe qui s'accélère** : 85,2 → 84,8 → 86,5 → 86,9 → **89,5** en 12 h (+2,6 pts sur le dernier intervalle). `vmmemWSL` commit **168,0 GB stable**, aucun consommateur unique nouveau (top : Code 4,1 ; `lean`+`lake` présents mais ~2,2 GB ; le reste est diffus). Signalé ; aucun travail lourd ; on approche le niveau du 09/10 (90,1 %) qui avait motivé l'alerte.
+
+4. **Charge (§5quater)** : **hit canonique 95,3 %** (device 528,3 M + host 58,8 M + disk 5,4 M / 622,0 M queries) ; **préemptions stables à 4** ; 622,0 M tokens prompt depuis le boot (+64,0 M en 3 h ≈ 21,3 M/h) ; **corps 100K-1M = 52 %** de la fenêtre 7 h (régime long-contexte nocturne maximal — contexte direct des 400 du point 1).
+
+5. **Census (7 h)** : ~277 req/h ; **statuts 1 860×200, 75×401, 3×400** (point 1). IP externe : uniquement le poller nanoclaw connu (69 req, toutes 401).
+
+6. **Condensation RSM** : **1 nouveau « pass deadline » à 06:00:51Z** (total 10 ; série propre cassée à ~20,2 h) — protection de la réserve cloud, périmètre RSM, connu.
+
+7. **Plateforme** : nbaudit **ok:true 06:13:09Z** (vague `Image/`). G: probe OK, 501 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0 ; DM claudish envoyé (point 1).
+
+Aucun geste moteur. Registre : Q58 seule ouverte (l'attente de qualification #431 porte chez claudish, pas au user). Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
