@@ -7478,3 +7478,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte (l'attente de qualification #43
 7. **Plateforme** : nbaudit **ok:true 09:12:56Z** (vague `Image/`). G: probe OK, 542 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0 ; global lu (vue registre claudish-ai01, questions user Q76-Q80 — rien d'adressé vllm).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 12:13Z (cycle :43) — moteur sain, hit 95,3 %, 0×400 (les 3 texte pur sorties de fenêtre, aucune nouvelle) ; ⚠️ commit hôte 90,9 % (niveau d'alerte 09/10 franchi)
+
+1. **Moteur** : health 200 en 4,0 ms, RC=0, boot inchangé (`00:19:36Z`, Up 36 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 023 / GPU 1 21 168 MiB à 46/47 °C. `/dev/shm` 51 %. Watchdog : 3 995 sondes OK ; seul `WEDGE fail 1/2` = celui de 06:32Z.
+
+2. **⚠️ Marge commit hôte : 90,9 %** (348,9/383,8 Go, **marge 34,9 GB**) — **niveau d'alerte du 09/10 (90,1 %) franchi** ; rampe 86,9 → 89,5 → 89,5 → 90,9 sur 9 h. `vmmemWSL` commit 168,9 GB (+0,9). Posture spec : signal (fait, ici), **aucun travail lourd**, pas de bricolage (`.wslconfig`/`wsl --shutdown` hors périmètre — tuerait moteur et hub). La panne du 24/09 était à 97,8 % : il reste 34,9 GB.
+
+3. **400 (§2)** : **0 dans la fenêtre 7 h** — les 3 occurrences texte pur (03:57×2 + 04:21) sont sorties de fenêtre et **aucune nouvelle n'est apparue** ; l'épisode reste borné à ces 3. DM claudish **toujours sans réponse à ~6 h** (lane vue active 09:05Z sur global). Relance prévue au prochain cycle si toujours rien (~9 h).
+
+4. **Charge (§5quater)** : **hit canonique 95,3 %** (device 651,9 M + host 68,7 M + disk 6,9 M / 763,6 M queries) ; **préemptions stables à 6** ; 763,6 M tokens prompt depuis le boot (+70,3 M en 3 h ≈ 23,4 M/h, charge diurne revenue) ; generation franchit 10 M tokens.
+
+5. **Census (7 h)** : ~401 req/h ; **statuts 2 732×200, 75×401, 1×404, 0×400**. Corps : 100K-1M 44,3 % / 10-100K 33,6 %. IP : `92.184.136.17` 1×200 (**famille mobile Free connue**, non-alerte) ; web1 connue 2×200 ; `34.38.248.210` 1×401 (rejetée) ; poller nanoclaw connu.
+
+6. **Condensation RSM** : **2ᵉ « pass deadline » du jour à 09:50:20Z** (total 11) — la cadence se marque (06:00, 09:50) à mesure que le dashboard grossit ; protection de la réserve cloud, périmètre RSM (#3962), suivi par le propriétaire.
+
+7. **Plateforme** : nbaudit **ok:true 12:13:02Z** (vague `Image/`). G: probe OK, 543 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
