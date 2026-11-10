@@ -7497,3 +7497,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 12:13:02Z** (vague `Image/`). G: probe OK, 543 G libres. **Veille amont 4/4 inchangés**. Coordination : inbox 0.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 10/11 15:13Z (cycle :43) — moteur sain, hit 95,2 % ; ⚠️ 2 NOUVELLES occurrences 400 texte pur via po-2027 (épisode NON borné, total 5 sur 2 machines) ; commit hôte 91,6 % (rampe continue)
+
+1. **Moteur** : health 200 en 3,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 39 h), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 061 / GPU 1 21 168 MiB à 48 °C (bande en charge attendue, < 23 000). `/dev/shm` 51 % (33G). Watchdog : 3 996 sondes OK ; seul `WEDGE fail 1/2` = celui de 06:32Z (connu, attendu).
+
+2. **⚠️ 400 (§2) : 2 NOUVELLES occurrences TEXTE PUR** — l'épisode n'est **pas borné** aux 3 de la nuit : (4) **13:21:53Z 866 490 o**, (5) **14:35:16Z 912 502 o**, toutes deux Bun/1.3.14, `/v1/chat/completions`, corps sans marqueur image, via **`x_claudish_machine=myia-po-2027`** cette fois. Total 10/11 : **5 occurrences sur 2 machines** (ai-01 ×3, po-2027 ×2) — phénomène récurrent et cross-machine, cohérent avec des sessions haiku→swift qui croissent au-delà de 262 144 avant leur auto-compact. **Relance DM claudish envoyée** (`vllm-400-textpure-20261110-bump1`, HIGH — l'original de 07:16Z était toujours non lu à ~9 h) : qualification retry-local vs #431 fallback plus pressante à mesure que ça se reproduit.
+
+3. **⚠️ Marge commit hôte : 91,6 %** (351,6/383,8 Go, **marge 32,2 GB**) — rampe continue 89,5 → 90,9 → 91,6 ; `vmmemWSL` commit 168,8 GB **stable** ⇒ la croissance vient du côté hôte hors vmmemWSL. Posture spec : signal (fait), aucun travail lourd, pas de bricolage. Panne 24/09 = 97,8 %.
+
+4. **Charge (§5quater)** : **hit canonique 95,2 %** (device 693,8 M + host 72,7 M + disk 7,5 M / 812,9 M queries) ; **préemptions 7** (+1 sur 3 h — pente lente 4 → 6 → 7 se confirme, watch maintenu, pas le « monte en continu » massif) ; 812,9 M tokens prompt depuis le boot (+49,3 M en 3 h ≈ 16,4 M/h, diurne modéré) ; generation 11,66 M.
+
+5. **Census (7 h)** : ~467 req/h ; statuts **3 190×200, 77×401, 2×400 (point 2), 1×404**. Corps : 100K-1M 27,7 % / <1K 30,0 %. IP : web1 connue `37.187.180.135` 4×200 ; `92.184.136.17` 1×200 (famille mobile Free connue) — **aucune IP nouvelle avec 200**.
+
+6. **Condensation RSM** : **aucun nouveau « pass deadline »** dans la fenêtre (total du jour reste 11, dernier 09:50Z) ; INFO nominaux seulement (detached condensation finished 10:41Z, condense-health stall clock armed 13:17Z = mécanisme auto qui précède l'auto-condensation). Périmètre RSM.
+
+7. **Plateforme** : nbaudit **ok:true 15:13:25Z** (vague `Image/`, 0 échec consécutif). G: probe OK, 537 G libres. **Veille amont 4/4 inchangés** (updated_at identiques : 63551 → 11-05, 58813 → 11-04, 58807 → 09-29, 53414 → 08-22 ; compte `gh` = jsboige vérifié). Coordination : 2 non-lus machine-only (CoursIA ACK dispatch, CoursIA-3 merge manuel #25625) — hors périmètre workspace (bug #3960), marqués lus ciblés.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
