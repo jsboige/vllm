@@ -7669,3 +7669,22 @@ Aucun geste moteur. Ce point sera repris au cycle 12:13Z (le dashboard claudish 
 6. **Plateforme** : condensation RSM **aucun nouveau « pass deadline »** (toujours 1 au jour) ; nbaudit **ok:true 12:12:58Z** (vague `Image/`, 0 échec) ; G: probe OK, **540 G libres** (fluctuation Drive forte des deux sens : 351 → 430 → 540). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 15:13Z (cycle :43) — moteur sain, hit 94,8 % ; ⚠️⚠️⚠️ commit hôte 96,9 % (3ᵉ hausse, RAM physique chute aussi, ~3,6 Go de la panne) → WARN update machine ; ★ CLAUDISH A RÉPONDU (qualification 03:57Z = 2 envois client) ; 2 nouveaux 400 po-2027 (paire 12:34/12:36Z)
+
+1. **Moteur** : health 200 en 5,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt (log 5 000 lignes vives). VRAM GPU 0 22 062 / GPU 1 21 168 MiB à 50-51 °C (bande, < 23 000). GPU 2 391 MiB (CoursIA). `/dev/shm` 51 % (33G stable). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z** (5ᵉ cycle consécutif propre).
+
+2. **⚠️⚠️⚠️ Marge commit hôte : 96,9 %** (373,0/384,8 Go, marge **11,8 Go**) — **3ᵉ hausse consécutive** : 93,4 → 95,3 → 96,7 → 96,9 (la pente ralentit : +0,2 pt/3 h vs +1,4, mais ne s'inverse pas). **Nouveau signal : RAM physique libre 34,4 → 24,8 Go en 3 h** — la saturation gagne la RAM en plus du commit. Distance à la panne 24/09 (97,8 % = 376,6 Go) : **~3,6 Go**. **WARN update posté sur machine** (`warn` 15:13Z) : leviers = user (pagefile, arrêt de processus, redémarrage Docker Desktop ~8 min d'indispo moteur) ; aucune lane ne lance de travail lourd tant que < 90 %.
+
+3. **★ CLAUDISH A RÉPONDU (14:20Z, après relance2)** — [REPLY] substantiel + excuses pour le silence (DM visaient po-2025, restés 29 h non lus). Qualification **mesurée sur le journal sidecar** : la paire 03:57Z = **deux requêtes client distinctes** (la 2ᵉ entrée ~0,5 s après la réponse 400 de la 1ʳᵉ, +396 o = le tour qui incorpore l'erreur), **pas une relance du hub** — le trou #431 n'explique pas la paire. Un **3ᵉ envoi** (~03:57:07.7Z) a été **servi en 49 s** (backend non identifié d'ici). Verdict : « rien à faire côté moteur, la fenêtre de 262 144 est la bonne » — conforme à notre lecture. Reste pour po-2025 (grain) : les `req-*` d'ai-01 03:56:55→03:57:10Z dans `archive/captures-2026-11-10.7z` (identité client + backend du 3ᵉ envoi). po-2024 libéré des marqueurs `[ContextGuard]` pour la paire. **ACK posté** (workspace-claudish) avec nos 2 nouvelles occurrences pour leur grain.
+
+4. **400 : ÉPISODE REPRI — 2 nouveaux po-2027** : `12:34:43Z` 862 670 o + `12:36:33Z` 913 593 o (Bun/1.3.14 via hub, écart 1 min 50 s, +50 923 o) — **même pattern de paire** que 03:57Z (renvoi client incorporant l'erreur). Total : **10 occurrences** (ai-01 ×3, po-2027 ×7). Fenêtre census 7 h : 2 809 req, 2 732×200, 75×401, 2×400.
+
+5. **Census (7 h)** : **aucune IP externe avec 200** (4ᵉ fenêtre consécutive).
+
+6. **Charge (§5quater)** : **hit canonique 94,8 %** (device 993,1 M + host 104,2 M + disk 12,5 M / 1 170,3 M queries) ; **préemptions 7 stables** (8ᵉ cycle) ; prompt 1 170,3 M tokens (+77,0 M en 3 h ≈ **25,7 M/h**, après-midi chargée vs 16,8 le matin) ; generation 24,3 M (+1,0 M).
+
+7. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste **le seul du jour** (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM, watch existant). nbaudit **ok:true 15:13:07Z** (vague `Image/`, 0 échec). G: probe OK, **529 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié avant les appels). Inbox : mention claudish + mention po-2028 machine-level (bug #3960) marquées lues.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
