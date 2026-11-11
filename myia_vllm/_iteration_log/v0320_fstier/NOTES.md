@@ -7573,3 +7573,26 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 00:12:50Z** (vague `Image/`, 0 échec). G: probe OK, 525 G libres. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Condensation RSM : **aucun nouveau « pass deadline »** (total 11, dernier 10/11 09:50Z — le log du 11/11 est propre). Coordination : inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 03:13Z (cycle :43) — moteur sain, hit 94,7 % ; micro-400 QC ARRÊTÉS (fin de boucle 00:10Z) ; 8ᵉ 400 texte pur (02:18Z) ⇒ escalade [ASK] sur global ; commit hôte 92,9 % — LA RAMPE S'INVERSE
+
+1. **Moteur** : health 200 en 10,5 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt (log 5 000 lignes vives). VRAM GPU 0 22 222 / GPU 1 21 168 MiB à 47-48 °C (bande en charge, < 23 000). `/dev/shm` 51 % (33G, stable). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z**.
+
+2. **Micro-400 QC (point 2 du cycle précédent) : ARRÊTÉS** — dernière salve 00:10:33-36Z, **plus rien en ~3 h** (fenêtre census 7 h complète). La boucle du client local (JSON malformé « Extra data ») s'est terminée d'elle-même ; le [WARN] dashboard machine reste le bon canal (le script re-plantera au prochain run s'il n'est pas corrigé — pas de destinataire identifiable au-delà, la mention « expression alpha / grammaire génétique » désigne QC-CoursIA). Impact moteur resté nul.
+
+3. **400 texte pur (§2) : 8ᵉ occurrence à 02:18:42Z** (906 956 o, Bun, po-2027 — ×5 pour cette machine ; total ai-01 ×3 + po-2027 ×5). Claudish toujours muet (~20 h) malgré DM ×2 + [ASK] 21:20Z + UPDATE 00:15Z sur leur workspace ⇒ **escalade [ASK] déposée sur le dashboard `global`** (`ask-claudish-400-escalade-20261111-0313Z`, crossPost workspace-claudish OK) : qui porte quoi, attendu (qualifier retry-local vs #431), effet sans réponse (sessions continuent d'échouer au lieu de basculer cloud), désescalade possible sur simple ACK. C'est l'échelon supérieur de la doctrine canal — rendez-vous reste leur workspace.
+
+4. **Marge commit hôte : 92,9 %** (357,5/384,8 Go, marge 27,3 GB) — **LA RAMPE S'INVERSE** : 94,0 → 92,9 (−1,1 pt en 3 h), `vmmemWSL` stable 168,8 GB. Trajectoire complète : 89,5→90,9→91,6→93,3→93,4→94,0→**92,9**. Toujours au-dessus du seuil 85 % ⇒ posture inchangée (signalé, aucun travail lourd) ; nouveau plateau attendu, re-mesure au prochain cycle.
+
+5. **Charge (§5quater)** : **hit canonique 94,7 %** (device 811,9 M + host 89,1 M + disk 11,2 M / 963,4 M queries — stable 94,8 → 94,7) ; **préemptions 7 stables** (4ᵉ cycle) ; 963,4 M tokens prompt depuis le boot (+43,4 M en 3 h ≈ 14,5 M/h, nuit) ; generation 18,6 M (+1,6 M).
+
+6. **Census (7 h)** : 4 365 req (~624/h) ; statuts **4 250×200, 74×401, 41×400** (les 39 micro-400 + 7ᵉ 21:53Z + 8ᵉ 02:18Z). **Aucune IP externe avec 200 dans la fenêtre** (web1 absente = zéro trafic externe 7 h — rien de neuf côté sécurité).
+
+7. **Condensation RSM** : **1 NOUVEAU « pass deadline » à 01:32:11Z** (primaire timeout 50,5 s « Request timed out », attempt 2, bascule réserve cloud = dégradation gracieuse ; total 12). Cohérent avec le dossier existant (primaire fragile, correctif #4434 côté RSM) — pas un fait moteur : aucune sonde moteur en échec à cette heure.
+
+8. **Coordination** : relance Hermes #67 (12:28Z) → **#67 est déjà CLOSED depuis le 09/11 21:16Z** (vérifié REST, commentaire de clôture = verdict MTP complet) ; la relance datait d'avant la fermeture. **[REPLY] déposé sur workspace-vllm** (`reply-hermes-67-20261111-0313Z`) : rien à fermer, suivi upstream #58813 vit dans la veille §5quinquies. Inbox 0 non-lu.
+
+9. **Plateforme** : nbaudit **ok:true 03:13:05Z** (vague `Image/`, 0 échec). G: probe OK — **360 G libres** (525 G au cycle précédent, −165 G ; la sonde d'écriture passe = DriveFS sain, la baisse est de l'usage/synchro Drive, pas un hang ; noté sans plus). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
