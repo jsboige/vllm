@@ -7652,3 +7652,20 @@ Demande user : « Tu peux relancer? ». Avant de relancer, vérification de l'é
 
 Aucun geste moteur. Ce point sera repris au cycle 12:13Z (le dashboard claudish n'est pas lu par la spec de cycle — d'où cette note).
 
+
+
+## 11/11 12:13Z (cycle :43) — moteur sain, hit 94,7 % ; ⚠️⚠️ commit hôte 96,7 % (2ᵉ hausse, ~4,2 GB du niveau de panne) → WARN update machine ; 0×400 sur 7 h ; relance2 claudish toujours UNREAD
+
+1. **Moteur** : health 200 en 15,1 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt (log 5 000 lignes vives). VRAM GPU 0 22 066 / GPU 1 21 168 MiB à 48-49 °C (bande, < 23 000). `/dev/shm` 51 % (33G stable). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z** (4ᵉ cycle consécutif).
+
+2. **⚠️⚠️ Marge commit hôte : 96,7 %** (372,1/384,8 Go, marge **12,7 GB**) — **2ᵉ hausse consécutive** : 93,4 → 95,3 → **96,7** (+3,3 pt en 6 h). Le niveau de la panne du 24/09 (Docker Desktop mort, tous conteneurs down 68 min) était **97,8 %** ⇒ **~4,2 GB restants**. Qualification : `vmmemWSL` **stable 168,8 GB** (croissance hors WSL, diffuse) ; top-15 sans nouveau consommateur (Code 4,6 + pwsh 4,0 + lean/lake 2,2 **résidents mais inactifs** — CPU 69 s/6 s) ; **RAM physique libre 34,4 GB** ⇒ c'est le **commit/pagefile** qui sature, pas la RAM. **[WARN] update posté sur le dashboard machine** (`warn-commit-host-967-20261111-1213Z`) : aucun travail lourd sur ai-01 ; leviers = décision user. Perimètre lane inchangé : signalé, zéro bricolage.
+
+3. **400 : AUCUNE occurrence sur la fenêtre 7 h** (3 011×200, 75×401, **0×400**) — le 8ᵉ (02:18:42Z) est sorti de fenêtre. Épisode totalement au repos (~10 h).
+
+4. **Relance 2 claudish : toujours UNREAD après 11 min** (comme les 2 DM précédents) — le canal dashboard (post `ask-claudish-400-relance2-20261111` sur workspace-claudish, adressé aux 2 lanes) reste le vecteur espéré ; la lane claudish tourne mais ne lit pas son inbox. Aucun nouveau canal (attendre leur cycle).
+
+5. **Charge (§5quater)** : **hit canonique 94,7 %** (device 931,7 M + host 92,1 M + disk 11,8 M / 1 093,3 M queries — stable) ; **préemptions 7 stables** (7ᵉ cycle) ; 1 093,3 M tokens prompt depuis le boot (+50,5 M en 3 h ≈ 16,8 M/h) ; generation 23,3 M (+1,5 M).
+
+6. **Plateforme** : condensation RSM **aucun nouveau « pass deadline »** (toujours 1 au jour) ; nbaudit **ok:true 12:12:58Z** (vague `Image/`, 0 échec) ; G: probe OK, **540 G libres** (fluctuation Drive forte des deux sens : 351 → 430 → 540). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
