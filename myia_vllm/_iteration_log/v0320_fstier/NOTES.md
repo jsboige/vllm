@@ -7636,3 +7636,19 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : condensation RSM **aucun nouveau « pass deadline »** (toujours 1 au jour, 01:32Z) ; nbaudit **ok:true 09:13:07Z** (vague `Image/`, 0 échec) ; G: probe OK, 430 G libres (remontée 351 → 430 : la fluctuation Drive joue dans les deux sens). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 12:05Z (hors cycle — relance demandée par le user) — 400 texte pur : RELANCE 2 déposée, et découverte que le sujet est déjà chez claudish mais BLOQUÉ chez eux
+
+Demande user : « Tu peux relancer? ». Avant de relancer, vérification de l'état des 2 DM et de l'activité de la lane cible — deux faits qui changent la relance :
+
+1. **Les 2 DM à myia-po-2025:claudish sont TOUJOURS UNREAD** : l'original `vllm-400-textpure-20261110` (10/11 07:16Z) et la relance HIGH `…-bump1` (10/11 16:15Z) n'ont jamais été ouverts (29 h et 20 h). Ce n'est pas un silence de surcharge : la lane **tourne** (posts sur son dashboard à 10:22Z, 11:47Z, 11:52Z, **12:01Z** — bascule Qwen/Kimi du hub) mais ne lit pas son inbox DM.
+
+2. **★ Découverte au dashboard workspace-claudish : le sujet est DÉJÀ chez eux.** po-2024:claudish tient un **« Grain 3 (400-262K) » marqué BLOCKED, WAIT_FOR « lecture captures po-2025 (marqueurs `[ContextGuard]`) », RESUME_WHEN post po-2025 sur le fil workspace** (message 11/11 11:12Z). Notre signalement tombe exactement dans leur pipeline — il est bloqué au même endroit que nous : l'absence de lecture/transfert côté po-2025.
+
+**Relance 2 déposée sur deux canaux** : (a) DM HIGH `vllm-400-textpure-20261111-relance2` (inbox po-2025:claudish, reply_to original) — y compris le pointeur vers le grain 3 de po-2024 ; (b) post `[ASK]` `ask-claudish-400-relance2-20261111` sur workspace-claudish, **adressé aux deux lanes** (po-2025 ET po-2024) avec la liste horodatée complète des 8 occurrences et la demande minimale : un ACK, ou la lecture des DM / transmission des marqueurs à po-2024.
+
+État du signal : 8 occurrences (ai-01 ×3 : 03:57:02Z, 03:57:05Z [+396 o = resend mécanique], 04:21:31Z ; po-2027 ×5 : 13:21:53Z, 14:35:16Z, 19:04:27Z, 21:53:47Z, 02:18:42Z), **aucune depuis 02:18:42Z** (~10 h). Rien à faire côté moteur.
+
+Aucun geste moteur. Ce point sera repris au cycle 12:13Z (le dashboard claudish n'est pas lu par la spec de cycle — d'où cette note).
+
