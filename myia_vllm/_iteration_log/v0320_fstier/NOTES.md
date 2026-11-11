@@ -7554,3 +7554,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : nbaudit **ok:true 21:12:56Z** (vague `Image/`, 0 échec). G: probe OK, 535 G libres. **Veille amont 4/4 inchangés** (updated_at identiques ; compte `gh` = jsboige vérifié). Coordination : 3 non-lus machine-only (CoursIA-2, po-2024 RSM, CoursIA-3) — hors périmètre workspace (bug #3960), marqués lus ciblés.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 00:13Z (cycle :43) — moteur sain, hit 94,8 % ; ★ NOUVEAU : 39 micro-400 en rafales = client local QC (JSON malformé, retry en boucle, rejet avant inférence) → [WARN] dashboard machine ; 7ᵉ 400 texte pur (21:53Z) ; commit hôte 94,0 %
+
+1. **Moteur** : health 200 en 5,3 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt. VRAM GPU 0 22 452 / GPU 1 21 168 MiB à 46 °C (bande, < 23 000). `/dev/shm` 51 % (33G). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z** (les 4 du 10/11 restent des fail 1/2 isolés, 0 restart).
+
+2. **★ NOUVEAU — rafales de micro-400 (pas le débordement 262K)** : **39 requêtes** de ~1 233 o en 3 salves (23:56:06-09Z ×20, 00:05:56-59Z ×18, 00:10:33+ ×4+), toutes `400 json_invalid "Extra data"` (corps JSON malformé — deux objets concaténés ; le loc `body.1232/1233` varie d'un octet = requêtes quasi identiques). Client : appels **DIRECTS :5002** (aucun `x_forwarded_for`, pas d'UA, pas de machine claudish = pas le hub), clé MEDIUM (`auth_prefix` fp `be312daf7c1c`), `/v1/chat/completions`. Prompt : « expression alpha dans une grammaire de programmation génétique… 40 candidats… mom, r1, r21, r5, vol, volr » = **QC ML strategies (CoursIA)**. Le client RETRY en boucle sur la même erreur (le retry ne passera jamais). **Impact moteur : NUL** (rejet avant inférence, pas de prefill). **Signalement [WARN] posté sur le dashboard machine myia-ai-01** (`vllm-micro400-boucle-20261111`) pour que le propriétaire du script se reconnaisse. À revoir au prochain cycle (rafales continues = producteur toujours en boucle).
+
+3. **400 texte pur (§2) : 7ᵉ occurrence à 21:53:47Z** (893 677 o, Bun, po-2027 — ×4 pour cette machine) ; total ai-01 ×3 + po-2027 ×4. Claudish toujours muet (~17 h) malgré DM ×2 + post [ASK] 21:20Z sur leur dashboard. **UPDATE postée sur workspace-claudish** (`vllm-400-textpure-update-20261111`, idempotente). Leur dashboard s'est auto-condensé (86,9 % → 61,4 %) entre nos 2 posts — leur mécanisme a tourné.
+
+4. **Marge commit hôte : 94,0 %** (360,6/383,8 Go, marge 23,2 GB) — le plateau se relève lentement : 91,6 → 93,3 → 93,4 → 94,0 (+0,6 pt/3 h), `vmmemWSL` stable 169,0 GB (croissance toujours hors vmmemWSL, diffuse). Panne 24/09 = 97,8 % ⇒ ~15 GB de marge restante au niveau critique — sans extrapolation (2 plateaux déjà observés), re-mesure au prochain cycle. Aucun travail lourd.
+
+5. **Charge (§5quater)** : **hit canonique 94,8 %** (device 773,9 M + host 88,7 M + disk 9,5 M / 920,0 M queries — stable 94,9 → 94,8) ; **préemptions 7 stables** (3ᵉ cycle) ; 920,0 M tokens prompt depuis le boot (+45,7 M en 3 h ≈ 15,2 M/h, régime nocturne) ; generation 16,9 M.
+
+6. **Census (7 h)** : ~537 req/h ; statuts **3 638×200, 75×401, 41×400** (7ᵉ texte-pur + les micro-400 du point 2 — les 6 premières occurrences texte-pur sont sorties de fenêtre). IP avec 200 : web1 connue 1×200 — **aucune IP nouvelle**.
+
+7. **Plateforme** : nbaudit **ok:true 00:12:50Z** (vague `Image/`, 0 échec). G: probe OK, 525 G libres. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Condensation RSM : **aucun nouveau « pass deadline »** (total 11, dernier 10/11 09:50Z — le log du 11/11 est propre). Coordination : inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
