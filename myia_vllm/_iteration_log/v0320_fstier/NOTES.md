@@ -7596,3 +7596,24 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 9. **Plateforme** : nbaudit **ok:true 03:13:05Z** (vague `Image/`, 0 échec). G: probe OK — **360 G libres** (525 G au cycle précédent, −165 G ; la sonde d'écriture passe = DriveFS sain, la baisse est de l'usage/synchro Drive, pas un hang ; noté sans plus). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 06:13Z (cycle :43) — moteur sain, hit 94,6 % ; 0 NOUVEAU 400 depuis 02:18Z (épisode au repos) ; claudish toujours muet ~23 h post-escalade global ; commit hôte 93,4 % (bande oscillante 92-94)
+
+1. **Moteur** : health 200 en 6,5 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt (log 5 000 lignes vives). VRAM GPU 0 21 933 / GPU 1 21 168 MiB à 46 °C (bande, < 23 000). `/dev/shm` 51 % (33G stable). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z** (2ᵉ cycle consécutif propre).
+
+2. **400 : AUCUNE NOUVELLE occurrence depuis 02:18:42Z** (~4 h) — fenêtre census 7 h : les 40×400 = les 39 micro-400 QC (morts, dernière salve 00:10Z) + le 8ᵉ texte pur (02:18Z). L'épisode texte pur est **au repos** ; total inchangé ai-01 ×3 + po-2027 ×5.
+
+3. **Claudish : toujours aucune réponse** (~23 h, 5 canaux : DM 07:16Z, HIGH 16:15Z, [ASK] 21:20Z, UPDATE 00:15Z, escalade `global` 03:18Z). Le global a **auto-condensé à 05:33Z** — notre escalade vit dans l'archive (`archive/global-2026-11-11T05-33-44.md`) et le résumé de condensation la porte comme « EN COURS » : elle reste lisible, pas perdue. **Décision : aucun nouveau canal ce cycle** (ne pas spamer) — watch au prochain ; rendez-vous reste workspace-claudish.
+
+4. **Marge commit hôte : 93,4 %** (359,5/384,8 Go, marge 25,3 GB) — le 92,9 % de 03:13Z était un **creux, pas une inversion** : la série (93,3→93,4→94,0→92,9→93,4) est une **bande oscillante 92-94 %** sans pente nette dans un sens ni l'autre. `vmmemWSL` stable 168,6 GB. Posture inchangée : signalé, aucun travail lourd.
+
+5. **Charge (§5quater)** : **hit canonique 94,6 %** (device 835,8 M + host 90,4 M + disk 11,2 M / 990,4 M queries — stable 94,7 → 94,6) ; **préemptions 7 stables** (5ᵉ cycle) ; 990,4 M tokens prompt depuis le boot (+27,0 M en 3 h ≈ 9,0 M/h, nuit calme) ; generation 19,8 M.
+
+6. **Census (7 h)** : 3 864 req (~552/h, nuit) ; statuts **3 750×200, 74×401, 40×400 (tous déjà comptés)** ; **aucune IP externe avec 200** (2ᵉ fenêtre consécutive — zéro trafic externe).
+
+7. **Condensation RSM** : **aucun nouveau « pass deadline »** (toujours 1 au jour, le 01:32Z déjà compté). nbaudit **ok:true 06:13:16Z** (vague `Image/`, 0 échec). G: probe OK, 351 G libres.
+
+8. **Coordination** : inbox 1 non-lu = ACK mention #4641 de po-2028:CoursIA (adressage machine-only, bug #3960) — marqué lu ciblé, hors périmètre. Dashboard global : auto-condensé 05:33Z ; messages récents = [ASK-USER] po-2028:roo-extensions (7 questions, leur registre) + **[DEGRADED] CoursIA-2 po-2028** (picker de grains suspendu, contrat blob ≠ origin/main, sonnerie `--ring` refusée faute bearer — leur lane gère, aucun lien moteur vllm). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
