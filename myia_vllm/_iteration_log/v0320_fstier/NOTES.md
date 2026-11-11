@@ -7705,3 +7705,20 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste **le seul du jour** (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM, watch existant). nbaudit **ok:true 18:13:18Z** (vague `Image/`, 0 échec). G: probe OK, **528 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié avant les appels). Inbox : 1 worker-report machine-only (bug #3960) marqué lu. Global : ASK-USER des autres lanes (CoursIA-2 picker dégradé sonné par claudish/roo-extensions, Q40/Q37/Q183) — rien pour nous.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 21:13Z (cycle :43) — moteur sain, hit 94,9 % ; commit hôte 92,7 % (recul qui continue) ; 400 : 0 sur la fenêtre 7 h (épisode au repos ~8,6 h) ; cycle pleinement nominal
+
+1. **Moteur** : health 200 en 5,3 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 preempt (log 5 000 lignes vives). VRAM GPU 0 22 065 / GPU 1 21 168 MiB à 51 °C (bande, < 23 000). GPU 2 84 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Watchdog : 3 994 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z la veille** (7ᵉ cycle consécutif propre).
+
+2. **Commit hôte : 92,7 %** (356,7/384,8 Go, marge **28,1 Go**) — le recul continue doucement (96,9 → 93,5 → 93,1 → 92,7) ; RAM libre remonte 21,2 → 26,6 Go. Aucun geste, consigne « pas de travail lourd » maintenue.
+
+3. **400 : 0 occurrence sur la fenêtre 7 h** (2 917 req, 2 844×200, 73×401, 0×400) — la paire po-2027 de 12:34/12:36Z est sortie de fenêtre ; épisode au repos **~8,6 h**. Dossier clos côté claudish, watch maintenu.
+
+4. **Census (7 h)** : web1 `37.187.180.135` ×1 avec 200 (IP connue, 2ᵉ fenêtre consécutive à ×1 — pas une alerte).
+
+5. **Charge (§5quater)** : **hit canonique 94,9 %** (device 1 084,1 M + host 110,5 M + disk 13,5 M / 1 273,5 M queries) ; **préemptions 7 stables** (10ᵉ cycle) ; prompt 1 273,5 M (+53,1 M en 3 h ≈ 17,7 M/h) ; generation 27,3 M (+1,2 M).
+
+6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste le seul du jour (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM). nbaudit **ok:true 21:13:15Z** (vague `Image/`). G: probe OK, **527 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox : 1 mention machine-level Argumentum (dispatch pool, déjà lue par CoursIA-2) marquée lue — bug #3960, pas notre périmètre.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
