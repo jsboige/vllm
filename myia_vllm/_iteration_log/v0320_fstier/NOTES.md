@@ -7617,3 +7617,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 8. **Coordination** : inbox 1 non-lu = ACK mention #4641 de po-2028:CoursIA (adressage machine-only, bug #3960) — marqué lu ciblé, hors périmètre. Dashboard global : auto-condensé 05:33Z ; messages récents = [ASK-USER] po-2028:roo-extensions (7 questions, leur registre) + **[DEGRADED] CoursIA-2 po-2028** (picker de grains suspendu, contrat blob ≠ origin/main, sonnerie `--ring` refusée faute bearer — leur lane gère, aucun lien moteur vllm). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 09:13Z (cycle :43) — moteur sain, hit 94,8 % ; ⚠️ commit hôte 95,3 % = PLUS-HAUT de la série → [WARN] dashboard machine ; 0 nouveau 400 (7 h de calme) ; claudish muet ~26 h
+
+1. **Moteur** : health 200 en 4,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 ligne preempt (log 5 000 lignes vives). VRAM GPU 0 21 934 / GPU 1 21 168 MiB à 48-49 °C (bande, < 23 000). `/dev/shm` 51 % (33G stable). Watchdog : 3 990 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z** (3ᵉ cycle consécutif propre).
+
+2. **⚠️ Marge commit hôte : 95,3 %** (366,7/384,8 Go, marge **18,1 GB**) — **PLUS-HAUT de la série** suivie depuis le 10/11 : 89,5→90,9→91,6→93,3→93,4→94,0→92,9→93,4→**95,3** (+1,9 pt/3 h). La « bande oscillante 92-94 » a cassé vers le haut. Qualification : `vmmemWSL` **stable 168,8 GB**, top-12 ≈ 206 GB (Code 4,4 + pwsh 3,9 + lean/lake 2,2 résidents…), croissance toujours **diffuse**, pas de consommateur unique. Référence panne 24/09 = 97,8 % ⇒ **~10 GB restants**. **[WARN] posté sur le dashboard machine** (`warn-commit-host-95-20261111-0913Z`) : demande explicite aux lanes ai-01 de ne lancer AUCUN travail lourd tant que < 90 % ; leviers (`.wslconfig`/`wsl --shutdown`) hors périmètre lane = geste user si zone critique. Posture vllm inchangée : signalé, zéro travail lourd.
+
+3. **400 : aucune nouvelle occurrence** — fenêtre census 7 h ne contient que le 8ᵉ texte pur (02:18Z) ; **~7 h de calme total** (micro-400 QC morts, épisode texte pur au repos). Total inchangé ai-01 ×3 + po-2027 ×5.
+
+4. **Claudish : toujours muet ~26 h** après 5 canaux (escalade `global` 03:18Z, condensée 05:33Z mais vivante en archive + résumé « EN COURS »). Global relu ce cycle : 3 messages récents (ASK-USER po-2024, Vibe po-2025, ASK-USER CoursIA ai-01) — **aucun pour nous**. Aucun nouveau canal (watch).
+
+5. **Charge (§5quater)** : **hit canonique 94,8 %** (device 885,3 M + host 91,2 M + disk 11,6 M / 1 042,8 M queries — remontée 94,6 → 94,8) ; **préemptions 7 stables** (6ᵉ cycle) ; 1 042,8 M tokens prompt depuis le boot (+52,3 M en 3 h ≈ 17,4 M/h, matinée) ; generation 21,7 M (+1,9 M).
+
+6. **Census (7 h)** : 2 876 req (~411/h nuit profonde) ; statuts **2 803×200, 72×401, 1×400** ; **aucune IP externe avec 200** (3ᵉ fenêtre consécutive).
+
+7. **Plateforme** : condensation RSM **aucun nouveau « pass deadline »** (toujours 1 au jour, 01:32Z) ; nbaudit **ok:true 09:13:07Z** (vague `Image/`, 0 échec) ; G: probe OK, 430 G libres (remontée 351 → 430 : la fluctuation Drive joue dans les deux sens). **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
