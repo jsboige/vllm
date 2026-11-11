@@ -7688,3 +7688,20 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste **le seul du jour** (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM, watch existant). nbaudit **ok:true 15:13:07Z** (vague `Image/`, 0 échec). G: probe OK, **529 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié avant les appels). Inbox : mention claudish + mention po-2028 machine-level (bug #3960) marquées lues.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 11/11 18:13Z (cycle :43) — moteur sain, hit 94,8 % ; commit hôte RETOUR AU CALME 93,1 % (recul tenu, INFO machine) ; 400 épisode au repos (0 nouveau depuis 12:36Z) ; dossier 400-262K CLOS côté claudish
+
+1. **Moteur** : health 200 en 4,9 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 preempt (log 5 000 lignes vives). VRAM GPU 0 22 058 / GPU 1 21 168 MiB à 48 °C (bande, < 23 000). GPU 2 89 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Watchdog : 3 994 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z la veille** (6ᵉ cycle consécutif propre).
+
+2. **Commit hôte : RETOUR AU CALME 93,1 %** (358,2/384,8 Go, marge **26,6 Go**) — le recul initié ~16:00Z tient : 96,9 → 93,5 → 93,1 (−13,3 Go au total), sans geste de notre part (cause non établie, vraisemblablement un gros processus terminé). RAM libre 21,2 Go. **[INFO] posted sur machine** (`retour au calme`) : le WARN 15:13Z est résolu-sans-geste ; la consigne « aucun travail lourd tant que < 90 % » reste par prudence.
+
+3. **400 : épisode au repos** — fenêtre census 7 h ne contient que la paire po-2027 déjà signalée (12:34:43Z + 12:36:33Z) ; **0 nouveau depuis 12:36Z (~5,6 h)**. **Dossier CLOS côté claudish** : verdict final po-2024 (15:30Z) « code sain, levier = route » — paire = 2 envois client, #431 hors cause, fenêtre 262 144 correcte, résiduel = po-2027 seul (canal sk-agent direct hub, levier émetteur `source_max_chars` non appliqué). Relance 2 satisfaite, grain clos po-2024 ; le grain po-2025 (identité client/backend du 3ᵉ envoi) suit son cours chez eux.
+
+4. **Census (7 h)** : 2 876 req, 2 800×200, 74×401, 2×400. **1 IP externe avec 200 : `37.187.180.135` ×1 = web1 (CONNUE)** — pas une alerte (5ᵉ fenêtre ; première IP externe visible depuis le début de la série, à surveiller sans alerter).
+
+5. **Charge (§5quater)** : **hit canonique 94,8 %** (device 1 034,2 M + host 109,5 M + disk 13,3 M / 1 220,5 M queries — stable 3ᵉ cycle) ; **préemptions 7 stables** (9ᵉ cycle) ; prompt 1 220,5 M (+50,1 M en 3 h ≈ 16,7 M/h) ; generation 26,1 M (+1,8 M).
+
+6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste **le seul du jour** (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM, watch existant). nbaudit **ok:true 18:13:18Z** (vague `Image/`, 0 échec). G: probe OK, **528 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié avant les appels). Inbox : 1 worker-report machine-only (bug #3960) marqué lu. Global : ASK-USER des autres lanes (CoursIA-2 picker dégradé sonné par claudish/roo-extensions, Q40/Q37/Q183) — rien pour nous.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
