@@ -7779,3 +7779,20 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 7. **Plateforme** : condensation RSM — stall clock armé 04:55Z (#4608) **résolu 05:10Z** (condensation complétée + detached finished), 1 fallback cloud isolé (#2719) = nominal ; 0 pass-deadline nouveau. WARN `ToolRegistry roosync_messages` (03:49-06:06Z, refus immédiats 1 ms — même famille que les roosync_dashboard du cycle précédent, scope RSM autres sièges ; nos propres appels passent : dashboard 27 ms, messages OK). `MessageManager Message not found` (ai01-reply/queue) = scope RSM. nbaudit **ok:true 06:13:16Z** (vague `Image/`). **G: 367 G libres — le décrochage (526→364) s'est arrêté**, légère remontée, probe OK ; watch apaisé. **Veille amont 4/4 inchangés** (gh=jsboige). Inbox : 2 messages po-2023 marqués lus (mentions machine-level Argumentum, bug #3960, scope hors lane).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 12/11 09:13Z (cycle :43) — moteur sain, hit 95,0 % ; 400 : 0 nouveau depuis 02:31Z (>6 h de calme, levier 230K confirmé sur 2 fenêtres) ; commit hôte 90,6 % (marge s'élargit à 36 Go)
+
+1. **Moteur** : health 200 en 4,4 ms, RC=0, boot inchangé (`00:19:36Z`, Up 3 days), 0 OOM, 0 traceback (log 5 000 lignes vives). VRAM GPU 0 22 245 / GPU 1 21 168 MiB (bande en charge, < 23 000). GPU 2 76 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Watchdog : 4 000 sondes OK ; **aucun nouveau WEDGE** (11ᵉ cycle consécutif propre).
+
+2. **400 : 0 nouvelle occurrence** (fenêtre 7 h : 1 755 req, 2×400 = les anciens 02:21Z po-2024 + 02:31Z po-2027, déjà comptés ; le 01:14Z est sorti de fenêtre). **Plus de 6 h sans occurrence — 2ᵉ fenêtre calme consécutive** : le levier route `CLAUDE_CODE_AUTO_COMPACT_WINDOW=230000` tient. Total famille **13 inchangé**. Watch maintenu un cycle de plus pour confirmer, puis le dossier pourra être refermé en veille passive.
+
+3. **Census (7 h)** : aucune IP externe nouvelle avec 200 — web2 ×1 (connue), Paris `82.66.89.184` ×2 (IP connue, volume nul), hairpin site ×661. Pas d'alerte.
+
+4. **Charge (§5quater)** : **hit canonique 95,0 %** (device 1 242,0 M + host 115,0 M + disk 14,2 M / 1 442,9 M queries) ; **préemptions 9,0 stables** (2ᵉ relevé consécutif) ; KV usage 19,8 % (matinée légère) ; prompt 1 442,9 M (+36,2 M en 3 h ≈ 12,1 M/h) ; generation 30,8 M (+0,4 M).
+
+5. **Commit hôte : 90,6 %** (348,8/384,9 Go, **marge 36,0 Go — s'élargit**, suite du reflux entamé après le pic 96,9 % du 11/11) ; RAM libre 24,3 Go (remonte).
+
+6. **Plateforme** : condensation RSM 08:49-08:50Z nominale (fallback cloud isolé #2719 + complétée, 0 pass-deadline). WARN `MessageManager Message not found` (motifs `c2820-dispatch-*`/`c2820-sub-*`, 08:49-09:12Z) = conversation inter-workspaces CoursIA-2/Argumentum, scope RSM hors lane. Fill warning #4527 récurrent (condensation passe derrière). nbaudit **ok:true 09:13:18Z** (vague `Image/`). G: 363 G libres, probe OK (stable 3ᵉ relevé). **Veille amont 4/4 inchangés**. ⚠️ `gh` dérivé vers `jsboigeEpita` (4ᵉ drift documenté) — lectures REST uniquement ce cycle, aucune écriture gh (le push de clôture passe par git, non concerné) ; switch requis avant toute prochaine écriture. Inbox : 1 mention po-2024 (CoursIA-2 sur Argumentum, hors lane) marquée lue.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
