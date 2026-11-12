@@ -7722,3 +7722,20 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z reste le seul du jour (0 nouveau) ; WARN `NonNominativeBaselineService` persiste (scope RSM). nbaudit **ok:true 21:13:15Z** (vague `Image/`). G: probe OK, **527 G libres**. **Veille amont 4/4 inchangés** (compte `gh` = jsboige vérifié). Inbox : 1 mention machine-level Argumentum (dispatch pool, déjà lue par CoursIA-2) marquée lue — bug #3960, pas notre périmètre.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 12/11 00:13Z (cycle :43) — moteur sain, hit 94,9 % ; commit hôte 93,0 % (bande 92-93) ; 400 : 0 sur 7 h (épisode au repos ~11,6 h) ; ⚠️ compte gh dérivé vers `jsboigeEpita` (aucune écriture affectée)
+
+1. **Moteur** : health 200 en 9,5 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 preempt (log 5 000 lignes vives). VRAM GPU 0 22 059 / GPU 1 21 168 MiB à 50-52 °C (bande, < 23 000). GPU 2 89 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Watchdog : 3 994 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z la veille** (8ᵉ cycle consécutif propre).
+
+2. **Commit hôte : 93,0 %** (358,0/384,8 Go, marge 26,8 Go) — bande 92-93 % stable après le pic de l'après-midi (96,9 → 92,7 → 93,0) ; RAM libre 23,3 Go. Aucun geste.
+
+3. **400 : 0 occurrence sur la fenêtre 7 h** (2 454 req, 2 380×200, 74×401) — épisode au repos **~11,6 h**. Dossier clos côté claudish, watch léger maintenu.
+
+4. **Census (7 h)** : web1 `37.187.180.135` ×1 avec 200 (IP connue, 3ᵉ fenêtre consécutive à ×1 — pas une alerte).
+
+5. **Charge (§5quater)** : **hit canonique 94,9 %** (device 1 137,2 M + host 111,4 M + disk 13,9 M / 1 329,8 M queries) ; **préemptions 7 stables** (11ᵉ cycle) ; prompt 1 329,8 M (+56,3 M en 3 h ≈ 18,8 M/h) ; generation 28,5 M (+1,2 M).
+
+6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z (11/11) reste le dernier relevé (0 nouveau sur les logs du jour et de la veille) ; WARN `NonNominativeBaselineService` persiste (scope RSM). nbaudit **ok:true 00:12:50Z** (vague `Image/`). G: probe OK, **526 G libres**. **Veille amont 4/4 inchangés**. ⚠️ **Compte `gh` dérivé vers `jsboigeEpita`** (drift documenté, 3ᵉ occurrence) — lecture seule ce cycle, aucune écriture gh donc aucun impact ; la règle « `gh auth switch -u jsboige` + vérif avant chaque écriture » s'applique au prochain besoin d'écriture. Inbox 0 non-lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
