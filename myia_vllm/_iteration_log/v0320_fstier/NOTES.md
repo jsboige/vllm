@@ -7760,3 +7760,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 8. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z (11/11) reste le dernier ; WARN `NonNominativeBaselineService` persiste. **4 WARN `ToolRegistry` roosync_dashboard à 02:57-02:58Z** (contextes vérifiés : clés `global` et `machine-myia-po-2024`, échecs 6-13 ms = refus immédiat, pas un timeout) — **scope RSM/po-2024**, nos propres posts passent (celui de ce cycle compris). À relayer au propriétaire si récurrent. nbaudit **ok:true 03:13:15Z** (vague `Image/`). **G: 364 G libres (91 %)** — chute de 162 G en 3 h (526 → 364), probe OK ; fluctuation Drive déjà vue dans les deux sens (351↔540), à surveiller au prochain cycle. **Veille amont 4/4 inchangés** (compte `gh` = jsboige cette fois, le drift de 00:13Z s'est résorbé seul). Inbox : 3 messages po-2024 traités (2 mentions machine-level + 1 worker-report).
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 12/11 06:13Z (cycle :43) — moteur sain, hit 95,0 % ; préemptions stables à 9 (watch levé) ; 400 : 0 nouveau depuis 02:31Z (première fenêtre calme, levier 230K mord) ; G: stabilisé 367 G
+
+1. **Moteur** : health 200 en 3,1 ms, RC=0, boot inchangé (`00:19:36Z`, Up 3 days), 0 OOM, 0 traceback (log 5 000 lignes vives). VRAM GPU 0 22 221 / GPU 1 21 168 MiB (bande en charge, < 23 000). GPU 2 76 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Watchdog : 4 000 sondes OK ; **aucun nouveau WEDGE** (10ᵉ cycle consécutif propre).
+
+2. **Préemptions : 9,0 STABLES** — l'épisode 7→9 du cycle précédent ne s'est pas prolongé (KV usage 0 % au relevé, nuit calme). **Watch levé** : confirmé épisode isolé, pas une saturation.
+
+3. **400 : 0 nouvelle occurrence** (fenêtre 7 h : 2 051 req, 79×401, 3×400 = les 3 du cycle précédent, 01:14Z/02:21Z po-2024 + 02:31Z po-2027). Total famille **13 inchangé**. **Première fenêtre calme depuis le début de la famille** — cohérent avec le levier route `CLAUDE_CODE_AUTO_COMPACT_WINDOW=230000` en production chez claudish (les sessions compactent avant d'approcher notre fenêtre 262 144). Watch léger maintenu pour confirmer la tendance.
+
+4. **Census (7 h)** : aucune IP externe nouvelle avec 200 — web1 `37.187.180.135` ×1, web2 `51.75.200.22` ×1 (connues), Paris `82.66.89.184` ×2 (IP connue du poste user, retour à faible volume — pas d'alerte), hairpin site ×657. Pas d'alerte.
+
+5. **Charge (§5quater)** : **hit canonique 95,0 %** (device 1 207,6 M + host 114,6 M + disk 14,2 M / 1 406,7 M queries) ; prompt 1 406,7 M (+40,1 M en 3 h ≈ 13,4 M/h, nuit) ; generation 30,4 M (+1,4 M).
+
+6. **Commit hôte : 93,0 %** (358,0/384,9 Go, marge 26,9 Go) — bande 92-93 stable ; RAM libre 18,8 Go.
+
+7. **Plateforme** : condensation RSM — stall clock armé 04:55Z (#4608) **résolu 05:10Z** (condensation complétée + detached finished), 1 fallback cloud isolé (#2719) = nominal ; 0 pass-deadline nouveau. WARN `ToolRegistry roosync_messages` (03:49-06:06Z, refus immédiats 1 ms — même famille que les roosync_dashboard du cycle précédent, scope RSM autres sièges ; nos propres appels passent : dashboard 27 ms, messages OK). `MessageManager Message not found` (ai01-reply/queue) = scope RSM. nbaudit **ok:true 06:13:16Z** (vague `Image/`). **G: 367 G libres — le décrochage (526→364) s'est arrêté**, légère remontée, probe OK ; watch apaisé. **Veille amont 4/4 inchangés** (gh=jsboige). Inbox : 2 messages po-2023 marqués lus (mentions machine-level Argumentum, bug #3960, scope hors lane).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
