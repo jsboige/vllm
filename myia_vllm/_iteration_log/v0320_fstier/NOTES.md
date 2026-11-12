@@ -7739,3 +7739,24 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 6. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z (11/11) reste le dernier relevé (0 nouveau sur les logs du jour et de la veille) ; WARN `NonNominativeBaselineService` persiste (scope RSM). nbaudit **ok:true 00:12:50Z** (vague `Image/`). G: probe OK, **526 G libres**. **Veille amont 4/4 inchangés**. ⚠️ **Compte `gh` dérivé vers `jsboigeEpita`** (drift documenté, 3ᵉ occurrence) — lecture seule ce cycle, aucune écriture gh donc aucun impact ; la règle « `gh auth switch -u jsboige` + vérif avant chaque écriture » s'applique au prochain besoin d'écriture. Inbox 0 non-lu.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 12/11 03:13Z (cycle :43) — moteur sain, hit 94,9 % ; ⚠️ préemptions 7 → 9 (premier mouvement en 11 cycles, KV 24 % = épisode isolé) ; 3 nouveaux 400 dont **po-2024 ×2 (nouvelle machine)** ; levier route `AUTO_COMPACT_WINDOW` 330K→230K en déploiement chez claudish ; G: chute à 364 G libres
+
+1. **Moteur** : health 200 en 17,3 ms, RC=0, boot inchangé (`00:19:36Z`, Up 2 days), 0 OOM, 0 traceback, 0 preempt (log 5 000 lignes vives). VRAM GPU 0 22 139 / GPU 1 21 168 MiB à 49-50 °C (bande, < 23 000). GPU 2 77 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable). Disque conteneur 48 % (505 G libres). Watchdog : 3 996 sondes OK ; **aucun nouveau WEDGE depuis 19:02Z la veille** (9ᵉ cycle consécutif propre).
+
+2. **⚠️ Préemptions : 7 → 9** (+2, **premier mouvement en 11 cycles**) — qualifié : `kv_cache_usage_perc` à **24,2 %** au relevé, 29 526 requêtes au compteur dont 1 seule au-delà de 1 préemption ⇒ **épisode isolé** (rafale de contextes longs), PAS une saturation KV. Watch au prochain cycle : si ça remonte encore avec KV > 60 %, escalade ; sinon retour au calme attendu.
+
+3. **400 : 3 nouvelles occurrences** (fenêtre 7 h, 2 499 req, 2 418×200, 78×401, 3×400) — toutes ~900 Ko, Bun/1.3.14 via hub : `01:14:42Z` 905 944 o (**po-2024**, première apparition), `02:21:46Z` 928 651 o (**po-2024**), `02:31:11Z` 896 849 o (po-2027). Total famille : **13** (ai-01 ×3, po-2024 ×2, po-2027 ×8). **[INFO] posté sur workspace-claudish** pour leur volet route/émetteur.
+
+4. **★ Levier route en déploiement chez claudish** : `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 330000 → **230000** (sous notre fenêtre 262 144, canon 05/11) — valeur live confirmée sur le fichier du siège po-2024 (le 330K du relevé précédent était un instantané périmé), `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` à 95. Effet attendu : les 400 de dépassement de fenêtre ne peuvent plus être atteints avant compaction. C'est exactement le levier « route » du verdict grain clos.
+
+5. **Commit hôte : 92,9 %** (357,6/384,9 Go, marge 27,2 Go) — bande 92-93 stable ; RAM libre 23,5 Go.
+
+6. **Census (7 h)** : web1 `37.187.180.135` ×1 avec 200 (IP connue, 4ᵉ fenêtre à ×1 — pas d'alerte).
+
+7. **Charge (§5quater)** : **hit canonique 94,9 %** (device 1 168,9 M + host 114,4 M + disk 14,1 M / 1 366,8 M queries) ; prompt 1 366,6 M (+36,8 M en 3 h ≈ 12,3 M/h, nuit) ; generation 29,9 M (+1,1 M).
+
+8. **Plateforme** : condensation RSM — le « pass deadline » de 01:32Z (11/11) reste le dernier ; WARN `NonNominativeBaselineService` persiste. **4 WARN `ToolRegistry` roosync_dashboard à 02:57-02:58Z** (contextes vérifiés : clés `global` et `machine-myia-po-2024`, échecs 6-13 ms = refus immédiat, pas un timeout) — **scope RSM/po-2024**, nos propres posts passent (celui de ce cycle compris). À relayer au propriétaire si récurrent. nbaudit **ok:true 03:13:15Z** (vague `Image/`). **G: 364 G libres (91 %)** — chute de 162 G en 3 h (526 → 364), probe OK ; fluctuation Drive déjà vue dans les deux sens (351↔540), à surveiller au prochain cycle. **Veille amont 4/4 inchangés** (compte `gh` = jsboige cette fois, le drift de 00:13Z s'est résorbé seul). Inbox : 3 messages po-2024 traités (2 mentions machine-level + 1 worker-report).
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
