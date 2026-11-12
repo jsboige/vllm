@@ -7848,3 +7848,16 @@ Veille amont 4/4 inchangés (#63551 05/11, #58813 05/11, #58807 09-29, #53414 08
 - Veille amont 4/4 inchangés. `gh` = jsboige (tenu, 2ᵉ relevé). G: 523 G, probe OK. Q58 seule ouverte.
 
 **Aucun geste moteur supplémentaire.** Surveillance au cycle 21:13Z : stabilité du boot 17:36Z, absence de récidive de wedge (si récidive sur boot frais → pattern, instruire), commit hôte, et la cause 15:27Z reste ouverte (vérifier Application log au prochain cycle pour un éventuel Docker Desktop crash report).
+
+
+## 12/11 21:18Z — cycle :43 — boot 17:36Z stable, aucune récidive de wedge
+
+**Moteur sain.** Boot 17:36:35Z **Up 4 h, aucun WEDGE nouveau** (derniers événements = 10:03Z fail 1/2 et le 2/2→restart 17:32-17:34:58Z du cycle précédent) — le wedge était un cas isolé sur boot frais, **pas un pattern** ; watch levé. Health 200 (4,5 ms), RC=0, 0 OOM, VRAM 21 721/20 742 (stable, régime de soirée), /dev/shm 33 G/51 %. Hit canonique **97,2 %** (compteurs du boot, montée normale en croisière), **préemptions 0** stables.
+
+**Preuve complémentaire sur le restart hôte 15:27Z** : le log RSM ai-01 (`roosync-20261112-116.log`) montre `dashboard-pg read failed` + `retirement lookup failed (fail-open)` à **15:27:40Z** — la moitié PG du dashboard RSM a lâché ici pendant le restart hôte (fail-open GDrive a tenu). **Le mécanisme du [DEGRADED] pg-unavailable de po-2023 est désormais VÉRIFIÉ** (DM complémentaire envoyé 21:25:45Z). La cause du restart Docker lui-même reste **non établie**.
+
+**400 texte pur : 0 nouveau** (famille 14) ; trafic ~288 req/h, statuts 1 948×200 / 70×401, IPs connues seules (hairpin 1 146, ? 801, Paris 1). G: 522 G, probe OK. **Commit hôte 91,7 %** (356,9/389,2 Go, marge 32,2 Go — stable). Condensation : aucun événement d'échec dans les rotations du jour.
+
+**nbaudit : vague Video/ en régime établi.** 21:13:24Z ok=true, failures 0. #19451 : 24 à auditer, 13 hors subpath, **0 picked ce passage** — état stationnaire (les carnets Video/ dans le périmètre ont des dossiers frais ou sont PR-skippés ; « 6 fresh ahead ») ; les supersessions (8 records Audio/Image, 5 GameTheory) prouvent que **les consommateurs auditent et rendent les dossiers obsolètes** — la chaîne produit→consomme fonctionne. Watch : si « 0 picked » persiste plusieurs heures avec « fresh ahead » à 0, la vague Video/ sera drainée à son tour (préparer la vague 4 selon l'ordre convergé).
+
+Veille amont 4/4 inchangés. `gh` = jsboige (3ᵉ relevé tenu). Inbox 0 non-lu ; global : ACK web1 (PROPOSAL Spark, pas notre périmètre) + ASK-USER CoursIA-3 (leur registre). Registre : Q58 seule ouverte. Aucun geste moteur.
