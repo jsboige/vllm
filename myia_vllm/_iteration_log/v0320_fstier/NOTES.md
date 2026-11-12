@@ -7796,3 +7796,22 @@ Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job r
 6. **Plateforme** : condensation RSM 08:49-08:50Z nominale (fallback cloud isolé #2719 + complétée, 0 pass-deadline). WARN `MessageManager Message not found` (motifs `c2820-dispatch-*`/`c2820-sub-*`, 08:49-09:12Z) = conversation inter-workspaces CoursIA-2/Argumentum, scope RSM hors lane. Fill warning #4527 récurrent (condensation passe derrière). nbaudit **ok:true 09:13:18Z** (vague `Image/`). G: 363 G libres, probe OK (stable 3ᵉ relevé). **Veille amont 4/4 inchangés**. ⚠️ `gh` dérivé vers `jsboigeEpita` (4ᵉ drift documenté) — lectures REST uniquement ce cycle, aucune écriture gh (le push de clôture passe par git, non concerné) ; switch requis avant toute prochaine écriture. Inbox : 1 mention po-2024 (CoursIA-2 sur Argumentum, hors lane) marquée lue.
 
 Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
+
+
+## 12/11 12:13Z (cycle :43) — moteur sain, hit 95,0 % ; 1 WEDGE fail 1/2 (10:03Z, gros prefills po-2023 en vol = attendu, 0 restart) ; 1 nouveau 400 (po-2027 10:23Z, total 14) ; trafic en hausse (2 354 req/7 h, po-2023 en session montante 500→690 Ko) ; G: 521 G (remontée +158 G)
+
+1. **Moteur** : health 200 en 10,2 ms, RC=0, boot inchangé (`00:19:36Z`, Up 3 days), 0 OOM, 0 traceback (log 5 000 lignes vives). VRAM GPU 0 **22 371** / GPU 1 21 168 MiB — **haut de bande** (22 200-22 800), < 23 000 ; à surveiller si le trafic reste élevé. GPU 2 45 MiB (CoursIA libre). `/dev/shm` 51 % (33G stable).
+
+2. **WEDGE `fail 1/2` à 10:03:16Z** (health 200, decode 000, snapshot p=1 455,9 M g=31,1 M) — **comportement documenté** : 38 corps >200 Ko dans la fenêtre voisine, po-2023 poussait une session montante (500→643 Ko à 08:45-08:55Z, 690 Ko à 11:49Z) ⇒ gros prefills qui affament les sondes. **0 restart, compteurs avancent, RC=0** : moteur sain. 5ᵉ occurrence de la famille `fail 1/2`, jamais de `2/2`.
+
+3. **400 : 1 nouvelle occurrence** — `10:23:18Z` po-2027, 899 688 o, Bun/1.3.14 (même signature). La fenêtre calme aura tenu **~7,9 h** (02:31→10:23) : le levier 230K réduit le rythme mais n'éteint pas le canal po-2027 (émetteur direct-hub, `source_max_chars` non appliqué, résidu connu). **Total famille : 14** (ai-01 ×3, po-2024 ×2, po-2027 ×9). [INFO] posté sur workspace-claudish.
+
+4. **Census (7 h)** : 2 354 req (vs 1 755 au cycle précédent, **+34 %**), **290 corps >500 Ko**. Aucune IP externe nouvelle avec 200 (web2 ×1, Paris ×2 connues, hairpin site ×558). **Watch** : la session po-2023 croît de ~123 Ko/11 min ; à ~1 Mo de corps elle approcherait ~250K tokens — si elle atteint 262 144, elle produira un 400 de la famille depuis po-2023 (jamais vue). Pas d'action moteur ; à signaler à claudish si ça se produit.
+
+5. **Charge (§5quater)** : **hit canonique 95,0 %** (device 1 265,4 M + host 115,6 M + disk 14,2 M / 1 469,0 M queries) ; **préemptions 9,0 stables** (3ᵉ relevé) ; KV usage 4,2 % (instant bas malgré le trafic — le cache sert) ; prompt 1 469,0 M (+26,1 M en 3 h ≈ 8,7 M/h) ; generation 32,2 M (+1,4 M).
+
+6. **Commit hôte : 94,2 %** (362,7/384,9 Go, marge 22,2 Go) — 2ᵉ hausse après 90,6 (trajectoire 93,0→90,6→94,2, oscillation sous le pic 96,9 du 11/11) ; RAM libre 27,8 Go (en hausse). Pas de travail lourd, watch standard.
+
+7. **Plateforme** : condensation 10:33Z complétée, stall clock réarmé 10:47Z, fallback client construit 11:55Z (en vol) — rythme de dashboard chargé cohérent avec l'activité multi-lanes, pas un échec. WARN : `NonNominativeBaselineService non disponible` (09:46/10:46/11:46Z, horaire — scope RSM), `concurrent instance possible` (heartbeat myia-ai-01, non bloquant), `roosync_messages` refus 1 ms (10:18Z, même famille). nbaudit **ok:true 11:13:18Z** (vague `Image/`) + consommation C5 Hermes (Complexity-03f, cycle 1063) = producteur vivant et consommé. **G: 521 G libres (87 %) — remontée de 158 G depuis 363 G** : la chute était bien une fluctuation Drive dans les deux sens (351↔540 historique) ; probe OK. **Veille amont 4/4 inchangés**. `gh` = `jsboigeEpita` (5ᵉ relevé, lectures REST seules, aucun impact ; push par git non concerné). Inbox : 1 message Hermes C5 marqué lu.
+
+Aucun geste moteur. Registre : Q58 seule ouverte. Cron vérifié : un seul job récurrent (`afdf4439`, 3 h), pas de one-shot résiduel.
