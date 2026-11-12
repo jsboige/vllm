@@ -7,10 +7,14 @@
 # --subpath scopes it; the prefix switched Audio/ -> Image/ on 10/10 11:20Z when Audio/ hit 38/38
 # checked with zero remaining (trigger recorded in the surveillance spec, PR #113). Audio/ notebooks
 # stay covered: already-audited ones need nothing, PR-open ones are skipped by the runner itself.
+# Image/ -> Video/ switch on 12/11 13:50Z: the runner reported 0 picked in Image/ (3 unchecked but
+# already audited in comments) while NanoClaw had started auditing Video/ notebooks in FULL READ
+# without pre-audit dossiers (01-3, 01-4, 02-2 audited 12/11 02:12-06:13Z) -- the exact cost the
+# producer exists to cut. Dry-run before the switch: 3 Video notebooks selected, nothing written.
 # The skip list the order named (PR #19868) was stale within hours (closed-superseded by #19854);
 # the runner now derives per pass which notebooks an open PR is about to change and skips those by itself.
 param([int[]]$Series = @(17107, 17239, 17357, 17692, 19451), [int]$PerSeries = 3,
-      [string[]]$Subpath = @('19451:Image/'))
+      [string[]]$Subpath = @('19451:Video/'))
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $env:LOCALAPPDATA 'nbaudit\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
