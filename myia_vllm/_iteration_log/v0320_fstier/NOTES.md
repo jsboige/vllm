@@ -7861,3 +7861,18 @@ Veille amont 4/4 inchangés (#63551 05/11, #58813 05/11, #58807 09-29, #53414 08
 **nbaudit : vague Video/ en régime établi.** 21:13:24Z ok=true, failures 0. #19451 : 24 à auditer, 13 hors subpath, **0 picked ce passage** — état stationnaire (les carnets Video/ dans le périmètre ont des dossiers frais ou sont PR-skippés ; « 6 fresh ahead ») ; les supersessions (8 records Audio/Image, 5 GameTheory) prouvent que **les consommateurs auditent et rendent les dossiers obsolètes** — la chaîne produit→consomme fonctionne. Watch : si « 0 picked » persiste plusieurs heures avec « fresh ahead » à 0, la vague Video/ sera drainée à son tour (préparer la vague 4 selon l'ordre convergé).
 
 Veille amont 4/4 inchangés. `gh` = jsboige (3ᵉ relevé tenu). Inbox 0 non-lu ; global : ACK web1 (PROPOSAL Spark, pas notre périmètre) + ASK-USER CoursIA-3 (leur registre). Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 00:43Z (cycle :43) — moteur sain 7 h ; CAUSE du restart 15:27Z ÉTABLE ; TASK capacité 10 slots livrée ; #63551 : mergify demande un rebase
+
+**Moteur sain.** Boot 17:36:35Z **Up 7 h**, health 200 (2,6 ms), RC=0, 0 OOM (lignes 5 000), VRAM 22 037/21 010 MiB (régime nocturne détendu), /dev/shm 33 G/51 %. **Aucun WEDGE nouveau** (derniers : 10:03Z fail 1/2 et 17:32Z→restart 17:34:58Z) — 3 986 sondes OK. Hit canonique **96,9 %** (170 360 816/175 846 631 : device 165,4 M + host 3,3 M + disk 1,6 M), **préemptions 0** depuis le boot.
+
+**★ Cause du restart hôte 15:27Z ÉTABLE (source claudish, pas nous)** : le statut workspace-claudish porte « **Docker Desktop ai-01 : redémarré 15:26:54Z (POST /app/quit)** » — un **quit délibéré de Docker Desktop via son API**, pas un crash (cohérent avec le journal System muet). La question ouverte des cycles 18:13Z/21:18Z est close : mort simultanée des 23 conteneurs = le quit ; le retour par politique de restart à 15:28:23Z. Attribution humain vs outil non tranchée (le user était actif 13:46-13:48Z, pas à 15:26Z) — mais le mécanisme n'est plus « non établi ».
+
+**TASK claudish 15:59Z (priorité user Haiku→Swift) LIVRÉE à 00:4xZ** sur workspace-claudish [REPLY][TASK] : capacité 10 slots (hit 94-97 %, decode 66-103 t/s, prefill 4 350-5 944 t/s, préemptions 0-4/h ; genou à 12 slots : préemptions 9→35, hit 73,6 %), live 00:43Z (hit 96,9 %, préemptions 0), file d'attente = capacité légitime, commit 92,1 % = pas d'headroom runtime. Chiffres vérifiés contre NOTES avant envoi.
+
+**Veille amont : `#63551` A BOUGÉ (23:32:07Z)** — mais c'est **mergify[bot]** : « merge conflicts, please rebase ». **PAS la review d'orozery** (toujours attendue sur la forme révisée promise le 05/11). Conséquence : le rework devra se faire **contre le main amont récent** (le conflit rend tout rebase obligatoire avant review). Tâche dédiée — pas un geste de cycle nocturne. #58813, #58807, #53414 inchangés.
+
+**Reste de la batterie** : trafic nocturne ~31 req/h (220 req/7 h, 211×200 + 9×401), IPs connues seules (hairpin 125, ? 86), **0 nouveau 400 gros corps** (famille 14). G: 522 G probe OK. **Commit 92,1 %** (358,5/389,2, marge 30,7 Go — 4ᵉ relevé >85 %, aucun travail lourd). nbaudit 00:14:24Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 23:05Z complet, cloud fallback OK) ; WARNs ToolRegistry `roosync_dashboard`/`roosync_messages` persistent (00:13-00:18Z) + `[DASHBOARD-FORK]` 15:27:40Z + 2 alertes fill — **périmètre RSM, récurrence à signaler au propriétaire si ça tient**. `gh` re-dérivé vers jsboigeEpita (lectures seules ce cycle — pas d'écriture gh, switch non requis).
+
+Registre : Q58 seule ouverte. Aucun geste moteur. Cron `58bc67c5` vérifié en clôture.
