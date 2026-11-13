@@ -7943,3 +7943,16 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Reste.** Trafic **~253 req/h** stable (2 896×200 + 139×401 sur 12 h), IPs connues seules (hairpin 986×200, direct 802×200, web1 ×1 — sur la carte), **0 nouveau 400 gros corps** (famille 14). nbaudit 15:12:58Z **ok=true failures 0** (Video/). RSM : WARNs `ToolRegistry roosync_dashboard` 14:56-15:13Z (famille récurrente scope RSM) + fork file `dashboard-reconcile` #3482 — rien côté vllm. `gh`=jsboigeEpita (lectures seules). Inbox : 1 worker report RSM #2766 marqué lu.
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 18:13Z (cycle :43) — 4ᵉ cycle post-reboot : nominal ; hit 96,0 % ; commit redescend 60,3 %
+
+**Moteur nominal.** Boot 07:48:48Z **Up ~10 h 25**, health 200 (3,4 ms), RC=0, 0 OOM (5 000 lignes), /dev/shm 33 G/51 %, VRAM 22 353/21 032 MiB (dans la bande 0,73). **Aucun WEDGE** (3 lignes = 12/11), 3 980 sondes OK. Hit canonique **96,0 %** (185 042 512/192 841 108 — encore +65 M de queries sur 3 h, ratio stable), **préemptions 0**, 2,53 M tokens générés depuis le boot.
+
+**Hôte.** Commit **60,3 %** (236,4/391,8 Go, marge **155,4 Go** — en baisse depuis 65,1 %, la pression du soir reflue). G: 608 G libres (−3 G/3 h normal).
+
+**Veille amont 5/5 figés** (mêmes valeurs que les deux cycles précédents) — aucun réveil.
+
+**Reste.** Trafic **~265 req/h** (montée du soir ; 3 034×200 + 140×401 sur 12 h), IPs connues seules (hairpin 951×200, direct 807×200, web1 ×1, web2 ×1 — toutes sur la carte), **0 nouveau 400 gros corps** (famille 14). nbaudit 17:13:17Z **ok=true failures 0** (Video/). RSM : 1 WARN IdentityManager heartbeat (instance concurrente possible, non bloquant) — scope RSM. `gh`=jsboige (lectures seules). Inbox : worker report RSM #4697 + **[web1 #4131 étape 1]** (clés PG retirées du .env RSM, host respawn 16:30:29Z, envoi de contrôle « Message sent (PG primary) ») lus — bascule PG flotte, aucune action vllm (notre probe G: est indépendant, nos posts dashboard passent).
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
