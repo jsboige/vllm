@@ -29,8 +29,13 @@ The runner already reads GitHub defensively (skips notebooks touched by the 50 m
    → `status ok`, stdout + execute_result **written back into the .ipynb** (2 outputs, sha256 recorded).
    This is exactly what a deliverable notebook in a PR needs: source **and** executed outputs.
    - ⚠ Tool gotcha: the legacy `execute_notebook_cell` returns `Kernel not found` for standalone
-     kernels (registry race/mismatch, #2206 consolidated tool supersedes it) — **always
-     `execute_on_kernel`**. Cost us 2 failed calls; encode in the driver.
+     kernels — **root cause verified in source**: `main.py` runs `initialize_kernel_tools` AND
+     `initialize_execution_tools`, each building its OWN `KernelService` → two `JupyterManager`
+     instances, each with an **instance-local in-memory** `_active_kernels` dict
+     (`jupyter_manager.py:115`, raise at `:467`). A kernel started via `manage_kernel` (kernel_tools
+     instance) is structurally invisible to the legacy tools (execution_tools instance). The
+     consolidated `execute_on_kernel` shares kernel_tools' instance, hence works. **Always
+     `execute_on_kernel`**; cleanup signalled to roo-extensions (13/11).
 3. **Sandbox = kernel choice.** The kernel registry exposes **29 kernels including every CoursIA
    series venv** (`coursia-genai-audio`, `coursia-genai-video`, `python3-lean`, `search313`,
    `python313-tweety`, `smartcontracts`, …). Per-series isolation is a config line per series, not
