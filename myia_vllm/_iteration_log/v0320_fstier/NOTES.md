@@ -7889,3 +7889,16 @@ Registre : Q58 seule ouverte. Aucun geste moteur. Cron `58bc67c5` vérifié en c
 **Reste** : trafic ~146 req/h (988×200 + 40×401 sur 7 h, remontée matinale), IPs connues seules (hairpin 562, ? 426), **0 nouveau 400 gros corps** (famille 14). Commit hôte **92,2 %** (358,8/389,2, marge 30,4 Go — stable, aucun travail lourd). nbaudit 03:13Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 03:10-03:11Z complet) ; WARNs prose-drift/contradictions/redaction = périmètre RSM (déjà connu). `gh` = jsboigeEpita (lectures seules, pas d'écriture ce cycle). Inbox 0 non-lu.
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 06:43Z (cycle :43) — moteur sain 13 h ; G: stabilisé (−1 G/3 h après le coup de −128 G) ; veille 4/4 inchangés
+
+**Moteur sain.** Boot 17:36:35Z **Up 13 h**, health 200 (3,1 ms), RC=0, 0 OOM (5 000 lignes), VRAM 22 192/21 010 MiB (bande de charge), /dev/shm 33 G/51 %. **Aucun WEDGE nouveau** (les 3 lignes = événements documentés du 12/11), 3 986 sondes OK. Hit canonique **96,9 %** (277 349 344/286 353 132 : device 266,8 M + host 8,2 M + disk 2,4 M), **préemptions 0**, 3,5 M tokens générés depuis le boot.
+
+**G: STABILISÉ — le watch est levé.** 393 G libres à 06:44Z contre 394 G à 03:44Z : **−1 G en 3 h** après le coup de −128 G de la nuit. La chute était **un écrit unique massif** (bulk DriveFS venu d'ailleurs), pas une pente — à ce rythme-là la marge fondait en 9 h, à celui-ci elle tient des années. Probe OK. Aucune escalade.
+
+**Veille amont 4/4 inchangés** depuis le cycle 03:43Z (#63551 23:32Z mergify-rebase, #58813 01:40Z mergify-rebase à l'auteur, #58807/#53414 muets). Rien à qualifier.
+
+**Reste** : trafic **~246 req/h** en montée matinale (1 655×200 + 70×401 sur 7 h), IPs connues seules (hairpin 877, ? 778), **0 nouveau 400 gros corps** (famille 14). Commit hôte **91,8 %** (357,3/389,2, marge 31,8 Go — stable, aucun travail lourd). nbaudit 06:13Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 06:03Z complet) ; WARNs fill-warning/#1502-contradictions = RSM scope récurrent. `gh` revenu sur jsboige (lectures seules). Inbox : 3 messages traités en mark_read ciblé (2 MENTIONS roo-extensions identité RSM + 1 worker report RSM — **aucun pour vllm**, déjà lus par leurs lanes).
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
