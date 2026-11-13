@@ -7930,3 +7930,16 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Reste.** Trafic **~253 req/h** (2 895×200 + 140×401 sur 12 h ; Bun/hub 1 496, curl watchdog 1 363, Go-http 121, OpenAI/JS 30 ; 1 436 corps 100K-1M = régime pilote long-contexte), IPs connues seules (hairpin 860×200 + direct 794×200), **0 nouveau 400 gros corps** (famille 14). nbaudit 12:13:22Z **ok=true failures 0** (Video/). Logs RSM frais (rotations -146/-147) sans ERROR/WARN. `gh`=jsboigeEpita (lectures seules). Inbox : 1 worker report EPIC SDDD (scope RSM) marqué lu.
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 15:13Z (cycle :43) — 3ᵉ cycle post-reboot : nominal stable ; hit 95,6 % sous +50 M de queries
+
+**Moteur nominal.** Boot 07:48:48Z **Up ~7 h 25**, health 200 (4,9 ms), RC=0, 0 OOM (5 000 lignes), /dev/shm 33 G/51 %, VRAM **22 242/21 032 MiB** (GPU 0 dans la bande de charge 0,73 attendue 22 200-22 800 — première lecture pleine bande depuis le reboot). **Aucun WEDGE** (3 lignes = 12/11), 3 980 sondes OK. Hit canonique **95,6 %** (122 235 744/127 836 545) — l'après-midi a ajouté **+50,6 M de queries en 3 h** (après-midi chargé, sessions longues) et le ratio tient haut ; **préemptions 0**, 1,7 M tokens générés depuis le boot.
+
+**Hôte.** Commit **65,1 %** (254,9/391,8 Go, marge 136,9 Go). G: 611 G libres (−2 G/3 h = dérive d'usage normale).
+
+**Veille amont 5/5 figés** (mêmes `updated_at` qu'au cycle 12:13Z : #63551 23:32Z, #58813 08:25:21Z, #58807, #53414, #59040) — aucun réveil.
+
+**Reste.** Trafic **~253 req/h** stable (2 896×200 + 139×401 sur 12 h), IPs connues seules (hairpin 986×200, direct 802×200, web1 ×1 — sur la carte), **0 nouveau 400 gros corps** (famille 14). nbaudit 15:12:58Z **ok=true failures 0** (Video/). RSM : WARNs `ToolRegistry roosync_dashboard` 14:56-15:13Z (famille récurrente scope RSM) + fork file `dashboard-reconcile` #3482 — rien côté vllm. `gh`=jsboigeEpita (lectures seules). Inbox : 1 worker report RSM #2766 marqué lu.
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
