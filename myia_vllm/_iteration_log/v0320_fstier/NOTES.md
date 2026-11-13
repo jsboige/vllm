@@ -8002,3 +8002,16 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 - fil Anthropic → `entrypoints/anthropic/serving.py:89-96` traduit en **`cache_read_input_tokens`** (+ `cache_creation_input_tokens` si pertinent, `input_tokens` ajusté) — **exactement la sémantique que le hub attend**.
 
 **Correctif proposé** : 1 ligne profil (`--enable-prompt-tokens-details`) + restart (boot chaud ~5-6 min, KV 776 824 identique attendu). **GO user + annonce `global` requis** — la demande user interdit explicitement « redémarrage partagé non annoncé ». Preuve après = re-run du même diag (attendu : `cached_tokens: 16` visible pass 2 OpenAI, `cache_read_input_tokens: 16` Anthropic). La forme exacte du drapeau CLI (tirets) sera confirmée par `--help` au préalable de la fenêtre.
+
+
+## 13/11 22:20→22:24Z — FENÊTRE `--enable-prompt-tokens-details` : EXÉCUTÉE, preuve avant/après rendue, KV identique
+
+**Fenêtre** (GO user 22:1xZ, annoncée `global` avant geste) : recreate `vllm-medium-swift15-27b` 22:20:21Z (profil `medium-swift15-27b-fstier.yml` +1 ligne après `--enable-prefix-caching`), **health 200 à 22:23:46Z = 3 min 25 s de coupure** (mieux que les ~6 min annoncés). **Purge shm-orpheline PR #318 jouée au boot** (région offload 32 GiB + 4 blocs psm purgés avant init — le scénario 01/11 est couvert en automatique). Boot RC=0.
+
+**Preuve après (même diagnostic, requête identique ×2)** :
+- **OpenAI** : `usage.prompt_tokens_details = {"cached_tokens": 16, "created_cache_tokens": 0, "multimodal_tokens": null}` — rempli (était `null`).
+- **Anthropic** : `usage = {input_tokens: 8, output_tokens: 8, cache_read_input_tokens: 16, cache_creation_input_tokens: 0}` — les 24 tokens de prompt = 16 lus du cache + 8 frais, `input_tokens` ajusté : **sémantique Anthropic exacte, consommable par le hub tel quel**.
+- **KV GPU 776 824 tokens = référence identique** — le drapeau ne coûte rien en capacité.
+- Timings de sonde dégressifs (91,9 → 40,9 → 14,6 s) = warm-up post-boot normal, health 200 continue.
+
+**Demande user 13/11 14:57Z « Swift déclare les lectures de cache » : RENDUE** (avant/après mesuré, distingué compteur non exposé ≠ absent du wire ≠ perdu en traduction). Volet po-2025:claudish (conservation par le proxy) armable dès maintenant — les champs sont sur le wire.

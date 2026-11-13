@@ -191,6 +191,7 @@ services:
           --kv-offloading-backend ${KV_OFFLOAD_BACKEND_SWIFT15:-native} \
           --kv-transfer-config '{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"spec_name":"TieringOffloadingSpec","secondary_tiers":[{"type":"TouchOnHitFsTier","module_path":"lru_fs_tier","root_dir":"/kv-tier-fs","n_read_threads":16,"n_write_threads":16}]}}' \
           --enable-prefix-caching \
+          --enable-prompt-tokens-details \
           --prefix-caching-hash-algo sha256 \
           --prefix-match-unit 16 \
           --mamba-ssm-cache-dtype float16 \
