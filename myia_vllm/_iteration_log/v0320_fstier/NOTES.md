@@ -7917,3 +7917,16 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Reste** : trafic ~251 req/h (1 670×200 + 87×401 sur 7 h), IPs connues seules (hairpin 868, ? 802), **0 nouveau 400 gros corps** (famille 14). nbaudit 09:12:59Z **ok=true failures 0**. Condensation : log RSM frais post-reboot (`roosync-20261113-19.log`) — aucune erreur ni événement à ce stade. `gh` re-dérivé jsboigeEpita (lectures seules).
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 12:13Z (cycle :43) — 2ᵉ cycle post-reboot : nominal ; hit reconstruit 96,0 % ; commit 64,4 %
+
+**Moteur nominal.** Boot 07:48:48Z **Up ~4 h 25**, health 200 (4,9 ms), RC=0, 0 OOM (5 000 lignes), /dev/shm 33 G/51 %, VRAM 21 755/21 032 MiB (remontée vers la bande de charge, +118/+274 MiB vs 09:13Z). **Aucun WEDGE nouveau** (les 3 lignes watchdog = événements documentés du 12/11), 3 980 sondes OK. Hit canonique **96,0 %** (74 129 648/77 211 899 — reconstruction post-boot terminée : device 72,4 M + host 1,2 M + disk 544 K ; le disk sert encore = les blocs fs ont survécu au reboot), **préemptions 0**, 805 k tokens générés depuis le boot.
+
+**Hôte.** Commit **64,4 %** (252,4/391,8 Go, marge 139,4 Go — remontée douce depuis le 61,8 % post-reboot, très sous le seuil 85 %). **G: 613 G libres** (631 → 613, −18 G/3 h = dérive d'usage normale, rien comme le coup de −128 G ; instrument bruité confirmé, pas de watch).
+
+**Veille amont : AUCUN réveil.** #63551 figé (updated 23:32Z, mergify-rebase déjà qualifié) ; #58813 `updated=08:25:21Z` = l'enregistrement du merge commit déjà vu au cycle 09:13Z (comments toujours 7, pas de review, `merged=-`) ; #58807/#53414/#59040 muets ; #62615 close connue.
+
+**Reste.** Trafic **~253 req/h** (2 895×200 + 140×401 sur 12 h ; Bun/hub 1 496, curl watchdog 1 363, Go-http 121, OpenAI/JS 30 ; 1 436 corps 100K-1M = régime pilote long-contexte), IPs connues seules (hairpin 860×200 + direct 794×200), **0 nouveau 400 gros corps** (famille 14). nbaudit 12:13:22Z **ok=true failures 0** (Video/). Logs RSM frais (rotations -146/-147) sans ERROR/WARN. `gh`=jsboigeEpita (lectures seules). Inbox : 1 worker report EPIC SDDD (scope RSM) marqué lu.
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
