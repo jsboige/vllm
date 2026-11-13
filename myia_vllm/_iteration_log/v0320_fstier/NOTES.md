@@ -7876,3 +7876,16 @@ Veille amont 4/4 inchangés. `gh` = jsboige (3ᵉ relevé tenu). Inbox 0 non-lu 
 **Reste de la batterie** : trafic nocturne ~31 req/h (220 req/7 h, 211×200 + 9×401), IPs connues seules (hairpin 125, ? 86), **0 nouveau 400 gros corps** (famille 14). G: 522 G probe OK. **Commit 92,1 %** (358,5/389,2, marge 30,7 Go — 4ᵉ relevé >85 %, aucun travail lourd). nbaudit 00:14:24Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 23:05Z complet, cloud fallback OK) ; WARNs ToolRegistry `roosync_dashboard`/`roosync_messages` persistent (00:13-00:18Z) + `[DASHBOARD-FORK]` 15:27:40Z + 2 alertes fill — **périmètre RSM, récurrence à signaler au propriétaire si ça tient**. `gh` re-dérivé vers jsboigeEpita (lectures seules ce cycle — pas d'écriture gh, switch non requis).
 
 Registre : Q58 seule ouverte. Aucun geste moteur. Cron `58bc67c5` vérifié en clôture.
+
+
+## 13/11 03:43Z (cycle :43) — moteur sain 10 h ; G: chute −128 G/3 h à noter ; #58813 = mergify rebase (pas une réponse à notre preuve)
+
+**Moteur sain.** Boot 17:36:35Z **Up 10 h**, health 200 (3,0 ms), RC=0, 0 OOM (5 000 lignes), VRAM 22 178/21 010 MiB (bande de charge attendue), /dev/shm 33 G/51 %. **Aucun WEDGE nouveau** (les 3 lignes watchdog = 10:03Z fail 1/2, 17:32Z/17:34Z restart documentés), 3 986 sondes OK. Hit canonique **96,9 %** (229 636 416/237 083 253 : device 221,2 M + host 6,3 M + disk 2,1 M), **préemptions 0**, 2,85 M tokens générés depuis le boot.
+
+**⚠ G: 394 G libres, −128 G en 3 h** (522 G à 00:43Z → 394 G à 03:44Z ; 90 % utilisé). Probe d'écriture OK. La chute n'est **pas de notre fait** (nous n'écrivons que le probe) — DriveFS partagé, écriture venant d'ailleurs (autre machine du shared drive ?). Pas de seuil de panne franchi (RSM fail-closed exige un échec d'écriture, pas un pourcentage), mais **pente à re-sounder au prochain cycle** : à ce rythme la marge fond en ~9 h. Si la chute continue : signaler à roo-extensions (le dossier #4131 suit la bascule PG — la voûte GDrive reste le chemin de repli).
+
+**Veille amont : #58813 a bougé (01:40Z) = mergify[bot] demande un rebase à l'auteur (he-yufeng)** — même schéma que #63551 la veille : le main amont a bougé sous les deux PR, **pas une réponse à notre preuve du 05/11** (toujours attendue, comme la review d'orozery sur #63551). Aucun geste pour nous sur #58813 (le rebase appartient à l'auteur) ; le rework #63551 contre main récent reste notre tâche dédiée. #58807, #53414 inchangés.
+
+**Reste** : trafic ~146 req/h (988×200 + 40×401 sur 7 h, remontée matinale), IPs connues seules (hairpin 562, ? 426), **0 nouveau 400 gros corps** (famille 14). Commit hôte **92,2 %** (358,8/389,2, marge 30,4 Go — stable, aucun travail lourd). nbaudit 03:13Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 03:10-03:11Z complet) ; WARNs prose-drift/contradictions/redaction = périmètre RSM (déjà connu). `gh` = jsboigeEpita (lectures seules, pas d'écriture ce cycle). Inbox 0 non-lu.
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
