@@ -7986,3 +7986,19 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Travail hors-cycle livré ce soir (déjà commité)** : gate `swift_capacity_gate.py` (`0252de3ebd`), proposition sk-agent sur workspace-roo-extensions, décision issue #8 (backlog, REPLY à po-2023), NOTES `fe50290601`.
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 22:0xZ (hors cycle) — diagnostic « Swift déclare les lectures de cache » : CAUSE ÉTABLIE, correctif = 1 drapeau, GO fenêtre attendu
+
+**Origine de la tâche retrouvée** (le point du cycle 21:13Z) : demande user du 13/11 14:57Z postée sur workspace-claudish (ic-2026-11-13T14570-4ake) — « faire en sorte que Swift déclare les lectures de cache, aujourd'hui absentes des réponses observées au hub ». Notre lane porte le diagnostic moteur + l'exposition avec preuve avant/après ; po-2025:claudish porte la conservation des compteurs par le proxy. L'hypothèse « item condenseur » du cycle 21:13Z est **fausse** — vraie tâche, manquée à la publication (fenêtre de compaction).
+
+**Diagnostic MESURÉ (`.tmp/cache_exposure_diag.py`, requête identique × 2 sur chaque fil)** :
+- **OpenAI** `/v1/chat/completions` : `usage.prompt_tokens_details = null` — le champ existe au schéma mais jamais rempli (`completion_tokens_details` l'est, d'où l'asymétrie observée).
+- **Anthropic** `/v1/messages` : `usage = {input_tokens, output_tokens}` — aucun champ cache.
+- **Preuve que le cache SERT** : delta `prompt_tokens_cached_by_source_total` = **+16 tokens sur la 2ᵉ passe** (prompt 24 tok, prefix_match_unit 16) — hit réel, invisible dans la réponse. Verdict : **compteur interne vivant, non exposé sur aucun des deux fils**.
+
+**Cause racine (VÉRIFIÉE au source dans l'image)** : drapeau serveur `enable_prompt_tokens_details`, **défaut False** (`entrypoints/launchers/cli_args.py:148`). Éteint, `_make_prompt_tokens_details` rend null (`chat_completion/serving.py:97`). Allumé :
+- fil OpenAI → `prompt_tokens_details.cached_tokens` rempli ;
+- fil Anthropic → `entrypoints/anthropic/serving.py:89-96` traduit en **`cache_read_input_tokens`** (+ `cache_creation_input_tokens` si pertinent, `input_tokens` ajusté) — **exactement la sémantique que le hub attend**.
+
+**Correctif proposé** : 1 ligne profil (`--enable-prompt-tokens-details`) + restart (boot chaud ~5-6 min, KV 776 824 identique attendu). **GO user + annonce `global` requis** — la demande user interdit explicitement « redémarrage partagé non annoncé ». Preuve après = re-run du même diag (attendu : `cached_tokens: 16` visible pass 2 OpenAI, `cache_read_input_tokens: 16` Anthropic). La forme exacte du drapeau CLI (tirets) sera confirmée par `--help` au préalable de la fenêtre.
