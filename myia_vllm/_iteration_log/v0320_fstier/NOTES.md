@@ -7902,3 +7902,18 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Reste** : trafic **~246 req/h** en montée matinale (1 655×200 + 70×401 sur 7 h), IPs connues seules (hairpin 877, ? 778), **0 nouveau 400 gros corps** (famille 14). Commit hôte **91,8 %** (357,3/389,2, marge 31,8 Go — stable, aucun travail lourd). nbaudit 06:13Z **ok=true failures 0** (Video/). Condensation RSM nominale (cycle 06:03Z complet) ; WARNs fill-warning/#1502-contradictions = RSM scope récurrent. `gh` revenu sur jsboige (lectures seules). Inbox : 3 messages traités en mark_read ciblé (2 MENTIONS roo-extensions identité RSM + 1 worker report RSM — **aucun pour vllm**, déjà lus par leurs lanes).
 
 Registre : Q58 seule ouverte. Aucun geste moteur.
+
+
+## 13/11 09:13Z (cycle :43) — premier cycle post-reboot Windows Update ; moteur nominal ; commit hôte 92,2 → 61,8 %
+
+**Reboot planifié (Windows Update), déjà annoncé sur `global` à 08:5xZ.** Journal System : Event 1074 à 07:42:46Z (`MoNotificationUx.exe`, redémarrage Windows Update accepté par l'utilisateur MYIA) puis 1074 à 07:45:23Z (`TrustedInstaller.exe`, servicing) ; OS boot 07:45:53Z ; conteneurs relancés par politique de restart 07:48:48Z ; init moteur 07:50:40Z. **Coupure API ≈ 5-6 min, aucun crash.** [INFO] global avec timeline + crossPost workspace-vllm déjà posté ; si un voisin a vu des erreurs 07:45-07:51Z, c'est cette fenêtre.
+
+**Moteur : nominal au MiB près.** Boot 07:48:48Z **Up ~1 h 25**, health 200 (6,9 ms), RC=0, 0 OOM, **KV 776 824 tokens = référence exacte**, compile cache chaud (0,76 s), purge shm no-op (tmpfs vidé par le reboot), /dev/shm 33 G/51 %. **Aucun WEDGE** (les 3 lignes watchdog = 12/11), 3 980 sondes OK. Hit canonique **95,3 %** (27 370 896/28 720 185 — reconstruction post-boot normale), **préemptions 0**, 233 k tokens générés. VRAM 21 637/20 758 MiB (remplissage de la bande en cours).
+
+**Effets mesurables du reboot sur l'hôte** : **commit 92,2 % → 61,8 %** (242,1/391,8 Go, marge **149,7 Go** — le reboot a vidé `vmmemWSL` ; quatre cycles au-dessus de 85 % effacés d'un coup) ; **G: 393 → 631 G libres** — la chute de −128 G de la nuit était donc bien un **état transitoire DriveFS** (sync/quota), pas une fuite ; l'instrument est bruité, à ne pas lire comme une pente.
+
+**Veille amont : #58813 a bougé mécaniquement** — l'auteur a poussé un **merge commit upstream/main à 07:48:30Z** (résolution des conflits après la demande mergify de 01:40Z) ; `mergeable_state=blocked` (review manquante), **pas de merge, pas de réponse à notre preuve du 05/11**. `#63551` : toujours notre rebase à faire (tâche dédiée). #58807/#53414 muets.
+
+**Reste** : trafic ~251 req/h (1 670×200 + 87×401 sur 7 h), IPs connues seules (hairpin 868, ? 802), **0 nouveau 400 gros corps** (famille 14). nbaudit 09:12:59Z **ok=true failures 0**. Condensation : log RSM frais post-reboot (`roosync-20261113-19.log`) — aucune erreur ni événement à ce stade. `gh` re-dérivé jsboigeEpita (lectures seules).
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
