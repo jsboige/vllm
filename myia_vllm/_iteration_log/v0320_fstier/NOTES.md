@@ -7967,3 +7967,22 @@ Registre : Q58 seule ouverte. Aucun geste moteur.
 **Issue jsboige/vllm #8 — décision rendue** (REPLY à po-2023, qui avait réfuté la prémisse de la relance NanoClaw « embeddings/502 » : #8 = enhancement « Diff-aware session logging for error_source_capture », 0 commentaire, aucune PR). **#8 reste en backlog enhancement, non fermée** : la rotation rapide du log `error_sources.jsonl` (~4 400 lignes ≈ 1,2 h) borne le census §5ter, et le diff-aware (×6 réduction) étendrait la fenêtre rétrospective — valeur regagnée. Fermeture `not planned` seulement sur arbitrage user.
 
 **À instruire au prochain cycle** : l'entrée status « ai-01:vllm : diagnostic exposition lectures de cache Swift (usage/cached tokens, preuve avant/après) » n'a aucune trace dans NOTES ni mémoire — origine à retrouver (conversation_browser), possiblement liée au volet claudish « conservation compteurs cache par le proxy ».
+
+
+## 13/11 21:13Z (cycle :43) — 5ᵉ cycle post-reboot : nominal ; gate GREEN au premier relevé officiel
+
+**Moteur nominal.** Boot 07:48:48Z **Up ~13 h 25**, health 200 (8,1 ms), RC=0, 0 OOM (5 000 lignes), /dev/shm 33 G/51 %, VRAM 22 409/21 032 MiB (bande 0,73). **Aucun WEDGE** (2 lignes = 12/11), 3 982 sondes OK. Hit canonique **96,0 %** (236 119 024/245 960 575), **préemptions 0**, 3,24 M tokens générés depuis le boot.
+
+**★ Gate de capacité : premier relevé officiel en cycle = GREEN** (running 1, waiting 0, KV 19,6 %, preempt_delta 0) — le probe livré ce soir (commit `0252de3ebd`) s'intègre à la batterie ; chaque cycle relèvera désormais son verdict pour constituer la courbe 24 h avant d'armer des consommateurs.
+
+**Hôte.** Commit **66,4 %** (260,2/391,8 Go, marge 131,5 Go). G: 607 G libres (−1 G/3 h).
+
+**Veille amont 5/5 figés — 4ᵉ cycle consécutif sans aucun mouvement** (#63551 23:32Z, #58813 08:25Z, #58807, #53414, #59040).
+
+**Reste.** Trafic **~260 req/h** (2 996×200 + 124×401 sur 12 h), IPs connues seules (hairpin 967×200, direct 814×200, web2 ×1), **0 nouveau 400 gros corps** (famille 14). nbaudit 21:13:03Z **ok=true failures 0** (Video/). `gh`=jsboigeEpita (lectures seules). Inbox 0 non lu.
+
+**Point en cours d'instruction** : origine de l'entrée status « diagnostic exposition lectures de cache Swift (usage/cached tokens, preuve avant/après) » — aucune trace NOTES/mémoire/journal ; grep des archives dashboard RooSync lancé (G: DriveFS lent, en arrière-plan). Hypothèse de travail : item généré par le condenseur de status à partir du volet claudish « conservation compteurs cache par le proxy » (po-2025:claudish), pas une tâche posée à cette lane. À confirmer ou infirmer au cycle 00:43Z.
+
+**Travail hors-cycle livré ce soir (déjà commité)** : gate `swift_capacity_gate.py` (`0252de3ebd`), proposition sk-agent sur workspace-roo-extensions, décision issue #8 (backlog, REPLY à po-2023), NOTES `fe50290601`.
+
+Registre : Q58 seule ouverte. Aucun geste moteur.
