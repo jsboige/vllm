@@ -116,11 +116,25 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
 ## 4. What must be built, in order
 
 1. `nb_coder_driver.py` (stages 1-2-5 skeleton; gates reused from nbaudit organs) — **vllm repo**.
+
+   **État 2026-11-14 (dispatch CoursIA 15:34Z)** : étapes **0-2 écrites** dans
+   `myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py` (claim guard via
+   `check_lane_claim.py` ; plan JSON ; build par le modèle via papermill, **exécution par le
+   harnais** via `execute_on_kernel`, verdict mécanique sur sorties réelles ; noyau par série
+   avec version des voisins ; gate capacité en mode warn jusqu'à la fin de l'observation 24 h ;
+   trace JSON + ledger ; **dry par défaut, zéro écriture GitHub hors claim**). Les chemins des
+   grains portent le préfixe `MyIA.AI.Notebooks/`. Stages 3-5 (organes, vérificateur distinct,
+   PR) = incrément suivant. Passe à blanc : grain 1 de CoursIA#26534.
 2. `notebook-coder` agent entry in sk-agent config — **roo-extensions adds it** (ask via dashboard,
-   spec = §3.1; same flow as #4712).
+   spec = §3.1; same flow as #4712). *2026-11-14 : PR jsboige-mcp-servers#1760 en review — 4
+   variantes seat-local (Swift gaté sur `qwen3.6-35b-a3b-nbcoder`), split GitHubPlugin/
+   GitHubWritePlugin, CI verte ; application siège ai-01 attendue côté ai-01:roo-extensions.*
 3. Pilot issue agreed with the CoursIA coordinator (their repo, their review load) — sandbox branch
-   first, PR only when the coordinator and the user GO.
+   first, PR only when the coordinator and the user GO. *2026-11-14 : les 3 grains pilotes sont
+   nommés dans CoursIA#26534 (2 gestes Epic-ref markdown sur #20250, 1 conversion print→display
+   sur #18874 P3).*
 4. Capacity-gate call wired (after the 24 h probe observation started 13/11 21:13Z).
+   *Fin de l'observation ~14/11 21:13Z ; mode warn d'ici là, conformément au dispatch.*
 
 ## 5. Guardrails carried over
 
