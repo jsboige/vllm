@@ -125,6 +125,19 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
    trace JSON + ledger ; **dry par défaut, zéro écriture GitHub hors claim**). Les chemins des
    grains portent le préfixe `MyIA.AI.Notebooks/`. Stages 3-5 (organes, vérificateur distinct,
    PR) = incrément suivant. Passe à blanc : grain 1 de CoursIA#26534.
+
+   **Leçons des quatre passes à blanc du 14/11** (chaque défaut est mesuré, pas supposé) :
+
+   | # | Défaut trouvé | Correctif |
+   |---|---|---|
+   | 1 | `plan_prompt` coupait la vue du carnet à **20 000 caractères** sans le dire → le modèle a planifié « insérer en pied » **après la cellule 19** d'un carnet qui en compte 37, et a reconstruit 21 cellules (17 perdues, 12 sorties perdues) | `build_view` rend **toute** la vue (39 203 caractères ici) ; toute coupe est **déclarée** avec l'index des cellules restantes |
+   | 2 | le build demandait au modèle de « réécrire l'intégralité du carnet » → reconstruction fidèle à ce qu'il avait vu, jamais à la source | le harnais **copie la source** (`shutil.copy2`, sorties incluses) et le modèle n'édite que les cellules du plan |
+   | 3 | le verdict se contentait de « le fichier existe » → un carnet de 21 cellules était accepté | `verify_structure` : nombre de cellules, cellules non prévues **verbatim et dans l'ordre**, sorties préservées, édition réellement appliquée, **ancre d'insertion** (un `insert_after` doit atterrir juste après son ancre) |
+   | 4 | **le MCP papermill perd les écritures concurrentes** : trois appels parallèles du modèle (`update_cell` 0, `update_cell` 36, `add_cell` 37) à 17:08:12 locale → chacun lit-modifie-écrit, les deux `update_cell` répondent « success » et sont **écrasés** par le `add_cell` (carnet final : 38 cellules, zéro édition) | mode d'écriture **`--write-mode json` (défaut)** : le modèle rend les sources complètes, le harnais applique en **une seule** lecture-modification-écriture (`apply_edits`, ids nbformat générés, round-trip canonique `json.dumps(indent=1)+"\n"` vérifié). `--write-mode mcp` conservé pour la démonstration de capacité |
+
+   Conséquence pour roo-extensions : les outils d'écriture du MCP sont **sûrs en appel unique,
+   pas en appels parallèles** — un `lock` par fichier (ou une sérialisation des appels d'un même
+   agent) est nécessaire avant qu'un autre consommateur s'appuie dessus.
 2. `notebook-coder` agent entry in sk-agent config — **roo-extensions adds it** (ask via dashboard,
    spec = §3.1; same flow as #4712). *2026-11-14 : PR jsboige-mcp-servers#1760 en review — 4
    variantes seat-local (Swift gaté sur `qwen3.6-35b-a3b-nbcoder`), split GitHubPlugin/

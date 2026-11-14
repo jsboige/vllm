@@ -3,9 +3,10 @@
 
 Stage 0 CLAIM : check_lane_claim.py on the CoursIA checkout (read), optional [CLAIMED] comment.
 Stage 1 PLAN  : sk-agent model turn -> cell plan JSON (kernel, edits, expected outputs).
-Stage 2 BUILD : the model writes cells via its papermill tools; the HARNESS runs every
-                planned cell with execute_on_kernel on the series kernel and decides
-                success alone, from the real outputs (never from the model's claims).
+Stage 2 BUILD : the HARNESS copies the source notebook (outputs preserved) and the model
+                edits ONLY the planned cells on that copy (update_cell/add_cell/remove_cell);
+                the harness then proves the result is a minimal edit (structure diff) and runs
+                every planned cell with execute_on_kernel, deciding success alone.
 
 Dry by default: no branch, no commit, no push, no PR. The spec's stages 3-5 (gates,
 verify, PR) are deliberately absent from this file for now (dispatch 14/11 15:34Z asks 0-2).
@@ -19,9 +20,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -139,6 +142,21 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
 
 
+def engine_tokens() -> dict:
+    """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
+    try:
+        p = subprocess.run(["curl", "-s", "--max-time", "5", "http://localhost:5002/metrics"],
+                           capture_output=True, text=True, timeout=10)
+        vals = {}
+        for ln in (p.stdout or "").splitlines():
+            for key in ("prompt_tokens_total", "generation_tokens_total"):
+                if ln.startswith(f"vllm:{key}"):
+                    vals[key] = float(ln.rsplit(" ", 1)[-1])
+        return vals
+    except Exception:
+        return {}
+
+
 def gate_call(mode: str) -> dict:
     """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window)."""
     p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
@@ -175,13 +193,33 @@ def series_kernel(repo: Path, rel: str) -> dict:
             "neighbour_versions": versions}
 
 
-def build_view(nb_path: Path, max_cells: int = 200) -> str:
+def build_view(nb_path: Path, max_chars: int = 120_000) -> str:
+    """Whole-notebook view. Overflow is DECLARED, never silent: a cut view makes the model
+    plan against a notebook whose footer it cannot see (measured 14/11: 37-cell notebook,
+    view cut at 20 000 chars -> plan said "insert a footer after cell 19", 17 cells lost)."""
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    parts = []
-    for i, cell in enumerate(nb.get("cells", [])[:max_cells]):
-        ctype, src = cell.get("cell_type"), _text(cell.get("source"))
-        parts.append(f"=== cellule {i} | {ctype} ===\n{src}")
-    return "\n\n".join(parts)
+    cells = nb.get("cells", [])
+    parts, used, shown = [], 0, 0
+    for i, cell in enumerate(cells):
+        block = f"=== cellule {i} | {cell.get('cell_type')} ===\n{_text(cell.get('source'))}"
+        if used + len(block) > max_chars and shown:
+            break
+        parts.append(block)
+        used += len(block)
+        shown += 1
+    head = f"[Vue : {len(cells)} cellules au total ; {shown} affichées en entier.]"
+    if shown < len(cells):
+        rest = [f"ATTENTION — vue TRONQUÉE : les cellules {shown}..{len(cells) - 1} ne sont pas "
+                "affichées ; le carnet CONTINUE après la dernière cellule montrée "
+                "(ce n'est pas le pied de carnet). Index du reste :"]
+        for j in range(shown, len(cells)):
+            first = next((ln.strip() for ln in _text(cells[j].get("source")).splitlines()
+                          if ln.strip()), "")
+            rest.append(f"- {j} | {cells[j].get('cell_type')} | {first[:120]}")
+        rest.append("Si ton plan touche une cellule non affichée, dis-le explicitement et "
+                    "n'invente pas son contenu.")
+        parts.append("\n".join(rest))
+    return head + "\n\n" + "\n\n".join(parts)
 
 
 def series_context(repo: Path, rel: str, max_headers: int = 10) -> str:
@@ -216,17 +254,43 @@ def parse_json_block(text: str) -> dict | None:
 
 
 # ---------------------------------------------------------------- prompts
-def plan_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, view: str) -> str:
+def _cut(text: str, limit: int, label: str, tail: bool = False) -> str:
+    """Cut with a DECLARED marker: a silent cut makes the model invent what it cannot see
+    (measured 14/11: Epic body 20 245 chars cut at 6 000 -> the canonical footer wording,
+    which lives at char ~16 700, was never shown and the plan invented a `## Provenance`)."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    body = text[-limit:] if tail else text[:limit]
+    where = f"les {limit} derniers" if tail else f"les {limit} premiers"
+    return (f"{body}\n\n[ATTENTION — {label} TRONQUÉ : {len(text)} caractères au total, "
+            f"{where} seulement sont affichés.]")
+
+
+def read_conventions(path: str | None) -> str:
+    if not path:
+        return ""
+    p = Path(path)
+    try:
+        return p.read_text(encoding="utf-8").strip() if p.is_file() else ""
+    except Exception:
+        return ""
+
+
+def plan_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, view: str,
+                conventions: str = "") -> str:
     return (
         f"MODE CONSTRUCTION — tu n'audites pas, tu prépares une modification de carnet pour l'issue "
         f"jsboige/CoursIA#{issue_n}.\n\n"
-        f"## Issue\nTITRE : {issue['title']}\n\nCORPS :\n{issue['body'][:6000]}\n\n"
-        f"## Fil (extrait)\n{issue['comments'][-3000:]}\n\n"
-        f"## Carnet cible : {rel} (branche origin/main)\n"
+        f"## Issue\nTITRE : {issue['title']}\n\n"
+        f"CORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        f"## Fil (extrait récent)\n{_cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+        + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
+        + f"## Carnet cible : {rel} (branche origin/main)\n"
         f"Noyau canonique de la série : {kernel['kernel_name']} "
         f"(version des voisins : {kernel['canonical_version']} — {kernel['neighbour_versions']})\n\n"
         f"## Contexte de série\n{ctx}\n\n"
-        f"## Carnet actuel\n{view[:20000]}\n\n"
+        f"## Carnet actuel\n{view}\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"plan":[{"cell":<index>,"geste":"edit|insert_after|delete","but":"..."}],'
         '"execute_cells":[<index des cellules code à ré-exécuter>],'
@@ -235,18 +299,198 @@ def plan_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, vie
     )
 
 
-def build_prompt(scratch_nb: str, plan: dict, execute_ids: list) -> str:
+def build_prompt(scratch_nb: str, plan: dict, execute_ids: list, src_cells: list,
+                 n_cells: int, conventions: str = "") -> str:
+    """Edit prompt: the harness already made the copy, the model only applies the plan.
+
+    Measured 14/11 (attempt 2): asking for "the entirety of the notebook, exact sources, no
+    outputs" made the model re-emit what it had seen and drop everything past the view."""
+    current = []
+    for p in plan.get("plan") or []:
+        if p.get("geste") != "edit":
+            continue
+        try:
+            i = int(p["cell"])
+            current.append(f"=== cellule {i} — source ACTUELLE (à remplacer intégralement) ===\n"
+                           f"{_text(src_cells[i].get('source'))}")
+        except Exception:
+            continue
     return (
-        "TOUR 2 — écris le carnet. Tu disposes des outils papermill : `create_notebook` puis "
-        "`add_cell`/`update_cell` (n'utilise JAMAIS les outils legacy : `execute_on_kernel` seul côté "
-        "exécution, et c'est le harnais qui exécute, pas toi).\n\n"
-        f"Chemin de travail ABSOLU à créer : {scratch_nb}\n"
+        "TOUR 2 — applique le plan sur le carnet de travail. "
+        f"Le fichier EXISTE DÉJÀ à {scratch_nb} : c'est une copie exacte du carnet cible "
+        f"({n_cells} cellules, outputs inclus). N'utilise PAS create_notebook — il écraserait "
+        "la copie.\n\n"
+        "Outils papermill autorisés, rien d'autre :\n"
+        "- `update_cell` {path, index, source} pour un geste `edit` ;\n"
+        "- `add_cell` {path, cell_type, source, index} pour un geste `insert_after` "
+        "(index = position d'insertion 0-based = cellule_ancre + 1) ;\n"
+        "- `remove_cell` {path, index} pour un geste `delete`.\n"
+        "N'ÉCRIS QUE les cellules du plan ; toute autre cellule doit rester intacte — le harnais "
+        "compare le résultat à la source et rejette tout écart (nombre de cellules, cellules non "
+        "prévues modifiées, outputs perdus).\n\n"
         f"Plan validé : {json.dumps(plan, ensure_ascii=False)[:6000]}\n\n"
-        "Écris l'intégralité du carnet visé (cells existantes pertinentes + modifications du plan), "
-        "sources exactes, sans outputs. Puis rends UNIQUEMENT un bloc ```json :\n"
-        '{"cells_written":<n>,"code_cell_indexes":[...],"notes":"..."}\n'
+        + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
+        + ("\n\n".join(current) + "\n\n" if current else "")
+        + "Puis rends UNIQUEMENT un bloc ```json :\n"
+        '{"cells_written":<n>,"gestures_done":[{"cell":<index>,"tool":"update_cell|add_cell|remove_cell"}],'
+        '"notes":"..."}\n'
         f"Cellules que le harnais exécutera ensuite : {execute_ids or 'aucune'}."
     )
+
+
+# ---------------------------------------------------------------- structural verdict
+def build_json_prompt(plan: dict, execute_ids: list, src_cells: list, n_cells: int,
+                      conventions: str = "") -> str:
+    """JSON write mode: the model returns the new cell sources, the harness applies them with
+    ONE write. Measured 14/11: three parallel MCP write calls -> two silent lost updates."""
+    current = []
+    for p in plan.get("plan") or []:
+        if p.get("geste") != "edit":
+            continue
+        try:
+            i = int(p["cell"])
+            current.append(f"=== cellule {i} — source ACTUELLE (à remplacer intégralement) ===\n"
+                           f"{_text(src_cells[i].get('source'))}")
+        except Exception:
+            continue
+    return (
+        "TOUR 2 — rends les cellules à écrire. Le harnais les appliquera lui-même sur une copie "
+        f"exacte du carnet ({n_cells} cellules, outputs inclus) ; tu n'écris aucun fichier et tu "
+        "n'appelles aucun outil d'écriture.\n\n"
+        f"Plan validé : {json.dumps(plan, ensure_ascii=False)[:6000]}\n\n"
+        + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
+        + ("\n\n".join(current) + "\n\n" if current else "")
+        + "Rends UNIQUEMENT un bloc ```json :\n"
+        '{"edits":[{"cell":<index>,"source":"<source COMPLET de remplacement>"}],'
+        '"inserts":[{"after":<index>,"cell_type":"markdown|code","source":"<source complet>"}],'
+        '"notes":"..."}\n'
+        "Règles : source COMPLET (pas un diff), aucune cellule hors plan, `after` = index de "
+        "l'ancre dans le carnet d'origine, une seule entrée par geste du plan."
+    )
+
+
+def apply_edits(nb_path: Path, payload: dict) -> dict:
+    """Deterministic applier: one read-modify-write, indexes taken on the ORIGINAL notebook."""
+    raw = nb_path.read_text(encoding="utf-8")
+    nb = json.loads(raw)
+    cells = nb["cells"]
+    rep = {"roundtrip_ok": json.dumps(nb, ensure_ascii=False, indent=1) + "\n" == raw,
+           "edits": [], "inserts": [], "errors": []}
+    for e in payload.get("edits") or []:
+        try:
+            i, new = int(e["cell"]), e["source"]
+            if not 0 <= i < len(cells):
+                raise IndexError(f"cell {i} hors bornes (0..{len(cells) - 1})")
+            old = _text(cells[i].get("source"))
+            cells[i]["source"] = new
+            rep["edits"].append({"cell": i, "changed": new != old, "chars": len(new)})
+        except Exception as exc:
+            rep["errors"].append(f"edit: {exc}")
+    taken = {c.get("id") for c in cells}
+    for x in sorted(payload.get("inserts") or [],
+                    key=lambda v: int(v.get("after", -1)), reverse=True):
+        try:
+            a, src = int(x["after"]), x["source"]
+            if not 0 <= a < len(cells):
+                raise IndexError(f"ancre {a} hors bornes")
+            cid = hashlib.sha1((str(a) + src).encode("utf-8")).hexdigest()[:8]
+            while cid in taken:
+                cid = hashlib.sha1((cid + src).encode("utf-8")).hexdigest()[:8]
+            taken.add(cid)
+            ct = x.get("cell_type") or "markdown"
+            new_cell = {"cell_type": ct, "id": cid, "metadata": {}, "source": src}
+            if ct == "code":
+                new_cell |= {"execution_count": None, "outputs": []}
+            cells.insert(a + 1, new_cell)
+            rep["inserts"].append({"after": a, "chars": len(src), "id": cid})
+        except Exception as exc:
+            rep["errors"].append(f"insert: {exc}")
+    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    rep["wrote"] = True
+    return rep
+
+
+def _cells(path: Path) -> list:
+    return json.loads(path.read_text(encoding="utf-8")).get("cells", [])
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
+    """Mechanical proof the deliverable is a MINIMAL EDIT of the source, not a rewrite.
+
+    The first dry pass (14/11) produced a 21-cell notebook from a 37-cell source and the
+    "file exists" verdict accepted it: that is the hole this closes."""
+    src, built = _cells(src_path), _cells(built_path)
+    gestures = plan.get("plan") or []
+    edits = {int(p["cell"]) for p in gestures
+             if p.get("geste") == "edit" and str(p.get("cell", "")).isdigit()}
+    deletes = {int(p["cell"]) for p in gestures
+               if p.get("geste") == "delete" and str(p.get("cell", "")).isdigit()}
+    anchors = [int(p["cell"]) for p in gestures
+               if p.get("geste") == "insert_after" and str(p.get("cell", "")).isdigit()]
+    s_src = [_text(c.get("source")) for c in src]
+    s_b = [_text(c.get("source")) for c in built]
+
+    def shift(i: int) -> int:
+        return i + sum(1 for a in anchors if a < i) - sum(1 for k in deletes if k < i)
+
+    d = {"src_cells": len(src), "built_cells": len(built),
+         "edits": sorted(edits), "deletes": sorted(deletes), "inserts": len(anchors)}
+    d["count_ok"] = len(built) == len(src) - len(deletes) + len(anchors)
+
+    untouched = [i for i in range(len(src)) if i not in edits | deletes]
+    j, missing = 0, None
+    for i in untouched:                      # verbatim, in order (index-agnostic)
+        while j < len(s_b) and s_b[j] != s_src[i]:
+            j += 1
+        if j >= len(s_b):
+            missing = i
+            break
+        j += 1
+    d["untouched_ok"] = missing is None
+    d["missing_cell"] = missing
+
+    detail, edits_ok = [], True
+    for i in sorted(edits):
+        pos = shift(i)
+        changed = 0 <= pos < len(s_b) and s_b[pos] != s_src[i]
+        detail.append({"cell": i, "built_pos": pos,
+                       "type_kept": 0 <= pos < len(built)
+                                    and built[pos].get("cell_type") == src[i].get("cell_type"),
+                       "changed": changed})
+        edits_ok = edits_ok and changed
+    d["edits_detail"] = detail
+    d["edits_ok"] = edits_ok
+
+    lost = []
+    for i in untouched:
+        if src[i].get("cell_type") == "code" and (src[i].get("outputs") or []):
+            pos = shift(i)
+            if pos >= len(built) or not (built[pos].get("outputs") or []):
+                lost.append(i)
+    d["outputs_lost"] = lost
+    d["outputs_ok"] = not lost
+
+    # an insert_after must actually land right after its anchor: a Provenance block dropped in
+    # the middle of a 37-cell notebook passes count/order checks but is not the intended footer
+    ins_detail, ins_ok = [], True
+    for a in anchors:
+        pos_a = shift(a)
+        nxt = pos_a + 1
+        if a + 1 >= len(src):
+            # insert after the LAST source cell: it must really be the tail of the notebook
+            landed = nxt < len(built) and s_b[len(built) - 1] != s_src[len(src) - 1]
+        else:
+            landed = nxt < len(built) and s_b[nxt] != s_src[a + 1]
+        ins_detail.append({"anchor": a, "built_pos": pos_a + 1, "landed": landed})
+        ins_ok = ins_ok and landed
+    d["inserts_detail"] = ins_detail
+    d["inserts_ok"] = ins_ok
+    d["ok"] = all(d[k] for k in ("count_ok", "untouched_ok", "edits_ok", "outputs_ok", "inserts_ok"))
+    return d
 
 
 # ---------------------------------------------------------------- sk-agent / papermill calls
@@ -268,6 +512,28 @@ async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -
     except Exception:
         env = {"response": raw}
     return env, round(time.time() - t0, 1)
+
+
+# empty answers: nbaudit pilots 2/11 and 1/11 — one retry asking for shorter reasoning
+# recovered the pilot-2 case; measured again here on stage 2 (14/11 dry pass, 482 s, 0 char)
+RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
+              "Réfléchis plus court (quelques centaines de mots), puis rends directement ta sortie.")
+
+
+async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
+                        conv: str | None) -> dict:
+    for attempt in range(2):
+        tob = engine_tokens()
+        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv)
+        toa = engine_tokens()
+        rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
+                             "elapsed_s": dt, "error": env.get("error"),
+                             "response_chars": len(env.get("response") or ""),
+                             "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
+                                              or None)})
+        if not (env.get("error") or "").startswith("empty model response"):
+            break
+    return env
 
 
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
@@ -311,8 +577,11 @@ async def run(args) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": LANE, "dry": True, "stages": {}, "calls": []}
+           "lane": LANE, "dry": True, "stages": {}, "calls": [],
+           "engine_tokens_before": engine_tokens()}
     token = app_token(repo)
+    conventions = read_conventions(args.conventions)
+    rec["conventions"] = {"path": args.conventions, "chars": len(conventions)}
 
     # ---- stage 0
     t0 = time.time()
@@ -359,11 +628,9 @@ async def run(args) -> dict:
             t1 = time.time()
             prompt = plan_prompt(args.issue, issue, args.notebook, kernel,
                                  series_context(Path(wt["path"]), args.notebook),
-                                 build_view(src_nb))
-            env, dt = await sk_call(sk, args, prompt, None)
+                                 build_view(src_nb), conventions)
+            env = await sk_call_retry(sk, args, rec, "1-plan", prompt, None)
             conv = env.get("conversation_id")
-            rec["calls"].append({"stage": "1-plan", "elapsed_s": dt, "error": env.get("error"),
-                                 "response_chars": len(env.get("response") or "")})
             plan = parse_json_block(env.get("response") or "")
             rec["plan"] = plan
             rec["stage1_s"] = round(time.time() - t1, 1)
@@ -375,33 +642,51 @@ async def run(args) -> dict:
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
-            # ---- stage 2 BUILD (model writes via its papermill tools, same conversation)
+            # ---- stage 2 BUILD (model edits a harness-made copy, same conversation)
             t2 = time.time()
-            env2, dt2 = await sk_call(sk, args, build_prompt(scratch_nb, plan, exec_idx), conv)
-            rec["calls"].append({"stage": "2-build", "elapsed_s": dt2, "error": env2.get("error"),
-                                 "response_chars": len(env2.get("response") or "")})
+            scratch = Path(scratch_nb)
+            if scratch.exists():
+                scratch.unlink()
+            shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
+            sha_before = _sha(scratch)
+            src_cells = _cells(src_nb)
+            rec["write_mode"] = args.write_mode
+            prompt2 = (build_json_prompt(plan, exec_idx, src_cells, len(src_cells), conventions)
+                       if args.write_mode == "json"
+                       else build_prompt(scratch_nb, plan, exec_idx, src_cells,
+                                         len(src_cells), conventions))
+            env2 = await sk_call_retry(sk, args, rec, "2-build", prompt2, conv)
             built = parse_json_block(env2.get("response") or "")
             rec["build_model_answer"] = {"parsed": built, "chars": len(env2.get("response") or "")}
+            if args.write_mode == "json" and built:
+                rec["apply"] = apply_edits(scratch, built)
             rec["stage2_s"] = round(time.time() - t2, 1)
 
-            # ---- harness: verify the notebook exists, execute the planned cells, judge
+            # ---- harness: structural diff first, then execution; the harness judges alone
             t3 = time.time()
-            exists = Path(scratch_nb).is_file()
+            exists = scratch.is_file()
             rec["built_notebook"] = {"path": scratch_nb, "exists": exists,
-                                     "bytes": Path(scratch_nb).stat().st_size if exists else 0}
-            if exists:
-                kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"])
-                rec["kernel_id"] = kid
-                if kid and exec_idx:
-                    rec["execution"] = await execute_cells(pm, Path(scratch_nb), kid,
-                                                           [int(i) for i in exec_idx])
-                elif kid:
-                    rec["execution"] = []
-                rec["verdict"] = ("built-executed-ok"
-                                  if all(e["ok"] for e in rec.get("execution") or [{}])
-                                  else "built-execution-failed")
-            else:
+                                     "bytes": scratch.stat().st_size if exists else 0,
+                                     "changed": exists and _sha(scratch) != sha_before}
+            if not exists:
                 rec["verdict"] = "build-no-notebook"
+            elif not rec["built_notebook"]["changed"]:
+                rec["verdict"] = "build-no-change"
+            else:
+                rec["structure"] = verify_structure(src_nb, scratch, plan)
+                if not rec["structure"]["ok"]:
+                    rec["verdict"] = "built-structure-mismatch"
+                else:
+                    kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"])
+                    rec["kernel_id"] = kid
+                    if kid and exec_idx:
+                        rec["execution"] = await execute_cells(pm, scratch, kid,
+                                                               [int(i) for i in exec_idx])
+                    elif kid:
+                        rec["execution"] = []
+                    rec["verdict"] = ("built-executed-ok"
+                                      if all(e.get("ok") for e in (rec.get("execution") or []))
+                                      else "built-execution-failed")
             rec["stage3_s"] = round(time.time() - t3, 1)
     rec["finished"] = utcnow()
     return rec
@@ -416,15 +701,29 @@ def main() -> int:
     ap.add_argument("--fresh-worktree", action="store_true")
     ap.add_argument("--out-dir", default=str(VLLM_ROOT / ".tmp/nbcoder"))
     ap.add_argument("--agent", default="notebook-auditor", help="sk-agent agent id")
+    ap.add_argument("--conventions",
+                    default=str(VLLM_ROOT / "myia_vllm/docs/adoption/nb-coder-conventions.md"),
+                    help="house rules injected into the prompts ('' disables)")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
     ap.add_argument("--gate-mode", choices=["warn", "block"], default="warn")
+    ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
+                    help="json = harness applies the model's cell sources in one write; "
+                         "mcp = the model calls the papermill write tools (lost-update hazard "
+                         "when it parallelises its calls, measured 14/11)")
     ap.add_argument("--kernel-override", default=None)
     ap.add_argument("--max-stage", type=int, choices=[0, 1, 2], default=2)
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
-    rec = asyncio.run(run(args))
+    try:
+        rec = asyncio.run(run(args))
+    except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
+        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+               "lane": LANE, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
+    rec["engine_tokens_after"] = engine_tokens()
+    b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
+    rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
     out = Path(args.out_dir) / f"issue-{args.issue}.json"
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     with open(Path(args.out_dir) / "ledger.jsonl", "a", encoding="utf-8") as fh:
