@@ -117,14 +117,19 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
 
 1. `nb_coder_driver.py` (stages 1-2-5 skeleton; gates reused from nbaudit organs) — **vllm repo**.
 
-   **État 2026-11-14 (dispatch CoursIA 15:34Z)** : étapes **0-2 écrites** dans
-   `myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py` (claim guard via
-   `check_lane_claim.py` ; plan JSON ; build par le modèle via papermill, **exécution par le
-   harnais** via `execute_on_kernel`, verdict mécanique sur sorties réelles ; noyau par série
-   avec version des voisins ; gate capacité en mode warn jusqu'à la fin de l'observation 24 h ;
-   trace JSON + ledger ; **dry par défaut, zéro écriture GitHub hors claim**). Les chemins des
-   grains portent le préfixe `MyIA.AI.Notebooks/`. Stages 3-5 (organes, vérificateur distinct,
-   PR) = incrément suivant. Passe à blanc : grain 1 de CoursIA#26534.
+   **État 2026-11-14 (dispatch CoursIA 15:34Z, GO suite 17:00Z/corrigé 17:15Z)** : étapes
+   **0-2 écrites** dans `myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py` (claim guard
+   via `check_lane_claim.py` ; plan JSON ; build par le modèle via papermill, **exécution par
+   le harnais** via `execute_on_kernel`, verdict mécanique sur sorties réelles ; noyau par
+   série avec version des voisins ; gate capacité en mode warn jusqu'à la fin de
+   l'observation 24 h ; trace JSON + ledger ; **dry par défaut, zéro écriture GitHub hors
+   claim**). Les chemins des grains portent le préfixe `MyIA.AI.Notebooks/`. Passe à blanc
+   grain 1 : **built-executed-ok** (4 passes, 4 défauts corrigés) ; passe à blanc grain 3
+   (#18874, chemin exécution) : **built-executed-ok, C.2 prouvé** — 16/16 cellules exécutées,
+   `execution_count` 1..16 strictement séquentiels, 0 erreur, 0 cellule dégénérée restante
+   (5 éditions + 5 inserts markdown, édition minimale vérifiée). Stages 3-5 = incrément
+   suivant ; **stage PR gelé sur Q188** (identité GitHub à arbitrer par le user — aucun push,
+   préparation à blanc autorisée).
 
    **Leçons des quatre passes à blanc du 14/11** (chaque défaut est mesuré, pas supposé) :
 
@@ -138,6 +143,22 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
    Conséquence pour roo-extensions : les outils d'écriture du MCP sont **sûrs en appel unique,
    pas en appels parallèles** — un `lock` par fichier (ou une sérialisation des appels d'un même
    agent) est nécessaire avant qu'un autre consommateur s'appuie dessus.
+
+   **Leçons de la passe grain 3 du 14/11 soir (exécution de cellules, #18874)** :
+
+   | # | Défaut trouvé AVANT la passe (lecture du code, corrigé préventivement) | Correctif |
+   |---|---|---|
+   | 5 | `apply_edits` ne savait ni **supprimer** une cellule ni **convertir son type** (bannière `print("="*60)` → titre markdown), alors que le schéma du plan le déclare (`geste: delete`) | `deletes[]` + `cell_type` optionnel par édition (conversion : pop/ajout `execution_count`/`outputs`), ordre canonique édits → deletes (desc) → inserts (ancre remappée `a − #(deletes<a) + 1`), **cohérent avec le `shift()` du vérificateur** — prouvé par 5/5 contrôles positifs/négatifs, non exercé par la passe live (le modèle a choisi éditions+inserts) |
+   | 6 | `execute_cells` du plan = index **source**, exécutés sur le carnet **construit** → décalage dès la première insertion ; et exécuter seulement les cellules éditées casse sur l'état du noyau (une cellule exercice appelle `charger()` défini plus haut) | `--exec-mode auto` (défaut) : si le plan touche du code, le harnais exécute **toutes les cellules code du carnet construit, dans l'ordre** (Restart & Run All) — état-sûr et preuve C.2 native ; verdict `built-executed-counts-broken` si les `execution_count` ne sont pas 1..N |
+   | 7 | Réponse vide du tour plan (**2ᵉ occurrence mesurée**, 303 s perdues) | le retry `RETRY_NOTE` existant a récupéré (4 299 chars au 2ᵉ essai) — mécanisme validé, pas de changement |
+
+   Résultat grain 3 : **`built-executed-ok`** — 16/16 cellules exécutées sur `python3` (3.13.14,
+   version des voisins), `execution_count` **1..16 strictement séquentiels**, 0 erreur, 0
+   cellule dégénérée restante (critères de l'issue : ≥5 prints, ≤2 assignations, pas de `def`),
+   47 cellules (42 + 5 inserts markdown), édition minimale vérifiée (5 éditions, cellules hors
+   plan verbatim, outputs préservés). Durée ~15 min (plan 303 s vide + retry 415 s + build
+   162 s + exécution 4,3 s). Tokens (bornes hautes fenêtre, hub partagé) : 2 047 775 prompt /
+   65 702 génération.
 2. `notebook-coder` agent entry in sk-agent config — **roo-extensions adds it** (ask via dashboard,
    spec = §3.1; same flow as #4712). *2026-11-14 : PR jsboige-mcp-servers#1760 en review — 4
    variantes seat-local (Swift gaté sur `qwen3.6-35b-a3b-nbcoder`), split GitHubPlugin/

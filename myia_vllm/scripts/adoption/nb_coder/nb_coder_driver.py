@@ -292,10 +292,14 @@ def plan_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, vie
         f"## Contexte de série\n{ctx}\n\n"
         f"## Carnet actuel\n{view}\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
-        '{"plan":[{"cell":<index>,"geste":"edit|insert_after|delete","but":"..."}],'
-        '"execute_cells":[<index des cellules code à ré-exécuter>],'
+        '{"plan":[{"cell":<index>,"geste":"edit|insert_after|delete",'
+        '"to":"<code|markdown — uniquement si le geste convertit le type de la cellule>",'
+        '"but":"..."}],'
+        '"execute_cells":[<index des cellules code concernées, carnet d ORIGINE>],'
         '"expectations":["..."],"risques":["..."]}\n'
-        "`execute_cells` vide si le geste est markdown seul."
+        "`execute_cells` vide si le geste est markdown seul. Tout index (`cell`, `after`, "
+        "`execute_cells`) est un index du carnet d'ORIGINE ; le harnais remappe après "
+        "suppressions/insertions."
     )
 
 
@@ -361,21 +365,29 @@ def build_json_prompt(plan: dict, execute_ids: list, src_cells: list, n_cells: i
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + ("\n\n".join(current) + "\n\n" if current else "")
         + "Rends UNIQUEMENT un bloc ```json :\n"
-        '{"edits":[{"cell":<index>,"source":"<source COMPLET de remplacement>"}],'
+        '{"edits":[{"cell":<index>,"source":"<source COMPLET de remplacement>",'
+        '"cell_type":"<code|markdown — UNIQUEMENT si le plan déclare une conversion de type>"}],'
+        '"deletes":[<index du carnet d ORIGINE>...],'
         '"inserts":[{"after":<index>,"cell_type":"markdown|code","source":"<source complet>"}],'
         '"notes":"..."}\n'
         "Règles : source COMPLET (pas un diff), aucune cellule hors plan, `after` = index de "
-        "l'ancre dans le carnet d'origine, une seule entrée par geste du plan."
+        "l'ancre dans le carnet d'origine, une seule entrée par geste du plan ; `deletes` "
+        "reprend les gestes delete du plan (tableau vide s'il n'y en a pas)."
     )
 
 
 def apply_edits(nb_path: Path, payload: dict) -> dict:
-    """Deterministic applier: one read-modify-write, indexes taken on the ORIGINAL notebook."""
+    """Deterministic applier: one read-modify-write, indexes taken on the ORIGINAL notebook.
+
+    Order (must stay consistent with verify_structure's shift): edits on original indexes,
+    then deletes (desc), then inserts (anchor desc, anchor = ORIGINAL index). A delete
+    shifts every later cell by -1, so an insert anchored at `a` lands at
+    a - #(deletes < a) + 1 in the post-delete array."""
     raw = nb_path.read_text(encoding="utf-8")
     nb = json.loads(raw)
     cells = nb["cells"]
     rep = {"roundtrip_ok": json.dumps(nb, ensure_ascii=False, indent=1) + "\n" == raw,
-           "edits": [], "inserts": [], "errors": []}
+           "edits": [], "deletes": [], "inserts": [], "errors": []}
     for e in payload.get("edits") or []:
         try:
             i, new = int(e["cell"]), e["source"]
@@ -383,16 +395,42 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
                 raise IndexError(f"cell {i} hors bornes (0..{len(cells) - 1})")
             old = _text(cells[i].get("source"))
             cells[i]["source"] = new
-            rep["edits"].append({"cell": i, "changed": new != old, "chars": len(new)})
+            entry = {"cell": i, "changed": new != old, "chars": len(new)}
+            if e.get("cell_type") in ("code", "markdown"):
+                ct = e["cell_type"]
+                if ct != cells[i].get("cell_type"):          # declared type conversion
+                    entry["type"] = f"{cells[i].get('cell_type')}->{ct}"
+                    cells[i]["cell_type"] = ct
+                    if ct == "markdown":
+                        cells[i].pop("execution_count", None)
+                        cells[i].pop("outputs", None)
+                    else:
+                        cells[i]["execution_count"] = None
+                        cells[i]["outputs"] = []
+            rep["edits"].append(entry)
         except Exception as exc:
             rep["errors"].append(f"edit: {exc}")
+    deletes = sorted({int(k) for k in payload.get("deletes") or []}, reverse=True)
+    n_src = len(cells)
+    for k in deletes:
+        try:
+            if not 0 <= k < len(cells):
+                raise IndexError(f"delete {k} hors bornes (0..{n_src - 1})")
+            cells.pop(k)                                     # desc: earlier indexes stay valid
+            rep["deletes"].append(k)
+        except Exception as exc:
+            rep["errors"].append(f"delete: {exc}")
     taken = {c.get("id") for c in cells}
     for x in sorted(payload.get("inserts") or [],
                     key=lambda v: int(v.get("after", -1)), reverse=True):
         try:
             a, src = int(x["after"]), x["source"]
-            if not 0 <= a < len(cells):
+            below = sum(1 for k in rep["deletes"] if k < a)
+            if not 0 <= a < n_src:
                 raise IndexError(f"ancre {a} hors bornes")
+            pos = a - below + 1
+            if any(d == a for d in rep["deletes"]):
+                raise ValueError(f"ancre {a} supprimée — ancre le prédécesseur")
             cid = hashlib.sha1((str(a) + src).encode("utf-8")).hexdigest()[:8]
             while cid in taken:
                 cid = hashlib.sha1((cid + src).encode("utf-8")).hexdigest()[:8]
@@ -401,8 +439,9 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
             new_cell = {"cell_type": ct, "id": cid, "metadata": {}, "source": src}
             if ct == "code":
                 new_cell |= {"execution_count": None, "outputs": []}
-            cells.insert(a + 1, new_cell)
-            rep["inserts"].append({"after": a, "chars": len(src), "id": cid})
+            cells.insert(pos, new_cell)
+            rep["inserts"].append({"after": a, "built_pos": pos, "type": ct,
+                                   "chars": len(src), "id": cid})
         except Exception as exc:
             rep["errors"].append(f"insert: {exc}")
     nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -431,6 +470,9 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
                if p.get("geste") == "delete" and str(p.get("cell", "")).isdigit()}
     anchors = [int(p["cell"]) for p in gestures
                if p.get("geste") == "insert_after" and str(p.get("cell", "")).isdigit()]
+    convert = {int(p["cell"]): p["to"] for p in gestures
+               if p.get("geste") == "edit" and str(p.get("cell", "")).isdigit()
+               and p.get("to") in ("code", "markdown")}
     s_src = [_text(c.get("source")) for c in src]
     s_b = [_text(c.get("source")) for c in built]
 
@@ -438,8 +480,10 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
         return i + sum(1 for a in anchors if a < i) - sum(1 for k in deletes if k < i)
 
     d = {"src_cells": len(src), "built_cells": len(built),
-         "edits": sorted(edits), "deletes": sorted(deletes), "inserts": len(anchors)}
+         "edits": sorted(edits), "deletes": sorted(deletes), "inserts": len(anchors),
+         "type_conversions": sorted(convert)}
     d["count_ok"] = len(built) == len(src) - len(deletes) + len(anchors)
+    d["anchors_on_deleted"] = sorted(set(anchors) & deletes)
 
     untouched = [i for i in range(len(src)) if i not in edits | deletes]
     j, missing = 0, None
@@ -456,12 +500,12 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
     detail, edits_ok = [], True
     for i in sorted(edits):
         pos = shift(i)
-        changed = 0 <= pos < len(s_b) and s_b[pos] != s_src[i]
+        want_type = convert.get(i) or src[i].get("cell_type")
         detail.append({"cell": i, "built_pos": pos,
-                       "type_kept": 0 <= pos < len(built)
-                                    and built[pos].get("cell_type") == src[i].get("cell_type"),
-                       "changed": changed})
-        edits_ok = edits_ok and changed
+                       "type_ok": 0 <= pos < len(built)
+                                  and built[pos].get("cell_type") == want_type,
+                       "changed": 0 <= pos < len(s_b) and s_b[pos] != s_src[i]})
+        edits_ok = edits_ok and detail[-1]["type_ok"] and detail[-1]["changed"]
     d["edits_detail"] = detail
     d["edits_ok"] = edits_ok
 
@@ -489,7 +533,8 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
         ins_ok = ins_ok and landed
     d["inserts_detail"] = ins_detail
     d["inserts_ok"] = ins_ok
-    d["ok"] = all(d[k] for k in ("count_ok", "untouched_ok", "edits_ok", "outputs_ok", "inserts_ok"))
+    d["ok"] = (all(d[k] for k in ("count_ok", "untouched_ok", "edits_ok", "outputs_ok", "inserts_ok"))
+               and not d["anchors_on_deleted"])
     return d
 
 
@@ -679,14 +724,44 @@ async def run(args) -> dict:
                 else:
                     kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"])
                     rec["kernel_id"] = kid
-                    if kid and exec_idx:
-                        rec["execution"] = await execute_cells(pm, scratch, kid,
-                                                               [int(i) for i in exec_idx])
-                    elif kid:
-                        rec["execution"] = []
-                    rec["verdict"] = ("built-executed-ok"
-                                      if all(e.get("ok") for e in (rec.get("execution") or []))
-                                      else "built-execution-failed")
+                    # exec policy: plan indexes are SOURCE-space and shift with deletes/inserts.
+                    # auto = run ALL built code cells in order when the plan touches code
+                    # (state-safe: dependencies run first, execution_count sequential 1..N —
+                    # the C.2 proof), none for a markdown-only gesture.
+                    exec_targets: list[int] = []
+                    if kid:
+                        code_idx = [i for i, c in enumerate(_cells(scratch))
+                                    if c.get("cell_type") == "code"]
+                        touches_code = (
+                            any(src_cells[int(p["cell"])].get("cell_type") == "code"
+                                for p in plan.get("plan") or []
+                                if p.get("geste") in ("edit", "delete")
+                                and str(p.get("cell", "")).isdigit()
+                                and int(p["cell"]) < len(src_cells))
+                            or any(x.get("type") == "code"
+                                   for x in (rec.get("apply") or {}).get("inserts") or []))
+                        mode = "all" if (args.exec_mode == "auto" and touches_code) \
+                            else ("none" if args.exec_mode == "auto" else args.exec_mode)
+                        rec["exec_mode"] = f"{args.exec_mode}->{mode}"
+                        rec["exec_planned_idx"] = exec_idx
+                        if mode == "all":
+                            exec_targets = code_idx
+                        elif mode == "plan":
+                            exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
+                        rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
+                                            if exec_targets else [])
+                    counts = [c.get("execution_count") for c in _cells(scratch)
+                              if c.get("cell_type") == "code"
+                              and _text(c.get("source")).strip()]
+                    rec["c2"] = {"counts": counts,
+                                 "sequential": counts == list(range(1, len(counts) + 1))}
+                    exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
+                    if not exec_ok:
+                        rec["verdict"] = "built-execution-failed"
+                    elif not rec.get("execution") or rec["c2"]["sequential"]:
+                        rec["verdict"] = "built-executed-ok"
+                    else:
+                        rec["verdict"] = "built-executed-counts-broken"
             rec["stage3_s"] = round(time.time() - t3, 1)
     rec["finished"] = utcnow()
     return rec
@@ -712,6 +787,11 @@ def main() -> int:
                          "mcp = the model calls the papermill write tools (lost-update hazard "
                          "when it parallelises its calls, measured 14/11)")
     ap.add_argument("--kernel-override", default=None)
+    ap.add_argument("--exec-mode", choices=["auto", "all", "plan"], default="auto",
+                    help="auto: run ALL built code cells in order when the plan touches code "
+                         "(state-safe, execution_count sequential — C.2 proof), none for "
+                         "markdown-only; all: always; plan: the plan's execute_cells "
+                         "(SOURCE indexes, shift hazard with deletes/inserts)")
     ap.add_argument("--max-stage", type=int, choices=[0, 1, 2], default=2)
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
