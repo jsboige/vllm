@@ -173,6 +173,17 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
    passage. Exit du script : 0 approve / 1 reject / 2 erreur d'instrument — **jamais de lecture
    d'un `reject` comme un « zéro »** (attention : dans une commande pipée, le code de sortie lu
    est celui du tube, pas celui du script).
+
+   **Garde d'origine du `--repo` (15/11, après un faux diagnostic rétracté)** : `check_lane_claim.py`
+   infère le slug du dépôt depuis le remote `origin` de **son cwd** — un appel manuel depuis
+   `d:/vllm` a rendu un verdict sur `jsboige/vllm#20250` (bon numéro, mauvais dépôt) ; le driver,
+   lui, l'appelle avec `cwd=repo` et tous les contrôles de passe étaient corrects. Le driver
+   **refuse désormais** un `--repo` dont l'`origin` n'est pas `jsboige/CoursIA`
+   (`refused-foreign-origin`, `--allow-foreign-origin` pour déroger) et enregistre `repo_origin`
+   dans la trace ; le `conversation_id` du build est persisté (`rec["conversation_id"]`) pour que
+   le corps de PR porte la trace agentique. Piège d'instrument jumeau : `git remote -v | head -2`
+   **n'est pas un inventaire** — `d:/CoursIA` porte deux remotes (`Arfi345`, puis `origin`) et la
+   liste tronquée avait fait conclure à tort à un fork étranger ; lire `git remote get-url origin`.
 2. `notebook-coder` agent entry in sk-agent config — **roo-extensions adds it** (ask via dashboard,
    spec = §3.1; same flow as #4712). *2026-11-14 : PR jsboige-mcp-servers#1760 en review — 4
    variantes seat-local (Swift gaté sur `qwen3.6-35b-a3b-nbcoder`), split GitHubPlugin/

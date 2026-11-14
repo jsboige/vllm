@@ -624,6 +624,17 @@ async def run(args) -> dict:
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
            "lane": LANE, "dry": True, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
+    # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
+    # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
+    # repo's issue numbers (measured 14/11: a manual claim check run from d:/vllm queried
+    # jsboige/vllm#20250 — right number, wrong repo; multi-remote checkouts also hide this,
+    # `git remote -v | head` shows only the alphabetically first remote).
+    origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
+                            capture_output=True, text=True).stdout.strip()
+    rec["repo_origin"] = origin
+    if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
+        rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
+        return rec
     token = app_token(repo)
     conventions = read_conventions(args.conventions)
     rec["conventions"] = {"path": args.conventions, "chars": len(conventions)}
@@ -676,6 +687,7 @@ async def run(args) -> dict:
                                  build_view(src_nb), conventions)
             env = await sk_call_retry(sk, args, rec, "1-plan", prompt, None)
             conv = env.get("conversation_id")
+            rec["conversation_id"] = conv      # the agentic trace the PR body must carry
             plan = parse_json_block(env.get("response") or "")
             rec["plan"] = plan
             rec["stage1_s"] = round(time.time() - t1, 1)
@@ -772,6 +784,10 @@ def main() -> int:
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
     ap.add_argument("--notebook", required=True, help="repo-relative target notebook")
     ap.add_argument("--repo", default="d:/CoursIA", help="CoursIA checkout (claim guard + worktree source)")
+    ap.add_argument("--allow-foreign-origin", action="store_true",
+                    help="accept a --repo checkout whose origin is not jsboige/CoursIA (default: "
+                         "refuse — the claim guard infers its slug from its cwd's origin, so a "
+                         "wrong --repo silently serves another repo's issue numbers)")
     ap.add_argument("--worktree", default=str(VLLM_ROOT / ".tmp/nbcoder/wt"))
     ap.add_argument("--fresh-worktree", action="store_true")
     ap.add_argument("--out-dir", default=str(VLLM_ROOT / ".tmp/nbcoder"))
