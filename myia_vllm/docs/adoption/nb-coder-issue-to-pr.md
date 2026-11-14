@@ -195,6 +195,22 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
 4. Capacity-gate call wired (after the 24 h probe observation started 13/11 21:13Z).
    *Fin de l'observation ~14/11 21:13Z ; mode warn d'ici là, conformément au dispatch.*
 
+### 2026-11-15 — Shared writer correction for the MiniMax pilot
+
+The CoursIA review on #26584 identified a serialization defect: edited cell sources
+were stored as one string, inflating an otherwise line-sized diff. Both edits and
+inserts now use `splitlines(keepends=True)`; untouched cells and outputs stay intact.
+Offline regression test: `python -m unittest discover -s myia_vllm/scripts/adoption/nb_coder -p test_source_lines.py -v`
+(four text cases: trailing newline, no trailing newline, empty, Unicode). Driver compilation
+and `git diff --check` also pass. This corrects the writer, not the existing pilot PR.
+
+User priority: MiniMax should start useful nb_coder work on 2026-11-15 before the evening
+weekly credit reset, coordinated with the hub. Exact reset time and available credit
+must be measured by claudish. The MiniMax POC must not wait for Swift's separate
+long-context-aware opportunistic round admission. Coordination spans claudish (POC/hub),
+vllm (shared harness), roo-extensions (sk-agent/MCP), and CoursIA (task queue/review),
+with the global dashboard as the shared rendezvous. Session cadence remains three hours.
+
 ## 5. Guardrails carried over
 
 - CoursIA repo = another workspace's infra: **ask, don't apply** — the pilot PR needs their GO;

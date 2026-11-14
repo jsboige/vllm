@@ -394,7 +394,7 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
             if not 0 <= i < len(cells):
                 raise IndexError(f"cell {i} hors bornes (0..{len(cells) - 1})")
             old = _text(cells[i].get("source"))
-            cells[i]["source"] = new
+            cells[i]["source"] = new.splitlines(keepends=True)
             entry = {"cell": i, "changed": new != old, "chars": len(new)}
             if e.get("cell_type") in ("code", "markdown"):
                 ct = e["cell_type"]
@@ -436,7 +436,8 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
                 cid = hashlib.sha1((cid + src).encode("utf-8")).hexdigest()[:8]
             taken.add(cid)
             ct = x.get("cell_type") or "markdown"
-            new_cell = {"cell_type": ct, "id": cid, "metadata": {}, "source": src}
+            new_cell = {"cell_type": ct, "id": cid, "metadata": {},
+                        "source": src.splitlines(keepends=True)}
             if ct == "code":
                 new_cell |= {"execution_count": None, "outputs": []}
             cells.insert(pos, new_cell)
