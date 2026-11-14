@@ -159,6 +159,20 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
    plan verbatim, outputs préservés). Durée ~15 min (plan 303 s vide + retry 415 s + build
    162 s + exécution 4,3 s). Tokens (bornes hautes fenêtre, hub partagé) : 2 047 775 prompt /
    65 702 génération.
+
+   **Étape 4 — vérificateur indépendant (`nb_coder_verify.py`, 14/11 soir)** : producteur =
+   `notebook-auditor` (Swift), vérificateur = `critic` (GLM-5.3 via hub) — **modèles réellement
+   distincts**, session neuve, aucun outil, prompt = SOURCE + LIVRABLE + critères d'issue +
+   les faits mécaniques du harnais étiquetés « affirmations à contre-vérifier ». Les vues ne
+   montrent pas les sorties : une **annexe d'empreintes par cellule code** (n, types, bytes,
+   sha1[:8]) comble ce trou — le vérificateur avait signalé la limite lui-même au premier
+   passage. **Prouvé dans les deux sens** : `approve` sur le livrable grain 1 (0 constat,
+   5 points vérifiés citant les 12 empreintes de sorties) et **`reject` sur le carnet tronqué
+   de la passe 2** (4 constats majeurs/mineur : 17 cellules perdues, 12 sorties effacées avec
+   preuve sha, provenance en mauvaise forme, caractère parasite). ~18 s et 30 881 tokens par
+   passage. Exit du script : 0 approve / 1 reject / 2 erreur d'instrument — **jamais de lecture
+   d'un `reject` comme un « zéro »** (attention : dans une commande pipée, le code de sortie lu
+   est celui du tube, pas celui du script).
 2. `notebook-coder` agent entry in sk-agent config — **roo-extensions adds it** (ask via dashboard,
    spec = §3.1; same flow as #4712). *2026-11-14 : PR jsboige-mcp-servers#1760 en review — 4
    variantes seat-local (Swift gaté sur `qwen3.6-35b-a3b-nbcoder`), split GitHubPlugin/
