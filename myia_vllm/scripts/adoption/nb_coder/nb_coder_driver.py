@@ -573,6 +573,11 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
                              "elapsed_s": dt, "error": env.get("error"),
+                             # model_used/agent_used: the sk-agent envelope's own proof of what
+                             # actually served the call (routing evidence, self-service since
+                             # the 15/11 pilot where engine_delta alone had to stand in).
+                             "model_used": env.get("model_used"),
+                             "agent_used": env.get("agent_used"),
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
