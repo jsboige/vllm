@@ -10,6 +10,7 @@ not an invented shape — a pin built on a made-up payload protects nothing.
 
 Skipped when `mcp` is not importable (the driver imports the MCP client at load).
 """
+import json
 import sys
 from pathlib import Path
 
@@ -105,16 +106,54 @@ def test_an_answered_call_returns_no_verdict():
 
 
 # ---- grain tag (CoursIA's merge gate, 16/11) ----
+# The tag is read by TWO guards, and the second one was measured the hard way: the tier guard
+# wants `Grain: <TIER>/<GENRE>`, and #10983's guard poses `variation-tag-prev-absent` on a tag
+# that declares no predecessor. CoursIA#26943 carried both labels the moment it opened.
 
 def test_grain_tag_is_the_line_the_parser_reads():
-    assert d.grain_tag("MED", "myia-po-2028:claudish", 26804) == (
-        "Grain: MED/notebook-python — lane myia-po-2028:claudish — issue #26804")
+    assert d.grain_tag("MED", "myia-po-2028:claudish") == (
+        "Grain: MED/notebook-python — lane myia-po-2028:claudish — "
+        "prev: none (premier grain)")
 
 
 def test_auto_is_refused_rather_than_written_silently():
     """The exact string that made every harness PR unmergeable: `auto` is not a tier."""
     with pytest.raises(ValueError):
-        d.grain_tag("auto", "myia-po-2028:claudish", 26804)
+        d.grain_tag("auto", "myia-po-2028:claudish")
+
+
+def test_a_predecessor_is_cited_verbatim():
+    assert d.grain_tag("LIGHT", "l", prev="MED/tooling #26943") == (
+        "Grain: LIGHT/notebook-python — lane l — prev: MED/tooling #26943")
+
+
+def test_a_prev_that_is_not_a_predecessor_is_refused():
+    """`prev:` is read as a CITATION, so a value that is not one must not reach the body."""
+    with pytest.raises(ValueError):
+        d.grain_tag("MED", "l", prev="auto/notebook-python")
+    with pytest.raises(ValueError):
+        d.grain_tag("MED", "l", prev="see the previous one")
+
+
+def test_an_unreadable_history_omits_the_field_rather_than_inventing_one():
+    """No predecessor READ is not the same fact as no predecessor EXISTING.
+
+    Writing the exemption here would assert a first grain nobody checked; the guard's label
+    is then the true verdict, and the trace records why (see `lane_predecessor`).
+    """
+    tag = d.grain_tag("MED", "myia-po-2028:claudish", prev=None)
+    assert "prev" not in tag
+    assert tag == "Grain: MED/notebook-python — lane myia-po-2028:claudish"
+
+
+def test_nothing_scannable_follows_the_prev_field():
+    """The parser takes the first `#N` within 120 chars after `prev: <TIER>/<GENRE>`.
+
+    A trailing `— issue #26804` (this harness's old tag shape) would be READ AS THE PR
+    NUMBER: an adjacency verdict against an issue that is not a grain. `prev:` is last.
+    """
+    tag = d.grain_tag("MED", "l", prev="MED/notebook-python")
+    assert tag.endswith("prev: MED/notebook-python")
 
 
 def test_the_pr_body_is_built_from_the_flag_not_from_a_literal():
@@ -127,6 +166,79 @@ def test_the_pr_body_is_built_from_the_flag_not_from_a_literal():
     src = Path(d.__file__).read_text(encoding="utf-8")
     assert 'f"{grain_tag(args.grain_tier' in src, "the PR body no longer uses the flag"
     assert '"Grain: auto' not in src, "a literal `auto` tier is back in the source"
+    # The predecessor reaches the tag from a real read, not from a constant.
+    assert "lane_predecessor(repo_slug, args.lane, token)" in src
+    assert "prev=prev" in src, "the read predecessor is no longer handed to the tag"
+
+
+# ---- lane predecessor (vllm#459: `prev:` is lane history, not a value this run knows) ----
+
+def _stub_gh(monkeypatch, prs, rc=0):
+    """Replace the `gh` runner: the pins below are about READING, not about GitHub."""
+    calls = []
+
+    def fake(args, token=None, timeout=60):
+        calls.append(args)
+        if rc != 0:
+            return rc, "HTTP 502"
+        return 0, json.dumps(prs)
+    monkeypatch.setattr(d, "gh", fake)
+    return calls
+
+
+def test_a_lane_with_no_earlier_grain_cites_the_documented_exemption(monkeypatch):
+    _stub_gh(monkeypatch, [])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == d.GRAIN_PREV_FIRST
+
+
+def test_the_newest_matching_grain_is_the_predecessor(monkeypatch):
+    _stub_gh(monkeypatch, [
+        {"number": 26950, "body": "Grain: LIGHT/docs — lane myia-po-2028:claudish — prev: none"},
+        {"number": 26920, "body": "Grain: DEEP/tooling — lane myia-po-2028:claudish"},
+    ])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == "LIGHT/docs #26950"
+
+
+def test_the_predecessor_is_the_highest_number_not_the_first_row(monkeypatch):
+    """GitHub's search ordering is not creation order — measured 16/11 on CoursIA, where
+    `#26790` came back ABOVE `#26806`. Reading the first row would cite an older grain."""
+    _stub_gh(monkeypatch, [
+        {"number": 26790, "body": "Grain: MED/notebook-python — lane myia-po-2028:claudish"},
+        {"number": 26821, "body": "Grain: MED/notebook-python — lane myia-po-2028:claudish"},
+    ])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == "MED/notebook-python #26821"
+
+
+def test_a_sibling_lane_is_not_cited(monkeypatch):
+    """The search is a substring match: `lane myia-po-2028:claudish` also returns
+    `…:claudish-2`. Citing a sibling's grain would make the adjacency verdict meaningless."""
+    _stub_gh(monkeypatch, [
+        {"number": 26951, "body": "Grain: DEEP/docs — lane myia-po-2028:claudish-2"},
+        {"number": 26949, "body": "Grain: MED/notebook-python — lane myia-po-2028:claudish"},
+    ])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == "MED/notebook-python #26949"
+
+
+def test_an_unreadable_history_says_so_instead_of_citing_a_first_grain(monkeypatch):
+    _stub_gh(monkeypatch, [], rc=1)
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) is None
+
+
+def test_a_tag_without_grain_is_not_a_predecessor(monkeypatch):
+    _stub_gh(monkeypatch, [
+        {"number": 26952, "body": "Fix something. Closes #26804"},
+        {"number": 26940, "body": "Grain: MED/notebook-python — lane myia-po-2028:claudish"},
+    ])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == "MED/notebook-python #26940"
+
+
+def test_the_cited_pr_number_is_the_pull_request_not_an_issue(monkeypatch):
+    """The wrong-pointer pin. The harness's OWN old tag ends `— issue #26804`; reading that
+    line must yield the PR it lives in, never the issue it cites."""
+    _stub_gh(monkeypatch, [
+        {"number": 26943, "body": "Grain: LIGHT/docs — lane myia-po-2028:claudish — issue #26804"},
+    ])
+    assert d.lane_predecessor("o/r", "myia-po-2028:claudish", None) == "LIGHT/docs #26943"
 
 
 def test_grain_tag_round_trips_through_the_coursia_parser():
@@ -137,7 +249,24 @@ def test_grain_tag_round_trips_through_the_coursia_parser():
     sys.path.insert(0, str(coursia))
     import grain_tag as g  # noqa: E402
 
-    parsed = g.parse_grain_tag(d.grain_tag("LIGHT", "myia-po-2028:claudish", 26804))
+    parsed = g.parse_grain_tag(d.grain_tag("LIGHT", "myia-po-2028:claudish"))
     assert parsed["tier"] == "LIGHT"
     assert parsed["genre"] == "notebook-python"
     assert parsed["lane"] == "myia-po-2028:claudish"
+
+
+def test_the_prev_field_round_trips_through_the_coursia_parser():
+    """Both shapes reach the guard as what they claim: an exemption, and a citation."""
+    coursia = Path(r"D:\dev\CoursIA\scripts")
+    if not (coursia / "grain_tag.py").is_file():
+        pytest.skip("CoursIA checkout absent on this seat")
+    sys.path.insert(0, str(coursia))
+    import grain_tag as g  # noqa: E402
+
+    first = g.parse_prev(d.grain_tag("MED", "myia-po-2028:claudish"))
+    assert first["exempt"] is True, "the documented exemption must not be labelled"
+
+    cited = g.parse_prev(d.grain_tag("MED", "myia-po-2028:claudish",
+                                     prev="LIGHT/docs #26943"))
+    assert cited["present"] is True
+    assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
