@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nb-coder driver — stages 0-2 of the issue -> notebook -> PR harness (jsboige/vllm#431).
+"""nb-coder driver — stages 0-5 of the issue -> notebook -> PR harness (jsboige/vllm#431).
 
 Stage 0 CLAIM : check_lane_claim.py on the CoursIA checkout (read), optional [CLAIMED] comment.
 Stage 1 PLAN  : sk-agent model turn -> cell plan JSON (kernel, edits, expected outputs).
@@ -7,14 +7,22 @@ Stage 2 BUILD : the HARNESS copies the source notebook (outputs preserved) and t
                 edits ONLY the planned cells on that copy (update_cell/add_cell/remove_cell);
                 the harness then proves the result is a minimal edit (structure diff) and runs
                 every planned cell with execute_on_kernel, deciding success alone.
+Stage 3 GATES : harness-only checks on the built notebook — coordination refs added outside
+                the exact provenance-footer form, secrets, language_info drift vs source.
+Stage 4 VERIFY: independent verifier (nb_coder_verify.py, SEPARATE process and agent —
+                producer != verifier; its exit 2 is an instrument error, never a reject).
+Stage 5 PR    : harness-only GitHub gestures — fresh branch, single-notebook commit, REST PR
+                create, delivery comment. The MODEL never writes to git or GitHub.
 
-Dry by default: no branch, no commit, no push, no PR. The spec's stages 3-5 (gates,
-verify, PR) are deliberately absent from this file for now (dispatch 14/11 15:34Z asks 0-2).
+Dry below --max-stage 5: no branch, no commit, no push, no PR.
 
 Run with the sk-agent venv python (it carries the ``mcp`` client package):
     d:/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe \
         nb_coder_driver.py --issue 20250 --notebook IIT/ICT-Series/ICT-40b-...ipynb \
         --out-dir d:/vllm/.tmp/nbcoder --worktree d:/vllm/.tmp/nbcoder/wt-20250
+
+Seat wiring (sk-agent dir/config, papermill python/cwd, lane, gate, engine metrics,
+kernel map) is env-overridable via NBCODER_* — one driver, every seat of the fleet.
 """
 from __future__ import annotations
 
@@ -36,15 +44,23 @@ from mcp.client.stdio import stdio_client
 
 HERE = Path(__file__).resolve().parent
 VLLM_ROOT = HERE.parents[3]
-SK_DIR = Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+# Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
+# harness, #431). Defaults stay the ai-01 vllm seat; e.g. po-2028 sets NBCODER_SK_DIR,
+# NBCODER_PM_PY, NBCODER_LANE (and NBCODER_GATE/GATE-MODE=off where capacity is enforced
+# server-side by claudis lane budgets instead of a local Swift gate).
+SK_DIR = Path(os.environ.get("NBCODER_SK_DIR", "d:/roo-extensions/mcps/internal/servers/sk-agent"))
 SK_PY = SK_DIR / "venv/Scripts/python.exe"
-SK_CONFIG = SK_DIR / "sk_agent_config.json"
-PM_PY = Path(r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe")
-PM_CWD = Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server")
-GATE = VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py"
-LANE = "myia-ai-01:nb-coder"
+SK_CONFIG = Path(os.environ.get("NBCODER_SK_CONFIG", str(SK_DIR / "sk_agent_config.json")))
+PM_PY = Path(os.environ.get("NBCODER_PM_PY", r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe"))
+PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
+                             r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))
+GATE = Path(os.environ.get("NBCODER_GATE",
+                           str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
+LANE = os.environ.get("NBCODER_LANE", "myia-ai-01:nb-coder")
+ENGINE_METRICS = os.environ.get("NBCODER_ENGINE_METRICS", "http://localhost:5002/metrics")
 
-# requirement #3: canonical kernel per series, version read from the neighbours on main
+# requirement #3: canonical kernel per series, version read from the neighbours on main.
+# NBCODER_KERNEL_MAP (JSON, {"Series dir": "kernel"}) merges seat-local series over these.
 KERNEL_MAP = {
     "Audio": "coursia-genai-audio",
     "GameTheory": "python3",
@@ -53,6 +69,8 @@ KERNEL_MAP = {
     "Image": "python3",
     "Video": "python3",
 }
+if os.environ.get("NBCODER_KERNEL_MAP"):
+    KERNEL_MAP.update(json.loads(os.environ["NBCODER_KERNEL_MAP"]))
 DEFAULT_KERNEL = "python3"
 
 
@@ -166,7 +184,7 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
 def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
-        p = subprocess.run(["curl", "-s", "--max-time", "5", "http://localhost:5002/metrics"],
+        p = subprocess.run(["curl", "-s", "--max-time", "5", ENGINE_METRICS],
                            capture_output=True, text=True, timeout=10)
         vals = {}
         for ln in (p.stdout or "").splitlines():
@@ -179,7 +197,11 @@ def engine_tokens() -> dict:
 
 
 def gate_call(mode: str) -> dict:
-    """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window)."""
+    """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window).
+    off = no local gate: capacity is enforced elsewhere (MiniMax variant -> claudish lane
+    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code)."""
+    if mode == "off":
+        return {"verdict": "off", "mode": "off", "exit": None, "blocking_refusal": False}
     p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=60)
     try:
@@ -642,13 +664,259 @@ async def start_kernel(pm: ClientSession, kernel_name: str) -> str | None:
     return r.get("kernel_id")
 
 
+# ---------------------------------------------------------------- stages 3-5
+# Convention forms (nb-coder-conventions.md): a coordination reference only ever survives
+# as the exact footer note; anything else the BUILD adds is a violation.
+# NB: the bare word `lane` in the alternation is deliberately broad -- ANY use of the
+# word in a built cell is a candidate violation, whitelisted only by the footer note
+# (PROVENANCE_RE). This is prose-vocabulary policing, not claim-marker matching: the
+# registry's own markers live on issue comments, never inside notebooks.
+COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
+PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+                       r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
+
+
+def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
+    """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
+
+    Judged on the DELTA (cells the build touched): the source's own prose is the repo's
+    business, not the gate's — a pre-existing footer stays legit untouched."""
+    src_cells, built_cells = _cells(src_nb), _cells(built_nb)
+    gates: list[dict] = []
+    last_md = max((i for i, c in enumerate(built_cells) if c.get("cell_type") == "markdown"),
+                  default=-1)
+    offenders = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        if COORD_REF_RE.search(txt) and not (i == last_md and PROVENANCE_RE.search(txt)):
+            offenders.append(i)
+    gates.append({"gate": "coord-refs", "ok": not offenders,
+                  "detail": {"cells": offenders[:10]}})
+    # Delta-judged like coord-refs (#433 review): a secret sitting UNTOUCHED in the
+    # source is the repo's business -- reported in the detail, it does not fail THIS
+    # build. The detail keeps the full picture (source_hits = pre-existing,
+    # build_hits = everything seen in the built nb) so a reviewer never confuses
+    # "the build introduced one" with "the repo already had one".
+    src_secret_hits = [i for i, c in enumerate(src_cells)
+                       if SECRET_RE.search(_text(c.get("source")))]
+    build_secret_hits = [i for i, c in enumerate(built_cells)
+                         if SECRET_RE.search(_text(c.get("source")))]
+    new_secret_hits = [i for i in build_secret_hits
+                       if not (i < len(src_cells)
+                               and _text(built_cells[i].get("source"))
+                               == _text(src_cells[i].get("source")))]
+    gates.append({"gate": "secrets", "ok": not new_secret_hits,
+                  "detail": {"cells": new_secret_hits[:10],
+                             "source_hits": src_secret_hits[:10],
+                             "build_hits": build_secret_hits[:10]}})
+    sv = (json.loads(src_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
+        .get("language_info", {}).get("version")
+    bv = (json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
+        .get("language_info", {}).get("version")
+    gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
+                  "detail": {"src": sv, "built": bv}})
+    return gates
+
+
+def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) -> None:
+    """Stage 4 — the independent verifier runs as a SEPARATE process and agent
+    (producer != verifier, global rule). nb_coder_verify.py exits 0 approve /
+    1 reject / 2 instrument error — an error is NEVER read as a reject."""
+    facts = out_dir / f"facts-{args.issue}.json"
+    facts.write_text(json.dumps(
+        {k: rec.get(k) for k in ("plan", "apply", "structure", "exec_mode", "c2",
+                                 "execution", "conversation_id")}, ensure_ascii=False),
+        encoding="utf-8")
+    cmd = [sys.executable, str(HERE / "nb_coder_verify.py"),
+           "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
+           "--facts", str(facts), "--agent", args.verifier_agent,
+           "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # the child prints non-ASCII JSON
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=args.verify_timeout + 300, env=env)
+        rc, out = p.returncode, (p.stdout or p.stderr or "")
+    except subprocess.TimeoutExpired:
+        rc, out = 2, "verify subprocess timeout"
+    entry: dict = {"rc": rc, "agent": args.verifier_agent,
+                   "elapsed_s": round(time.time() - t0, 1), "tail": out.strip()[-1500:]}
+    trace = out_dir / f"verify-{args.issue}.json"
+    if trace.is_file():
+        t = json.loads(trace.read_text(encoding="utf-8"))
+        entry |= {"verdict": t.get("verdict"), "model_used": t.get("model_used"),
+                  "findings": (t.get("answer") or {}).get("findings"),
+                  "conversation_id": t.get("conversation_id")}
+    rec["verify"] = entry
+    rec["stage4_s"] = entry["elapsed_s"]
+    if rc == 0 and entry.get("verdict") == "approve":
+        rec["verdict"] = "verify-approved"
+    elif rc == 1 and entry.get("verdict") == "reject":
+        rec["verdict"] = "verify-reject"
+    else:
+        rec["verdict"] = "verify-error"
+
+
+def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
+    p = subprocess.run(["git", "-C", str(wt), *git_args], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
+    return p.returncode, (p.stdout or p.stderr).strip()
+
+
+def _repo_slug(wt: Path) -> str | None:
+    """owner/repo parsed from the worktree's origin URL (#433 review: no hard-coded
+    repo -- the PR targets wherever the branch is pushed, neutral by construction).
+    Handles https://github.com/o/r(.git) and git@github.com:o/r(.git)."""
+    _, out = _git(wt, "remote", "get-url", "origin")
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", out or "")
+    return m.group(1) if m else None
+
+
+def _short_desc(args, plan: dict) -> str:
+    """One-line gesture description composed from the plan's own 'but' fields —
+    harness-only, no model turn. House form: '<notebook stem> cell N — <but>'."""
+    stem = Path(args.notebook).stem
+    gestes = [g for g in (plan.get("plan") or []) if isinstance(g, dict)]
+    if len(gestes) == 1 and gestes[0].get("geste") == "edit" and str(gestes[0].get("cell")).isdigit():
+        but = _text(gestes[0].get("but")).strip()
+        return f"{stem} cell {gestes[0]['cell']} — {but}"[:140] or f"{stem} — edit"
+    kinds = ",".join(sorted({str(g.get("geste")) for g in gestes})) or "edit"
+    return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
+
+
+def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
+              token: str | None) -> None:
+    """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
+    Fresh branch off the detached worktree, single-notebook commit, REST PR create,
+    delivery comment on the issue."""
+    t0 = time.time()
+    nb_rel = args.notebook.replace("\\", "/")
+    branch = args.pr_branch or f"nbcoder/auto-{args.issue}"
+    desc = _short_desc(args, rec.get("plan") or {})
+    entry: dict = {"branch": branch}
+
+    rc, out = _git(wt_path, "checkout", "-b", branch)
+    if rc != 0:
+        entry["error"] = out[:300]
+        rec["verdict"], rec["pr"] = "pr-branch-failed", entry
+        return
+    shutil.copy2(built_nb, wt_path / args.notebook)
+    rc, out = _git(wt_path, "add", "--", nb_rel)
+    if rc != 0:
+        entry["error"] = f"add: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-git-failed", entry
+        return
+
+    commit_body = (
+        f"{desc}\n\n"
+        + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
+                    for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + f"\n\nProducteur : {args.agent} (harnais nb_coder, stages 0-5)."
+        + f"\nVérification indépendante : {args.verifier_agent} — "
+        f"{(rec.get('verify') or {}).get('verdict')} "
+        f"(modèle {(rec.get('verify') or {}).get('model_used')})."
+        + f"\nExécution : kernel {rec.get('kernel', {}).get('kernel_name')}, "
+        f"{len(rec.get('execution') or [])} cellules exécutées, C.2 "
+        f"{'séquentiel' if (rec.get('c2') or {}).get('sequential') else 'BROKEN'}."
+        + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
+    msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
+    msg_file.write_text(commit_body, encoding="utf-8")
+    rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    msg_file.unlink(missing_ok=True)
+    if rc != 0:
+        entry["error"] = f"commit: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-git-failed", entry
+        return
+    entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+
+    rc, out = _git(wt_path, "push", "-u", "origin", branch)
+    if rc != 0:
+        entry["error"] = f"push: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-push-failed", entry
+        return
+
+    n_exec = len(rec.get("execution") or [])
+    gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
+    findings = (rec.get("verify") or {}).get("findings") or []
+    pr_body = (
+        f"Grain: auto/notebook-python — lane {args.lane} — issue #{args.issue}\n\n"
+        f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
+        f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
+        f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
+        f"vérificateur indépendant `{args.verifier_agent}` "
+        f"(`{(rec.get('verify') or {}).get('model_used')}`).\n\n"
+        f"## Geste\n\n{desc}\n\n"
+        + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
+                    for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + "\n\n## Mesures\n\n"
+        f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
+        f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
+        f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
+        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK.\n"
+        f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
+        f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
+        f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
+        f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
+        f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
+        f"run record complet dans le out-dir du harnais.\n\n"
+        f"Closes #{args.issue}\n\n"
+        "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
+    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
+    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
+    # claim registry.
+    repo_slug = args.pr_repo or _repo_slug(wt_path)
+    if not repo_slug:
+        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
+                          "unparseable) -- pass --pr-repo owner/repo explicitly")
+        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
+        return
+    entry["repo"] = repo_slug
+    body_file = built_nb.parent / f"pr-body-{args.issue}.md"
+    body_file.write_text(pr_body, encoding="utf-8")
+    rc, out = gh(["api", f"repos/{repo_slug}/pulls",
+                  "-f", f"title=Fix(notebooks,#{args.issue}): {desc}",
+                  "-f", f"head={branch}", "-f", f"base={args.pr_base}",
+                  "-F", f"body=@{body_file}"], token, timeout=120)
+    body_file.unlink(missing_ok=True)
+    if rc != 0:
+        entry["error"] = f"pr create: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-create-failed", entry
+        return
+    pr = json.loads(out)
+    entry |= {"number": pr.get("number"), "url": pr.get("html_url")}
+
+    # #433 review: the claim registry (CoursIA check_lane_claim.py) parses the marker
+    # grammar `[DELIVERED] lane <lane> -- PR #N ... paths: <list>`: the marker must
+    # START a line, `PR #N` (prefix required) is the only PR ref it captures -- prose
+    # `issue #N` never matches -- and the `paths:` clause is read as the FINAL segment
+    # of the marker line. Producer/verifier/trace stay on separate prose lines BELOW,
+    # never on the marker line.
+    comment = (f"[DELIVERED] lane {args.lane} -- PR #{pr.get('number')} -- paths: {nb_rel}\n\n"
+               f"Livraison harnais nb_coder : issue #{args.issue}.\n"
+               f"Producteur : `{args.agent}`. Vérificateur : `{args.verifier_agent}` "
+               f"({(rec.get('verify') or {}).get('verdict')}). "
+               f"Trace : conversation `{rec.get('conversation_id')}`.")
+    rc_c, out_c = gh(["api", f"repos/{repo_slug}/issues/{args.issue}/comments",
+                      "-f", f"body={comment}"], token, timeout=120)
+    entry["delivery_comment"] = rc_c == 0
+    if rc_c != 0:
+        entry["delivery_comment_error"] = out_c[:200]
+    rec["pr"] = entry
+    rec["verdict"] = "pr-created"
+    rec["stage5_s"] = round(time.time() - t0, 1)
+
+
 # ---------------------------------------------------------------- main flow
 async def run(args) -> dict:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": LANE, "dry": True, "stages": {}, "calls": [],
+           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
     # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
     # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
@@ -667,7 +935,7 @@ async def run(args) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, LANE)
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane)
     if rec["stages"]["claim_check"]["rc"] == 1:
         rec["verdict"] = "refused-claim-held-by-another-lane"
         return rec
@@ -675,7 +943,7 @@ async def run(args) -> dict:
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
     if args.claim:
-        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, LANE, args.intention)
+        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
@@ -790,6 +1058,11 @@ async def run(args) -> dict:
                             exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
                         rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
                                             if exec_targets else [])
+                    # kernel hygiene: an hourly cadence must not leak one kernel per run
+                    if rec.get("kernel_id"):
+                        rec["kernel_stop"] = await pm_call(
+                            pm, "manage_kernel", {"action": "stop",
+                                                  "kernel_id": rec["kernel_id"]})
                     counts = [c.get("execution_count") for c in _cells(scratch)
                               if c.get("cell_type") == "code"
                               and _text(c.get("source")).strip()]
@@ -803,6 +1076,19 @@ async def run(args) -> dict:
                     else:
                         rec["verdict"] = "built-executed-counts-broken"
             rec["stage3_s"] = round(time.time() - t3, 1)
+
+    # ---- stages 3-5: harness-only (no model turn inside these)
+    built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
+    if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
+        tg = time.time()
+        rec["gates"] = run_gates(src_nb, built_path)
+        rec["gates_s"] = round(time.time() - tg, 1)
+        bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
+        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
+    if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
+        stage4_verify(args, rec, src_nb, built_path, out_dir)
+    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+        stage5_pr(args, rec, Path(wt["path"]), built_path, issue, token)
     rec["finished"] = utcnow()
     return rec
 
@@ -825,7 +1111,9 @@ def main() -> int:
                     help="house rules injected into the prompts ('' disables)")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
-    ap.add_argument("--gate-mode", choices=["warn", "block"], default="warn")
+    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--lane", default=LANE,
+                    help="claim lane id (default: NBCODER_LANE env, else myia-ai-01:nb-coder)")
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
                          "mcp = the model calls the papermill write tools (lost-update hazard "
@@ -836,7 +1124,23 @@ def main() -> int:
                          "(state-safe, execution_count sequential — C.2 proof), none for "
                          "markdown-only; all: always; plan: the plan's execute_cells "
                          "(SOURCE indexes, shift hazard with deletes/inserts)")
-    ap.add_argument("--max-stage", type=int, choices=[0, 1, 2], default=2)
+    ap.add_argument("--max-stage", type=int, choices=[0, 1, 2, 3, 4, 5], default=2,
+                    help="0 claim+issue · +1 plan · +2 build/exec · +3 gates · "
+                         "+4 independent verify · +5 PR (the only GitHub-writing stage; "
+                         "the model never performs it)")
+    ap.add_argument("--verifier-agent",
+                    default=os.environ.get("NBCODER_VERIFIER", "critic"),
+                    help="stage-4 verifier agent — must be a DIFFERENT model from the "
+                         "builder (default critic = GLM-5.3 vs builder MiniMax)")
+    ap.add_argument("--verify-timeout", type=int, default=900)
+    ap.add_argument("--pr-base", default="main")
+    ap.add_argument("--pr-repo", default=None,
+                    help="PR target as owner/repo (default: derived from the worktree's "
+                         "origin remote; the run refuses with pr-repo-unresolved if "
+                         "unparseable -- never a hard-coded fallback)")
+    ap.add_argument("--pr-branch", default=None,
+                    help="branch name (default nbcoder/auto-<issue>; seat-neutral, "
+                         "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
@@ -844,7 +1148,7 @@ def main() -> int:
         rec = asyncio.run(run(args))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "lane": LANE, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
+               "lane": args.lane, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
@@ -854,13 +1158,19 @@ def main() -> int:
         fh.write(json.dumps({k: rec.get(k) for k in
                              ("issue", "notebook", "started", "finished", "verdict", "lane")}
                             | {"stage0_s": rec.get("stage0_s"), "stage1_s": rec.get("stage1_s"),
-                               "stage2_s": rec.get("stage2_s"),
+                               "stage2_s": rec.get("stage2_s"), "stage4_s": rec.get("stage4_s"),
+                               "stage5_s": rec.get("stage5_s"),
                                "gate": (rec.get("gate") or {}).get("verdict"),
+                               "verify": (rec.get("verify") or {}).get("verdict"),
+                               "pr": (rec.get("pr") or {}).get("number"),
                                "calls": len(rec.get("calls") or [])}, ensure_ascii=False) + "\n")
     print(json.dumps({k: rec.get(k) for k in
-                      ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "kernel_id")},
-                     ensure_ascii=False))
-    return 0 if rec.get("verdict", "").endswith(("ok", "stage0-only", "stage1-only")) else 1
+                      ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "stage4_s",
+                       "stage5_s", "kernel_id")}
+                     | {"verify": (rec.get("verify") or {}).get("verdict"),
+                        "pr": (rec.get("pr") or {}).get("number")}, ensure_ascii=False))
+    return 0 if rec.get("verdict", "").endswith(
+        ("ok", "stage0-only", "stage1-only", "verify-approved", "pr-created")) else 1
 
 
 if __name__ == "__main__":
