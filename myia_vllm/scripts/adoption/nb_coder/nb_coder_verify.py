@@ -206,6 +206,14 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
 
 
 async def call_verifier(args, prompt: str) -> tuple[dict, float]:
+    # Same wiring guard as the builder: the verifier launches sk-agent too, and a seat that
+    # exports nothing must be told once, in the same words, not per agent.
+    nbcd.require_sk()
+    cred = nbcd.missing_credential(args.agent)
+    if cred:
+        # The verifier has no preflight of its own: same refusal, same words as the driver's.
+        raise SystemExit(f"nb-coder (vérificateur): credential absent — {cred} n'est pas "
+                         f"dans l'environnement.")
     sk_params = StdioServerParameters(
         command=str(nbcd.SK_PY), args=[str(nbcd.SK_DIR / "sk_agent.py")],
         env={**os.environ, "SK_AGENT_CONFIG": str(nbcd.SK_CONFIG)}, cwd=str(Path(args.out_dir)))

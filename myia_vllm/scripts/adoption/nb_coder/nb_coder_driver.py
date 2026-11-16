@@ -56,15 +56,118 @@ def _sk_dir() -> Path:
     """Where the sk-agent checkout lives (roo-extensions #4781: no seat binding in the tree).
     Order: NBCODER_SK_DIR env, then the sibling layout the harness has once it lives at
     servers/sk-agent/harness/nb_coder/ (its sk-agent root is ../.., recognised by sk_agent.py
-    so an unrelated ../.. cannot shadow it), then the legacy absolute path kept for the live
-    ai-01 seat until the cutover."""
+    so an unrelated ../.. cannot shadow it), then the fleet roots below, probed by the marker
+    file.
+
+    One hardcoded legacy path was not enough: it named ai-01's layout (d:/roo-extensions) and
+    po-2028 keeps the same checkout under d:/dev/roo-extensions. Measured 16/11 — the run
+    reached sk-agent only because NBCODER_SK_DIR happened to be exported in the operator's
+    shell; an unattended run would have died at the MCP launch, three stages away from the
+    cause. Probing means a seat that misses every candidate says so (see `require_sk`)."""
     env = os.environ.get("NBCODER_SK_DIR")
     if env:
         return Path(env)
     sibling = (HERE / "../..").resolve()
     if (sibling / "sk_agent.py").is_file():
         return sibling
-    return Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+    for cand in _SK_ROOTS:
+        if (cand / "sk_agent.py").is_file():
+            return cand
+    return _SK_ROOTS[0]
+
+
+# Roots where the sk-agent checkout has actually been seen on the fleet. A single hardcoded
+# absolute path is how the trap above happened; candidates are cheap and named.
+_SK_ROOTS = (Path("d:/roo-extensions/mcps/internal/servers/sk-agent"),
+             Path("d:/dev/roo-extensions/mcps/internal/servers/sk-agent"))
+
+
+def _launch_gap(label: str, path: Path, marker: str, env_var: str, probed) -> None:
+    """Refuse to launch an MCP whose directory is missing, and say what to set.
+
+    Fail loud, never quiet (F1/F2, vllm#438): the stdio client reports a missing interpreter
+    as a bare `[Errno 2]` from a child process, which reads like a broken MCP and not like a
+    seat that was never wired. The two are different repairs and only one is an incident.
+
+    Used by the VERIFIER, which has no preflight of its own. The driver does not need it:
+    `_preflight` already refuses the whole wiring, with a trace, before any side effect —
+    a second guard here would be a duplicate that drifts."""
+    raise SystemExit(
+        f"nb-coder: {label} introuvable — {path} ne contient pas {marker}.\n"
+        f"  Poser {env_var} sur le répertoire de ce siège.\n"
+        f"  Sondé : {probed}")
+
+
+def require_sk() -> None:
+    """Check the sk-agent launch inputs before opening the stdio client (verifier side)."""
+    if not (SK_DIR / "sk_agent.py").is_file():
+        probed = ", ".join(str(c) for c in _SK_ROOTS)
+        _launch_gap("sk-agent", SK_DIR, "sk_agent.py", "NBCODER_SK_DIR",
+                    f"NBCODER_SK_DIR={os.environ.get('NBCODER_SK_DIR') or '(absent)'}; "
+                    f"racines flotte : {probed}")
+
+
+def unknown_agent(agent: str) -> str | None:
+    """The refusal when the agent id is absent from sk-agent's config, else None.
+
+    An unknown id is NOT inert, which is what makes this a preflight check and not a
+    nicety. sk-agent's `_get_or_create_agent` logs a warning and returns None, then the
+    resolution falls back to `get_default_agent()` — **a different model runs**, the claim
+    is already posted, and only the envelope's `agent_used`/`model_used` reveals the
+    substitution after the fact (measured by ai-01:vllm the 16/11). A typo in `--agent`
+    must cost zero, not one claim plus one pass of the wrong model.
+
+    The neighbouring `missing_credential` returns None on an unknown agent on purpose —
+    nothing to judge about a credential that cannot be resolved. That is exactly the hole
+    ai-01:vllm named in the #455 co-review; the two functions are complementary, not
+    redundant: one refuses an agent that DOES NOT EXIST, the other one that exists but
+    cannot authenticate.
+
+    Only a readable config can accuse: with none, `_preflight` has a more precise refusal
+    of its own (the path check), and this returns None rather than stack a second one.
+    """
+    try:
+        cfg = json.loads(SK_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    base_id = agent.split("[")[0] if "[" in agent else agent
+    ids = [a.get("id") for a in cfg.get("agents") or [] if a.get("id")]
+    if base_id in ids:
+        return None
+    shown = ", ".join(ids[:8]) + (" …" if len(ids) > 8 else "")
+    return f"agent {base_id} (absent de {SK_CONFIG.name}) — agents connus : {shown}"
+
+
+def missing_credential(agent: str) -> str | None:
+    """The env var an agent's model needs and the environment lacks, or None.
+
+    sk-agent authenticates through the environment — each model declares ``api_key_env``
+    (``ZAI_API_KEY`` for the hub models on this fleet) — and the driver hands it the
+    DRIVER's environment. Launched by an MCP host those variables come from the server
+    entry in ``~/.claude.json``; launched from a shell or a runner that never exported
+    them, the first model call fails with 401. Measured 16/11 on po-2028 with every
+    NBCODER_* variable removed: ``stage1-auth-failed`` after a 50 s claim, zero calls
+    served. `_preflight` checks file paths, not credentials — this is the one input of
+    that list a path check cannot see.
+
+    Unknown agent or model, or no declared variable: nothing to judge, returns None.
+    """
+    try:
+        cfg = json.loads(SK_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return None                             # _preflight already refuses a missing config
+    base_id = agent.split("[")[0] if "[" in agent else agent
+    agent_cfg = next((a for a in cfg.get("agents") or [] if a.get("id") == base_id), None)
+    if not agent_cfg:
+        return None
+    model_id = agent_cfg.get("model")
+    model_cfg = next((m for m in cfg.get("models") or [] if m.get("id") == model_id), None)
+    if not model_cfg:
+        return None
+    var = model_cfg.get("api_key_env")
+    if not var or os.environ.get(var):
+        return None
+    return f"{var} (modèle {model_id} de l'agent {agent})"
 
 
 # Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
@@ -81,9 +184,26 @@ _LEGACY_PM_PY = Path(r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe")
 PM_PY = Path(os.environ.get("NBCODER_PM_PY",
                             str(_LEGACY_PM_PY if _LEGACY_PM_PY.is_file() else Path(sys.executable))))
 _PM_CWD_SIBLING = (HERE / "../../../jupyter-papermill-mcp-server").resolve()
-PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
-                             str(_PM_CWD_SIBLING if _PM_CWD_SIBLING.is_dir()
-                                 else Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))))
+# Same probed-candidate shape as _SK_ROOTS, for the same measured reason: the hardcoded path
+# was ai-01's layout and po-2028 keeps the same checkout under D:\dev.
+_PM_CWD_ROOTS = (Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"),
+                 Path(r"D:\dev\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))
+
+
+def _pm_cwd() -> Path:
+    """Seat-agnostic discovery of the papermill MCP checkout (checked by `_preflight`)."""
+    env = os.environ.get("NBCODER_PM_CWD")
+    if env:
+        return Path(env)
+    if _PM_CWD_SIBLING.is_dir():
+        return _PM_CWD_SIBLING
+    for cand in _PM_CWD_ROOTS:
+        if (cand / "papermill_mcp").is_dir():
+            return cand
+    return _PM_CWD_ROOTS[0]
+
+
+PM_CWD = _pm_cwd()
 GATE = Path(os.environ.get("NBCODER_GATE",
                            str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
 # No seat default (F1, vllm#438): this value reaches the claim text, the [DELIVERED] marker and
@@ -200,7 +320,11 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     if dest.exists() and (dest / ".git").exists() and not fresh:
         head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
-        return {"path": str(dest), "reused": True, "head": head}
+        # Same contract on BOTH branches (vllm#455 review): the reuse branch used to return
+        # no `ok` at all, so `if not wt.get("ok")` refused a perfectly healthy reused
+        # worktree — a false positive, which is how a guard gets switched off. Callers test
+        # `wt.get("ok") is False`.
+        return {"path": str(dest), "reused": True, "head": head, "ok": True, "err": None}
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
                    capture_output=True, text=True, timeout=300)
     if dest.exists():
@@ -212,6 +336,19 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
                           capture_output=True, text=True).stdout.strip()
     return {"path": str(dest), "reused": False, "head": head,
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
+
+
+def worktree_refusal(wt: dict) -> str | None:
+    """The verdict when the worktree organ refused, else None.
+
+    `ok` is read as tri-state on purpose: `is False` is the only failing value, and an
+    ABSENT key means a dict shaped before the both-branches contract (or by a caller that
+    never asked for one) — never a failure. `if not wt.get("ok")` would refuse a healthy
+    reused worktree, and a guard that cries wolf is a guard someone removes.
+    """
+    if wt.get("ok") is False:
+        return f"worktree-failed:{(wt.get('err') or 'unknown')[:300]}"
+    return None
 
 
 def engine_tokens() -> dict:
@@ -1037,6 +1174,13 @@ async def run(args, rec: dict) -> dict:
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
+    refusal = worktree_refusal(wt)
+    if refusal:
+        # Before the `stage0-only` early return: a worktree that never got created is not a
+        # successful stage 0, and `notebook-not-found` would send the operator hunting a
+        # notebook that is right there on main.
+        rec["verdict"] = refusal
+        return rec
     if args.max_stage < 1:
         rec["verdict"] = "stage0-only"
         return rec
@@ -1206,6 +1350,17 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
+    # A path check cannot see a credential (vllm#455): the model's api_key_env is the one
+    # wiring input that lives in the environment and whose absence only shows up as a 401
+    # from the backend, AFTER the claim has been posted.
+    cred = missing_credential(args.agent)
+    if cred:
+        missing.append(cred)
+    # ... and a credential check cannot see an agent id that does not exist: sk-agent then
+    # serves the DEFAULT agent, a different model, after the claim is paid (vllm#455 review).
+    ghost = unknown_agent(args.agent)
+    if ghost:
+        missing.append(ghost)
     if not missing:
         return
     detail = "seat wiring does not resolve here — point the env var at a real path: " \

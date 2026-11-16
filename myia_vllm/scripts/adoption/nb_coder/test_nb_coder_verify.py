@@ -130,3 +130,91 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+# ------------------------------------------------- worktree organ (vllm#455 review)
+
+
+def _git_repo(p: Path) -> Path:
+    """A real one-commit repo — no mock: the organ shells out to `git` and that IS the code."""
+    import subprocess
+    p.mkdir(parents=True, exist_ok=True)
+    for cmd in (["init", "-q"], ["-c", "user.name=nb", "-c", "user.email=nb@x",
+                                 "commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", "-C", str(p), *cmd], check=True, capture_output=True)
+    return p
+
+
+def test_reused_worktree_reports_ok_true(tmp_path):
+    """The branch that used to omit `ok` entirely: a healthy reuse must say so, or the
+    call-site guard refuses it (a false positive, and a guard that cries wolf gets removed)."""
+    dest = _git_repo(tmp_path / "wt")
+    wt = v.nbcd.prepare_worktree(tmp_path / "unused", dest, fresh=False)
+    assert wt["reused"] is True
+    assert wt["ok"] is True and wt["err"] is None
+    assert v.nbcd.worktree_refusal(wt) is None
+
+
+def test_failed_worktree_reports_ok_false_with_the_error(tmp_path):
+    """No origin/main in a bare tmp repo: `worktree add` fails, and the reason must survive."""
+    repo = _git_repo(tmp_path / "repo")          # has HEAD, has no origin/main
+    wt = v.nbcd.prepare_worktree(repo, tmp_path / "wt", fresh=True)
+    assert wt["ok"] is False
+    assert wt["err"]
+    ref = v.nbcd.worktree_refusal(wt)
+    assert ref and ref.startswith("worktree-failed:")
+
+
+def test_absent_ok_is_not_a_refusal(tmp_path):
+    """Tri-state: `is False` fails, absent passes. This is the exact dict the pre-contract
+    organ returned for a HEALTHY reuse — refusing it is the bug being pinned."""
+    assert v.nbcd.worktree_refusal({"path": "x", "reused": True, "head": "abc"}) is None
+
+
+# ------------------------------------------------- agent wiring (vllm#455 review)
+
+
+def _cfg(tmp_path: Path, ids: list) -> Path:
+    p = tmp_path / "sk-agent.config.json"
+    p.write_text(json.dumps({"agents": [{"id": i, "model": "m"} for i in ids],
+                             "models": [{"id": "m", "api_key_env": None}]}), encoding="utf-8")
+    return p
+
+
+def test_a_known_agent_is_not_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local", "notebook-coder-minimax"]))
+    assert v.nbcd.unknown_agent("fast-local") is None
+
+
+def test_a_typo_is_refused_and_lists_the_real_ids(tmp_path, monkeypatch):
+    """sk-agent falls back to `get_default_agent()` on an unknown id — a DIFFERENT model
+    runs after the claim is paid (ai-01:vllm, 16/11). The refusal must name the typo and
+    show what exists, or the operator keeps guessing."""
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local", "notebook-coder-minimax"]))
+    ref = v.nbcd.unknown_agent("notebook-coder-minmax")
+    assert ref and "notebook-coder-minmax" in ref
+    assert "notebook-coder-minimax" in ref
+
+
+def test_a_model_suffix_does_not_look_like_a_typo(tmp_path, monkeypatch):
+    """`agent[model]` is legal; only the base id is looked up — a false refusal here would
+    block a working invocation."""
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local"]))
+    assert v.nbcd.unknown_agent("fast-local[glm-5.3]") is None
+
+
+def test_an_unreadable_config_accuses_nobody(tmp_path, monkeypatch):
+    """The path check owns that failure; a second, less precise refusal would only muddy it."""
+    missing = tmp_path / "absent.json"
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", missing)
+    assert v.nbcd.unknown_agent("whatever") is None
+
+
+def test_the_preflight_actually_calls_it():
+    """A correct refusal that `_preflight` never calls protects nothing.
+
+    `_preflight` is not reachable from a unit test without argparse + a full seat, so the
+    pin reads the CALL SITE in the source — the same pattern the grain tag uses.
+    """
+    src = Path(v.nbcd.__file__).read_text(encoding="utf-8")
+    assert "unknown_agent(args.agent)" in src, "the preflight no longer refuses a ghost agent"
