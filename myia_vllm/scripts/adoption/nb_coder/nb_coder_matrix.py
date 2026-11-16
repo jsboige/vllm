@@ -119,7 +119,8 @@ def run_one(agent: str, model: str, args, out_root: Path, idx: int = 0) -> dict:
     row.update({
         "verdict": rec.get("verdict"),
         "stage0_s": rec.get("stage0_s"), "stage1_s": rec.get("stage1_s"),
-        "stage2_s": rec.get("stage2_s"), "stage4_s": rec.get("stage4_s"),
+        "stage2_s": rec.get("stage2_s"), "stage3_s": rec.get("stage3_s"),
+        "stage4_s": rec.get("stage4_s"),
         "stage5_s": rec.get("stage5_s"),
         "calls": len(calls),
         "calls_failed": sum(1 for c in calls if c.get("error")),
@@ -148,16 +149,34 @@ def run_one(agent: str, model: str, args, out_root: Path, idx: int = 0) -> dict:
 
 def money_rows(rows: list[dict]) -> list[str]:
     """A markdown table an operator can read at a glance — one line per model."""
-    head = ("| modèle | verdict | s0 | s1 | s2 | s4 | s5 | mur | appels | échecs | exéc | "
-            "octets | struct | gate | verify | PR |")
-    sep = "|" + "---|" * 17
+    head = ("| modèle | servi | verdict | s0 | s1 | s2 | s3 | s4 | s5 | mur | appels | échecs | "
+            "exéc | octets | struct | gate | verify | PR |")
+    sep = "|" + "---|" * 18
     out = [head, sep]
     for r in rows:
         def s(k):
             v = r.get(k)
+            # bools first: `True` is an int in Python, so `:g` would print the structurally
+            # meaningful `structure.ok` as a bare "1" and the operator could not tell an
+            # unread field from a passing one.
+            if isinstance(v, bool):
+                return "ok" if v else "KO"
             return f"{v:g}" if isinstance(v, (int, float)) else ("" if v is None else str(v))
+
+        def short(k, n=64):
+            """A table cell stays a cell. `verdict` can carry a full Windows path
+            (`notebook-not-found:D:\\…\\b_26804_built.ipynb`) and one such cell pushes every
+            other column off the screen — measured 16/11 on the failed sweep. The full string
+            is unchanged in the JSON report; only the glance view is bounded."""
+            v = s(k)
+            return v if len(v) <= n else v[:n - 1] + "…"
         out.append("| " + " | ".join([
-            r.get("label") or r["agent"], s("verdict"), s("stage0_s"), s("stage1_s"), s("stage2_s"),
+            r.get("label") or r["agent"],
+            # What ACTUALLY served, not what was asked (sk-agent envelope `model_used`): an
+            # alias like nb-minimax can change backend without any config moving, so the
+            # requested id is not evidence of the model that answered.
+            "+".join(r.get("model_used") or []) or "",
+            short("verdict"), s("stage0_s"), s("stage1_s"), s("stage2_s"), s("stage3_s"),
             s("stage4_s"), s("stage5_s"), s("wall_s"),
             f"{r.get('calls', '')}" + (f" (+{r['calls_retry']}r)" if r.get("calls_retry") else ""),
             s("calls_failed"),

@@ -1292,6 +1292,15 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
+    # The out-dir is normalised to an ABSOLUTE path here, once, at the argument boundary
+    # (vllm#453 review). The build writes the notebook into out_dir with a RELATIVE path while
+    # the papermill server is spawned with cwd=PM_CWD — a different, absolute directory — so a
+    # relative --out-dir made stage 2 execute a file that does not exist from where the server
+    # stands. Measured 16/11 (po-2028:claudish): the build was produced (83 407 B) and then
+    # every one of 11 cells returned "Notebook file not found", verdict
+    # built-execution-failed. Resolving at the caller would have left the same trap in every
+    # other invocation (hourly runner, manual run); here it cannot come back.
+    args.out_dir = str(Path(args.out_dir).resolve())
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
     # resolution path the README does not document.
