@@ -64,6 +64,27 @@ def _text(x) -> str:
     return "".join(x) if isinstance(x, list) else (x or "")
 
 
+def _lines(x):
+    """Cell source in nbformat list-of-lines form (CoursIA convention, cf. fix_epic_refs.py:150-154).
+    A str source written back reformats the whole cell JSON: every harness PR would inflate its diff
+    (CR CoursIA 14/11, point 1a)."""
+    return x.splitlines(keepends=True) if isinstance(x, str) else (x or [])
+
+
+def normalize_sources(nb_path: Path) -> int:
+    """Rewrite any str-form cell source into list-of-lines form; returns the count converted.
+    Covers the MCP write mode (update_cell/add_cell write strings). No-op when nothing to convert."""
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    n = 0
+    for c in nb.get("cells", []):
+        if isinstance(c.get("source"), str):
+            c["source"] = c["source"].splitlines(keepends=True)
+            n += 1
+    if n:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return n
+
+
 def gh(args: list[str], token: str | None = None, timeout: int = 60) -> tuple[int, str]:
     """REST-only GitHub calls (GraphQL bucket is fleet-shared)."""
     env = {**os.environ}
@@ -394,7 +415,7 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
             if not 0 <= i < len(cells):
                 raise IndexError(f"cell {i} hors bornes (0..{len(cells) - 1})")
             old = _text(cells[i].get("source"))
-            cells[i]["source"] = new
+            cells[i]["source"] = _lines(new)
             entry = {"cell": i, "changed": new != old, "chars": len(new)}
             if e.get("cell_type") in ("code", "markdown"):
                 ct = e["cell_type"]
@@ -436,7 +457,7 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
                 cid = hashlib.sha1((cid + src).encode("utf-8")).hexdigest()[:8]
             taken.add(cid)
             ct = x.get("cell_type") or "markdown"
-            new_cell = {"cell_type": ct, "id": cid, "metadata": {}, "source": src}
+            new_cell = {"cell_type": ct, "id": cid, "metadata": {}, "source": _lines(src)}
             if ct == "code":
                 new_cell |= {"execution_count": None, "outputs": []}
             cells.insert(pos, new_cell)
@@ -722,6 +743,8 @@ async def run(args) -> dict:
             rec["build_model_answer"] = {"parsed": built, "chars": len(env2.get("response") or "")}
             if args.write_mode == "json" and built:
                 rec["apply"] = apply_edits(scratch, built)
+            if scratch.is_file():
+                rec["sources_normalized"] = normalize_sources(scratch)   # CR 1a, couvre le mode mcp
             rec["stage2_s"] = round(time.time() - t2, 1)
 
             # ---- harness: structural diff first, then execution; the harness judges alone
