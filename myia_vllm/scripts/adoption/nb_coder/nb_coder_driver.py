@@ -669,6 +669,37 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
 _AUTH_CODE_RE = re.compile(r"\b(?:401|403)\b")
 _AUTH_MARKERS = ("unauthorized", "authentication", "invalid proxy")
 
+# A 403 is not a credential verdict: a proxy that cannot RESOLVE the model name answers 403
+# too — `permission_error` on the OpenAI wire. The status is ambiguous, the wording is not,
+# so the body is read before the code and a code only decides when the body is silent.
+# Measured 16/11 (po-2028:claudish): 'claudish: unknown model nb-luna — not found in any
+# provider catalog or routing map' surfaced as `stage1-auth-failed`, sending the operator
+# after a credential that had not moved (vllm#457).
+_MODEL_UNRESOLVED_MARKERS = ("unknown model", "not found in any provider catalog",
+                             "routing map", "use provider@model")
+
+
+def _excerpt(err: str, marker: str = "", budget: int = 160) -> str:
+    """The part of an error that explains it, bounded.
+
+    Head+tail by default: the head names the exception, the tail names the cause. When the
+    verdict rests on a MARKER, the window is centred on that marker instead — on the measured
+    luna run the model name sat at char ~185, past the head slice and before the tail slice,
+    so head+tail alone kept the right verdict and lost the word that justified it. That gap
+    was found by the pin, not by reading the code (vllm#457).
+    """
+    if len(err) <= budget:
+        return err
+    if marker:
+        i = err.lower().find(marker)
+        if i >= 0:
+            start = max(0, i - budget // 4)
+            # The slice can open mid-token (' 403 - {...'): the verdict is read by a human
+            # first, so it starts on the token, not inside it.
+            return err[start:start + budget].strip()
+    head = budget * 2 // 3
+    return f"{err[:head]} … {err[-(budget - head - 3):]}"
+
 
 def call_failure(env: dict) -> str:
     """Verdict for a model call that never produced an answer, or "" when it answered.
@@ -677,14 +708,23 @@ def call_failure(env: dict) -> str:
     reporting stage1-unparsed points the operator at the model instead of at the wiring.
     Measured 16/11 (po-2028:claudish): api_key_env unset -> '401 invalid proxy authentication'
     surfaced as stage1-unparsed with the real cause buried in .calls[0].error (F5, vllm#441).
+
+    The MODEL-unresolved test comes first, before any status code: same day, same seat, a
+    403 carrying 'unknown model nb-luna' was read as auth-failed, and the repair it named
+    (find the key) was not the repair needed (publish the alias) — vllm#457.
     """
     err = (env.get("error") or "").strip()
     if not err:
         return ""
     low = err.lower()
-    kind = ("auth-failed" if _AUTH_CODE_RE.search(low)
-            or any(m in low for m in _AUTH_MARKERS) else "call-failed")
-    return f"{kind}: {err[:160]}"
+    hit = next((m for m in _MODEL_UNRESOLVED_MARKERS if m in low), "")
+    if hit:
+        kind = "model-unresolved"
+    elif _AUTH_CODE_RE.search(low) or any(m in low for m in _AUTH_MARKERS):
+        kind = "auth-failed"
+    else:
+        kind = "call-failed"
+    return f"{kind}: {_excerpt(err, hit)}"
 
 
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
