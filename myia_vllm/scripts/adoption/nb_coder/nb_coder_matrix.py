@@ -54,7 +54,7 @@ def slug(agent: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", agent).strip("-") or "agent"
 
 
-def run_one(agent: str, model: str, args, out_root: Path) -> dict:
+def run_one(agent: str, model: str, args, out_root: Path, idx: int = 0) -> dict:
     """Run the driver once for one (agent, model) pair and read back what the trace says.
 
     `agent` carries the PROMPT (the notebook-builder conventions); `model` is what actually
@@ -75,7 +75,13 @@ def run_one(agent: str, model: str, args, out_root: Path) -> dict:
            "--timeout", str(args.timeout),
            "--verify-timeout", str(args.verify_timeout),
            "--out-dir", str(out_dir),
-           "--worktree", str(out_dir / "wt"),
+           # A SHORT worktree root, not out_dir/"wt": measured 16/11 — the CoursIA tree carries
+           # deep paths, and an extra ~50 characters of prefix crosses the Windows MAX_PATH
+           # limit. `git worktree add` then dies on "unable to create file
+           # MyIA.AI.Notebooks/…", the driver IGNORES `ok:false`, and the run reports
+           # `notebook-not-found` — a wiring failure wearing a missing-file label. One
+           # numeric directory per row keeps the prefix at ~24 characters.
+           "--worktree", str((out_root.parent / "mx" / str(idx)).resolve()),
            "--gate-mode", args.gate_mode,
            "--exec-mode", args.exec_mode,
            "--write-mode", args.write_mode,
@@ -104,6 +110,12 @@ def run_one(agent: str, model: str, args, out_root: Path) -> dict:
         return row
     rec = json.loads(trace.read_text(encoding="utf-8"))
     calls = rec.get("calls") or []
+    # Name a wiring failure instead of letting it wear a missing-file label: prepare_worktree
+    # reports `ok:false` and the driver ignores it, so the verdict says `notebook-not-found`
+    # when the real cause is one level up (MAX_PATH, a stale lock, a failed fetch).
+    wt = (rec.get("stages") or {}).get("worktree") or {}
+    if wt and wt.get("ok") is False:
+        row["worktree_failed"] = str(wt.get("err") or "")[:300]
     row.update({
         "verdict": rec.get("verdict"),
         "stage0_s": rec.get("stage0_s"), "stage1_s": rec.get("stage1_s"),
@@ -207,13 +219,15 @@ def main() -> int:
     print(f"# carnet : {args.notebook}")
     print(f"# sorties : {out_root}")
     rows = []
-    for agent, model in pairs:
+    for i, (agent, model) in enumerate(pairs):
         print(f"\n== {agent}{'@' + model if model else ''} ==", flush=True)
-        row = run_one(agent, model, args, out_root)
+        row = run_one(agent, model, args, out_root, i)
         rows.append(row)
         if not args.dry:
             print(f"   verdict={row.get('verdict')} wall={row.get('wall_s')}s "
                   f"calls={row.get('calls')}", flush=True)
+            if row.get("worktree_failed"):
+                print(f"   ⚠ worktree KO : {row['worktree_failed']}", flush=True)
     if args.dry:
         for r in rows:
             print(" ".join(r["cmd"]))
