@@ -662,7 +662,12 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
     return env
 
 
-_AUTH_MARKERS = ("401", "403", "unauthorized", "authentication", "invalid proxy")
+# Codes are matched on word boundaries, never as substrings: a raw `in` test turns
+# 'timeout after 1401 ms' and 'listening on port 8403' into auth failures — the exact mirror
+# of the bug this classification removes (a timeout blamed on the wiring). Measured in
+# co-review of #442 (po-2028:claudish), F5-1.
+_AUTH_CODE_RE = re.compile(r"\b(?:401|403)\b")
+_AUTH_MARKERS = ("unauthorized", "authentication", "invalid proxy")
 
 
 def call_failure(env: dict) -> str:
@@ -677,7 +682,8 @@ def call_failure(env: dict) -> str:
     if not err:
         return ""
     low = err.lower()
-    kind = "auth-failed" if any(m in low for m in _AUTH_MARKERS) else "call-failed"
+    kind = ("auth-failed" if _AUTH_CODE_RE.search(low)
+            or any(m in low for m in _AUTH_MARKERS) else "call-failed")
     return f"{kind}: {err[:160]}"
 
 
@@ -1147,7 +1153,7 @@ async def run(args, rec: dict) -> dict:
     return rec
 
 
-def _preflight(ap) -> None:
+def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
     On a foreign checkout PM_CWD fell through to a non-existent legacy path, so the two MCP
@@ -1155,6 +1161,10 @@ def _preflight(ap) -> None:
     the operator saw was 'crashed:ExceptionGroup ... (1 sub-exception)' with calls: 0, which
     reads like a model or protocol defect. A missing SK_PY / config dies the same opaque way
     inside stdio_client, so the check covers the whole wiring, not just the reported field.
+
+    A refusal still leaves a TRACE (F3-1, co-review of #442): a scheduled loop cannot tell
+    "ran and refused" from "never ran" if the refusal leaves no out-dir and no ledger line.
+    The trace is written here, before ap.error, with the refusal itself as the verdict.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -1163,9 +1173,26 @@ def _preflight(ap) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
-    if missing:
-        ap.error("seat wiring does not resolve here — point the env var at a real path: "
-                 + " | ".join(missing))
+    if not missing:
+        return
+    detail = "seat wiring does not resolve here — point the env var at a real path: " \
+             + " | ".join(missing)
+    out_dir = Path(args.out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
+               "verdict": "refused-wiring-unresolved",
+               "wiring_missing": missing}
+        (out_dir / f"issue-{args.issue}.json").write_text(
+            json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: rec.get(k) for k in
+                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
+                                | {"calls": 0}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass          # the refusal must not be masked by a failed trace write
+    ap.error(detail)
 
 
 def main() -> int:
@@ -1232,7 +1259,7 @@ def main() -> int:
         ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a default "
                  "identity would let two seats share one claim lane (F1, vllm#438)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
-        _preflight(ap)
+        _preflight(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
@@ -1246,7 +1273,9 @@ def main() -> int:
         rec["crash"] = {"type": type(exc).__name__, "message": str(exc)[:500],
                         "traceback_tail": traceback.format_exc()[-2000:]}
         rec["verdict"] = f"crashed:{type(exc).__name__}: {str(exc)[:300]}"
-        rec["dry"] = True
+        # `dry` is NOT forced here: it says "the run stopped before stage 5", which a crash on
+        # --max-stage 5 does not mean (co-review of #442, F4-1). rec already carries the true
+        # value from main() — a crash is a crash, not a dry run.
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
