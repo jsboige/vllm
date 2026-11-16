@@ -62,6 +62,12 @@ def cell_output_text(cell: dict) -> str:
     Consecutive STREAMS are joined with NO separator (the reader sees one continuous stream);
     a non-stream output (a result, an error) is separated from its neighbours by a newline so
     that two different outputs cannot silently merge into the same string.
+
+    NON-TEXT payloads (an image, a JSON result, a widget) contribute no text, so leaving them
+    out made a cell that only displays an image hash the EMPTY string on both sides — measured
+    16/11: two different PNGs both gave `da39a3ee`, sha1(""), and a changed image was
+    invisible. They are hashed RAW and folded into the text as a marker, so the digest moves
+    and the verifier sees which payload moved.
     """
     chunks: list[tuple[bool, str]] = []
     for o in cell.get("outputs") or []:
@@ -71,9 +77,14 @@ def cell_output_text(cell: dict) -> str:
             chunks.append((True, _text(o.get("text"))))
             continue
         data = o.get("data") or {}
-        bits = [_text(data.get(mime)) for mime in ("text/plain", "text/html", "text/markdown")]
+        text_mimes = ("text/plain", "text/html", "text/markdown")
+        bits = [_text(data.get(mime)) for mime in text_mimes]
         bits.append(_text(o.get("traceback")))
         bits.append(str(o.get("evalue") or ""))
+        others = {k: v for k, v in data.items() if k not in text_mimes}
+        if others:
+            raw = json.dumps(others, ensure_ascii=False, sort_keys=True).encode()
+            bits.append(f"[{'+'.join(sorted(others))} {hashlib.sha1(raw).hexdigest()[:12]}]")
         chunks.append((False, "\n".join(b for b in bits if b)))
     out: list[str] = []
     for is_stream, txt in chunks:
