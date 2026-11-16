@@ -102,3 +102,42 @@ def test_the_short_error_is_not_abbreviated():
 def test_an_answered_call_returns_no_verdict():
     assert d.call_failure({}) == ""
     assert d.call_failure({"response": "fine"}) == ""
+
+
+# ---- grain tag (CoursIA's merge gate, 16/11) ----
+
+def test_grain_tag_is_the_line_the_parser_reads():
+    assert d.grain_tag("MED", "myia-po-2028:claudish", 26804) == (
+        "Grain: MED/notebook-python — lane myia-po-2028:claudish — issue #26804")
+
+
+def test_auto_is_refused_rather_than_written_silently():
+    """The exact string that made every harness PR unmergeable: `auto` is not a tier."""
+    with pytest.raises(ValueError):
+        d.grain_tag("auto", "myia-po-2028:claudish", 26804)
+
+
+def test_the_pr_body_is_built_from_the_flag_not_from_a_literal():
+    """A pin on the CALL SITE: `grain_tag()` can be perfect and still never be used.
+
+    Reverting the body to its old literal would leave every behavioural pin green — the
+    regression lives in a string, so the pin reads the source (house pattern: grep the
+    wiring, not the intent).
+    """
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    assert 'f"{grain_tag(args.grain_tier' in src, "the PR body no longer uses the flag"
+    assert '"Grain: auto' not in src, "a literal `auto` tier is back in the source"
+
+
+def test_grain_tag_round_trips_through_the_coursia_parser():
+    """Read by the CONSUMER, not by a copy of its grammar. Skipped where CoursIA is absent."""
+    coursia = Path(r"D:\dev\CoursIA\scripts")
+    if not (coursia / "grain_tag.py").is_file():
+        pytest.skip("CoursIA checkout absent on this seat")
+    sys.path.insert(0, str(coursia))
+    import grain_tag as g  # noqa: E402
+
+    parsed = g.parse_grain_tag(d.grain_tag("LIGHT", "myia-po-2028:claudish", 26804))
+    assert parsed["tier"] == "LIGHT"
+    assert parsed["genre"] == "notebook-python"
+    assert parsed["lane"] == "myia-po-2028:claudish"
