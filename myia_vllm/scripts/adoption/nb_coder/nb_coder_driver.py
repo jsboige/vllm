@@ -15,6 +15,9 @@ Run with the sk-agent venv python (it carries the ``mcp`` client package):
     d:/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe \
         nb_coder_driver.py --issue 20250 --notebook IIT/ICT-Series/ICT-40b-...ipynb \
         --out-dir d:/vllm/.tmp/nbcoder --worktree d:/vllm/.tmp/nbcoder/wt-20250
+
+Seat wiring (sk-agent dir/config, papermill python/cwd, lane, gate, engine metrics,
+kernel map) is env-overridable via NBCODER_* — one driver, every seat of the fleet.
 """
 from __future__ import annotations
 
@@ -36,15 +39,23 @@ from mcp.client.stdio import stdio_client
 
 HERE = Path(__file__).resolve().parent
 VLLM_ROOT = HERE.parents[3]
-SK_DIR = Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+# Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
+# harness, #431). Defaults stay the ai-01 vllm seat; e.g. po-2028 sets NBCODER_SK_DIR,
+# NBCODER_PM_PY, NBCODER_LANE (and NBCODER_GATE/GATE-MODE=off where capacity is enforced
+# server-side by claudis lane budgets instead of a local Swift gate).
+SK_DIR = Path(os.environ.get("NBCODER_SK_DIR", "d:/roo-extensions/mcps/internal/servers/sk-agent"))
 SK_PY = SK_DIR / "venv/Scripts/python.exe"
-SK_CONFIG = SK_DIR / "sk_agent_config.json"
-PM_PY = Path(r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe")
-PM_CWD = Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server")
-GATE = VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py"
-LANE = "myia-ai-01:nb-coder"
+SK_CONFIG = Path(os.environ.get("NBCODER_SK_CONFIG", str(SK_DIR / "sk_agent_config.json")))
+PM_PY = Path(os.environ.get("NBCODER_PM_PY", r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe"))
+PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
+                             r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))
+GATE = Path(os.environ.get("NBCODER_GATE",
+                           str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
+LANE = os.environ.get("NBCODER_LANE", "myia-ai-01:nb-coder")
+ENGINE_METRICS = os.environ.get("NBCODER_ENGINE_METRICS", "http://localhost:5002/metrics")
 
-# requirement #3: canonical kernel per series, version read from the neighbours on main
+# requirement #3: canonical kernel per series, version read from the neighbours on main.
+# NBCODER_KERNEL_MAP (JSON, {"Series dir": "kernel"}) merges seat-local series over these.
 KERNEL_MAP = {
     "Audio": "coursia-genai-audio",
     "GameTheory": "python3",
@@ -53,6 +64,8 @@ KERNEL_MAP = {
     "Image": "python3",
     "Video": "python3",
 }
+if os.environ.get("NBCODER_KERNEL_MAP"):
+    KERNEL_MAP.update(json.loads(os.environ["NBCODER_KERNEL_MAP"]))
 DEFAULT_KERNEL = "python3"
 
 
@@ -145,7 +158,7 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
 def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
-        p = subprocess.run(["curl", "-s", "--max-time", "5", "http://localhost:5002/metrics"],
+        p = subprocess.run(["curl", "-s", "--max-time", "5", ENGINE_METRICS],
                            capture_output=True, text=True, timeout=10)
         vals = {}
         for ln in (p.stdout or "").splitlines():
@@ -158,7 +171,11 @@ def engine_tokens() -> dict:
 
 
 def gate_call(mode: str) -> dict:
-    """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window)."""
+    """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window).
+    off = no local gate: capacity is enforced elsewhere (MiniMax variant -> claudish lane
+    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code)."""
+    if mode == "off":
+        return {"verdict": "off", "mode": "off", "exit": None, "blocking_refusal": False}
     p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=60)
     try:
@@ -627,7 +644,7 @@ async def run(args) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": LANE, "dry": True, "stages": {}, "calls": [],
+           "lane": args.lane, "dry": True, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
     # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
     # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
@@ -646,7 +663,7 @@ async def run(args) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, LANE)
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane)
     if rec["stages"]["claim_check"]["rc"] == 1:
         rec["verdict"] = "refused-claim-held-by-another-lane"
         return rec
@@ -654,7 +671,7 @@ async def run(args) -> dict:
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
     if args.claim:
-        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, LANE, args.intention)
+        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
@@ -802,7 +819,9 @@ def main() -> int:
                     help="house rules injected into the prompts ('' disables)")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
-    ap.add_argument("--gate-mode", choices=["warn", "block"], default="warn")
+    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--lane", default=LANE,
+                    help="claim lane id (default: NBCODER_LANE env, else myia-ai-01:nb-coder)")
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
                          "mcp = the model calls the papermill write tools (lost-update hazard "
@@ -821,7 +840,7 @@ def main() -> int:
         rec = asyncio.run(run(args))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "lane": LANE, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
+               "lane": args.lane, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
