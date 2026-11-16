@@ -14,6 +14,17 @@ Contract:
   exit 3 = unknown (metrics unreachable — instrument failure, NOT a verdict;
                     consumers should treat it as "don't run" and report)
 
+  exit 0 also carries `not-applicable`: this seat DECLARES it runs no local engine
+  (`SWIFT_GATE_ENGINE=none`). Refusing there protects nothing, and a gate that
+  refuses on a seat it cannot serve is a gate operators switch off — which takes
+  the protection away from the seats that DO have an engine. Read `verdict` when
+  the reason matters; both mean "start".
+
+  The rule the two cases encode: **the absence of an answer never changes the
+  verdict — only an explicit declaration does.** A seat that declared an engine
+  and cannot read it stays `unknown`/3, fail-closed: there the silence IS the
+  evidence.
+
 Output: single-line JSON on stdout, e.g.
   {"verdict":"green","running":2,"waiting":0,"preemptions":0,"preempt_delta":0,
    "kv_gpu_perc":0.31,"age_s":12}
@@ -30,7 +41,8 @@ Classifier (thresholds from measured prod behaviour, 2026-11):
 
 State: %LOCALAPPDATA%/vllm-capacity-gate/state.json (last probe, 10-min window).
 Overrides: SWIFT_GATE_URL, SWIFT_GATE_RED_RUNNING, SWIFT_GATE_YELLOW_RUNNING,
-           SWIFT_GATE_STATE, SWIFT_GATE_WINDOW_S.
+           SWIFT_GATE_STATE, SWIFT_GATE_WINDOW_S,
+           SWIFT_GATE_ENGINE (default `swift`; `none` = this seat has no local engine).
 
 Self-test: python swift_capacity_gate.py --selftest   (offline, no engine call)
 """
@@ -49,6 +61,17 @@ WINDOW_S = float(os.environ.get("SWIFT_GATE_WINDOW_S", "600"))
 DEFAULT_STATE = os.path.join(
     os.environ.get("LOCALAPPDATA", os.environ.get("TEMP", "/tmp")),
     "vllm-capacity-gate", "state.json")
+
+NO_ENGINE_VALUES = {"none", "off", "absent"}
+
+
+def declared_engine():
+    """What this seat says about its local engine.
+
+    Read at call time, not at import: a caller that sets the variable after
+    importing this module must still get what it set.
+    """
+    return os.environ.get("SWIFT_GATE_ENGINE", "swift").strip().lower()
 
 
 def _metric(text, name):
@@ -95,6 +118,14 @@ def classify(running, waiting, preempt_delta, waiting_prev, age_s):
 
 def probe(url=DEFAULT_URL, state_path=None):
     state_path = state_path or os.environ.get("SWIFT_GATE_STATE", DEFAULT_STATE)
+    engine = declared_engine()
+    if engine in NO_ENGINE_VALUES:
+        # A declaration, not a measurement: the network is never touched, so this
+        # branch cannot be reached by an engine that merely failed to answer.
+        return {"verdict": "not-applicable", "engine": engine,
+                "reason": "SWIFT_GATE_ENGINE=%s — seat declares no local engine" % engine,
+                "running": None, "waiting": None, "preemptions": None,
+                "preempt_delta": None, "kv_gpu_perc": None, "age_s": None}, 0
     text = read_metrics(url)
     running = _metric(text, "vllm:num_requests_running")
     waiting = _metric(text, "vllm:num_requests_waiting")
@@ -149,6 +180,36 @@ def selftest():
         ok = ok and got == exp
         print("case %d: running=%d waiting=%d preempt_delta=%s prev_wait=%s -> %s (%s)"
               % (i + 1, r, w, pd, wp, got, status))
+
+    # The declaration short-circuits BEFORE the network. An unroutable URL is the
+    # proof: with the declaration it must never be contacted.
+    os.environ["SWIFT_GATE_ENGINE"] = "none"
+    try:
+        out, code = probe(url="http://127.0.0.1:9/metrics")
+        case10 = out["verdict"] == "not-applicable" and code == 0 and out["running"] is None
+    except Exception as e:  # touching the network here is the failure being tested
+        case10, out, code = False, {"verdict": "raised: %s" % e}, -1
+    finally:
+        os.environ.pop("SWIFT_GATE_ENGINE", None)
+    ok = ok and case10
+    print("case 10: SWIFT_GATE_ENGINE=none, unroutable url -> %s exit=%s (%s)"
+          % (out["verdict"], code, "ok" if case10 else "FAIL"))
+
+    # Control, and the half that must NOT move: without the declaration, the same
+    # unreachable URL is an instrument failure. The verdict separates the two cases
+    # on the DECLARATION alone, never on the absence of an answer.
+    os.environ["SWIFT_GATE_ENGINE"] = "swift"
+    try:
+        probe(url="http://127.0.0.1:9/metrics")
+        case11 = False  # it answered, or it swallowed the failure: both are wrong
+    except Exception:
+        case11 = True
+    finally:
+        os.environ.pop("SWIFT_GATE_ENGINE", None)
+    ok = ok and case11
+    print("case 11: SWIFT_GATE_ENGINE=swift, unroutable url -> raises (%s)"
+          % ("ok" if case11 else "FAIL"))
+
     print("SELFTEST", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
