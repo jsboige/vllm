@@ -196,13 +196,34 @@ def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
 
 
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
-    """Detached worktree of origin/main: the dirty checkout is never read or touched."""
-    if dest.exists() and (dest / ".git").exists() and not fresh:
-        head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
-        return {"path": str(dest), "reused": True, "head": head}
+    """Detached worktree of origin/main: the dirty checkout is never read or touched.
+
+    Reuse contract (#460): the shared default worktree is reused ONLY if it is
+    clean and its HEAD is exactly origin/main. A worktree left on the previous
+    run's branch (PR still open) must not be reused: stage 5 is born
+    `checkout -b` off the worktree HEAD, so that run's unmerged commit would
+    ride into the next PR as a stowaway (measured 16/11: CoursIA#26986 was born
+    with two files). Clean-but-elsewhere is rebuilt (the branch itself survives
+    in the repo — only the scratch checkout is discarded); dirty is REFUSED,
+    because rebuilding would discard uncommitted work."""
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
                    capture_output=True, text=True, timeout=300)
+    origin_main = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"],
+                                 capture_output=True, text=True).stdout.strip()
+    if dest.exists() and (dest / ".git").exists() and not fresh:
+        head_full = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"],
+                                   capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(dest), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout.strip()
+        if head_full == origin_main and not dirty:
+            return {"path": str(dest), "reused": True, "head": head_full[:9], "ok": True}
+        if dirty:
+            return {"path": str(dest), "refused": "dirty", "head": head_full[:9],
+                    "origin_main": origin_main[:9], "ok": False,
+                    "err": ("shared worktree holds uncommitted changes; refusing to rebuild "
+                            "-- commit or stash them, or use --fresh-worktree / another "
+                            "--worktree")}
+        # clean but not at origin/main: previous run's branch or stale base -> rebuild
     if dest.exists():
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(dest)],
                        capture_output=True, text=True)
@@ -1174,6 +1195,11 @@ async def run(args, rec: dict) -> dict:
         rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
+    if not wt.get("ok", True):
+        # #460: a refused/broken worktree must stop the run BEFORE any stage pays a
+        # token -- and a rebuild failure must not fall through to stage 1 either.
+        rec["verdict"] = f"worktree-refused:{wt.get('refused', 'rebuild-failed')}"
+        return rec
     rec["stage0_s"] = round(time.time() - t0, 1)
     if args.max_stage < 1:
         rec["verdict"] = "stage0-only"

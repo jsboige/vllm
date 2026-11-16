@@ -11,6 +11,7 @@ not an invented shape — a pin built on a made-up payload protects nothing.
 Skipped when `mcp` is not importable (the driver imports the MCP client at load).
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -270,3 +271,103 @@ def test_the_prev_field_round_trips_through_the_coursia_parser():
                                      prev="LIGHT/docs #26943"))
     assert cited["present"] is True
     assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
+
+
+# ---- sticky shared worktree (vllm#460: the previous run's branch must not ride along) ----
+# Measured 16/11 on po-2028:claudish -- run --issue 26983 after run --issue 26972 (PR #26974
+# still open) was born with TWO files, because stage 5 does `checkout -b` off the WORKTREE
+# HEAD and the reused worktree still sat on the previous run's unmerged branch. These pins
+# run against real throwaway git stacks (repo + local origin), not mocks: the bug lived in
+# subprocess plumbing, and a mocked `git` would pin the mock, not the contract.
+
+def _g(cwd, *args):
+    p = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    assert p.returncode == 0, f"git {' '.join(args)}: {p.stderr}"
+    return p.stdout.strip()
+
+
+@pytest.fixture()
+def stack(tmp_path):
+    """A repo whose `origin` is a local bare -- `origin/main` resolves, fetch is real."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                   capture_output=True, check=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _g(repo, "init", "-b", "main")
+    _g(repo, "config", "user.email", "t@example.com")
+    _g(repo, "config", "user.name", "t")
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    _g(repo, "add", ".")
+    _g(repo, "commit", "-m", "base")
+    _g(repo, "remote", "add", "origin", str(origin))
+    _g(repo, "push", "-q", "origin", "main")
+    _g(repo, "fetch", "origin", "main")
+    return repo
+
+
+def test_a_clean_worktree_at_origin_main_is_reused(stack, tmp_path):
+    dest = tmp_path / "wt"
+    d.prepare_worktree(stack, dest, fresh=False)          # builds at origin/main
+    r2 = d.prepare_worktree(stack, dest, fresh=False)
+    assert r2["reused"] is True and r2["ok"] is True
+
+
+def test_the_previous_runs_open_branch_is_not_reused(stack, tmp_path):
+    """THE #460 case: the shared worktree left on run N-1's branch (PR still open)
+    must be rebuilt at origin/main, never reused as the birth base of run N."""
+    dest = tmp_path / "wt"
+    d.prepare_worktree(stack, dest, fresh=False)
+    # run N-1: branch born off HEAD (= origin/main), one grain commit, PR stays open
+    _g(dest, "checkout", "-b", "nbcoder/auto-26972")
+    (dest / "stowaway.txt").write_text("run N-1 grain\n", encoding="utf-8")
+    _g(dest, "add", ".")
+    _g(dest, "commit", "-m", "run N-1 grain")
+    r = d.prepare_worktree(stack, dest, fresh=False)
+    assert r["reused"] is False, "a worktree on another branch was reused as-is"
+    assert r["ok"] is True
+    assert _g(dest, "rev-parse", "HEAD") == _g(stack, "rev-parse", "origin/main")
+    # the branch itself survives -- only the scratch checkout was discarded
+    assert _g(stack, "rev-parse", "--verify", "nbcoder/auto-26972")
+    assert not (dest / "stowaway.txt").exists(), "the stowaway rode into the rebuilt tree"
+
+
+def test_a_dirty_worktree_is_refused_not_discarded(stack, tmp_path):
+    """Uncommitted changes are the one state the guard must NOT repair by itself:
+    rebuilding would discard work nobody archived. Refused loud, tree untouched."""
+    dest = tmp_path / "wt"
+    d.prepare_worktree(stack, dest, fresh=False)
+    (dest / "uncommitted.txt").write_text("in-flight\n", encoding="utf-8")
+    r = d.prepare_worktree(stack, dest, fresh=False)
+    assert r["ok"] is False and r["refused"] == "dirty"
+    assert (dest / "uncommitted.txt").exists(), "the guard destroyed uncommitted work"
+    assert "--fresh-worktree" in r["err"], "the refusal must name the exits"
+
+
+def test_fresh_rebuilds_even_when_the_worktree_is_reusable(stack, tmp_path):
+    dest = tmp_path / "wt"
+    d.prepare_worktree(stack, dest, fresh=False)
+    r = d.prepare_worktree(stack, dest, fresh=True)
+    assert r["reused"] is False and r["ok"] is True
+
+
+def test_a_stale_origin_main_base_is_rebuilt(stack, tmp_path):
+    """Second condition of the incident: the worktree HEAD is an OLD origin/main
+    (the --repo fetched since). Same verdict -- rebuild, don't reuse."""
+    dest = tmp_path / "wt"
+    d.prepare_worktree(stack, dest, fresh=False)
+    (stack / "f.txt").write_text("main moved\n", encoding="utf-8")
+    _g(stack, "add", ".")
+    _g(stack, "commit", "-m", "main moved")
+    _g(stack, "push", "-q", "origin", "main")
+    r = d.prepare_worktree(stack, dest, fresh=False)
+    assert r["reused"] is False and r["ok"] is True
+    assert _g(dest, "rev-parse", "HEAD") == _g(stack, "rev-parse", "origin/main")
+
+
+def test_the_main_flow_stops_on_a_refused_worktree():
+    """Call-site pin (house pattern): `prepare_worktree` can refuse perfectly and
+    still never be obeyed. Before #460 the `ok` key was recorded and ignored."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    assert 'worktree-refused:' in src, "a refused worktree no longer stops the run"
+    assert 'wt.get("ok", True)' in src, "the guard's verdict is no longer read"
