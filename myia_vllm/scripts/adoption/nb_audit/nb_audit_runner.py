@@ -227,12 +227,17 @@ def main() -> int:
                     help="fresh records kept ahead of the bot per series (a bot reads ~1 notebook/h)")
     ap.add_argument("--concurrency", type=int, default=6,
                     help="6 needs sk-agent's 600 s turn for notebook-auditor (roo-extensions #3797, in service)")
-    ap.add_argument("--repo", default="d:/dev/CoursIA-skaudit")
+    ap.add_argument("--repo", default=os.environ.get("NB_AUDIT_REPO", ""),
+                    help="CoursIA checkout (required, or NB_AUDIT_REPO): an input of the run, "
+                         "not a harness binding (F2, vllm#438)")
     # local on purpose: neither bot can read the GDrive share, and DriveFS is the slow link on ai-01
     ap.add_argument("--landing", default=str(Path(os.environ.get("LOCALAPPDATA", "/tmp")) / "nbaudit" / "landing"))
     ap.add_argument("--work-dir", default=str(Path(os.environ.get("TEMP", "/tmp")) / "nbaudit-runner"))
     ap.add_argument("--dry-run", action="store_true", help="select and print; no model call, no write")
     args = ap.parse_args()
+    if not args.repo:
+        ap.error("--repo is required (or NB_AUDIT_REPO): the CoursIA checkout is an input of the "
+                 "run, not a harness binding (F2, vllm#438)")
 
     landing, work = Path(args.landing), Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)

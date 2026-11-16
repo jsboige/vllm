@@ -465,7 +465,9 @@ async def _audit_one(session: ClientSession, sem: asyncio.Semaphore, args, rel: 
 async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("notebooks", nargs="+", help="repo-relative notebook paths")
-    ap.add_argument("--repo", default="d:/dev/CoursIA-skaudit")
+    ap.add_argument("--repo", default=os.environ.get("NB_AUDIT_REPO", ""),
+                    help="CoursIA checkout (required, or NB_AUDIT_REPO): an input of the run, "
+                         "not a harness binding (F2, vllm#438)")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--agent", default="notebook-auditor")
     ap.add_argument("--concurrency", type=int, default=2)
@@ -479,6 +481,9 @@ async def main() -> int:
     ap.add_argument("--work-root", default=str(Path(os.environ.get("TEMP", "/tmp")) / "nbaudit"),
                     help="per-notebook scratch dirs for the verification scripts")
     args = ap.parse_args()
+    if not args.repo:
+        ap.error("--repo is required (or NB_AUDIT_REPO): the CoursIA checkout is an input of the "
+                 "run, not a harness binding (F2, vllm#438)")
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     # cwd = work root: sk-agent's child MCPs (papermill's ./outputs) must not write into the repo
     Path(args.work_root).mkdir(parents=True, exist_ok=True)
