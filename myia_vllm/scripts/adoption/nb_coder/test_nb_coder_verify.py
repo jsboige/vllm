@@ -130,3 +130,36 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+# --------------------------------------------------------------- non-text payloads
+
+
+def test_a_changed_image_moves_the_fingerprint(tmp_path):
+    """The defect #445 shipped: only the text mimes were concatenated, so a cell that
+    displays nothing but an image contributed the EMPTY string and both sides hashed
+    sha1("") = da39a3ee. Measured 16/11: two different PNGs gave the same fingerprint, so
+    a changed image was invisible to the verifier."""
+    import base64
+
+    def png(tag: str) -> dict:
+        return {"output_type": "display_data", "metadata": {},
+                "data": {"image/png": base64.b64encode(tag.encode()).decode()}}
+
+    a = _nb(tmp_path, [_code([png("P1")])], "a.ipynb")
+    b = _nb(tmp_path, [_code([png("P2")])], "b.ipynb")
+    da, db = v.outputs_digest(a)[0], v.outputs_digest(b)[0]
+    assert da["sha"] != db["sha"], "a changed image must move the fingerprint"
+    assert "da39a3ee" not in (da["sha"], db["sha"]), "the empty string is not a fingerprint"
+
+
+def test_an_identical_image_does_not_move_the_fingerprint(tmp_path):
+    """The marker must be stable, or every re-execution would look like a change."""
+    import base64
+    payload = base64.b64encode(b"stable").decode()
+    cell = {"output_type": "display_data", "metadata": {},
+            "data": {"image/png": payload}}
+    a = _nb(tmp_path, [_code([cell])], "a.ipynb")
+    b = _nb(tmp_path, [_code([cell])], "b.ipynb")
+    assert v.outputs_digest(a)[0]["sha"] == v.outputs_digest(b)[0]["sha"]
+    assert v.cell_diffs(a, b) == []
