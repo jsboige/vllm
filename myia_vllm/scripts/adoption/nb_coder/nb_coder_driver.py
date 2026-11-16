@@ -617,6 +617,12 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 # ---------------------------------------------------------------- sk-agent / papermill calls
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
     spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.4}}
+    # --model-override keeps the agent's PROMPT and swaps the SERVED MODEL (agent_spec precedence:
+    # call override > spec > preset). This is what makes the harness comparable across hub-served
+    # models: same task, same conventions, one variable. Without it, comparing two models means
+    # comparing two different prompts, which measures the prompts, not the models.
+    if getattr(args, "model_override", ""):
+        spec["model"] = args.model_override
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -1243,6 +1249,10 @@ def main() -> int:
     ap.add_argument("--fresh-worktree", action="store_true")
     ap.add_argument("--out-dir", default=str(VLLM_ROOT / ".tmp/nbcoder"))
     ap.add_argument("--agent", default="notebook-auditor", help="sk-agent agent id")
+    ap.add_argument("--model-override", default="",
+                    help="hold the agent's prompt and serve another model (hub ids: glm-5.3, "
+                         "glm-5.3-flash, swift-1.5-27b, frognano-4b; sidecar ids: nb-minimax, "
+                         "nb-luna, nb-haiku). Empty = the agent's own model")
     ap.add_argument("--conventions",
                     default=str(VLLM_ROOT / "myia_vllm/docs/adoption/nb-coder-conventions.md"),
                     help="house rules injected into the prompts ('' disables)")
@@ -1282,6 +1292,15 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
+    # The out-dir is normalised to an ABSOLUTE path here, once, at the argument boundary
+    # (vllm#453 review). The build writes the notebook into out_dir with a RELATIVE path while
+    # the papermill server is spawned with cwd=PM_CWD — a different, absolute directory — so a
+    # relative --out-dir made stage 2 execute a file that does not exist from where the server
+    # stands. Measured 16/11 (po-2028:claudish): the build was produced (83 407 B) and then
+    # every one of 11 cells returned "Notebook file not found", verdict
+    # built-execution-failed. Resolving at the caller would have left the same trap in every
+    # other invocation (hourly runner, manual run); here it cannot come back.
+    args.out_dir = str(Path(args.out_dir).resolve())
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
     # resolution path the README does not document.
