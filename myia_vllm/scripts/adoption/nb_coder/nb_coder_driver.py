@@ -918,6 +918,28 @@ def _short_desc(args, plan: dict) -> str:
     return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
 
 
+# CoursIA's parser knows exactly these three tiers; anything else is refused downstream.
+GRAIN_TIERS = ("DEEP", "MED", "LIGHT")
+
+
+def grain_tag(tier: str, lane: str, issue: int, genre: str = "notebook-python") -> str:
+    """The PR's leading `Grain: <TIER>/<GENRE> — lane … — issue …` line, in CoursIA's grammar.
+
+    `auto` is NOT a tier. CoursIA's shared parser (`scripts/grain_tag.py`) reads
+    `auto/notebook-python` as `grain-tier-unknown:AUTO`, and `merge_ready` refuses such a PR
+    **even approved and green** — the harness was producing merges that could not merge
+    (measured by ai-01:CoursIA the 16/11, #26943 retagged by hand the same day).
+
+    The tier is a CLAIM the lane makes about the grain's weight, so it comes from a flag and
+    is never inferred here: a harness that guesses DEEP on a one-cell edit buys its own
+    review cost. Normalisation is argparse's job (`type=str.upper`); this function is strict
+    on purpose, so a caller that bypasses the flag gets a loud refusal, not a silent `auto`.
+    """
+    if tier not in GRAIN_TIERS:
+        raise ValueError(f"grain tier must be one of {GRAIN_TIERS}, got {tier!r}")
+    return f"Grain: {tier}/{genre} — lane {lane} — issue #{issue}"
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -973,7 +995,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
     findings = (rec.get("verify") or {}).get("findings") or []
     pr_body = (
-        f"Grain: auto/notebook-python — lane {args.lane} — issue #{args.issue}\n\n"
+        f"{grain_tag(args.grain_tier, args.lane, args.issue)}\n\n"
         f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
         f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
         f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
@@ -1292,6 +1314,13 @@ def main() -> int:
     ap.add_argument("--lane", default=LANE,
                     help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
                          "no fallback — --claim refuses without it, F1/vllm#438)")
+    ap.add_argument("--grain-tier", type=str.upper, choices=list(GRAIN_TIERS), default="MED",
+                    help="the tier claimed on the PR's `Grain:` line (DEEP/MED/LIGHT). "
+                         "CoursIA's merge gate refuses an unknown tier even when the PR is "
+                         "approved and green — `auto` was never a tier, it read as "
+                         "grain-tier-unknown:AUTO (ai-01:CoursIA, 16/11). Default MED: the "
+                         "harness's own grains are full notebook builds, not one-cell edits. "
+                         "Lowercase is accepted and normalised.")
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
                          "mcp = the model calls the papermill write tools (lost-update hazard "
