@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -661,6 +662,25 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
     return env
 
 
+_AUTH_MARKERS = ("401", "403", "unauthorized", "authentication", "invalid proxy")
+
+
+def call_failure(env: dict) -> str:
+    """Verdict for a model call that never produced an answer, or "" when it answered.
+
+    A 401 or a dead MCP spawn is NOT an 'unreadable response': the model was never asked, so
+    reporting stage1-unparsed points the operator at the model instead of at the wiring.
+    Measured 16/11 (po-2028:claudish): api_key_env unset -> '401 invalid proxy authentication'
+    surfaced as stage1-unparsed with the real cause buried in .calls[0].error (F5, vllm#441).
+    """
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    kind = "auth-failed" if any(m in low for m in _AUTH_MARKERS) else "call-failed"
+    return f"{kind}: {err[:160]}"
+
+
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
     try:
         res = await session.call_tool(tool, payload, read_timeout_seconds=timedelta(seconds=300))
@@ -943,13 +963,12 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- main flow
-async def run(args) -> dict:
+async def run(args, rec: dict) -> dict:
+    """Fill the caller-owned trace. `rec` is created in main() and passed in so a crash keeps
+    everything already paid for: calls made, stages timed, plan received (F4, vllm#441)."""
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
-    rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
-           "engine_tokens_before": engine_tokens()}
     # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
     # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
     # repo's issue numbers (measured 14/11: a manual claim check run from d:/vllm queried
@@ -1018,10 +1037,11 @@ async def run(args) -> dict:
             rec["plan"] = plan
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
-                rec["verdict"] = "stage1-only" if plan else "stage1-unparsed"
+                rec["verdict"] = ("stage1-only" if plan
+                                  else f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
-                rec["verdict"] = "stage1-unparsed"
+                rec["verdict"] = f"stage1-{call_failure(env) or 'unparsed'}"
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
@@ -1053,10 +1073,12 @@ async def run(args) -> dict:
             rec["built_notebook"] = {"path": scratch_nb, "exists": exists,
                                      "bytes": scratch.stat().st_size if exists else 0,
                                      "changed": exists and _sha(scratch) != sha_before}
+            # A dead stage-2 call leaves the copy untouched: 'build-no-change' would then blame
+            # the model for an edit it was never asked to make (same lie as stage 1, F5).
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = "build-no-change"
+                rec["verdict"] = f"build-{call_failure(env2) or 'no-change'}"
             else:
                 rec["structure"] = verify_structure(src_nb, scratch, plan)
                 if not rec["structure"]["ok"]:
@@ -1125,6 +1147,27 @@ async def run(args) -> dict:
     return rec
 
 
+def _preflight(ap) -> None:
+    """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
+
+    On a foreign checkout PM_CWD fell through to a non-existent legacy path, so the two MCP
+    spawns died with NotADirectoryError [WinError 267] AFTER the engine-token baseline: what
+    the operator saw was 'crashed:ExceptionGroup ... (1 sub-exception)' with calls: 0, which
+    reads like a model or protocol defect. A missing SK_PY / config dies the same opaque way
+    inside stdio_client, so the check covers the whole wiring, not just the reported field.
+    """
+    missing = [f"{name}={path}" for name, path, ok in (
+        ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
+        ("NBCODER_SK_PY", SK_PY, SK_PY.is_file()),
+        ("NBCODER_SK_CONFIG", SK_CONFIG, SK_CONFIG.is_file()),
+        ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
+        ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
+    ) if not ok]
+    if missing:
+        ap.error("seat wiring does not resolve here — point the env var at a real path: "
+                 + " | ".join(missing))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
@@ -1188,11 +1231,22 @@ def main() -> int:
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a default "
                  "identity would let two seats share one claim lane (F1, vllm#438)")
+    if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
+        _preflight(ap)
+    rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
+           "engine_tokens_before": engine_tokens()}
     try:
-        rec = asyncio.run(run(args))
+        rec = asyncio.run(run(args, rec))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
-        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "lane": args.lane, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
+        # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
+        # away the calls, the last stage and the plan: a stage-5 crash produced the same
+        # 'calls: 0' trace as a pre-stage-0 one, and str(ExceptionGroup) renders as
+        # '(1 sub-exception)' — an operator-visible crash with no operator-readable cause.
+        rec["crash"] = {"type": type(exc).__name__, "message": str(exc)[:500],
+                        "traceback_tail": traceback.format_exc()[-2000:]}
+        rec["verdict"] = f"crashed:{type(exc).__name__}: {str(exc)[:300]}"
+        rec["dry"] = True
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
