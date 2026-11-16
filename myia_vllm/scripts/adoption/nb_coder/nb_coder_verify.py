@@ -16,9 +16,11 @@ Exit: 0 approve, 1 reject, 2 error (instrument failure — never read as "reject
 """
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -38,26 +40,123 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _as_text(v) -> str:
+    """nbformat allows a stream payload to be a list of chunks — join it, never repr it."""
+    if isinstance(v, list):
+        return "".join(x for x in v if isinstance(x, str))
+    return v if isinstance(v, str) else ""
+
+
+# A printed zero carries no sign: numpy prints +0.0 or -0.0 depending on the rounding
+# path, and the two are the same value. Anchored so `-0.5`, `103`, `4012` are untouched.
+_ZERO = re.compile(r"(?<![\d.])[+-]0(?:\.0*)?(?![.\d])")
+
+
+def _norm_text(s: str) -> str:
+    return _ZERO.sub(lambda m: m.group(0)[1:], s)
+
+
+def _blocks(outs: list) -> list[tuple[str, str, str]]:
+    """One canonical record per LOGICAL output.
+
+    Two things made the first instrument lie (vllm#440):
+      * a stream payload split into N blocks (`['a', 'b']` vs `['ab']`) hashed differently
+        for byte-identical text — the channel is a transport detail, not content;
+      * `+0.000000` and `-0.000000` hashed differently for the same printed value.
+    Non-text payloads (images, HTML) are still hashed raw, so a real change is seen.
+    """
+    recs: list[tuple[str, str, str]] = []
+    pending: dict[tuple[str, str], list[str]] = {}
+    for o in outs:
+        if not isinstance(o, dict):
+            continue
+        t = o.get("output_type")
+        if t in ("stream", "display_data", "execute_result", "update_display_data"):
+            name = (o.get("name") or "") if t == "stream" else ""
+            pending.setdefault((str(t), name), []).append(_text_of(o))
+            data = o.get("data") or {}
+            others = {k: v for k, v in data.items() if k != "text/plain"}
+            if others:
+                recs.append((str(t), name, "[mimes] " + hashlib.sha1(
+                    json.dumps(others, ensure_ascii=False, sort_keys=True).encode()).hexdigest()))
+        elif t == "error":
+            recs.append(("error", "", _norm_text("\n".join(o.get("traceback") or []))))
+        else:
+            recs.append((str(t), "", ""))
+    for (t, name), chunks in pending.items():
+        recs.append((t, name, _norm_text("".join(chunks))))
+    return recs
+
+
+def _text_of(o: dict) -> str:
+    if o.get("output_type") == "stream":
+        return _as_text(o.get("text"))
+    return _as_text((o.get("data") or {}).get("text/plain"))
+
+
 def outputs_digest(nb_path: Path) -> list[dict]:
     """Per-code-cell outputs fingerprint — the views do not show outputs, so the verifier
     could not check their preservation (it flagged this itself on the grain-1 pass).
-    Bounded: type, count, bytes, sha1[:8] of the outputs payload per code cell."""
-    import hashlib
+    Bounded: type, count, bytes, sha1[:8] of the CANONICAL outputs payload per code cell.
+    Canonical = chunk-insensitive and sign-of-zero-insensitive (vllm#440): the digest must
+    answer "did the outputs change", not "were they re-chunked"."""
     rows = []
     for i, c in enumerate(nbcd._cells(nb_path)):
         if c.get("cell_type") != "code":
             continue
-        outs = c.get("outputs") or []
-        payload = json.dumps(outs, ensure_ascii=False, sort_keys=True)
-        rows.append({"cell": i, "n": len(outs),
-                     "types": sorted({o.get("output_type") for o in outs if isinstance(o, dict)}),
+        recs = _blocks(c.get("outputs") or [])
+        payload = json.dumps(recs, ensure_ascii=False)
+        rows.append({"cell": i, "n": len(recs),
+                     "types": sorted({r[0] for r in recs}),
                      "bytes": len(payload), "sha": hashlib.sha1(payload.encode()).hexdigest()[:8]})
     return rows
 
 
+def _text_rows(nb_path: Path) -> dict[int, str]:
+    """Canonical outputs TEXT per code cell — the same canonicalisation the digest uses,
+    so a row that differs here is exactly a row whose sha differs."""
+    rows: dict[int, str] = {}
+    for i, c in enumerate(nbcd._cells(nb_path)):
+        if c.get("cell_type") != "code":
+            continue
+        rows[i] = " | ".join(t for _, _, t in _blocks(c.get("outputs") or []))
+    return rows
+
+
+def outputs_diff(src_path: Path, built_path: Path, max_cells: int = 10,
+                 max_chars: int = 700) -> str:
+    """Bounded side-by-side of the cells whose canonical text differs.
+
+    The digest LOCATES a divergence; it cannot say whether the divergence is a content
+    change or an environment drift. Measured on the 26820 pair (po-2028, 16/11) an
+    unedited cell differs only by `python 3.13.15` vs `3.13.16`: the fingerprint alone
+    made the verifier reject a correct deliverable. This text is what lets it judge.
+    """
+    a, b = _text_rows(src_path), _text_rows(built_path)
+    chunks: list[str] = []
+    total = 0
+    for cell in sorted(set(a) | set(b)):
+        if a.get(cell) == b.get(cell):
+            continue
+        total += 1
+        if len(chunks) >= max_cells:
+            continue
+
+        def cut(s: str | None) -> str:
+            s = "<cellule absente>" if s is None else s
+            return s if len(s) <= max_chars else s[:max_chars] + f"… (+{len(s) - max_chars} car.)"
+
+        chunks.append(f"--- cell {cell} ---\nSOURCE  : {cut(a.get(cell))}\nLIVRABLE: {cut(b.get(cell))}")
+    if not chunks:
+        return ""
+    shown = f"{total} cellule(s) divergentes" + ("" if total <= max_cells else f", {max_cells} montrées")
+    return f"({shown}, texte borné)\n" + "\n".join(chunks)
+
+
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
-                  built_digest: list[dict] | None = None) -> str:
+                  built_digest: list[dict] | None = None,
+                  digests_diff: str = "") -> str:
     return (
         "MODE VÉRIFICATION — tu es le vérificateur INDÉPENDANT d'un carnet produit par un autre "
         "agent. Tu n'as pas produit ce carnet et tu ne dois croire AUCUNE de ses affirmations : "
@@ -68,13 +167,25 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         + f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n"
         f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
         + ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
-           "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, sha=empreinte du "
-           "contenu. Une cellule code non éditée dont l'empreinte change entre SOURCE et "
-           "LIVRABLE = sorties altérées. Une cellule code de la SOURCE absente du LIVRABLE = "
-           "contenu perdu.\n"
+           "Chaque entrée : cell, n=nombre de sorties, types, bytes, sha=empreinte du "
+           "contenu. L'empreinte est canonique : un flux recollé autrement et un zéro "
+           "imprimé +0.0 ou -0.0 ne comptent pas comme un changement (vllm#440) — une "
+           "empreinte qui change est donc un VRAI changement de sortie. Une cellule code "
+           "NON éditée dont l'empreinte change entre SOURCE et LIVRABLE = sorties "
+           "altérées ; une cellule ÉDITÉE peut légitimement différer, juge son contenu "
+           "sur les vues. Une cellule code de la SOURCE absente du LIVRABLE = contenu "
+           "perdu.\n"
            f"SOURCE :\n{json.dumps(src_digest, ensure_ascii=False)}\n\n"
            f"LIVRABLE :\n{json.dumps(built_digest, ensure_ascii=False)}\n\n"
            if src_digest is not None and built_digest is not None else "")
+        + ("## Divergences de sorties — texte borné (à JUGER, pas à compter)\n"
+           "Les empreintes ci-dessus LOCALISENT ; ce texte DÉCIDE. Le livrable a été "
+           "ré-exécuté par un autre noyau : un numéro de version ('python 3.13.15' vs "
+           "'3.13.16'), une durée, un chemin absolu, une adresse mémoire ou une date "
+           "peuvent légitimement changer — c'est une dérive d'ENVIRONNEMENT, pas une "
+           "altération de contenu. Rejette seulement si une VALEUR CALCULÉE change, si "
+           "des sorties disparaissent, ou si du texte est réécrit.\n"
+           f"{digests_diff}\n\n" if digests_diff else "")
         + "## Faits mécaniques du harnais (des AFFIRMATIONS du producteur — à contre-vérifier "
         "sur les deux vues, jamais à croire sur parole)\n"
         f"{json.dumps(facts, ensure_ascii=False, indent=1)[:6000]}\n\n"
@@ -86,8 +197,9 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "3. **Critères satisfaits ?** Les gestes du LIVRABLE satisfont-ils les critères "
         "d'acceptation de l'issue ?\n"
         "4. **Conventions** : en-tête sans référence de coordination, note de provenance en pied "
-        "de carnet à la forme exacte, sorties réelles non éditées (vérifie les empreintes de "
-        "l'annexe : mêmes sha pour les cellules non éditées).\n\n"
+        "de carnet à la forme exacte, sorties réelles non éditées (les empreintes de "
+        "l'annexe LOCALISENT une divergence ; juge-la sur le texte borné — une dérive "
+        "d'environnement n'est pas une altération).\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
@@ -157,7 +269,8 @@ def main() -> int:
         conventions = nbcd.read_conventions(args.conventions)
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
-                               outputs_digest(src_p), outputs_digest(built_p))
+                               outputs_digest(src_p), outputs_digest(built_p),
+                               outputs_diff(src_p, built_p))
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         rec["elapsed_s"] = dt
