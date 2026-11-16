@@ -130,3 +130,35 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+# --------------------------------------------------------------- fabricated citations (#447)
+
+
+def test_a_cited_fingerprint_absent_from_the_prompt_is_flagged():
+    """Measured 16/11: the verifier cited `b9ce2ddb`/`f6794a99` while the prompt held
+    `d2af8bec`/`2a3c17cf`. The finding was right, the evidence invented — and an invented
+    citation decides a reader who does not redo the computation."""
+    prompt = ("## Annexe\nSOURCE : [{\"cell\": 2, \"sha\": \"d2af8bec\"}]\n"
+              "LIVRABLE : [{\"cell\": 2, \"sha\": \"2a3c17cf\"}]\n")
+    ans = {"verdict": "reject", "findings": [
+        {"cell": 2, "detail": "empreinte source d2af8bec contre livrable 2a3c17cf"},
+        {"cell": 2, "detail": "empreinte source b9ce2ddb contre livrable f6794a99"},
+    ]}
+    chk = v.citation_check(ans, prompt)
+    assert chk["unknown"] == ["b9ce2ddb", "f6794a99"]
+    assert chk["status"] == "suspected-fabrication"
+    assert chk["cited"] == 4
+    assert "fabricated_citations" not in ans["findings"][0]      # the real citation is clean
+    assert ans["findings"][1]["fabricated_citations"] == ["b9ce2ddb", "f6794a99"]
+
+
+def test_the_citation_guard_does_not_change_the_verdict():
+    """A fabricated citation on a real divergence must not launder itself into a pass,
+    and a clean citation must not be promoted to a reject: the model's judgement stands,
+    the harness records the doubt beside it."""
+    prompt = "sha d2af8bec"
+    ans = {"verdict": "reject", "findings": [{"cell": 1, "detail": "sha 00000000"}]}
+    v.citation_check(ans, prompt)
+    assert ans["verdict"] == "reject"
+    assert v.citation_check({"verdict": "approve", "findings": []}, prompt)["status"] == "clean"

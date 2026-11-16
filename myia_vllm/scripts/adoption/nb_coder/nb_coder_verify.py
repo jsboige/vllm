@@ -26,6 +26,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -146,6 +147,43 @@ def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
             d[k] = d[k][:room] + ("…" if room < len(d[k]) else "")
             budget -= room
     return diffs
+
+
+# Our fingerprints are sha1[:8]; the same shape appears in the notebook views, so a token that
+# a legitimate finding may cite is present in the prompt by construction.
+_FP_RE = re.compile(r"\b[0-9a-f]{8}\b")
+
+
+def citation_check(answer: dict, prompt: str) -> dict:
+    """A CITED fingerprint must exist in the prompt (vllm#447).
+
+    Measured 16/11 (po-2028:claudish, pair 26820, `notebook-coder-minimax`): the verifier
+    cited `b9ce2ddb` / `f6794a99` while the prompt it had received held `d2af8bec` /
+    `2a3c17cf`. The substantive finding was right — the cited EVIDENCE was invented.
+
+    An invented citation is worse than no citation: it is checkable, plausible, and it
+    decides a reader who does not redo the computation. The control is free (one `in` per
+    token) and independent of the model, which is the whole point.
+
+    The verdict is NOT changed: the model's judgement stays its own, and a fabricated
+    citation on a real divergence must not launder itself into a pass. The harness records
+    the doubt where an operator and the ledger can see it.
+    """
+    cited, unknown = [], []
+    for f in answer.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        detail = f.get("detail")
+        if not isinstance(detail, str):
+            continue
+        tokens = _FP_RE.findall(detail)
+        cited.extend(tokens)
+        bad = sorted({t for t in tokens if t not in prompt})
+        if bad:
+            f["fabricated_citations"] = bad
+            unknown.extend(bad)
+    return {"cited": len(cited), "unknown": sorted(set(unknown)),
+            "status": "suspected-fabrication" if unknown else "clean"}
 
 
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
@@ -277,6 +315,8 @@ def main() -> int:
         rec["conversation_id"] = env.get("conversation_id")
         rec["response_chars"] = len(env.get("response") or "")
         ans = nbcd.parse_json_block(env.get("response") or "")
+        if isinstance(ans, dict):
+            rec["citation_check"] = citation_check(ans, prompt)
         rec["answer"] = ans
         if not ans or ans.get("verdict") not in ("approve", "reject"):
             rec["verdict"] = "error:unparsable"
@@ -296,7 +336,8 @@ def main() -> int:
                       "findings": (rec.get("answer") or {}).get("findings"),
                       "diff_cells": rec.get("diff_cells"),
                       "elapsed_s": rec.get("elapsed_s"),
-                      "model_used": rec.get("model_used")}, ensure_ascii=False, indent=1))
+                      "model_used": rec.get("model_used"),
+                      "citation_check": rec.get("citation_check")}, ensure_ascii=False, indent=1))
     return rc
 
 
