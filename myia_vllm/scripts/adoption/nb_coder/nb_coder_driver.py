@@ -646,6 +646,10 @@ async def start_kernel(pm: ClientSession, kernel_name: str) -> str | None:
 # ---------------------------------------------------------------- stages 3-5
 # Convention forms (nb-coder-conventions.md): a coordination reference only ever survives
 # as the exact footer note; anything else the BUILD adds is a violation.
+# NB: the bare word `lane` in the alternation is deliberately broad -- ANY use of the
+# word in a built cell is a candidate violation, whitelisted only by the footer note
+# (PROVENANCE_RE). This is prose-vocabulary policing, not claim-marker matching: the
+# registry's own markers live on issue comments, never inside notebooks.
 COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
 PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
 SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -670,9 +674,23 @@ def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
             offenders.append(i)
     gates.append({"gate": "coord-refs", "ok": not offenders,
                   "detail": {"cells": offenders[:10]}})
-    hits = [i for i, c in enumerate(built_cells)
-            if SECRET_RE.search(_text(c.get("source")))]
-    gates.append({"gate": "secrets", "ok": not hits, "detail": {"cells": hits[:10]}})
+    # Delta-judged like coord-refs (#433 review): a secret sitting UNTOUCHED in the
+    # source is the repo's business -- reported in the detail, it does not fail THIS
+    # build. The detail keeps the full picture (source_hits = pre-existing,
+    # build_hits = everything seen in the built nb) so a reviewer never confuses
+    # "the build introduced one" with "the repo already had one".
+    src_secret_hits = [i for i, c in enumerate(src_cells)
+                       if SECRET_RE.search(_text(c.get("source")))]
+    build_secret_hits = [i for i, c in enumerate(built_cells)
+                         if SECRET_RE.search(_text(c.get("source")))]
+    new_secret_hits = [i for i in build_secret_hits
+                       if not (i < len(src_cells)
+                               and _text(built_cells[i].get("source"))
+                               == _text(src_cells[i].get("source")))]
+    gates.append({"gate": "secrets", "ok": not new_secret_hits,
+                  "detail": {"cells": new_secret_hits[:10],
+                             "source_hits": src_secret_hits[:10],
+                             "build_hits": build_secret_hits[:10]}})
     sv = (json.loads(src_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
         .get("language_info", {}).get("version")
     bv = (json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
@@ -727,6 +745,15 @@ def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
     return p.returncode, (p.stdout or p.stderr).strip()
 
 
+def _repo_slug(wt: Path) -> str | None:
+    """owner/repo parsed from the worktree's origin URL (#433 review: no hard-coded
+    repo -- the PR targets wherever the branch is pushed, neutral by construction).
+    Handles https://github.com/o/r(.git) and git@github.com:o/r(.git)."""
+    _, out = _git(wt, "remote", "get-url", "origin")
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", out or "")
+    return m.group(1) if m else None
+
+
 def _short_desc(args, plan: dict) -> str:
     """One-line gesture description composed from the plan's own 'but' fields —
     harness-only, no model turn. House form: '<notebook stem> cell N — <but>'."""
@@ -746,7 +773,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
-    branch = args.pr_branch or f"nbminimax/auto-{args.issue}"
+    branch = args.pr_branch or f"nbcoder/auto-{args.issue}"
     desc = _short_desc(args, rec.get("plan") or {})
     entry: dict = {"branch": branch}
 
@@ -816,9 +843,20 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"run record complet dans le out-dir du harnais.\n\n"
         f"Closes #{args.issue}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
+    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
+    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
+    # claim registry.
+    repo_slug = args.pr_repo or _repo_slug(wt_path)
+    if not repo_slug:
+        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
+                          "unparseable) -- pass --pr-repo owner/repo explicitly")
+        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
+        return
+    entry["repo"] = repo_slug
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
-    rc, out = gh(["api", "repos/jsboige/CoursIA/pulls",
+    rc, out = gh(["api", f"repos/{repo_slug}/pulls",
                   "-f", f"title=Fix(notebooks,#{args.issue}): {desc}",
                   "-f", f"head={branch}", "-f", f"base={args.pr_base}",
                   "-F", f"body=@{body_file}"], token, timeout=120)
@@ -830,11 +868,18 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     pr = json.loads(out)
     entry |= {"number": pr.get("number"), "url": pr.get("html_url")}
 
-    comment = (f"Livraison harnais nb-coder : PR #{pr.get('number')} — issue #{args.issue}.\n"
+    # #433 review: the claim registry (CoursIA check_lane_claim.py) parses the marker
+    # grammar `[DELIVERED] lane <lane> -- PR #N ... paths: <list>`: the marker must
+    # START a line, `PR #N` (prefix required) is the only PR ref it captures -- prose
+    # `issue #N` never matches -- and the `paths:` clause is read as the FINAL segment
+    # of the marker line. Producer/verifier/trace stay on separate prose lines BELOW,
+    # never on the marker line.
+    comment = (f"[DELIVERED] lane {args.lane} -- PR #{pr.get('number')} -- paths: {nb_rel}\n\n"
+               f"Livraison harnais nb_coder : issue #{args.issue}.\n"
                f"Producteur : `{args.agent}`. Vérificateur : `{args.verifier_agent}` "
                f"({(rec.get('verify') or {}).get('verdict')}). "
                f"Trace : conversation `{rec.get('conversation_id')}`.")
-    rc_c, out_c = gh(["api", f"repos/jsboige/CoursIA/issues/{args.issue}/comments",
+    rc_c, out_c = gh(["api", f"repos/{repo_slug}/issues/{args.issue}/comments",
                       "-f", f"body={comment}"], token, timeout=120)
     entry["delivery_comment"] = rc_c == 0
     if rc_c != 0:
@@ -1066,8 +1111,13 @@ def main() -> int:
                          "builder (default critic = GLM-5.3 vs builder MiniMax)")
     ap.add_argument("--verify-timeout", type=int, default=900)
     ap.add_argument("--pr-base", default="main")
+    ap.add_argument("--pr-repo", default=None,
+                    help="PR target as owner/repo (default: derived from the worktree's "
+                         "origin remote; the run refuses with pr-repo-unresolved if "
+                         "unparseable -- never a hard-coded fallback)")
     ap.add_argument("--pr-branch", default=None,
-                    help="branch name (default nbminimax/auto-<issue>)")
+                    help="branch name (default nbcoder/auto-<issue>; seat-neutral, "
+                         "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
