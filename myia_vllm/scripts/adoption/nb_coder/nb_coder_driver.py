@@ -87,7 +87,11 @@ def _launch_gap(label: str, path: Path, marker: str, env_var: str, probed) -> No
 
     Fail loud, never quiet (F1/F2, vllm#438): the stdio client reports a missing interpreter
     as a bare `[Errno 2]` from a child process, which reads like a broken MCP and not like a
-    seat that was never wired. The two are different repairs and only one is an incident."""
+    seat that was never wired. The two are different repairs and only one is an incident.
+
+    Used by the VERIFIER, which has no preflight of its own. The driver does not need it:
+    `_preflight` already refuses the whole wiring, with a trace, before any side effect —
+    a second guard here would be a duplicate that drifts."""
     raise SystemExit(
         f"nb-coder: {label} introuvable — {path} ne contient pas {marker}.\n"
         f"  Poser {env_var} sur le répertoire de ce siège.\n"
@@ -95,7 +99,7 @@ def _launch_gap(label: str, path: Path, marker: str, env_var: str, probed) -> No
 
 
 def require_sk() -> None:
-    """Check the sk-agent launch inputs before opening the stdio client."""
+    """Check the sk-agent launch inputs before opening the stdio client (verifier side)."""
     if not (SK_DIR / "sk_agent.py").is_file():
         probed = ", ".join(str(c) for c in _SK_ROOTS)
         _launch_gap("sk-agent", SK_DIR, "sk_agent.py", "NBCODER_SK_DIR",
@@ -103,58 +107,36 @@ def require_sk() -> None:
                     f"racines flotte : {probed}")
 
 
-def require_pm() -> None:
-    """Check the papermill MCP launch inputs before opening the stdio client.
-
-    Same class as `require_sk`: `PM_PY` and `PM_CWD` fall back to the ai-01 layout, and a
-    po-2028 seat that exports neither gets a launch failure inside stage 2 — after the model
-    has already been paid for the build, which is the most expensive place to learn it."""
-    if not PM_PY.is_file():
-        _launch_gap("interpréteur papermill", PM_PY, "python", "NBCODER_PM_PY",
-                    f"NBCODER_PM_PY={os.environ.get('NBCODER_PM_PY') or '(absent)'}; "
-                    f"défauts : {_LEGACY_PM_PY}, {sys.executable}")
-    if not (PM_CWD / "papermill_mcp").is_dir():
-        _launch_gap("serveur papermill", PM_CWD, "le paquet papermill_mcp", "NBCODER_PM_CWD",
-                    f"NBCODER_PM_CWD={os.environ.get('NBCODER_PM_CWD') or '(absent)'}; "
-                    f"défauts : {_PM_CWD_SIBLING}, "
-                    f"{', '.join(str(c) for c in _PM_CWD_ROOTS)}")
-
-
-def require_sk_credentials(agent: str) -> None:
-    """Refuse to call a model whose API key is not in the environment.
+def missing_credential(agent: str) -> str | None:
+    """The env var an agent's model needs and the environment lacks, or None.
 
     sk-agent authenticates through the environment — each model declares ``api_key_env``
     (``ZAI_API_KEY`` for the hub models on this fleet) — and the driver hands it the
-    DRIVER's environment. Launched by an MCP host, those variables come from the server
+    DRIVER's environment. Launched by an MCP host those variables come from the server
     entry in ``~/.claude.json``; launched from a shell or a runner that never exported
-    them, every call returns 401 at stage 1. Measured 16/11 on po-2028: the whole pass
-    stopped on ``stage1-auth-failed`` after a 50 s claim, and the earlier runs of the day
-    had only worked because the operator's shell happened to carry the key.
+    them, the first model call fails with 401. Measured 16/11 on po-2028 with every
+    NBCODER_* variable removed: ``stage1-auth-failed`` after a 50 s claim, zero calls
+    served. `_preflight` checks file paths, not credentials — this is the one input of
+    that list a path check cannot see.
 
-    Resolves the agent's model in sk-agent's own config and checks the variable it names.
-    Unknown agent/model, or no declared variable: nothing to judge, returns silently.
+    Unknown agent or model, or no declared variable: nothing to judge, returns None.
     """
     try:
         cfg = json.loads(SK_CONFIG.read_text(encoding="utf-8"))
     except Exception:
-        return                                  # require_sk already guarded the file itself
+        return None                             # _preflight already refuses a missing config
     base_id = agent.split("[")[0] if "[" in agent else agent
     agent_cfg = next((a for a in cfg.get("agents") or [] if a.get("id") == base_id), None)
     if not agent_cfg:
-        return
+        return None
     model_id = agent_cfg.get("model")
     model_cfg = next((m for m in cfg.get("models") or [] if m.get("id") == model_id), None)
     if not model_cfg:
-        return
+        return None
     var = model_cfg.get("api_key_env")
     if not var or os.environ.get(var):
-        return
-    raise SystemExit(
-        f"nb-coder: credential absent — le modèle {model_id} (agent {agent}) déclare "
-        f"{var} dans {SK_CONFIG}, et cette variable n'est pas dans l'environnement.\n"
-        f"  Lancé par un hôte MCP, il la tire de l'entrée serveur ; un shell ou un runner "
-        f"doit l'exporter.\n"
-        f"  Sans elle, chaque appel rend 401 APRÈS le claim, au stage 1.")
+        return None
+    return f"{var} (modèle {model_id} de l'agent {agent})"
 
 
 # Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
@@ -178,7 +160,7 @@ _PM_CWD_ROOTS = (Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermil
 
 
 def _pm_cwd() -> Path:
-    """Seat-agnostic discovery of the papermill MCP checkout (see `require_pm`)."""
+    """Seat-agnostic discovery of the papermill MCP checkout (checked by `_preflight`)."""
     env = os.environ.get("NBCODER_PM_CWD")
     if env:
         return Path(env)
@@ -307,7 +289,11 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     if dest.exists() and (dest / ".git").exists() and not fresh:
         head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
-        return {"path": str(dest), "reused": True, "head": head}
+        # Same contract on BOTH branches (vllm#455 review): the reuse branch used to return
+        # no `ok` at all, so `if not wt.get("ok")` refused a perfectly healthy reused
+        # worktree — a false positive, which is how a guard gets switched off. Callers test
+        # `wt.get("ok") is False`.
+        return {"path": str(dest), "reused": True, "head": head, "ok": True, "err": None}
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
                    capture_output=True, text=True, timeout=300)
     if dest.exists():
@@ -1161,11 +1147,6 @@ async def run(args, rec: dict) -> dict:
         return rec
 
     scratch_nb = (out_dir / f"nb_{args.issue}_built.ipynb").as_posix()
-    # Before paying for a build: a seat that never got wired must say so here, not as a bare
-    # Errno 2 out of a child process three stages later (see `_launch_gap`).
-    require_sk()
-    require_pm()
-    require_sk_credentials(args.agent)
     sk_params = StdioServerParameters(command=str(SK_PY), args=[str(SK_DIR / "sk_agent.py")],
                                       env={**os.environ, "SK_AGENT_CONFIG": str(SK_CONFIG)},
                                       cwd=str(out_dir))
@@ -1318,6 +1299,12 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
+    # A path check cannot see a credential (vllm#455): the model's api_key_env is the one
+    # wiring input that lives in the environment and whose absence only shows up as a 401
+    # from the backend, AFTER the claim has been posted.
+    cred = missing_credential(args.agent)
+    if cred:
+        missing.append(cred)
     if not missing:
         return
     detail = "seat wiring does not resolve here — point the env var at a real path: " \
