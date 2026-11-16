@@ -155,3 +155,34 @@ def test_empty_response_gets_one_retry():
     assert src.count("asyncio.run(call_verifier(") == 2, \
         "exactly two call sites: first attempt + one empty-response retry"
     assert "RETRY_NOTE" in src, "the retry re-asks with the shorter-reasoning note"
+
+
+# ------------------------------------------------- scope + binary payloads (pilot 16/11)
+
+
+def test_image_swap_changes_the_digest(tmp_path):
+    """Finding 26858 c.17: a display_data image is part of the output's content. Two
+    notebooks whose text output is identical but whose PNG differs must NOT share a
+    fingerprint — before the fix the image was invisible to every digest."""
+    def png(data):
+        return [{"output_type": "display_data",
+                 "data": {"image/png": data, "text/plain": "<Figure>"}}]
+    a = _nb(tmp_path, [_code(png("AAAA"))], "a.ipynb")
+    b = _nb(tmp_path, [_code(png("BBBB"))], "b.ipynb")
+    da, db = v.outputs_digest(a)[0], v.outputs_digest(b)[0]
+    assert da["sha"] != db["sha"], "a swapped image must move the fingerprint"
+    c = _nb(tmp_path, [_code(png("AAAA"))], "c.ipynb")
+    assert v.outputs_digest(c)[0]["sha"] == da["sha"]
+
+
+def test_prompt_scopes_the_verdict_to_the_deliverable():
+    """4/4 rejects measured on the pilot grains (16/11) were rejecting on facts the
+    verifier cannot observe: chain procedure (claims, MCP, coordinator approval) and
+    convention defects PRE-EXISTING in the source. The prompt must fence those out, or
+    no honest deliverable can ever pass and the verifier measures nothing."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "Périmètre" in p
+    assert "ne rejette jamais pour ce motif" in p
+    assert "déjà présent à l'identique dans la SOURCE" in p
+    assert "PAR LE LIVRABLE" in p
