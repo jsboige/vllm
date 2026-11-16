@@ -56,15 +56,68 @@ def _sk_dir() -> Path:
     """Where the sk-agent checkout lives (roo-extensions #4781: no seat binding in the tree).
     Order: NBCODER_SK_DIR env, then the sibling layout the harness has once it lives at
     servers/sk-agent/harness/nb_coder/ (its sk-agent root is ../.., recognised by sk_agent.py
-    so an unrelated ../.. cannot shadow it), then the legacy absolute path kept for the live
-    ai-01 seat until the cutover."""
+    so an unrelated ../.. cannot shadow it), then the fleet roots below, probed by the marker
+    file.
+
+    One hardcoded legacy path was not enough: it named ai-01's layout (d:/roo-extensions) and
+    po-2028 keeps the same checkout under d:/dev/roo-extensions. Measured 16/11 — the run
+    reached sk-agent only because NBCODER_SK_DIR happened to be exported in the operator's
+    shell; an unattended run would have died at the MCP launch, three stages away from the
+    cause. Probing means a seat that misses every candidate says so (see `require_sk`)."""
     env = os.environ.get("NBCODER_SK_DIR")
     if env:
         return Path(env)
     sibling = (HERE / "../..").resolve()
     if (sibling / "sk_agent.py").is_file():
         return sibling
-    return Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+    for cand in _SK_ROOTS:
+        if (cand / "sk_agent.py").is_file():
+            return cand
+    return _SK_ROOTS[0]
+
+
+# Roots where the sk-agent checkout has actually been seen on the fleet. A single hardcoded
+# absolute path is how the trap above happened; candidates are cheap and named.
+_SK_ROOTS = (Path("d:/roo-extensions/mcps/internal/servers/sk-agent"),
+             Path("d:/dev/roo-extensions/mcps/internal/servers/sk-agent"))
+
+
+def _launch_gap(label: str, path: Path, marker: str, env_var: str, probed) -> None:
+    """Refuse to launch an MCP whose directory is missing, and say what to set.
+
+    Fail loud, never quiet (F1/F2, vllm#438): the stdio client reports a missing interpreter
+    as a bare `[Errno 2]` from a child process, which reads like a broken MCP and not like a
+    seat that was never wired. The two are different repairs and only one is an incident."""
+    raise SystemExit(
+        f"nb-coder: {label} introuvable — {path} ne contient pas {marker}.\n"
+        f"  Poser {env_var} sur le répertoire de ce siège.\n"
+        f"  Sondé : {probed}")
+
+
+def require_sk() -> None:
+    """Check the sk-agent launch inputs before opening the stdio client."""
+    if not (SK_DIR / "sk_agent.py").is_file():
+        probed = ", ".join(str(c) for c in _SK_ROOTS)
+        _launch_gap("sk-agent", SK_DIR, "sk_agent.py", "NBCODER_SK_DIR",
+                    f"NBCODER_SK_DIR={os.environ.get('NBCODER_SK_DIR') or '(absent)'}; "
+                    f"racines flotte : {probed}")
+
+
+def require_pm() -> None:
+    """Check the papermill MCP launch inputs before opening the stdio client.
+
+    Same class as `require_sk`: `PM_PY` and `PM_CWD` fall back to the ai-01 layout, and a
+    po-2028 seat that exports neither gets a launch failure inside stage 2 — after the model
+    has already been paid for the build, which is the most expensive place to learn it."""
+    if not PM_PY.is_file():
+        _launch_gap("interpréteur papermill", PM_PY, "python", "NBCODER_PM_PY",
+                    f"NBCODER_PM_PY={os.environ.get('NBCODER_PM_PY') or '(absent)'}; "
+                    f"défauts : {_LEGACY_PM_PY}, {sys.executable}")
+    if not (PM_CWD / "papermill_mcp").is_dir():
+        _launch_gap("serveur papermill", PM_CWD, "le paquet papermill_mcp", "NBCODER_PM_CWD",
+                    f"NBCODER_PM_CWD={os.environ.get('NBCODER_PM_CWD') or '(absent)'}; "
+                    f"défauts : {_PM_CWD_SIBLING}, "
+                    f"{', '.join(str(c) for c in _PM_CWD_ROOTS)}")
 
 
 # Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
@@ -81,9 +134,26 @@ _LEGACY_PM_PY = Path(r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe")
 PM_PY = Path(os.environ.get("NBCODER_PM_PY",
                             str(_LEGACY_PM_PY if _LEGACY_PM_PY.is_file() else Path(sys.executable))))
 _PM_CWD_SIBLING = (HERE / "../../../jupyter-papermill-mcp-server").resolve()
-PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
-                             str(_PM_CWD_SIBLING if _PM_CWD_SIBLING.is_dir()
-                                 else Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))))
+# Same probed-candidate shape as _SK_ROOTS, for the same measured reason: the hardcoded path
+# was ai-01's layout and po-2028 keeps the same checkout under D:\dev.
+_PM_CWD_ROOTS = (Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"),
+                 Path(r"D:\dev\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))
+
+
+def _pm_cwd() -> Path:
+    """Seat-agnostic discovery of the papermill MCP checkout (see `require_pm`)."""
+    env = os.environ.get("NBCODER_PM_CWD")
+    if env:
+        return Path(env)
+    if _PM_CWD_SIBLING.is_dir():
+        return _PM_CWD_SIBLING
+    for cand in _PM_CWD_ROOTS:
+        if (cand / "papermill_mcp").is_dir():
+            return cand
+    return _PM_CWD_ROOTS[0]
+
+
+PM_CWD = _pm_cwd()
 GATE = Path(os.environ.get("NBCODER_GATE",
                            str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
 # No seat default (F1, vllm#438): this value reaches the claim text, the [DELIVERED] marker and
@@ -1054,6 +1124,10 @@ async def run(args, rec: dict) -> dict:
         return rec
 
     scratch_nb = (out_dir / f"nb_{args.issue}_built.ipynb").as_posix()
+    # Before paying for a build: a seat that never got wired must say so here, not as a bare
+    # Errno 2 out of a child process three stages later (see `_launch_gap`).
+    require_sk()
+    require_pm()
     sk_params = StdioServerParameters(command=str(SK_PY), args=[str(SK_DIR / "sk_agent.py")],
                                       env={**os.environ, "SK_AGENT_CONFIG": str(SK_CONFIG)},
                                       cwd=str(out_dir))
