@@ -617,6 +617,12 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 # ---------------------------------------------------------------- sk-agent / papermill calls
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
     spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.4}}
+    # --model-override keeps the agent's PROMPT and swaps the SERVED MODEL (agent_spec precedence:
+    # call override > spec > preset). This is what makes the harness comparable across hub-served
+    # models: same task, same conventions, one variable. Without it, comparing two models means
+    # comparing two different prompts, which measures the prompts, not the models.
+    if getattr(args, "model_override", ""):
+        spec["model"] = args.model_override
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -1243,6 +1249,10 @@ def main() -> int:
     ap.add_argument("--fresh-worktree", action="store_true")
     ap.add_argument("--out-dir", default=str(VLLM_ROOT / ".tmp/nbcoder"))
     ap.add_argument("--agent", default="notebook-auditor", help="sk-agent agent id")
+    ap.add_argument("--model-override", default="",
+                    help="hold the agent's prompt and serve another model (hub ids: glm-5.3, "
+                         "glm-5.3-flash, swift-1.5-27b, frognano-4b; sidecar ids: nb-minimax, "
+                         "nb-luna, nb-haiku). Empty = the agent's own model")
     ap.add_argument("--conventions",
                     default=str(VLLM_ROOT / "myia_vllm/docs/adoption/nb-coder-conventions.md"),
                     help="house rules injected into the prompts ('' disables)")
