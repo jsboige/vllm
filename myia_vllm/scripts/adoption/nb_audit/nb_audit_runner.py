@@ -35,7 +35,25 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "nb_audit_driver.py"
-SK_PY = Path("d:/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe")
+
+
+def _sk_dir() -> Path:
+    """Where the sk-agent checkout lives (roo-extensions #4781: no seat binding in the tree).
+    Order: NB_AUDIT_SK_DIR env, then the sibling layout the harness has once it lives at
+    servers/sk-agent/harness/nb_audit/ (its sk-agent root is ../.., recognised by sk_agent.py
+    so an unrelated ../.. cannot shadow it), then the legacy absolute path kept for the live
+    vllm task until the cutover. Its venv carries the `mcp` package the driver imports, so the
+    runner launches the driver with it."""
+    env = os.environ.get("NB_AUDIT_SK_DIR")
+    if env:
+        return Path(env)
+    sibling = (HERE / "../..").resolve()
+    if (sibling / "sk_agent.py").is_file():
+        return sibling
+    return Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+
+
+SK_PY = Path(os.environ.get("NB_AUDIT_SK_PY", str(_sk_dir() / "venv/Scripts/python.exe")))
 GH_REPO = "jsboige/CoursIA"
 NB_ROOT = "MyIA.AI.Notebooks/"
 
