@@ -37,9 +37,27 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-SK_DIR = Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
-SK_PY = SK_DIR / "venv/Scripts/python.exe"
-SK_CONFIG = SK_DIR / "sk_agent_config.json"
+HERE = Path(__file__).resolve().parent
+
+
+def _sk_dir() -> Path:
+    """Where the sk-agent checkout lives (roo-extensions #4781: no seat binding in the tree).
+    Order: NB_AUDIT_SK_DIR env, then the sibling layout the harness has once it lives at
+    servers/sk-agent/harness/nb_audit/ (its sk-agent root is ../.., recognised by sk_agent.py
+    so an unrelated ../.. cannot shadow it), then the legacy absolute path kept for the live
+    vllm task until the cutover."""
+    env = os.environ.get("NB_AUDIT_SK_DIR")
+    if env:
+        return Path(env)
+    sibling = (HERE / "../..").resolve()
+    if (sibling / "sk_agent.py").is_file():
+        return sibling
+    return Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+
+
+SK_DIR = _sk_dir()
+SK_PY = Path(os.environ.get("NB_AUDIT_SK_PY", str(SK_DIR / "venv/Scripts/python.exe")))
+SK_CONFIG = Path(os.environ.get("NB_AUDIT_SK_CONFIG", str(SK_DIR / "sk_agent_config.json")))
 
 # the six organs #17073 makes mandatory before any finding
 ORGANS = [

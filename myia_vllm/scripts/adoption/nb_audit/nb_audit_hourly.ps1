@@ -23,12 +23,13 @@ $env:PYTHONIOENCODING = 'utf-8'
 # Interpreter resolution (roo-extensions #4781 condition 3): -Python param, then
 # NB_AUDIT_PYTHON env, then the sk-agent venv two levels up (the layout the harness has
 # once it lives at mcps/internal/servers/sk-agent/harness/nb_audit/ -- that venv carries
-# the `mcp` package), then whatever `python` resolves to on PATH. No hard-coded path.
+# the `mcp` package; the ../..\sk_agent.py marker keeps an unrelated ../.. from matching),
+# then whatever `python` resolves to on PATH. No hard-coded path.
 $py = $Python
 if (-not $py) { $py = $env:NB_AUDIT_PYTHON }
 if (-not $py) {
     $venvPy = Join-Path $here '..\..\venv\Scripts\python.exe'
-    if (Test-Path $venvPy) { $py = (Resolve-Path $venvPy).Path }
+    if ((Test-Path $venvPy) -and (Test-Path (Join-Path $here '..\..\sk_agent.py'))) { $py = (Resolve-Path $venvPy).Path }
 }
 if (-not $py) { $py = 'python' }
 Set-Location $here
