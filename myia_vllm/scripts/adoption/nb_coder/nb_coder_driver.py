@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nb-coder driver — stages 0-2 of the issue -> notebook -> PR harness (jsboige/vllm#431).
+"""nb-coder driver — stages 0-5 of the issue -> notebook -> PR harness (jsboige/vllm#431).
 
 Stage 0 CLAIM : check_lane_claim.py on the CoursIA checkout (read), optional [CLAIMED] comment.
 Stage 1 PLAN  : sk-agent model turn -> cell plan JSON (kernel, edits, expected outputs).
@@ -7,9 +7,14 @@ Stage 2 BUILD : the HARNESS copies the source notebook (outputs preserved) and t
                 edits ONLY the planned cells on that copy (update_cell/add_cell/remove_cell);
                 the harness then proves the result is a minimal edit (structure diff) and runs
                 every planned cell with execute_on_kernel, deciding success alone.
+Stage 3 GATES : harness-only checks on the built notebook — coordination refs added outside
+                the exact provenance-footer form, secrets, language_info drift vs source.
+Stage 4 VERIFY: independent verifier (nb_coder_verify.py, SEPARATE process and agent —
+                producer != verifier; its exit 2 is an instrument error, never a reject).
+Stage 5 PR    : harness-only GitHub gestures — fresh branch, single-notebook commit, REST PR
+                create, delivery comment. The MODEL never writes to git or GitHub.
 
-Dry by default: no branch, no commit, no push, no PR. The spec's stages 3-5 (gates,
-verify, PR) are deliberately absent from this file for now (dispatch 14/11 15:34Z asks 0-2).
+Dry below --max-stage 5: no branch, no commit, no push, no PR.
 
 Run with the sk-agent venv python (it carries the ``mcp`` client package):
     d:/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe \
@@ -638,13 +643,214 @@ async def start_kernel(pm: ClientSession, kernel_name: str) -> str | None:
     return r.get("kernel_id")
 
 
+# ---------------------------------------------------------------- stages 3-5
+# Convention forms (nb-coder-conventions.md): a coordination reference only ever survives
+# as the exact footer note; anything else the BUILD adds is a violation.
+COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
+PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+                       r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
+
+
+def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
+    """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
+
+    Judged on the DELTA (cells the build touched): the source's own prose is the repo's
+    business, not the gate's — a pre-existing footer stays legit untouched."""
+    src_cells, built_cells = _cells(src_nb), _cells(built_nb)
+    gates: list[dict] = []
+    last_md = max((i for i, c in enumerate(built_cells) if c.get("cell_type") == "markdown"),
+                  default=-1)
+    offenders = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        if COORD_REF_RE.search(txt) and not (i == last_md and PROVENANCE_RE.search(txt)):
+            offenders.append(i)
+    gates.append({"gate": "coord-refs", "ok": not offenders,
+                  "detail": {"cells": offenders[:10]}})
+    hits = [i for i, c in enumerate(built_cells)
+            if SECRET_RE.search(_text(c.get("source")))]
+    gates.append({"gate": "secrets", "ok": not hits, "detail": {"cells": hits[:10]}})
+    sv = (json.loads(src_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
+        .get("language_info", {}).get("version")
+    bv = (json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
+        .get("language_info", {}).get("version")
+    gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
+                  "detail": {"src": sv, "built": bv}})
+    return gates
+
+
+def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) -> None:
+    """Stage 4 — the independent verifier runs as a SEPARATE process and agent
+    (producer != verifier, global rule). nb_coder_verify.py exits 0 approve /
+    1 reject / 2 instrument error — an error is NEVER read as a reject."""
+    facts = out_dir / f"facts-{args.issue}.json"
+    facts.write_text(json.dumps(
+        {k: rec.get(k) for k in ("plan", "apply", "structure", "exec_mode", "c2",
+                                 "execution", "conversation_id")}, ensure_ascii=False),
+        encoding="utf-8")
+    cmd = [sys.executable, str(HERE / "nb_coder_verify.py"),
+           "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
+           "--facts", str(facts), "--agent", args.verifier_agent,
+           "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # the child prints non-ASCII JSON
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=args.verify_timeout + 300, env=env)
+        rc, out = p.returncode, (p.stdout or p.stderr or "")
+    except subprocess.TimeoutExpired:
+        rc, out = 2, "verify subprocess timeout"
+    entry: dict = {"rc": rc, "agent": args.verifier_agent,
+                   "elapsed_s": round(time.time() - t0, 1), "tail": out.strip()[-1500:]}
+    trace = out_dir / f"verify-{args.issue}.json"
+    if trace.is_file():
+        t = json.loads(trace.read_text(encoding="utf-8"))
+        entry |= {"verdict": t.get("verdict"), "model_used": t.get("model_used"),
+                  "findings": (t.get("answer") or {}).get("findings"),
+                  "conversation_id": t.get("conversation_id")}
+    rec["verify"] = entry
+    rec["stage4_s"] = entry["elapsed_s"]
+    if rc == 0 and entry.get("verdict") == "approve":
+        rec["verdict"] = "verify-approved"
+    elif rc == 1 and entry.get("verdict") == "reject":
+        rec["verdict"] = "verify-reject"
+    else:
+        rec["verdict"] = "verify-error"
+
+
+def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
+    p = subprocess.run(["git", "-C", str(wt), *git_args], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
+    return p.returncode, (p.stdout or p.stderr).strip()
+
+
+def _short_desc(args, plan: dict) -> str:
+    """One-line gesture description composed from the plan's own 'but' fields —
+    harness-only, no model turn. House form: '<notebook stem> cell N — <but>'."""
+    stem = Path(args.notebook).stem
+    gestes = [g for g in (plan.get("plan") or []) if isinstance(g, dict)]
+    if len(gestes) == 1 and gestes[0].get("geste") == "edit" and str(gestes[0].get("cell")).isdigit():
+        but = _text(gestes[0].get("but")).strip()
+        return f"{stem} cell {gestes[0]['cell']} — {but}"[:140] or f"{stem} — edit"
+    kinds = ",".join(sorted({str(g.get("geste")) for g in gestes})) or "edit"
+    return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
+
+
+def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
+              token: str | None) -> None:
+    """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
+    Fresh branch off the detached worktree, single-notebook commit, REST PR create,
+    delivery comment on the issue."""
+    t0 = time.time()
+    nb_rel = args.notebook.replace("\\", "/")
+    branch = args.pr_branch or f"nbminimax/auto-{args.issue}"
+    desc = _short_desc(args, rec.get("plan") or {})
+    entry: dict = {"branch": branch}
+
+    rc, out = _git(wt_path, "checkout", "-b", branch)
+    if rc != 0:
+        entry["error"] = out[:300]
+        rec["verdict"], rec["pr"] = "pr-branch-failed", entry
+        return
+    shutil.copy2(built_nb, wt_path / args.notebook)
+    rc, out = _git(wt_path, "add", "--", nb_rel)
+    if rc != 0:
+        entry["error"] = f"add: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-git-failed", entry
+        return
+
+    commit_body = (
+        f"{desc}\n\n"
+        + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
+                    for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + f"\n\nProducteur : {args.agent} (harnais nb_coder, stages 0-5)."
+        + f"\nVérification indépendante : {args.verifier_agent} — "
+        f"{(rec.get('verify') or {}).get('verdict')} "
+        f"(modèle {(rec.get('verify') or {}).get('model_used')})."
+        + f"\nExécution : kernel {rec.get('kernel', {}).get('kernel_name')}, "
+        f"{len(rec.get('execution') or [])} cellules exécutées, C.2 "
+        f"{'séquentiel' if (rec.get('c2') or {}).get('sequential') else 'BROKEN'}."
+        + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
+    msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
+    msg_file.write_text(commit_body, encoding="utf-8")
+    rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    msg_file.unlink(missing_ok=True)
+    if rc != 0:
+        entry["error"] = f"commit: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-git-failed", entry
+        return
+    entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+
+    rc, out = _git(wt_path, "push", "-u", "origin", branch)
+    if rc != 0:
+        entry["error"] = f"push: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-push-failed", entry
+        return
+
+    n_exec = len(rec.get("execution") or [])
+    gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
+    findings = (rec.get("verify") or {}).get("findings") or []
+    pr_body = (
+        f"Grain: auto/notebook-python — lane {args.lane} — issue #{args.issue}\n\n"
+        f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
+        f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
+        f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
+        f"vérificateur indépendant `{args.verifier_agent}` "
+        f"(`{(rec.get('verify') or {}).get('model_used')}`).\n\n"
+        f"## Geste\n\n{desc}\n\n"
+        + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
+                    for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + "\n\n## Mesures\n\n"
+        f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
+        f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
+        f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
+        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK.\n"
+        f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
+        f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
+        f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
+        f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
+        f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
+        f"run record complet dans le out-dir du harnais.\n\n"
+        f"Closes #{args.issue}\n\n"
+        "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+    body_file = built_nb.parent / f"pr-body-{args.issue}.md"
+    body_file.write_text(pr_body, encoding="utf-8")
+    rc, out = gh(["api", "repos/jsboige/CoursIA/pulls",
+                  "-f", f"title=Fix(notebooks,#{args.issue}): {desc}",
+                  "-f", f"head={branch}", "-f", f"base={args.pr_base}",
+                  "-F", f"body=@{body_file}"], token, timeout=120)
+    body_file.unlink(missing_ok=True)
+    if rc != 0:
+        entry["error"] = f"pr create: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-create-failed", entry
+        return
+    pr = json.loads(out)
+    entry |= {"number": pr.get("number"), "url": pr.get("html_url")}
+
+    comment = (f"Livraison harnais nb-coder : PR #{pr.get('number')} — issue #{args.issue}.\n"
+               f"Producteur : `{args.agent}`. Vérificateur : `{args.verifier_agent}` "
+               f"({(rec.get('verify') or {}).get('verdict')}). "
+               f"Trace : conversation `{rec.get('conversation_id')}`.")
+    rc_c, out_c = gh(["api", f"repos/jsboige/CoursIA/issues/{args.issue}/comments",
+                      "-f", f"body={comment}"], token, timeout=120)
+    entry["delivery_comment"] = rc_c == 0
+    if rc_c != 0:
+        entry["delivery_comment_error"] = out_c[:200]
+    rec["pr"] = entry
+    rec["verdict"] = "pr-created"
+    rec["stage5_s"] = round(time.time() - t0, 1)
+
+
 # ---------------------------------------------------------------- main flow
 async def run(args) -> dict:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": args.lane, "dry": True, "stages": {}, "calls": [],
+           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
     # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
     # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
@@ -784,6 +990,11 @@ async def run(args) -> dict:
                             exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
                         rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
                                             if exec_targets else [])
+                    # kernel hygiene: an hourly cadence must not leak one kernel per run
+                    if rec.get("kernel_id"):
+                        rec["kernel_stop"] = await pm_call(
+                            pm, "manage_kernel", {"action": "stop",
+                                                  "kernel_id": rec["kernel_id"]})
                     counts = [c.get("execution_count") for c in _cells(scratch)
                               if c.get("cell_type") == "code"
                               and _text(c.get("source")).strip()]
@@ -797,6 +1008,19 @@ async def run(args) -> dict:
                     else:
                         rec["verdict"] = "built-executed-counts-broken"
             rec["stage3_s"] = round(time.time() - t3, 1)
+
+    # ---- stages 3-5: harness-only (no model turn inside these)
+    built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
+    if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
+        tg = time.time()
+        rec["gates"] = run_gates(src_nb, built_path)
+        rec["gates_s"] = round(time.time() - tg, 1)
+        bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
+        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
+    if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
+        stage4_verify(args, rec, src_nb, built_path, out_dir)
+    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+        stage5_pr(args, rec, Path(wt["path"]), built_path, issue, token)
     rec["finished"] = utcnow()
     return rec
 
@@ -832,7 +1056,18 @@ def main() -> int:
                          "(state-safe, execution_count sequential — C.2 proof), none for "
                          "markdown-only; all: always; plan: the plan's execute_cells "
                          "(SOURCE indexes, shift hazard with deletes/inserts)")
-    ap.add_argument("--max-stage", type=int, choices=[0, 1, 2], default=2)
+    ap.add_argument("--max-stage", type=int, choices=[0, 1, 2, 3, 4, 5], default=2,
+                    help="0 claim+issue · +1 plan · +2 build/exec · +3 gates · "
+                         "+4 independent verify · +5 PR (the only GitHub-writing stage; "
+                         "the model never performs it)")
+    ap.add_argument("--verifier-agent",
+                    default=os.environ.get("NBCODER_VERIFIER", "critic"),
+                    help="stage-4 verifier agent — must be a DIFFERENT model from the "
+                         "builder (default critic = GLM-5.3 vs builder MiniMax)")
+    ap.add_argument("--verify-timeout", type=int, default=900)
+    ap.add_argument("--pr-base", default="main")
+    ap.add_argument("--pr-branch", default=None,
+                    help="branch name (default nbminimax/auto-<issue>)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
@@ -850,13 +1085,19 @@ def main() -> int:
         fh.write(json.dumps({k: rec.get(k) for k in
                              ("issue", "notebook", "started", "finished", "verdict", "lane")}
                             | {"stage0_s": rec.get("stage0_s"), "stage1_s": rec.get("stage1_s"),
-                               "stage2_s": rec.get("stage2_s"),
+                               "stage2_s": rec.get("stage2_s"), "stage4_s": rec.get("stage4_s"),
+                               "stage5_s": rec.get("stage5_s"),
                                "gate": (rec.get("gate") or {}).get("verdict"),
+                               "verify": (rec.get("verify") or {}).get("verdict"),
+                               "pr": (rec.get("pr") or {}).get("number"),
                                "calls": len(rec.get("calls") or [])}, ensure_ascii=False) + "\n")
     print(json.dumps({k: rec.get(k) for k in
-                      ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "kernel_id")},
-                     ensure_ascii=False))
-    return 0 if rec.get("verdict", "").endswith(("ok", "stage0-only", "stage1-only")) else 1
+                      ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "stage4_s",
+                       "stage5_s", "kernel_id")}
+                     | {"verify": (rec.get("verify") or {}).get("verdict"),
+                        "pr": (rec.get("pr") or {}).get("number")}, ensure_ascii=False))
+    return 0 if rec.get("verdict", "").endswith(
+        ("ok", "stage0-only", "stage1-only", "verify-approved", "pr-created")) else 1
 
 
 if __name__ == "__main__":
