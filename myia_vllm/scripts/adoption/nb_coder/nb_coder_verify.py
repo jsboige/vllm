@@ -227,6 +227,28 @@ async def call_verifier(args, prompt: str) -> tuple[dict, float]:
         return {"response": raw}, round(time.time() - t0, 1)
 
 
+# The contract of this file is `2 = instrument failure, never read as a reject`. An operator
+# who reads `error:unparsable` cannot tell a model that answered unreadably from a model that
+# answered NOTHING — and the second one asks for a different gesture (vllm#446, measured by
+# po-2028:claudish: `critic`/glm-5.3 with thinking burned 4 096 then 16 000 tokens and emitted
+# 0 characters, twice, while `analyst-fast` returned a real verdict in 27,8 s).
+EMPTY_RESPONSE_HINT = (
+    "le modèle a rendu 0 caractère : si l'agent raisonne, son budget de sortie est consommé "
+    "par le raisonnement avant tout contenu — changer d'agent (--agent analyst-fast) plutôt "
+    "que d'augmenter --max-tokens, déjà mesuré insuffisant à 16 000 (vllm#446).")
+
+
+def unparsable_kind(env: dict, resp: str, agent: str, max_tokens: int) -> str:
+    """Name the failure instead of a bare `unparsable`.
+
+    An ANSWERED call that we cannot parse and a call that produced NOTHING are different
+    instrument failures; only the second is named after the budget that swallowed it.
+    """
+    if resp.strip():
+        return "unparsable"
+    return f"empty-response:{env.get('model_used') or agent}:max_tokens={max_tokens}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="nb-coder independent verifier (stage 4)")
     ap.add_argument("--issue", type=int, required=True)
@@ -275,11 +297,14 @@ def main() -> int:
         rec["elapsed_s"] = dt
         rec["model_used"] = env.get("model_used")
         rec["conversation_id"] = env.get("conversation_id")
-        rec["response_chars"] = len(env.get("response") or "")
-        ans = nbcd.parse_json_block(env.get("response") or "")
+        resp = env.get("response") or ""
+        rec["response_chars"] = len(resp)
+        ans = nbcd.parse_json_block(resp)
         rec["answer"] = ans
         if not ans or ans.get("verdict") not in ("approve", "reject"):
-            rec["verdict"] = "error:unparsable"
+            rec["verdict"] = "error:" + unparsable_kind(env, resp, args.agent, args.max_tokens)
+            if not resp.strip():
+                rec["hint"] = EMPTY_RESPONSE_HINT
             rc = 2
         else:
             rec["verdict"] = ans["verdict"]

@@ -130,3 +130,24 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+# --------------------------------------------------------------- instrument failures, named
+
+
+def test_an_empty_response_names_the_budget_not_a_bare_unparsable():
+    """vllm#446: `error:unparsable` could not be told apart from a model that answered
+    NOTHING. Measured by po-2028:claudish — `critic`/glm-5.3 (thinking) burned 4 096 then
+    16 000 tokens and emitted 0 characters, twice. The gesture differs: unreadable answer
+    -> look at the prompt; nothing emitted -> change the agent, the bigger budget was
+    already measured insufficient."""
+    assert v.unparsable_kind({"model_used": "glm-5.3"}, "", "critic", 16_000) == \
+           "empty-response:glm-5.3:max_tokens=16000"
+
+    # a real answer we could not read is a DIFFERENT failure, and must not blame the budget
+    assert v.unparsable_kind({"model_used": "glm-5.3"}, "voici mon verdict", "critic", 4_096) \
+           == "unparsable"
+
+    # the envelope itself failed to parse, so no model_used: fall back to the requested agent
+    assert v.unparsable_kind({}, "  \n ", "analyst-fast", 6_000) == \
+           "empty-response:analyst-fast:max_tokens=6000"
