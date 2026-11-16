@@ -209,6 +209,7 @@ async def call_verifier(args, prompt: str) -> tuple[dict, float]:
     # Same wiring guard as the builder: the verifier launches sk-agent too, and a seat that
     # exports nothing must be told once, in the same words, not per agent.
     nbcd.require_sk()
+    nbcd.require_sk_credentials(args.agent)
     sk_params = StdioServerParameters(
         command=str(nbcd.SK_PY), args=[str(nbcd.SK_DIR / "sk_agent.py")],
         env={**os.environ, "SK_AGENT_CONFIG": str(nbcd.SK_CONFIG)}, cwd=str(Path(args.out_dir)))

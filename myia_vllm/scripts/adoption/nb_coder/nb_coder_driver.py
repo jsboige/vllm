@@ -120,6 +120,43 @@ def require_pm() -> None:
                     f"{', '.join(str(c) for c in _PM_CWD_ROOTS)}")
 
 
+def require_sk_credentials(agent: str) -> None:
+    """Refuse to call a model whose API key is not in the environment.
+
+    sk-agent authenticates through the environment — each model declares ``api_key_env``
+    (``ZAI_API_KEY`` for the hub models on this fleet) — and the driver hands it the
+    DRIVER's environment. Launched by an MCP host, those variables come from the server
+    entry in ``~/.claude.json``; launched from a shell or a runner that never exported
+    them, every call returns 401 at stage 1. Measured 16/11 on po-2028: the whole pass
+    stopped on ``stage1-auth-failed`` after a 50 s claim, and the earlier runs of the day
+    had only worked because the operator's shell happened to carry the key.
+
+    Resolves the agent's model in sk-agent's own config and checks the variable it names.
+    Unknown agent/model, or no declared variable: nothing to judge, returns silently.
+    """
+    try:
+        cfg = json.loads(SK_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return                                  # require_sk already guarded the file itself
+    base_id = agent.split("[")[0] if "[" in agent else agent
+    agent_cfg = next((a for a in cfg.get("agents") or [] if a.get("id") == base_id), None)
+    if not agent_cfg:
+        return
+    model_id = agent_cfg.get("model")
+    model_cfg = next((m for m in cfg.get("models") or [] if m.get("id") == model_id), None)
+    if not model_cfg:
+        return
+    var = model_cfg.get("api_key_env")
+    if not var or os.environ.get(var):
+        return
+    raise SystemExit(
+        f"nb-coder: credential absent — le modèle {model_id} (agent {agent}) déclare "
+        f"{var} dans {SK_CONFIG}, et cette variable n'est pas dans l'environnement.\n"
+        f"  Lancé par un hôte MCP, il la tire de l'entrée serveur ; un shell ou un runner "
+        f"doit l'exporter.\n"
+        f"  Sans elle, chaque appel rend 401 APRÈS le claim, au stage 1.")
+
+
 # Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
 # harness, #431). e.g. po-2028 sets NBCODER_SK_DIR, NBCODER_PM_PY, NBCODER_LANE (and
 # NBCODER_GATE/GATE-MODE=off where capacity is enforced server-side by claudis lane budgets
@@ -1128,6 +1165,7 @@ async def run(args, rec: dict) -> dict:
     # Errno 2 out of a child process three stages later (see `_launch_gap`).
     require_sk()
     require_pm()
+    require_sk_credentials(args.agent)
     sk_params = StdioServerParameters(command=str(SK_PY), args=[str(SK_DIR / "sk_agent.py")],
                                       env={**os.environ, "SK_AGENT_CONFIG": str(SK_CONFIG)},
                                       cwd=str(out_dir))
