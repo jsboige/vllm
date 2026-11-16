@@ -307,6 +307,19 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
 
 
+def worktree_refusal(wt: dict) -> str | None:
+    """The verdict when the worktree organ refused, else None.
+
+    `ok` is read as tri-state on purpose: `is False` is the only failing value, and an
+    ABSENT key means a dict shaped before the both-branches contract (or by a caller that
+    never asked for one) — never a failure. `if not wt.get("ok")` would refuse a healthy
+    reused worktree, and a guard that cries wolf is a guard someone removes.
+    """
+    if wt.get("ok") is False:
+        return f"worktree-failed:{(wt.get('err') or 'unknown')[:300]}"
+    return None
+
+
 def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
@@ -1130,6 +1143,13 @@ async def run(args, rec: dict) -> dict:
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
+    refusal = worktree_refusal(wt)
+    if refusal:
+        # Before the `stage0-only` early return: a worktree that never got created is not a
+        # successful stage 0, and `notebook-not-found` would send the operator hunting a
+        # notebook that is right there on main.
+        rec["verdict"] = refusal
+        return rec
     if args.max_stage < 1:
         rec["verdict"] = "stage0-only"
         return rec

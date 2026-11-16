@@ -130,3 +130,42 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+# ------------------------------------------------- worktree organ (vllm#455 review)
+
+
+def _git_repo(p: Path) -> Path:
+    """A real one-commit repo — no mock: the organ shells out to `git` and that IS the code."""
+    import subprocess
+    p.mkdir(parents=True, exist_ok=True)
+    for cmd in (["init", "-q"], ["-c", "user.name=nb", "-c", "user.email=nb@x",
+                                 "commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", "-C", str(p), *cmd], check=True, capture_output=True)
+    return p
+
+
+def test_reused_worktree_reports_ok_true(tmp_path):
+    """The branch that used to omit `ok` entirely: a healthy reuse must say so, or the
+    call-site guard refuses it (a false positive, and a guard that cries wolf gets removed)."""
+    dest = _git_repo(tmp_path / "wt")
+    wt = v.nbcd.prepare_worktree(tmp_path / "unused", dest, fresh=False)
+    assert wt["reused"] is True
+    assert wt["ok"] is True and wt["err"] is None
+    assert v.nbcd.worktree_refusal(wt) is None
+
+
+def test_failed_worktree_reports_ok_false_with_the_error(tmp_path):
+    """No origin/main in a bare tmp repo: `worktree add` fails, and the reason must survive."""
+    repo = _git_repo(tmp_path / "repo")          # has HEAD, has no origin/main
+    wt = v.nbcd.prepare_worktree(repo, tmp_path / "wt", fresh=True)
+    assert wt["ok"] is False
+    assert wt["err"]
+    ref = v.nbcd.worktree_refusal(wt)
+    assert ref and ref.startswith("worktree-failed:")
+
+
+def test_absent_ok_is_not_a_refusal(tmp_path):
+    """Tri-state: `is False` fails, absent passes. This is the exact dict the pre-contract
+    organ returned for a HEALTHY reuse — refusing it is the bug being pinned."""
+    assert v.nbcd.worktree_refusal({"path": "x", "reused": True, "head": "abc"}) is None
