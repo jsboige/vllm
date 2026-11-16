@@ -43,17 +43,46 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 HERE = Path(__file__).resolve().parent
-VLLM_ROOT = HERE.parents[3]
+# Anchor for the vllm-side defaults (scratch dirs, conventions doc). Inside the jsboige/vllm
+# fork this is the repo root; installed anywhere else -- the mutualised copy under
+# servers/sk-agent/harness/ (roo-extensions #4781) -- it falls back to this directory so the
+# defaults stay on-disk instead of naming a seat's tree.
+_VLLM_CAND = HERE.parents[3]
+VLLM_ROOT = _VLLM_CAND if (_VLLM_CAND / "myia_vllm").is_dir() else HERE
+
+
+def _sk_dir() -> Path:
+    """Where the sk-agent checkout lives (roo-extensions #4781: no seat binding in the tree).
+    Order: NBCODER_SK_DIR env, then the sibling layout the harness has once it lives at
+    servers/sk-agent/harness/nb_coder/ (its sk-agent root is ../.., recognised by sk_agent.py
+    so an unrelated ../.. cannot shadow it), then the legacy absolute path kept for the live
+    ai-01 seat until the cutover."""
+    env = os.environ.get("NBCODER_SK_DIR")
+    if env:
+        return Path(env)
+    sibling = (HERE / "../..").resolve()
+    if (sibling / "sk_agent.py").is_file():
+        return sibling
+    return Path("d:/roo-extensions/mcps/internal/servers/sk-agent")
+
+
 # Seat wiring is env-overridable: the same driver serves any seat of the fleet (mutualised
-# harness, #431). Defaults stay the ai-01 vllm seat; e.g. po-2028 sets NBCODER_SK_DIR,
-# NBCODER_PM_PY, NBCODER_LANE (and NBCODER_GATE/GATE-MODE=off where capacity is enforced
-# server-side by claudis lane budgets instead of a local Swift gate).
-SK_DIR = Path(os.environ.get("NBCODER_SK_DIR", "d:/roo-extensions/mcps/internal/servers/sk-agent"))
-SK_PY = SK_DIR / "venv/Scripts/python.exe"
+# harness, #431). e.g. po-2028 sets NBCODER_SK_DIR, NBCODER_PM_PY, NBCODER_LANE (and
+# NBCODER_GATE/GATE-MODE=off where capacity is enforced server-side by claudis lane budgets
+# instead of a local Swift gate).
+SK_DIR = _sk_dir()
+SK_PY = Path(os.environ.get("NBCODER_SK_PY", str(SK_DIR / "venv/Scripts/python.exe")))
 SK_CONFIG = Path(os.environ.get("NBCODER_SK_CONFIG", str(SK_DIR / "sk_agent_config.json")))
-PM_PY = Path(os.environ.get("NBCODER_PM_PY", r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe"))
+# The papermill MCP server is a separate process with its own dependencies (papermill_mcp):
+# env, then the recorded ai-01 conda env when it exists, then the interpreter running this
+# driver (the honest "no seat binding" default; seats install papermill_mcp or set NBCODER_PM_PY).
+_LEGACY_PM_PY = Path(r"C:\Users\MYIA\miniconda3\envs\mcp-jupyter\python.exe")
+PM_PY = Path(os.environ.get("NBCODER_PM_PY",
+                            str(_LEGACY_PM_PY if _LEGACY_PM_PY.is_file() else Path(sys.executable))))
+_PM_CWD_SIBLING = (HERE / "../../../jupyter-papermill-mcp-server").resolve()
 PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
-                             r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))
+                             str(_PM_CWD_SIBLING if _PM_CWD_SIBLING.is_dir()
+                                 else Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))))
 GATE = Path(os.environ.get("NBCODER_GATE",
                            str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
 LANE = os.environ.get("NBCODER_LANE", "myia-ai-01:nb-coder")
