@@ -105,6 +105,12 @@ The driver calls `swift_capacity_gate.py` before **each** notebook (exit 0 only)
 yellow/red — this is precisely a "consumer armed after 24 h observation" of the gate rollout
 (#4712). Build work is batchable, so red = come back next hourly slot; no in-flight kill needed.
 
+A seat that runs **no local engine** declares it once (`SWIFT_GATE_ENGINE=none`) and the gate
+answers `not-applicable` / exit 0 instead of `unknown` / exit 3. Otherwise `block` mode refuses
+every dispatch on such a seat and the only way out is `--gate-mode off`, which removes the
+protection on the seats that *do* have an engine. The declaration moves the verdict; an engine
+that declares itself and stays silent remains `unknown` and still refuses.
+
 ### 3.4 Agentic trace
 
 - sk-agent `conversation_id` persists per notebook build → the PR body carries it;
