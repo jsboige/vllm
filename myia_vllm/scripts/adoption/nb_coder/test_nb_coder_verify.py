@@ -169,3 +169,52 @@ def test_absent_ok_is_not_a_refusal(tmp_path):
     """Tri-state: `is False` fails, absent passes. This is the exact dict the pre-contract
     organ returned for a HEALTHY reuse — refusing it is the bug being pinned."""
     assert v.nbcd.worktree_refusal({"path": "x", "reused": True, "head": "abc"}) is None
+
+
+# ------------------------------------------------- agent wiring (vllm#455 review)
+
+
+def _cfg(tmp_path: Path, ids: list) -> Path:
+    p = tmp_path / "sk-agent.config.json"
+    p.write_text(json.dumps({"agents": [{"id": i, "model": "m"} for i in ids],
+                             "models": [{"id": "m", "api_key_env": None}]}), encoding="utf-8")
+    return p
+
+
+def test_a_known_agent_is_not_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local", "notebook-coder-minimax"]))
+    assert v.nbcd.unknown_agent("fast-local") is None
+
+
+def test_a_typo_is_refused_and_lists_the_real_ids(tmp_path, monkeypatch):
+    """sk-agent falls back to `get_default_agent()` on an unknown id — a DIFFERENT model
+    runs after the claim is paid (ai-01:vllm, 16/11). The refusal must name the typo and
+    show what exists, or the operator keeps guessing."""
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local", "notebook-coder-minimax"]))
+    ref = v.nbcd.unknown_agent("notebook-coder-minmax")
+    assert ref and "notebook-coder-minmax" in ref
+    assert "notebook-coder-minimax" in ref
+
+
+def test_a_model_suffix_does_not_look_like_a_typo(tmp_path, monkeypatch):
+    """`agent[model]` is legal; only the base id is looked up — a false refusal here would
+    block a working invocation."""
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", _cfg(tmp_path, ["fast-local"]))
+    assert v.nbcd.unknown_agent("fast-local[glm-5.3]") is None
+
+
+def test_an_unreadable_config_accuses_nobody(tmp_path, monkeypatch):
+    """The path check owns that failure; a second, less precise refusal would only muddy it."""
+    missing = tmp_path / "absent.json"
+    monkeypatch.setattr(v.nbcd, "SK_CONFIG", missing)
+    assert v.nbcd.unknown_agent("whatever") is None
+
+
+def test_the_preflight_actually_calls_it():
+    """A correct refusal that `_preflight` never calls protects nothing.
+
+    `_preflight` is not reachable from a unit test without argparse + a full seat, so the
+    pin reads the CALL SITE in the source — the same pattern the grain tag uses.
+    """
+    src = Path(v.nbcd.__file__).read_text(encoding="utf-8")
+    assert "unknown_agent(args.agent)" in src, "the preflight no longer refuses a ghost agent"

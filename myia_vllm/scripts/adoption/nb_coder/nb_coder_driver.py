@@ -107,6 +107,37 @@ def require_sk() -> None:
                     f"racines flotte : {probed}")
 
 
+def unknown_agent(agent: str) -> str | None:
+    """The refusal when the agent id is absent from sk-agent's config, else None.
+
+    An unknown id is NOT inert, which is what makes this a preflight check and not a
+    nicety. sk-agent's `_get_or_create_agent` logs a warning and returns None, then the
+    resolution falls back to `get_default_agent()` — **a different model runs**, the claim
+    is already posted, and only the envelope's `agent_used`/`model_used` reveals the
+    substitution after the fact (measured by ai-01:vllm the 16/11). A typo in `--agent`
+    must cost zero, not one claim plus one pass of the wrong model.
+
+    The neighbouring `missing_credential` returns None on an unknown agent on purpose —
+    nothing to judge about a credential that cannot be resolved. That is exactly the hole
+    ai-01:vllm named in the #455 co-review; the two functions are complementary, not
+    redundant: one refuses an agent that DOES NOT EXIST, the other one that exists but
+    cannot authenticate.
+
+    Only a readable config can accuse: with none, `_preflight` has a more precise refusal
+    of its own (the path check), and this returns None rather than stack a second one.
+    """
+    try:
+        cfg = json.loads(SK_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    base_id = agent.split("[")[0] if "[" in agent else agent
+    ids = [a.get("id") for a in cfg.get("agents") or [] if a.get("id")]
+    if base_id in ids:
+        return None
+    shown = ", ".join(ids[:8]) + (" …" if len(ids) > 8 else "")
+    return f"agent {base_id} (absent de {SK_CONFIG.name}) — agents connus : {shown}"
+
+
 def missing_credential(agent: str) -> str | None:
     """The env var an agent's model needs and the environment lacks, or None.
 
@@ -1325,6 +1356,11 @@ def _preflight(ap, args) -> None:
     cred = missing_credential(args.agent)
     if cred:
         missing.append(cred)
+    # ... and a credential check cannot see an agent id that does not exist: sk-agent then
+    # serves the DEFAULT agent, a different model, after the claim is paid (vllm#455 review).
+    ghost = unknown_agent(args.agent)
+    if ghost:
+        missing.append(ghost)
     if not missing:
         return
     detail = "seat wiring does not resolve here — point the env var at a real path: " \
