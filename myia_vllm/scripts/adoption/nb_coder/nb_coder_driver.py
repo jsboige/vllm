@@ -707,6 +707,29 @@ COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
 PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
 SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                        r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
+# CoursIA acceptance contract, trigger 2 (2026-11-16): a machine path surfaced in an OUTPUT
+# is a change-request — it proves the notebook ran on someone's box rather than in the
+# canonical environment. Outputs only: the same string in the SOURCE is prose or config.
+# `Loading extensions from` is evcxr's own banner, the Rust form of the same leak.
+MACHINE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/](?:[^\\/\s\"']+[\\/])+"      # C:\Users\... , d:/vllm/... (>= 2 segments)
+    r"|\\\\wsl(?:\.localhost|\$)[\\/]"              # \\wsl.localhost\Ubuntu\...
+    r"|/home/[A-Za-z_][A-Za-z0-9._-]*/"
+    r"|/Users/[A-Za-z][A-Za-z0-9._-]*/"
+    r"|Loading extensions from\b)")
+
+
+def _outputs_text(cell: dict) -> str:
+    """What a cell DISPLAYS: streams, the text stubs of its rich data, and error tracebacks."""
+    parts: list[str] = []
+    for o in cell.get("outputs") or []:
+        parts.append(_text(o.get("text")))
+        data = o.get("data") or {}
+        for mime in ("text/plain", "text/html", "text/markdown"):
+            parts.append(_text(data.get(mime)))
+        parts.append(_text(o.get("traceback")))
+        parts.append(str(o.get("evalue") or ""))
+    return "\n".join(p for p in parts if p)
 
 
 def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
@@ -750,6 +773,16 @@ def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
         .get("language_info", {}).get("version")
     gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
                   "detail": {"src": sv, "built": bv}})
+    # Delta judged on the OUTPUTS themselves: a cell whose displayed text the build did not
+    # change keeps its pre-existing path without failing this build (same rule as secrets).
+    src_hits = [i for i, c in enumerate(src_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
+    built_hits = [i for i, c in enumerate(built_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
+    new_hits = [i for i in built_hits
+                if not (i < len(src_cells)
+                        and _outputs_text(built_cells[i]) == _outputs_text(src_cells[i]))]
+    gates.append({"gate": "machine-path", "ok": not new_hits,
+                  "detail": {"cells": new_hits[:10], "source_hits": src_hits[:10],
+                             "build_hits": built_hits[:10]}})
     return gates
 
 
