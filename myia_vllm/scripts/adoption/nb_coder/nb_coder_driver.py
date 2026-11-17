@@ -736,6 +736,35 @@ CREATE_SEGMENT = 8   # cells per stage-2 tour in creation mode — measured 17/1
                      # the sources of ~29 cells do not fit one output budget
 
 
+def segment_keep_valid(got: list, seg: list) -> tuple[list, list]:
+    """Keep only answers whose idx matches an ASKED plan cell of this segment, with a
+    non-empty source; returns (kept in plan order, missing plan cells). Duplicates keep
+    the first occurrence; out-of-segment and unusable idx are dropped (they would shift
+    every later cell and fail only at the final verify). A plan cell without a usable
+    int idx always lands in 'missing' — the fail-fast verdict names it, nothing is
+    silently dropped."""
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+    asked = {}
+    for c in seg:
+        i = _int(c.get("idx") if isinstance(c, dict) else None)
+        if i is not None:
+            asked[i] = c
+    kept: dict[int, dict] = {}
+    for c in got:
+        i = _int(c.get("idx") if isinstance(c, dict) else None)
+        if i is None or i not in asked or i in kept:
+            continue
+        if not str(c.get("source") or "").strip():
+            continue
+        kept[i] = c
+    return ([kept[i] for i in sorted(kept)],
+            [asked[i] for i in sorted(asked) if i not in kept])
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str) -> dict:
     """Stage 2 of creation mode, SEGMENT by SEGMENT. Each tour renders the sources of
@@ -743,7 +772,12 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     and hands ONE payload to apply_create (the single-write discipline holds). Returns
     {} with rec['verdict'] set on the first segment that fails to answer or parse —
     with the raw tail persisted for offline diagnosis (the 17/11 pass stored none,
-    leaving only response_chars to guess from)."""
+    leaving only response_chars to guess from).
+    A segment answering FEWER cells than asked gets ONE repair re-ask for exactly the
+    missing idx (17/11, #27104 blank pass: segment 3 answered 6/8 and the loop
+    appended silently — the notebook was 2 cells short and only the FINAL verify
+    caught it, after every token was spent). Still short after the repair fails fast
+    with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
@@ -751,6 +785,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         env = await sk_call_retry(session, args, rec, f"2-build+{si}",
                                   creation_json_prompt(seg, n_src_cells, conventions), conv)
         conv = env.get("conversation_id") or conv
+        chars_first = len(env.get("response") or "")
         part = parse_json_block(env.get("response") or "")
         got = (part or {}).get("cells") or []
         if not part or not got:
@@ -758,13 +793,29 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                               if not part else f"stage2-empty-segment:{si}")
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
             return {}
-        try:
-            got.sort(key=lambda c: int(c.get("idx")))   # plan order inside the segment
-        except (TypeError, ValueError):
-            pass                                          # no usable idx: keep given order
-        all_cells.extend(got)
-        seg_reports.append({"from": si, "asked": len(seg), "got": len(got),
-                            "chars": len(env.get("response") or "")})
+        kept, missing = segment_keep_valid(got, seg)
+        repair = None
+        if missing:
+            # one repair round for EXACTLY the omitted cells — same prompt shape,
+            # smaller tranche, so the omissions cannot hide in a long answer again
+            env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
+                                      creation_json_prompt(missing, n_src_cells,
+                                                           conventions), conv)
+            conv = env.get("conversation_id") or conv
+            part2 = parse_json_block(env.get("response") or "")
+            extra, missing = segment_keep_valid((part2 or {}).get("cells") or [], missing)
+            kept += extra
+            kept.sort(key=lambda c: int(c["idx"]))   # repair fills holes mid-segment
+            repair = {"filled": [int(c["idx"]) for c in extra],
+                      "chars": len(env.get("response") or "")}
+        if missing:
+            rec["verdict"] = f"stage2-short-segment:{si}"
+            rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
+            rec["stage2_missing_idx"] = [c.get("idx") for c in missing]
+            return {}
+        all_cells.extend(kept)                # plan order, by construction of the helper
+        seg_reports.append({"from": si, "asked": len(seg), "got": len(kept),
+                            "chars": chars_first, "repair": repair})
     rec["segments"] = seg_reports
     return {"cells": all_cells, "notes": f"assembled from {len(seg_reports)} segments"}
 
