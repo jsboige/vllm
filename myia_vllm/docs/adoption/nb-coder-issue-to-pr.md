@@ -138,6 +138,20 @@ python nb_coder_driver.py --issue 27099 `
   output au départ. Réponses non parsées : queue brute persistée
   (`stage1_raw_tail`/`stage2_raw_tail`, 3 000 car.) — la passe du 17/11 n'avait que
   `response_chars` pour deviner.
+- **Boucle de réparation (`--repair-rounds`, défaut 2)** — mesuré 17/11 (#27099, passes
+  3-4) : le modèle traduit des idiomes Python inexistants dans l'API .NET (`MkNe`,
+  `Expr` là où `ArithExpr` est exigé). Les erreurs **réelles** du kernel (messages du
+  compilateur, ligne + cause, extraits des outputs persistés) retournent au modèle dans
+  la même conversation (`2.5-repair+N`) ; il ne rend que les cellules en échec (index
+  inchangés) ; `apply_repairs` remplace leurs sources en une écriture et **réinitialise
+  outputs et `execution_count`** (les sorties ne reviennent que de l'EXÉCUTION), kernel
+  **frais** à chaque tour (une définition réparée peut changer la sémantique en aval),
+  puis re-exécution complète. Passe 4 : round 0 → 6 cellules réparées, round 1 →
+  **11/11 cellules OK, `execution_count` 1..11 séquentiels, verdict `gates-ok`** en
+  7 appels modèle (~23 min).
+- **Kernel cwd = dossier du carnet source** : sans lui `#load "Z3NativeLoader.cs"` meurt
+  CS1504 (le fichier existe dans la série) et chaque cellule utilisant Z3 cascade CS0246 —
+  mesuré #27099 passe 2 ; même correctif que #467 pour `import ict` (#27021).
 - **Preuve structurelle** : `verify_structure_create` — même nombre de cellules que le
   jumeau + signature de types identique (code↔code, markdown↔markdown) + aucune cellule code
   vide + aucun output résiduel (les sorties doivent venir de l'EXÉCUTION).
@@ -146,7 +160,8 @@ python nb_coder_driver.py --issue 27099 `
 - **Kernel mort = échec** : `kernel-start-failed` — un kernel `.net-csharp` absent ne peut
   plus produire un `built-executed-ok` sans aucune cellule exécutée (le trou était réel).
 - Tests offline : `test_nb_coder_create.py` (apply/skeleton, preuve structurelle, meta
-  canonique, gate création, prompts, garde mcp) — aucun moteur, aucun MCP, aucun GitHub.
+  canonique, gate création, prompts, garde mcp, applicateur de réparation) — aucun moteur,
+  aucun MCP, aucun GitHub. 18 verts avec les pins correction.
 
 ### 3.4 Agentic trace
 

@@ -24,6 +24,10 @@ def write_nb(path: Path, cells: list[dict], meta: dict | None = None) -> Path:
     return path
 
 
+def _join(src) -> str:
+    return "".join(src) if isinstance(src, list) else (src or "")
+
+
 def py_twin(tmp_path: Path) -> Path:
     return write_nb(tmp_path / "T-Python.ipynb", [
         {"cell_type": "markdown", "source": "# Titre", "metadata": {}},
@@ -188,6 +192,40 @@ def test_create_segments_assembles_and_reports(monkeypatch):
     out2 = asyncio.run(D.create_segments(None, None, rec2, None, plan_cells, 10, ""))
     assert out2 == {} and rec2["verdict"].startswith("stage2-unparsed:0")
     assert rec2["stage2_raw_tail"]                           # diagnosable without a re-run
+
+
+# ---------------------------------------------------------------- repair loop
+def test_apply_repairs_replaces_and_resets(tmp_path):
+    nb = tmp_path / "b.ipynb"
+    write_nb(nb, [
+        {"cell_type": "markdown", "source": "# T", "metadata": {}},
+        {"cell_type": "code", "source": "var a = MkNe(1, 2);", "metadata": {},
+         "execution_count": 3,
+         "outputs": [{"output_type": "error", "evalue": "compilation error"}]},
+        {"cell_type": "code", "source": "Console.WriteLine(1);", "metadata": {},
+         "execution_count": 4, "outputs": []},
+    ])
+    rep = D.apply_repairs(nb, {"cells": [
+        {"idx": 1, "cell_type": "code", "source": "var a = ctx.MkNot(ctx.MkEq(x, y));"},
+        {"idx": 9, "cell_type": "code", "source": "inconnue"},      # unknown idx
+        {"idx": 0, "cell_type": "code", "source": "pas code"},      # not a code cell
+        {"idx": 2, "cell_type": "code", "source": "   "},           # empty source
+    ]})
+    assert rep["replaced"] == [1] and rep["unknown_idx"] == [9, 0] and rep["bad"] == [2]
+    cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
+    # sources are normalized to LISTS of lines — substring on the joined source
+    assert "MkNot" in _join(cells[1]["source"])
+    assert cells[1]["outputs"] == [] and cells[1]["execution_count"] is None  # re-execute
+    assert _join(cells[2]["source"]) == "Console.WriteLine(1);"   # untouched
+
+
+def test_repair_prompt_contract():
+    p = D.repair_prompt([{"idx": 3, "source": "var a = MkNe(1,2);",
+                          "errors": "(2,15): error CS1061: MkNe"}], "conv")
+    assert "TOUR RÉPARATION" in p and "MkNe" in p and "CS1061" in p
+    assert '"idx"' in p and "conv" in p
+    # the schema demands ONLY the failing cells — no wholesale rewrite invitation
+    assert "index inchangés" in p
 
 
 def test_mcp_write_mode_refused_in_creation():

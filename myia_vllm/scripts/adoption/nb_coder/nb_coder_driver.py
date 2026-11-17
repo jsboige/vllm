@@ -754,6 +754,57 @@ def apply_create(nb_path: Path, payload: dict) -> dict:
     return rep
 
 
+def repair_prompt(failing: list[dict], conventions: str = "") -> str:
+    """One repair round: the REAL kernel errors of the failing cells (line + cause, as
+    persisted by execution) and a demand for corrected FULL sources of those cells only.
+    Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
+    .NET Z3 API (MkNe, Expr where ArithExpr is required) — the compiler messages cite
+    exactly what a repair round needs; the harness never shows the model its own claims."""
+    blocks = [f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
+              f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n{f['errors']}"
+              for f in failing]
+    return (
+        "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
+        "leur code : même rôle pédagogique, API de la série correcte — les messages du "
+        "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
+        "passent.\n\n" + "\n\n".join(blocks)
+        + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
+        + "\nRends UNIQUEMENT un bloc ```json :\n"
+        '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
+        '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
+        "TOUTES les cellules listées, index inchangés, aucune autre cellule."
+    )
+
+
+def apply_repairs(nb_path: Path, payload: dict) -> dict:
+    """Replace the sources of the given cells (by idx) in ONE write. A repaired cell
+    loses its outputs and execution_count: they must come back from EXECUTION, never
+    from the repair itself (same rule as creation)."""
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    rep = {"replaced": [], "unknown_idx": [], "bad": []}
+    for c in payload.get("cells") or []:
+        try:
+            i = int(c.get("idx"))
+        except (TypeError, ValueError):
+            rep["bad"].append(c)
+            continue
+        if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
+            rep["unknown_idx"].append(i)
+            continue
+        src = c.get("source") or ""
+        if not src.strip():
+            rep["bad"].append(i)
+            continue
+        cell = nb["cells"][i]
+        cell["source"] = _lines(src)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        rep["replaced"].append(i)
+    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                       encoding="utf-8")
+    return rep
+
+
 def verify_structure_create(src_path: Path, built_path: Path) -> dict:
     """Mechanical proof for a CREATION: same cell count as the twin, same type signature.
     Minimal-edit is meaningless here (everything is new); the pedagogical-thread rule
@@ -1388,6 +1439,60 @@ async def run(args, rec: dict) -> dict:
                             exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
                         rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
                                             if exec_targets else [])
+                        # ---- repair loop: the REAL kernel errors go back to the model
+                        # (max --repair-rounds, same conversation). A repaired definition
+                        # can change downstream semantics -> FRESH kernel per round, then
+                        # re-run the same targets (repair replaces sources only, indices
+                        # stay valid). Measured on #27099 attempt 3: content-level API
+                        # errors (MkNe inexistent, Expr vs ArithExpr) are exactly what
+                        # the compiler messages teach back.
+                        if exec_targets and rec.get("execution") and args.repair_rounds > 0:
+                            kname = args.kernel_override or kernel["kernel_name"]
+                            for rnd in range(args.repair_rounds):
+                                failing = [e for e in (rec.get("execution") or [])
+                                           if not e.get("ok")]
+                                if not failing:
+                                    break
+                                cells_now = _cells(scratch)
+                                detail = []
+                                for e in failing:
+                                    i = e.get("cell")
+                                    if not isinstance(i, int) or i >= len(cells_now):
+                                        continue
+                                    detail.append({
+                                        "idx": i,
+                                        "source": _text(cells_now[i].get("source"))[-1600:],
+                                        "errors": _outputs_text(cells_now[i])[-2000:]})
+                                if not detail:
+                                    break
+                                env = await sk_call_retry(
+                                    sk, args, rec, f"2.5-repair+{rnd}",
+                                    repair_prompt(detail, conventions), conv)
+                                conv = env.get("conversation_id") or conv
+                                part = parse_json_block(env.get("response") or "")
+                                if not part or not part.get("cells"):
+                                    rec.setdefault("repairs", []).append(
+                                        {"round": rnd,
+                                         "verdict": call_failure(env) or "unparsed",
+                                         "raw_tail": (env.get("response") or "")[-1500:]})
+                                    break
+                                rep = apply_repairs(scratch, part)
+                                rec.setdefault("repairs", []).append(
+                                    {"round": rnd, "asked": len(detail),
+                                     "replaced": rep["replaced"],
+                                     "unknown_idx": rep["unknown_idx"],
+                                     "bad": rep["bad"]})
+                                if not rep["replaced"]:
+                                    break
+                                await pm_call(pm, "manage_kernel",
+                                              {"action": "stop", "kernel_id": kid})
+                                kid = await start_kernel(pm, kname, src_nb.parent)
+                                rec["kernel_id"] = kid
+                                if kid is None:
+                                    rec["verdict"] = "kernel-start-failed"
+                                    break
+                                rec["execution"] = await execute_cells(
+                                    pm, scratch, kid, exec_targets)
                     # kernel hygiene: an hourly cadence must not leak one kernel per run
                     if rec.get("kernel_id"):
                         rec["kernel_stop"] = await pm_call(
@@ -1526,6 +1631,8 @@ def main() -> int:
                          "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
+    ap.add_argument("--repair-rounds", type=int, default=2,
+                    help="model repair rounds on real kernel errors (0 disables)")
     args = ap.parse_args()
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
