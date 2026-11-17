@@ -16,6 +16,7 @@ autres — et un chemin unique ne peut de toute façon pas porter N sièges (col
 
 - [`docs/seats/po2026-embeddings.md`](docs/seats/po2026-embeddings.md) — siège `myia-po-2026`, lane **embeddings** (identité, mission de vigie, non-négociables, chemins de service).
 - [`docs/seats/po2025-frognano.md`](docs/seats/po2025-frognano.md) — siège `myia-po-2025`, lane **FrogNano** (identité, modèle servi, vigie 4 h, non-négociables, chemins du siège).
+- [`docs/seats/po2028-vllm.md`](docs/seats/po2028-vllm.md) — siège `myia-po-2028`, lane **vllm** (identité, clone partagé avec claudish-72, vigie 6 h, éval GPU voltron-1-mini, non-négociables).
 
 ## Docs de lane (contenu, hors index)
 

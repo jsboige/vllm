@@ -1,8 +1,9 @@
-# Espace de travail vllm — flotte myia (workers siblings po-2025 / po-2026)
+# Espace de travail vllm — flotte myia (workers siblings po-2025 / po-2026 / po-2028)
 
 **Rôle.** Ce clone est le poste de travail des **workers siblings** sur le fork
-`jsboige/vllm` : po-2025 (FrogNano) et po-2026 (Embeddings). Les siblings se
-coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod :5002).
+`jsboige/vllm` : po-2025 (FrogNano), po-2026 (Embeddings) et po-2028 (vllm-eval).
+Les siblings se coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm`
+(siège prod :5002).
 
 **Périmètre assigné**
 
@@ -10,6 +11,7 @@ coordonnent sur le **dashboard workspace-vllm**, avec `ai-01:vllm` (siège prod 
 |---|---|---|---|
 | FrogNano-4B | `myia-ai-01/vllm#70` | po-2025 | siège vllm inauguré 06/10 ; **en service** — NVFP4 + FP8 KV promus 08/10 (KV 391 748 tok, N=16 1 073 t/s), thinking off par défaut ; P5 adoption en cours |
 | Embeddings | `myia-ai-01/vllm#71` | po-2026 | instruction livrée 05/10 ; workspace créé 06/10 (PR profil + scripts + runbook) |
+| voltron-1-mini (LFM3-1.7B) | — (mandat user 17/11) | po-2028 | siège inauguré 17/11 ; vigie 6 h + éval GPU 8 Go (RTX 3070 Ti) avec offload KV RAM→fs (recettes ai-01) ; doc [`docs/seats/po2028-vllm.md`](myia_vllm/docs/seats/po2028-vllm.md) |
 
 **Matériel (mesuré 05/10, ne pas réétablir)**
 
