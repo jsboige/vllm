@@ -248,6 +248,73 @@ def test_create_segments_short_segment_fails_fast(monkeypatch):
     assert rec["stage2_missing_idx"] == [7] and rec["stage2_raw_tail"]
 
 
+# ---------------------------------------------------------------- post-exec hygiene (17/11)
+def test_foreign_script_gate_flags_corruption_delta_judged(tmp_path):
+    """#27104 blank pass: Cyrillic/CJK hallucinated inside regenerated French prose.
+    Delta-judged — a pre-existing foreign-script cell untouched by the build is the
+    repo's business (same rule as coord-refs/secrets)."""
+    src = py_twin(tmp_path)                       # 4 cells, French-clean
+    corrupt = write_nb(tmp_path / "corrupt.ipynb", [
+        {"cell_type": "markdown", "source": "# Titre C#", "metadata": {}},
+        {"cell_type": "code", "source": "var a = 1;", "metadata": {},
+         "execution_count": None, "outputs": []},
+        # CHANGED cell carrying the measured corruption shapes
+        {"cell_type": "markdown",
+         "source": "## Suite : ni случай générateur, il serait。德onnant", "metadata": {}},
+        {"cell_type": "code", "source": "var b = 2;", "metadata": {},
+         "execution_count": None, "outputs": []},
+    ])
+    gates = {g["gate"]: g for g in D.run_gates(src, corrupt, create_mode=True)}
+    g = gates["foreign-script"]
+    assert g["ok"] is False and len(g["detail"]["hits"]) == 1
+    assert g["detail"]["hits"][0]["cell"] == 2 and "excerpt" in g["detail"]["hits"][0]
+
+    clean = write_nb(tmp_path / "clean.ipynb", [
+        {"cell_type": "markdown", "source": "# Titre C#", "metadata": {}},
+        {"cell_type": "code", "source": "var a = 1;", "metadata": {},
+         "execution_count": None, "outputs": []},
+        {"cell_type": "markdown", "source": "## Suite .NET (lambda, phi, Delta éàç)",
+         "metadata": {}},                       # Greek + accents: deliberately NOT flagged
+        {"cell_type": "code", "source": "var b = 2;", "metadata": {},
+         "execution_count": None, "outputs": []},
+    ])
+    gates2 = {g["gate"]: g for g in D.run_gates(src, clean, create_mode=True)}
+    assert gates2["foreign-script"]["ok"] is True
+
+    # correction-mode delta rule: the identical Cyrillic cell sits UNTOUCHED in the
+    # source and the build -> skipped (repo's business, not this build's)
+    src_cyr = write_nb(tmp_path / "src_cyr.ipynb", [
+        {"cell_type": "markdown", "source": "# Titre", "metadata": {}},
+        {"cell_type": "code", "source": "print('hello')", "metadata": {},
+         "execution_count": 1, "outputs": []},
+        {"cell_type": "markdown", "source": "## случай préexistant", "metadata": {}},
+        {"cell_type": "code", "source": "assert 1 + 1 == 2", "metadata": {},
+         "execution_count": 2, "outputs": []},
+    ])
+    built_same = write_nb(tmp_path / "same.ipynb", json.loads(
+        src_cyr.read_text(encoding="utf-8"))["cells"])
+    gates3 = {g["gate"]: g for g in D.run_gates(src_cyr, built_same)}
+    assert gates3["foreign-script"]["ok"] is True   # untouched -> not this build's fault
+
+
+def test_strip_dotnet_banner_records_and_never_fatals(tmp_path):
+    """Missing tool -> recorded error, no exception; a real tool is invoked with
+    --apply <nb> and its rc lands in the record."""
+    nb = write_nb(tmp_path / "nb.ipynb", [])
+    miss = D.strip_dotnet_banner(tmp_path / "nope.py", nb)
+    assert miss["ok"] is False and "absent" in miss["error"]
+
+    tool = tmp_path / "strip.py"
+    tool.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+    ok = D.strip_dotnet_banner(tool, nb)
+    assert ok["ok"] is True and ok["rc"] == 0
+
+    fail = tmp_path / "strip_fail.py"
+    fail.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    bad = D.strip_dotnet_banner(fail, nb)
+    assert bad["ok"] is False and bad["rc"] == 3
+
+
 # ---------------------------------------------------------------- repair loop
 def test_apply_repairs_replaces_and_resets(tmp_path):
     nb = tmp_path / "b.ipynb"
