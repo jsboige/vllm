@@ -194,6 +194,65 @@ yellow/red — this is precisely a "consumer armed after 24 h observation" of th
    sur #18874 P3).*
 4. Capacity-gate call wired (after the 24 h probe observation started 13/11 21:13Z).
    *Fin de l'observation ~14/11 21:13Z ; mode warn d'ici là, conformément au dispatch.*
+5. **Capacity-aware scheduler** above the driver (`nb_coder_scheduler.py`, #468) — *livré
+   17/11 : le maillon manquant du « remplissage intelligent » (mandat user 17/11 10:49Z).*
+
+## 4bis. Scheduler `nb_coder_scheduler.py` — la boucle au-dessus du driver (#468)
+
+Le driver gâte **par carnet** ; ce qui manquait pour remplir les batchs opportunistes était
+la **boucle** : maintenir N grains en vol seulement quand la gate est verte, reprendre les
+grains déférés par capacité, et monter un palier de ramp 2→3→4 **sur preuve mesurée**.
+Le driver reste inchangé (sa gate `block` reste la deuxième ligne de défense).
+
+**File d'entrée** (JSONL, un grain par ligne, champs fermés — tout champ inconnu est refusé) :
+
+```json
+{"issue":26997,"notebook":"MyIA.AI.Notebooks/…/X.ipynb"}
+{"issue":26998,"notebook":"…","max_stage":2,"claim":true,"agent":"notebook-coder"}
+```
+
+Mêmes clés que les flags par-grain connus du driver (`max_stage`, `claim`, `fresh_worktree`,
+`agent`, `intention`, `write_mode`, `exec_mode`, `kernel_override`, `verifier_agent`,
+`timeout`, `max_tokens`, `allow_foreign_origin`). Chemin `notebook` repo-relatif obligatoire.
+
+**Règles d'admission** (tick par `--poll-s`, 30 s par défaut) :
+
+- lancement **uniquement sur gate green**, et tant que
+  `max(len(en_vol_scheduler), gate.running) < max_active` — la cible de ramp borne le
+  total de requêtes moteur, pas un compte privé de slots ;
+- yellow/red/unknown **gèlent les nouveaux lancements** et ne touchent **jamais** un driver
+  en vol (contrat d'admission debout : pas de kill en vol, pas de replay d'outil) ;
+- fichier STOP (`<state-dir>/STOP`) = gel des lancements, enfants intacts ;
+- verdict driver `deferred-by-capacity-gate` → grain **deferred** avec backoff
+  `not_before` (croissant, plafonné), re-proposé plus tard sans re-claim dupliqué ;
+- `--max-attempts` épuisé sur du déféré → **failed** terminal (jamais de boucle infinie).
+
+**Ramp mesurée** (`--ramp 2,3,4`) : la promotion d'un palier exige `--ramp-min-done`
+achèvements propres (3), zéro échec au-delà de `--ramp-max-failures`, **aucun red/unknown
+depuis le début du palier** (`dirty`), et `--ramp-green-s` de green cumulé (600 s).
+`--ramp-demote` redescend d'un palier sur red (les preuves repartent de zéro, les grains
+en vol continuent). Tout palier franchi est archivé dans `ramp_history` (state.json) avec
+ses compteurs — la montée se **prouve**, elle ne se déclare pas.
+
+**Persistance** : `state.json` (statuts `pending/running/done/failed/deferred/withdrawn/
+orphaned` + état de ramp) et `scheduler.jsonl` (un événement JSON par décision). Un grain
+`running` d'une instance morte devient **orphaned**, jamais relancé automatiquement (le
+processus enfant peut vivre encore ; un doublon entrerait en collision sur worktree, claim
+et PR) — la reprise est un geste opérateur explicite.
+
+**Commande** :
+
+```powershell
+python myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py `
+  --queue grains.jsonl --state-dir D:/vllm/.tmp/nbcoder-sched `
+  --repo D:/CoursIA --lane myia-ai-01:nb-coder --claim `
+  --ramp 2,3,4 --gate-mode block
+```
+
+`--dry-run` journalise les commandes exactes sans rien spawner ; `--once` = une passe ;
+`--watch` = reste vivant après drain ; `--max-launch N` borne les lancements de la session.
+Tests offline : `test_nb_coder_scheduler.py` (fausse gate + faux driver, 14 cas — zéro
+moteur, zéro écriture GitHub).
 
 ## 5. Guardrails carried over
 
