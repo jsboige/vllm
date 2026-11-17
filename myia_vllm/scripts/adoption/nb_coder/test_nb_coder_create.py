@@ -194,6 +194,60 @@ def test_create_segments_assembles_and_reports(monkeypatch):
     assert rec2["stage2_raw_tail"]                           # diagnosable without a re-run
 
 
+def test_create_segments_short_segment_repaired(monkeypatch):
+    """17/11 #27104 blank pass: segment 3 answered 6 of 8 cells, the loop appended
+    silently, the built notebook was 2 cells short and ONLY the final verify caught
+    it. Now the missing idx get ONE repair re-ask; the assembled order stays the
+    PLAN order even when the repair fills mid-segment holes."""
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(8)]
+    first = {"cells": [{"idx": c["idx"], "cell_type": "markdown", "source": f"s{c['idx']}"}
+                       for c in plan_cells if c["idx"] not in (3, 6)]}   # 6 of 8
+    repair = {"cells": [
+        {"idx": 6, "cell_type": "markdown", "source": "s6"},             # out of order
+        {"idx": 3, "cell_type": "markdown", "source": ""},
+        {"idx": 3, "cell_type": "markdown", "source": "s3-dup"},        # after the empty
+        {"idx": 99, "cell_type": "markdown", "source": "hors-tranche"}, # dropped
+    ]}
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv):
+        calls.append(stage)
+        return {"response": "```json\n" + json.dumps(first if not calls[1:] else repair)
+                + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert calls == ["2-build+0", "2-build+0+repair"]
+    assert [c["idx"] for c in out["cells"]] == list(range(8))            # plan order
+    assert [c["source"] for c in out["cells"]] == [
+        "s0", "s1", "s2", "s3-dup", "s4", "s5", "s6", "s7"]   # empty dup skipped, real kept
+    s = rec["segments"][0]
+    assert s["asked"] == 8 and s["got"] == 8 and s["repair"]["filled"] == [3, 6]
+    assert "verdict" not in rec
+
+
+def test_create_segments_short_segment_fails_fast(monkeypatch):
+    """Repair still short -> verdict BEFORE the notebook is written (the tokens of a
+    doomed apply/execute round are not spent), missing idx named for the record."""
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(8)]
+    first = {"cells": [{"idx": c["idx"], "cell_type": "markdown", "source": f"s{c['idx']}"}
+                       for c in plan_cells if c["idx"] not in (6, 7)]}
+    half = {"cells": [{"idx": 6, "cell_type": "markdown", "source": "s6"}]}
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv):
+        calls.append(stage)
+        return {"response": "```json\n" + json.dumps(first if not calls[1:] else half)
+                + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert out == {} and rec["verdict"] == "stage2-short-segment:0"
+    assert rec["stage2_missing_idx"] == [7] and rec["stage2_raw_tail"]
+
+
 # ---------------------------------------------------------------- repair loop
 def test_apply_repairs_replaces_and_resets(tmp_path):
     nb = tmp_path / "b.ipynb"
