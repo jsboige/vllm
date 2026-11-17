@@ -1014,6 +1014,15 @@ MACHINE_PATH_RE = re.compile(
     r"|Loading extensions from\b)")
 
 
+# Foreign-script corruption, 17/11 #27104 blank pass: the builder regenerating FRENCH
+# prose hallucinated Cyrillic and CJK+CJK-punctuation inside markdown cells ("ni случай generateur", "il serait。德onnant"). A French/English/code corpus has no
+# legitimate Cyrillic, kana, Hangul or CJK-ideograph text. Greek is DELIBERATELY excluded:
+# math prose legitimately uses lambda/phi/Delta. The verify critic caught all instances as
+# major findings; this gate makes the class mechanical.
+FOREIGN_SCRIPT_RE = re.compile("[\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF"
+                               "\uAC00-\uD7AF\u3000-\u303F]")
+
+
 def _outputs_text(cell: dict) -> str:
     """What a cell DISPLAYS: streams, the text stubs of its rich data, and error tracebacks."""
     parts: list[str] = []
@@ -1048,6 +1057,19 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
             offenders.append(i)
     gates.append({"gate": "coord-refs", "ok": not offenders,
                   "detail": {"cells": offenders[:10]}})
+    # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
+    # pre-existing script in the SOURCE is the repo's business, not this build's.
+    fs_hits = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        m = FOREIGN_SCRIPT_RE.search(txt)
+        if m:
+            fs_hits.append({"cell": i,
+                            "excerpt": txt[max(0, m.start() - 30):m.end() + 30]})
+    gates.append({"gate": "foreign-script", "ok": not fs_hits,
+                  "detail": {"hits": fs_hits[:10]}})
     # Delta-judged like coord-refs (#433 review): a secret sitting UNTOUCHED in the
     # source is the repo's business -- reported in the detail, it does not fail THIS
     # build. The detail keeps the full picture (source_hits = pre-existing,
@@ -1088,6 +1110,25 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                   "detail": {"cells": new_hits[:10], "source_hits": src_hits[:10],
                              "build_hits": built_hits[:10]}})
     return gates
+
+
+def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
+    """Post-execution hygiene the CoursIA issues mandate verbatim: any .NET Interactive
+    re-execution injects a probeAddresses JS banner into cell outputs, and
+    `scripts/notebook_tools/strip_probe_banner.py --apply <nb>` must run BEFORE commit
+    (the canonical-kernel criterion). 17/11 #27104 blank pass: the verify rejected the
+    banner as a MAJOR finding. The tool lives in the CoursIA tree (the worktree carries
+    it); a missing tool or failure is RECORDED, not fatal — the verify stays the judge
+    of the delivered file."""
+    if not tool.is_file():
+        return {"ok": False, "error": f"strip tool absent: {tool}"}
+    try:
+        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path)],
+                           capture_output=True, text=True, timeout=120)
+        return {"ok": p.returncode == 0, "rc": p.returncode,
+                "out": (p.stdout or p.stderr or "")[-500:]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "strip tool timeout"}
 
 
 def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) -> None:
@@ -1568,6 +1609,13 @@ async def run(args, rec: dict) -> dict:
     # ---- stages 3-5: harness-only (no model turn inside these)
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
+        # .NET post-execution hygiene BEFORE anything reads the file: gates and verify
+        # must judge the DELIVERED state (issue-mandated strip, see strip_dotnet_banner)
+        kname_used = args.kernel_override or kernel["kernel_name"]
+        if kname_used.startswith(".net"):
+            rec["banner_strip"] = strip_dotnet_banner(
+                Path(wt["path"]) / "scripts" / "notebook_tools" / "strip_probe_banner.py",
+                built_path)
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
