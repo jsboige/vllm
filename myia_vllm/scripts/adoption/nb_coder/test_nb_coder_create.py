@@ -349,6 +349,60 @@ def test_repair_prompt_contract():
     assert "index inchangés" in p
 
 
+# ------------------------------------------------- prose authority + markdown repair (17/11 #27104)
+def test_creation_json_prompt_injects_twin_prose():
+    """The twin's markdown prose is handed to the builder VERBATIM — the model must
+    COPY it, not regenerate it (regenerated prose came back corrupted: Cyrillic/CJK)."""
+    seg = [{"idx": 1, "cell_type": "markdown", "titre": "théorème"},
+           {"idx": 2, "cell_type": "code", "titre": "impl"}]
+    twin = [{"cell_type": "markdown", "source": "# Titre"},
+            {"cell_type": "markdown", "source": "Le théorème de Gibbard–Satterthwaite."},
+            {"cell_type": "code", "source": "print(1)"}]
+    p = D.creation_json_prompt(seg, 3, "", src_cells=twin)
+    assert "PROSE DU JUMEAU PYTHON" in p and "AUTORITÉ" in p
+    assert "<cellule 1 — prose à recopier>" in p
+    assert "Gibbard–Satterthwaite" in p          # the twin prose, verbatim
+    assert "<cellule 2" not in p                 # CODE cells derive from the plan
+    # no twin (correction mode / absent) -> no prose block, prompt shape unchanged
+    p_plain = D.creation_json_prompt(seg, 3, "conv")
+    assert "PROSE DU JUMEAU PYTHON" not in p_plain and "TRANCHE" in p_plain and "conv" in p_plain
+
+
+def test_apply_repairs_markdown_needs_flag(tmp_path):
+    """Markdown repair is a SEPARATE lane: without the flag the old contract holds
+    (code cells only); with allow_markdown=True a markdown cell's source is replaced
+    and nothing else is touched — markdown has no outputs to reset."""
+    nb = tmp_path / "m.ipynb"
+    write_nb(nb, [
+        {"cell_type": "markdown", "source": "ni случай générateur", "metadata": {}},
+        {"cell_type": "code", "source": "var x = 1;", "metadata": {},
+         "execution_count": 2, "outputs": []},
+    ])
+    payload = {"cells": [
+        {"idx": 0, "cell_type": "markdown", "source": "ni un générateur ni un dictateur"},
+        {"idx": 1, "cell_type": "code", "source": "var x = 2;"},
+    ]}
+    strict = D.apply_repairs(nb, payload)                    # flag off
+    assert strict["replaced"] == [1] and strict["unknown_idx"] == [0]
+    md = D.apply_repairs(nb, payload, allow_markdown=True)    # prose round
+    assert md["replaced"] == [0, 1] and md["unknown_idx"] == []
+    cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
+    assert _join(cells[0]["source"]) == "ni un générateur ni un dictateur"
+    assert cells[1]["execution_count"] is None and cells[1]["outputs"] == []
+
+
+def test_md_repair_prompt_contract():
+    p = D.md_repair_prompt([{"idx": 4, "excerpt": "il serait。德onnant",
+                             "twin_source": "Il serait étonnant que"},
+                            {"idx": 7, "excerpt": "lalanceur", "twin_source": ""}],
+                           "conv")
+    assert "TOUR RÉPARATION PROSE" in p
+    assert "### Cellule 4 (markdown)" in p and "。德" in p and "Il serait étonnant" in p
+    assert "### Cellule 7 (markdown)" in p
+    assert "absente du jumeau" in p               # fallback when the twin has no prose
+    assert '"cell_type":"markdown"' in p and "index inchangés" in p and "conv" in p
+
+
 def test_mcp_write_mode_refused_in_creation():
     """The driver's own post-parse guard: --source-nb + --write-mode mcp exits 2
     BEFORE any stage runs (max-stage 0, unreachable repo, claim off)."""
