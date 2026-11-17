@@ -269,6 +269,23 @@ def series_kernel(repo: Path, rel: str) -> dict:
             "neighbour_versions": versions}
 
 
+def series_canonical_meta(repo: Path, rel: str) -> dict:
+    """Creation mode: kernelspec/language_info of the nearest existing TWIN in the target
+    folder. The built notebook inherits the series' canonical metadata (its .NET version),
+    never the Python twin's — that is what the language-info gate compares against."""
+    d = Path(rel).parent
+    for sib in sorted((repo / d).glob("*-CSharp.ipynb")):
+        if sib.name == Path(rel).name:
+            continue
+        try:
+            meta = json.loads(sib.read_text(encoding="utf-8")).get("metadata", {})
+            if meta.get("kernelspec") or meta.get("language_info"):
+                return meta
+        except Exception:
+            continue
+    return {}
+
+
 def build_view(nb_path: Path, max_chars: int = 120_000) -> str:
     """Whole-notebook view. Overflow is DECLARED, never silent: a cut view makes the model
     plan against a notebook whose footer it cannot see (measured 14/11: 37-cell notebook,
@@ -614,6 +631,201 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
     return d
 
 
+# ---------------------------------------------------------------- creation mode (--source-nb)
+def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
+                    ctx: str, view: str, conventions: str = "") -> str:
+    """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
+    model plans the COMPLETE twin from the Python source + the issue's cell table.
+    Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
+    16 268-char response that never parsed — the sources belong to stage 2, in SEGMENTS.
+    Stage 1 stays a LIGHT plan: one line per cell, no sources."""
+    return (
+        f"MODE CRÉATION — tu n'édites pas un carnet existant : tu prépares la CRÉATION COMPLÈTE "
+        f"du jumeau C# pour l'issue jsboige/CoursIA#{issue_n}.\n\n"
+        f"## Issue\nTITRE : {issue['title']}\n\n"
+        f"CORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        f"## Fil (extrait récent)\n{_cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+        + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
+        + f"## Carnet à CRÉER : {rel} (absent d'origin/main — sa création EST la livraison)\n"
+        f"## Jumeau Python source : {source_rel} (vue complète ci-dessous)\n"
+        f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
+        f"## Contexte de série\n{ctx}\n\n"
+        f"## Jumeau Python (structure à porter)\n{view}\n\n"
+        "Le jumeau C# rejoue le MÊME fil pédagogique : une cellule du jumeau Python = une "
+        "cellule du jumeau C# (markdown adapté au contexte .NET, code traduit selon la table "
+        "de l'issue). Respecte les interdits de l'issue (pas de NotImplementedException, "
+        "stubs `// TODO étudiant` + valeur neutre, pas d'appel réseau). La dernière cellule "
+        "markdown est le pied de provenance.\n\n"
+        "Rends UNIQUEMENT un bloc ```json — le PLAN, SANS les sources complètes :\n"
+        '{"cells":[{"idx":<0..N-1>,"cell_type":"markdown|code","titre":"<titre ou 1ère ligne>'
+        '","role":"<ce que fait cette cellule en une phrase>"}],'
+        '"expectations":["..."],"risques":["..."]}\n'
+        "UNE ligne par cellule du jumeau, dans l'ordre, du titre au pied de provenance. "
+        "Les sources seront réclamées au tour suivant, par tranches."
+    )
+
+
+def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "") -> str:
+    """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
+    the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
+    does not survive the output budget. The harness assembles every segment."""
+    return (
+        "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
+        "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
+        "(squelette + metadata de série déjà posés) ; tu n'écris aucun fichier et tu "
+        "n'appelles aucun outil d'écriture.\n\n"
+        f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
+        + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n\n"
+        + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
+        + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
+        "qu'une partie, ne rends QUE celles listées.\n\n"
+        "Rends UNIQUEMENT un bloc ```json :\n"
+        '{"cells":[{"idx":<index du plan>,"cell_type":"markdown|code",'
+        '"source":"<source COMPLET>"}],"notes":"..."}'
+    )
+
+
+CREATE_SEGMENT = 8   # cells per stage-2 tour in creation mode — measured 17/11 (#27099):
+                     # a whole-notebook single-shot answer (16 268 chars) never parsed;
+                     # the sources of ~29 cells do not fit one output budget
+
+
+async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
+                          n_src_cells: int, conventions: str) -> dict:
+    """Stage 2 of creation mode, SEGMENT by SEGMENT. Each tour renders the sources of
+    the plan's cells i..i+CREATE_SEGMENT only; the harness concatenates in plan order
+    and hands ONE payload to apply_create (the single-write discipline holds). Returns
+    {} with rec['verdict'] set on the first segment that fails to answer or parse —
+    with the raw tail persisted for offline diagnosis (the 17/11 pass stored none,
+    leaving only response_chars to guess from)."""
+    all_cells: list = []
+    seg_reports: list = []
+    for si in range(0, len(plan_cells), CREATE_SEGMENT):
+        seg = plan_cells[si:si + CREATE_SEGMENT]
+        env = await sk_call_retry(session, args, rec, f"2-build+{si}",
+                                  creation_json_prompt(seg, n_src_cells, conventions), conv)
+        conv = env.get("conversation_id") or conv
+        part = parse_json_block(env.get("response") or "")
+        got = (part or {}).get("cells") or []
+        if not part or not got:
+            rec["verdict"] = (f"stage2-{call_failure(env) or 'unparsed'}:{si}"
+                              if not part else f"stage2-empty-segment:{si}")
+            rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
+            return {}
+        try:
+            got.sort(key=lambda c: int(c.get("idx")))   # plan order inside the segment
+        except (TypeError, ValueError):
+            pass                                          # no usable idx: keep given order
+        all_cells.extend(got)
+        seg_reports.append({"from": si, "asked": len(seg), "got": len(got),
+                            "chars": len(env.get("response") or "")})
+    rec["segments"] = seg_reports
+    return {"cells": all_cells, "notes": f"assembled from {len(seg_reports)} segments"}
+
+
+def apply_create(nb_path: Path, payload: dict) -> dict:
+    """Creation-mode applier: fill the harness-made skeleton with every model cell, ONE
+    read-modify-write. Ids follow nbformat 4.5+ (required by the papermill server)."""
+    raw = nb_path.read_text(encoding="utf-8")
+    nb = json.loads(raw)
+    cells_in = payload.get("cells") or []
+    rep = {"cells_written": 0, "types": [], "empty_sources": [], "errors": []}
+    new_cells = []
+    for k, c in enumerate(cells_in):
+        ctype = c.get("cell_type")
+        src = c.get("source") or ""
+        if ctype not in ("code", "markdown"):
+            rep["errors"].append(f"cell {k}: cell_type invalide {ctype!r}")
+            continue
+        if not src.strip():
+            rep["empty_sources"].append(k)
+            continue
+        cell = {"cell_type": ctype, "id": f"cell-{k:03d}", "metadata": {},
+                "source": _lines(src)}
+        if ctype == "code":
+            cell["execution_count"] = None
+            cell["outputs"] = []
+        new_cells.append(cell)
+    nb["cells"] = new_cells
+    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                       encoding="utf-8")
+    rep["cells_written"] = len(new_cells)
+    rep["types"] = [c["cell_type"] for c in new_cells]
+    return rep
+
+
+def repair_prompt(failing: list[dict], conventions: str = "") -> str:
+    """One repair round: the REAL kernel errors of the failing cells (line + cause, as
+    persisted by execution) and a demand for corrected FULL sources of those cells only.
+    Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
+    .NET Z3 API (MkNe, Expr where ArithExpr is required) — the compiler messages cite
+    exactly what a repair round needs; the harness never shows the model its own claims."""
+    blocks = [f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
+              f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n{f['errors']}"
+              for f in failing]
+    return (
+        "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
+        "leur code : même rôle pédagogique, API de la série correcte — les messages du "
+        "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
+        "passent.\n\n" + "\n\n".join(blocks)
+        + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
+        + "\nRends UNIQUEMENT un bloc ```json :\n"
+        '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
+        '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
+        "TOUTES les cellules listées, index inchangés, aucune autre cellule."
+    )
+
+
+def apply_repairs(nb_path: Path, payload: dict) -> dict:
+    """Replace the sources of the given cells (by idx) in ONE write. A repaired cell
+    loses its outputs and execution_count: they must come back from EXECUTION, never
+    from the repair itself (same rule as creation)."""
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    rep = {"replaced": [], "unknown_idx": [], "bad": []}
+    for c in payload.get("cells") or []:
+        try:
+            i = int(c.get("idx"))
+        except (TypeError, ValueError):
+            rep["bad"].append(c)
+            continue
+        if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
+            rep["unknown_idx"].append(i)
+            continue
+        src = c.get("source") or ""
+        if not src.strip():
+            rep["bad"].append(i)
+            continue
+        cell = nb["cells"][i]
+        cell["source"] = _lines(src)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        rep["replaced"].append(i)
+    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                       encoding="utf-8")
+    return rep
+
+
+def verify_structure_create(src_path: Path, built_path: Path) -> dict:
+    """Mechanical proof for a CREATION: same cell count as the twin, same type signature.
+    Minimal-edit is meaningless here (everything is new); the pedagogical-thread rule
+    ('one source cell = one twin cell') is what stays provable."""
+    src, built = _cells(src_path), _cells(built_path)
+    sig_src = [c.get("cell_type") for c in src]
+    sig_b = [c.get("cell_type") for c in built]
+    d = {"src_cells": len(src), "built_cells": len(built),
+         "type_signature_ok": sig_src == sig_b,
+         "counts_ok": len(src) == len(built)}
+    # every code cell must be non-empty (no degenerate twin) and carry NO output yet
+    d["empty_code_cells"] = [i for i, c in enumerate(built)
+                             if c.get("cell_type") == "code"
+                             and not _text(c.get("source")).strip()]
+    d["stale_outputs"] = [i for i, c in enumerate(built)
+                          if c.get("cell_type") == "code" and (c.get("outputs") or [])]
+    d["ok"] = (d["counts_ok"] and d["type_signature_ok"]
+               and not d["empty_code_cells"] and not d["stale_outputs"])
+    return d
+
+
 # ---------------------------------------------------------------- sk-agent / papermill calls
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
     spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.4}}
@@ -717,8 +929,14 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
     return results
 
 
-async def start_kernel(pm: ClientSession, kernel_name: str) -> str | None:
-    r = await pm_call(pm, "manage_kernel", {"action": "start", "kernel_name": kernel_name})
+async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -> str | None:
+    """The kernel runs with the SOURCE notebook's directory as cwd. Without it the MCP
+    server's own cwd wins, and any notebook loading a sibling file of its series dies —
+    measured twice: CoursIA#27021 (`import ict`, PR #467) and #27099 in CREATION mode
+    (`#load "Z3NativeLoader.cs"` -> CS1504 while the file sits next to the Python twin,
+    then CS0246 cascade on every cell that used the Z3 namespace)."""
+    r = await pm_call(pm, "manage_kernel", {"action": "start", "kernel_name": kernel_name,
+                                            "working_dir": str(working_dir)})
     return r.get("kernel_id")
 
 
@@ -758,11 +976,14 @@ def _outputs_text(cell: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
+def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
+              canon_version: str | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
     Judged on the DELTA (cells the build touched): the source's own prose is the repo's
-    business, not the gate's — a pre-existing footer stays legit untouched."""
+    business, not the gate's — a pre-existing footer stays legit untouched.
+    In creation mode every cell is delta, and language-info compares against the series'
+    canonical .NET twin (canon_version), never the Python twin."""
     src_cells, built_cells = _cells(src_nb), _cells(built_nb)
     gates: list[dict] = []
     last_md = max((i for i, c in enumerate(built_cells) if c.get("cell_type") == "markdown"),
@@ -797,8 +1018,14 @@ def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
         .get("language_info", {}).get("version")
     bv = (json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {}) \
         .get("language_info", {}).get("version")
-    gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
-                  "detail": {"src": sv, "built": bv}})
+    if create_mode:
+        # the built notebook must carry the series' canonical .NET version, not the
+        # Python twin's (parité porte sur les verdicts, pas sur la langue du jumeau)
+        gates.append({"gate": "language-info", "ok": bv is not None and bv == canon_version,
+                      "detail": {"canon": canon_version, "built": bv}})
+    else:
+        gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
+                      "detail": {"src": sv, "built": bv}})
     # Delta judged on the OUTPUTS themselves: a cell whose displayed text the build did not
     # change keeps its pre-existing path without failing this build (same rule as secrets).
     src_hits = [i for i, c in enumerate(src_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
@@ -1041,11 +1268,29 @@ async def run(args, rec: dict) -> dict:
         rec["verdict"] = "stage0-only"
         return rec
 
-    src_nb = Path(wt["path"]) / args.notebook
-    if not src_nb.is_file():
-        rec["verdict"] = f"notebook-not-found:{src_nb}"
+    # Target resolution: correction (target exists on origin/main) or creation (--source-nb:
+    # target absent, twin provided — the parity grains #27099-#27116 are all creations).
+    wt_path = Path(wt["path"])
+    target_nb = wt_path / args.notebook
+    src_nb = target_nb
+    create_mode = False
+    if target_nb.is_file():
+        if args.source_nb:
+            # both present: an operator typo would silently CORRECT the twin instead of
+            # creating the target — refuse loud.
+            rec["verdict"] = f"target-already-exists:{args.notebook}"
+            return rec
+    elif args.source_nb:
+        src_nb = wt_path / args.source_nb
+        if not src_nb.is_file():
+            rec["verdict"] = f"source-nb-not-found:{src_nb}"
+            return rec
+        create_mode = True
+        rec["create_mode"] = {"source": args.source_nb, "target": args.notebook}
+    else:
+        rec["verdict"] = f"notebook-not-found:{target_nb}"
         return rec
-    kernel = series_kernel(Path(wt["path"]), args.notebook)
+    kernel = series_kernel(wt_path, args.notebook)
     rec["kernel"] = kernel
     gate = gate_call(args.gate_mode)
     rec["gate"] = gate
@@ -1064,16 +1309,25 @@ async def run(args, rec: dict) -> dict:
         async with ClientSession(r1, w1) as sk, ClientSession(r2, w2) as pm:
             await sk.initialize()
             await pm.initialize()
-            # ---- stage 1 PLAN
+            # ---- stage 1 PLAN (correction) / CREATION PLAN (--source-nb)
             t1 = time.time()
-            prompt = plan_prompt(args.issue, issue, args.notebook, kernel,
-                                 series_context(Path(wt["path"]), args.notebook),
-                                 build_view(src_nb), conventions)
+            if create_mode:
+                prompt = creation_prompt(args.issue, issue, args.notebook, args.source_nb,
+                                         kernel, series_context(wt_path, args.notebook),
+                                         build_view(src_nb), conventions)
+            else:
+                prompt = plan_prompt(args.issue, issue, args.notebook, kernel,
+                                     series_context(wt_path, args.notebook),
+                                     build_view(src_nb), conventions)
             env = await sk_call_retry(sk, args, rec, "1-plan", prompt, None)
             conv = env.get("conversation_id")
             rec["conversation_id"] = conv      # the agentic trace the PR body must carry
             plan = parse_json_block(env.get("response") or "")
             rec["plan"] = plan
+            if not plan:
+                # raw tail persisted for offline diagnosis (17/11: the unparsed 16 268-char
+                # retry left only response_chars — no way to see WHERE parsing broke)
+                rec["stage1_raw_tail"] = (env.get("response") or "")[-3000:]
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
@@ -1084,24 +1338,49 @@ async def run(args, rec: dict) -> dict:
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
-            # ---- stage 2 BUILD (model edits a harness-made copy, same conversation)
+            # ---- stage 2 BUILD (correction: copy of the target) / CREATION (skeleton + all cells)
             t2 = time.time()
             scratch = Path(scratch_nb)
             if scratch.exists():
                 scratch.unlink()
-            shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
+            if create_mode:
+                meta = series_canonical_meta(wt_path, args.notebook)
+                rec["create_metadata"] = {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
+                                          "language_version":
+                                              (meta.get("language_info") or {}).get("version")}
+                skeleton = {"cells": [], "metadata": meta,
+                            "nbformat": 4, "nbformat_minor": 5}
+                scratch.write_text(json.dumps(skeleton, ensure_ascii=False, indent=1) + "\n",
+                                   encoding="utf-8")
+            else:
+                shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
             sha_before = _sha(scratch)
             src_cells = _cells(src_nb)
             rec["write_mode"] = args.write_mode
-            prompt2 = (build_json_prompt(plan, exec_idx, src_cells, len(src_cells), conventions)
-                       if args.write_mode == "json"
-                       else build_prompt(scratch_nb, plan, exec_idx, src_cells,
-                                         len(src_cells), conventions))
-            env2 = await sk_call_retry(sk, args, rec, "2-build", prompt2, conv)
-            built = parse_json_block(env2.get("response") or "")
-            rec["build_model_answer"] = {"parsed": built, "chars": len(env2.get("response") or "")}
-            if args.write_mode == "json" and built:
-                rec["apply"] = apply_edits(scratch, built)
+            env2: dict = {}                # correction branch fills it; creation never reads it
+            if create_mode:
+                built = await create_segments(sk, args, rec, conv, plan.get("cells") or [],
+                                              len(src_cells), conventions)
+                rec["build_model_answer"] = {"parsed": bool(built),
+                                             "segments": rec.pop("segments", [])}
+                if built:
+                    rec["apply"] = apply_create(scratch, built)
+                elif not rec.get("verdict"):
+                    rec["verdict"] = "build-no-cells"
+                if rec.get("verdict"):     # a failed segment returns NOW (tail persisted)
+                    rec["stage2_s"] = round(time.time() - t2, 1)
+                    return rec
+            else:
+                prompt2 = (build_json_prompt(plan, exec_idx, src_cells, len(src_cells), conventions)
+                           if args.write_mode == "json"
+                           else build_prompt(scratch_nb, plan, exec_idx, src_cells,
+                                             len(src_cells), conventions))
+                env2 = await sk_call_retry(sk, args, rec, "2-build", prompt2, conv)
+                built = parse_json_block(env2.get("response") or "")
+                rec["build_model_answer"] = {"parsed": built,
+                                             "chars": len(env2.get("response") or "")}
+                if args.write_mode == "json" and built:
+                    rec["apply"] = apply_edits(scratch, built)
             if scratch.is_file():
                 rec["sources_normalized"] = normalize_sources(scratch)   # CR 1a, couvre le mode mcp
             rec["stage2_s"] = round(time.time() - t2, 1)
@@ -1119,12 +1398,20 @@ async def run(args, rec: dict) -> dict:
             elif not rec["built_notebook"]["changed"]:
                 rec["verdict"] = f"build-{call_failure(env2) or 'no-change'}"
             else:
-                rec["structure"] = verify_structure(src_nb, scratch, plan)
+                rec["structure"] = (verify_structure_create(src_nb, scratch) if create_mode
+                                    else verify_structure(src_nb, scratch, plan))
                 if not rec["structure"]["ok"]:
                     rec["verdict"] = "built-structure-mismatch"
                 else:
-                    kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"])
+                    kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"],
+                                             src_nb.parent)
                     rec["kernel_id"] = kid
+                    rec["kernel_cwd"] = str(src_nb.parent)
+                    if kid is None and args.exec_mode != "none":
+                        # a kernel that fails to start must never read as a pass: without
+                        # this, an absent .net-csharp kernelspec would produce a
+                        # built-executed-ok verdict with ZERO executed cells
+                        rec["verdict"] = "kernel-start-failed"
                     # exec policy: plan indexes are SOURCE-space and shift with deletes/inserts.
                     # auto = run ALL built code cells in order when the plan touches code
                     # (state-safe: dependencies run first, execution_count sequential 1..N —
@@ -1134,11 +1421,12 @@ async def run(args, rec: dict) -> dict:
                         code_idx = [i for i, c in enumerate(_cells(scratch))
                                     if c.get("cell_type") == "code"]
                         touches_code = (
-                            any(src_cells[int(p["cell"])].get("cell_type") == "code"
-                                for p in plan.get("plan") or []
-                                if p.get("geste") in ("edit", "delete")
-                                and str(p.get("cell", "")).isdigit()
-                                and int(p["cell"]) < len(src_cells))
+                            create_mode
+                            or any(src_cells[int(p["cell"])].get("cell_type") == "code"
+                                   for p in plan.get("plan") or []
+                                   if p.get("geste") in ("edit", "delete")
+                                   and str(p.get("cell", "")).isdigit()
+                                   and int(p["cell"]) < len(src_cells))
                             or any(x.get("type") == "code"
                                    for x in (rec.get("apply") or {}).get("inserts") or []))
                         mode = "all" if (args.exec_mode == "auto" and touches_code) \
@@ -1151,6 +1439,60 @@ async def run(args, rec: dict) -> dict:
                             exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
                         rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
                                             if exec_targets else [])
+                        # ---- repair loop: the REAL kernel errors go back to the model
+                        # (max --repair-rounds, same conversation). A repaired definition
+                        # can change downstream semantics -> FRESH kernel per round, then
+                        # re-run the same targets (repair replaces sources only, indices
+                        # stay valid). Measured on #27099 attempt 3: content-level API
+                        # errors (MkNe inexistent, Expr vs ArithExpr) are exactly what
+                        # the compiler messages teach back.
+                        if exec_targets and rec.get("execution") and args.repair_rounds > 0:
+                            kname = args.kernel_override or kernel["kernel_name"]
+                            for rnd in range(args.repair_rounds):
+                                failing = [e for e in (rec.get("execution") or [])
+                                           if not e.get("ok")]
+                                if not failing:
+                                    break
+                                cells_now = _cells(scratch)
+                                detail = []
+                                for e in failing:
+                                    i = e.get("cell")
+                                    if not isinstance(i, int) or i >= len(cells_now):
+                                        continue
+                                    detail.append({
+                                        "idx": i,
+                                        "source": _text(cells_now[i].get("source"))[-1600:],
+                                        "errors": _outputs_text(cells_now[i])[-2000:]})
+                                if not detail:
+                                    break
+                                env = await sk_call_retry(
+                                    sk, args, rec, f"2.5-repair+{rnd}",
+                                    repair_prompt(detail, conventions), conv)
+                                conv = env.get("conversation_id") or conv
+                                part = parse_json_block(env.get("response") or "")
+                                if not part or not part.get("cells"):
+                                    rec.setdefault("repairs", []).append(
+                                        {"round": rnd,
+                                         "verdict": call_failure(env) or "unparsed",
+                                         "raw_tail": (env.get("response") or "")[-1500:]})
+                                    break
+                                rep = apply_repairs(scratch, part)
+                                rec.setdefault("repairs", []).append(
+                                    {"round": rnd, "asked": len(detail),
+                                     "replaced": rep["replaced"],
+                                     "unknown_idx": rep["unknown_idx"],
+                                     "bad": rep["bad"]})
+                                if not rep["replaced"]:
+                                    break
+                                await pm_call(pm, "manage_kernel",
+                                              {"action": "stop", "kernel_id": kid})
+                                kid = await start_kernel(pm, kname, src_nb.parent)
+                                rec["kernel_id"] = kid
+                                if kid is None:
+                                    rec["verdict"] = "kernel-start-failed"
+                                    break
+                                rec["execution"] = await execute_cells(
+                                    pm, scratch, kid, exec_targets)
                     # kernel hygiene: an hourly cadence must not leak one kernel per run
                     if rec.get("kernel_id"):
                         rec["kernel_stop"] = await pm_call(
@@ -1162,7 +1504,9 @@ async def run(args, rec: dict) -> dict:
                     rec["c2"] = {"counts": counts,
                                  "sequential": counts == list(range(1, len(counts) + 1))}
                     exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
-                    if not exec_ok:
+                    if rec.get("verdict") == "kernel-start-failed":
+                        pass   # a dead kernel keeps its failure verdict, never overwritten
+                    elif not exec_ok:
                         rec["verdict"] = "built-execution-failed"
                     elif not rec.get("execution") or rec["c2"]["sequential"]:
                         rec["verdict"] = "built-executed-ok"
@@ -1174,7 +1518,9 @@ async def run(args, rec: dict) -> dict:
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
         tg = time.time()
-        rec["gates"] = run_gates(src_nb, built_path)
+        rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
+                                 canon_version=(rec.get("create_metadata") or {})
+                                 .get("language_version"))
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -1232,6 +1578,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
     ap.add_argument("--notebook", required=True, help="repo-relative target notebook")
+    ap.add_argument("--source-nb", default=None,
+                    help="repo-relative TWIN notebook (creation mode: the target is ABSENT "
+                         "from origin/main and gets created from this source, e.g. the "
+                         "C# parity wave-1 grains #27099-#27116)")
     ap.add_argument("--repo", default=os.environ.get("NBCODER_REPO", ""),
                     help="CoursIA checkout (claim guard + worktree source); required — a "
                          "per-seat default path is not a harness binding (F2, vllm#438)")
@@ -1281,6 +1631,8 @@ def main() -> int:
                          "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
+    ap.add_argument("--repair-rounds", type=int, default=2,
+                    help="model repair rounds on real kernel errors (0 disables)")
     args = ap.parse_args()
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
@@ -1289,8 +1641,12 @@ def main() -> int:
         ap.error("--repo is required (or NBCODER_REPO): the CoursIA checkout is an input of the "
                  "run, not a harness binding (F2, vllm#438)")
     if args.claim and not args.lane:
-        ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a default "
-                 "identity would let two seats share one claim lane (F1, vllm#438)")
+        ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a "
+                 "default identity would let two seats share one claim lane (F1, vllm#438)")
+    if args.source_nb and args.write_mode == "mcp":
+        ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
+                 "assembles the whole notebook in one write, MCP cell tools would race "
+                 "on an empty skeleton")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),

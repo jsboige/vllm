@@ -105,6 +105,64 @@ The driver calls `swift_capacity_gate.py` before **each** notebook (exit 0 only)
 yellow/red — this is precisely a "consumer armed after 24 h observation" of the gate rollout
 (#4712). Build work is batchable, so red = come back next hourly slot; no in-flight kill needed.
 
+### 3.2bis Mode création (`--source-nb`) — les grains de parité C# (vague 1, 17/11)
+
+La vague 1 de specs CoursIA (#27099-#27116, notre part : SMT/Z3-API + GameTheory) porte des
+carnets **à créer** : la cible `X-CSharp.ipynb` est absente d'origin/main, sa création EST la
+livraison (politique 7 de #26070). Le driver historique est correction-only
+(`copy2` de la cible depuis le worktree → `notebook-not-found` sinon — mesuré au source,
+échec sec avant tout appel modèle). Le mode création le comble :
+
+```powershell
+python nb_coder_driver.py --issue 27099 `
+  --notebook   MyIA.AI.Notebooks/SymbolicAI/SMT/Z3-API/Z3-10-Cryptarithmetic-CSharp.ipynb `
+  --source-nb  MyIA.AI.Notebooks/SymbolicAI/SMT/Z3-API/Z3-10-Cryptarithmetic-Python.ipynb `
+  --repo D:/CoursIA --agent notebook-coder --gate-mode block --kernel-override .net-csharp
+```
+
+- **Résolution** : cible absente + `--source-nb` présent → création (le jumeau Python devient
+  la source de contexte) ; cible présente + `--source-nb` → `target-already-exists` (refus
+  loud : une coquille opérateur corrigerait silencieusement le jumeau) ; cible absente sans
+  `--source-nb` → verdict historique inchangé.
+- **Stage 1** : `creation_prompt` — le modèle rend le PLAN du jumeau (une ligne par cellule :
+  index, type, titre, rôle — **SANS les sources** ; une cellule du jumeau Python = une
+  cellule du jumeau C#, même fil pédagogique), guidé par la table index/verbatim de l'issue.
+- **Stage 2** : le harnais pose un squelette vide héritant de la **metadata canonique du
+  plus proche jumeau C# de la série** (`*-CSharp.ipynb` : kernelspec + language_info .NET,
+  jamais ceux du jumeau Python), puis `create_segments` réclame les sources **PAR TRANCHES
+  de 8 cellules** (`2-build+0`, `2-build+8`, …) dans la même conversation — mesuré 17/11
+  (#27099, passe à blanc) : la réponse mono-tour « tout le carnet » de 16 268 caractères
+  n'a **jamais parsé** (budget de sortie dépassé sur ~29 cellules) ; `apply_create`
+  assemble le tout en UNE écriture (même discipline que le write-mode json ;
+  `--write-mode mcp` refusé en création). Cellules code : `execution_count: null`, zéro
+  output au départ. Réponses non parsées : queue brute persistée
+  (`stage1_raw_tail`/`stage2_raw_tail`, 3 000 car.) — la passe du 17/11 n'avait que
+  `response_chars` pour deviner.
+- **Boucle de réparation (`--repair-rounds`, défaut 2)** — mesuré 17/11 (#27099, passes
+  3-4) : le modèle traduit des idiomes Python inexistants dans l'API .NET (`MkNe`,
+  `Expr` là où `ArithExpr` est exigé). Les erreurs **réelles** du kernel (messages du
+  compilateur, ligne + cause, extraits des outputs persistés) retournent au modèle dans
+  la même conversation (`2.5-repair+N`) ; il ne rend que les cellules en échec (index
+  inchangés) ; `apply_repairs` remplace leurs sources en une écriture et **réinitialise
+  outputs et `execution_count`** (les sorties ne reviennent que de l'EXÉCUTION), kernel
+  **frais** à chaque tour (une définition réparée peut changer la sémantique en aval),
+  puis re-exécution complète. Passe 4 : round 0 → 6 cellules réparées, round 1 →
+  **11/11 cellules OK, `execution_count` 1..11 séquentiels, verdict `gates-ok`** en
+  7 appels modèle (~23 min).
+- **Kernel cwd = dossier du carnet source** : sans lui `#load "Z3NativeLoader.cs"` meurt
+  CS1504 (le fichier existe dans la série) et chaque cellule utilisant Z3 cascade CS0246 —
+  mesuré #27099 passe 2 ; même correctif que #467 pour `import ict` (#27021).
+- **Preuve structurelle** : `verify_structure_create` — même nombre de cellules que le
+  jumeau + signature de types identique (code↔code, markdown↔markdown) + aucune cellule code
+  vide + aucun output résiduel (les sorties doivent venir de l'EXÉCUTION).
+- **Gate language-info** : comparé à la version canon .NET de la série, pas au jumeau
+  Python (la parité porte sur les verdicts, pas sur la langue).
+- **Kernel mort = échec** : `kernel-start-failed` — un kernel `.net-csharp` absent ne peut
+  plus produire un `built-executed-ok` sans aucune cellule exécutée (le trou était réel).
+- Tests offline : `test_nb_coder_create.py` (apply/skeleton, preuve structurelle, meta
+  canonique, gate création, prompts, garde mcp, applicateur de réparation) — aucun moteur,
+  aucun MCP, aucun GitHub. 18 verts avec les pins correction.
+
 ### 3.4 Agentic trace
 
 - sk-agent `conversation_id` persists per notebook build → the PR body carries it;
