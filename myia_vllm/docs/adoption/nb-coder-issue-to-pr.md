@@ -213,7 +213,16 @@ Le driver reste inchangé (sa gate `block` reste la deuxième ligne de défense)
 
 Mêmes clés que les flags par-grain connus du driver (`max_stage`, `claim`, `fresh_worktree`,
 `agent`, `intention`, `write_mode`, `exec_mode`, `kernel_override`, `verifier_agent`,
-`timeout`, `max_tokens`, `allow_foreign_origin`). Chemin `notebook` repo-relatif obligatoire.
+`timeout`, `max_tokens`, `allow_foreign_origin`) **+ les champs du mode création (17/11)** :
+`source_nb` (jumeau Python repo-relatif — absent ⇒ le grain reste une correction, jamais
+d'héritage d'un `source_nb` par défaut) et `repair_rounds`. Chemin `notebook` repo-relatif
+obligatoire.
+
+**File vague 1 (17/11)** — les 10 grains de notre part sont prêts et validés par
+`load_queue` : `D:/vllm/.tmp/nbcoder/queue-wave1.jsonl` (digest `7a982c32ffb1`) —
+SMT/Z3-API #27099-#27103 + GameTheory #27109-#27113, tous `source_nb` + `kernel_override
+.net-csharp` + `max_stage 5` + `claim`. **Lancement armé après le merge des PR #469
+(scheduler) et #471 (création)** — ramp 2→3→4 sur preuve, fenêtre annoncée sur `global`.
 
 **Règles d'admission** (tick par `--poll-s`, 30 s par défaut) :
 

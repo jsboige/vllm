@@ -271,5 +271,26 @@ def test_driver_command_carries_known_fields_only(tmp_path):
     assert "--max-stage 2" in joined
 
 
+def test_driver_command_passes_creation_fields(tmp_path):
+    """Wave-1 parity grains are CREATIONS: the queue carries source_nb + kernel_override
+    + repair_rounds per item, and driver_command must forward them to the driver."""
+    sched = make_sched(tmp_path, [{
+        "issue": 27099, "notebook": "Ser/Z3-10-CSharp.ipynb",
+        "source_nb": "Ser/Z3-10-Python.ipynb", "kernel_override": ".net-csharp",
+        "max_stage": 3, "repair_rounds": 2}],
+        lane="myia-ai-01:nb-coder")
+    cmd = sched.driver_command(sched.items_by_key["#27099:Ser/Z3-10-CSharp.ipynb"])
+    joined = " ".join(cmd)
+    assert "--source-nb Ser/Z3-10-Python.ipynb" in joined
+    assert "--kernel-override .net-csharp" in joined
+    assert "--max-stage 3" in joined and "--repair-rounds 2" in joined
+    # no item value -> the scheduler default applies; None default means the flag
+    # is OMITTED (a correction grain must not inherit a creation source_nb)
+    sched2 = make_sched(tmp_path, [{
+        "issue": 43, "notebook": "A/C.ipynb", "max_stage": 2}])
+    joined2 = " ".join(sched2.driver_command(sched2.items_by_key["#43:A/C.ipynb"]))
+    assert "--source-nb" not in joined2
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

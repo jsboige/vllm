@@ -52,6 +52,8 @@ HERE = Path(__file__).resolve().parent
 ITEM_FIELDS = {
     "issue": int,
     "notebook": str,
+    "source_nb": str,          # creation mode (--source-nb): the Python twin's repo-relative
+                               # path — every wave-1 parity grain (#27099-#27116) is a CREATION
     "max_stage": int,
     "claim": bool,
     "fresh_worktree": bool,
@@ -63,6 +65,7 @@ ITEM_FIELDS = {
     "verifier_agent": str,
     "timeout": int,
     "max_tokens": int,
+    "repair_rounds": int,
     "allow_foreign_origin": bool,
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
@@ -283,6 +286,7 @@ class Scheduler:
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
+            ("--source-nb", item.get("source_nb", a.source_nb)),
             ("--max-stage", item.get("max_stage", a.max_stage)),
             ("--write-mode", item.get("write_mode", a.write_mode)),
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),
@@ -290,6 +294,7 @@ class Scheduler:
             ("--verifier-agent", item.get("verifier_agent", a.verifier_agent)),
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
+            ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
         ]
         for flag, val in opt:
             if val not in (None, ""):
@@ -564,9 +569,13 @@ def parse_args(argv=None):
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json")
     ap.add_argument("--exec-mode", choices=["auto", "all", "plan"], default="auto")
     ap.add_argument("--kernel-override", default=None)
+    ap.add_argument("--source-nb", default=None,
+                    help="default --source-nb (creation mode) for queue items without one")
     ap.add_argument("--verifier-agent", default="critic")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
+    ap.add_argument("--repair-rounds", type=int, default=2,
+                    help="model repair rounds on real kernel errors (driver flag, 0=off)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")
