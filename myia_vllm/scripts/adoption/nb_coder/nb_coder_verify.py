@@ -240,7 +240,12 @@ def main() -> int:
                          "(builder = notebook-auditor/Swift; default critic = GLM-5.3)")
     ap.add_argument("--out-dir", default=str(nbcd.VLLM_ROOT / ".tmp/nbcoder"))
     ap.add_argument("--timeout", type=int, default=900)
-    ap.add_argument("--max-tokens", type=int, default=4096)
+    # 32 768, not 4 096: the default verifier (critic = GLM-5.3, thinking on) burns the
+    # WHOLE output budget reasoning and returns HTTP 200 with zero content — measured
+    # 16/11 (vllm#446): 4 096 and 16 000 both die as error:unparsable, 32 000 renders
+    # the verdict (28 685 tok in / 756 out). Re-confirmed 17/11 on the #27104 blank
+    # creation pass: response_chars 0 at the 4 096 default, driver passes no override.
+    ap.add_argument("--max-tokens", type=int, default=32768)
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
