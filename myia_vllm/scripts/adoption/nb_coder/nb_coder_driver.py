@@ -665,17 +665,44 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
     )
 
 
-def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "") -> str:
+def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
+                         src_cells: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
-    does not survive the output budget. The harness assembles every segment."""
+    does not survive the output budget. The harness assembles every segment.
+    src_cells: the TWIN's cells — when present, the authoritative French prose of every
+    MARKDOWN cell of this segment is injected verbatim (17/11 #27104: prose REGENERATED
+    from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent;
+    code cells keep deriving from the plan, only prose is pinned to the twin)."""
+    prose = ""
+    if src_cells:
+        parts = []
+        for c in segment_cells:
+            if not isinstance(c, dict) or c.get("cell_type") != "markdown":
+                continue
+            try:
+                i = int(c.get("idx"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < len(src_cells):
+                t = _text(src_cells[i].get("source"))
+                if t.strip():
+                    parts.append(f"<cellule {i} — prose à recopier>\n{t[:2500]}")
+        if parts:
+            prose = ("\n\nPROSE DU JUMEAU PYTHON — AUTORITÉ pour les cellules MARKDOWN de "
+                     "cette tranche : recopie cette prose TELLE QUELLE en n'adaptant QUE les "
+                     "termes propres au code .NET (noms d'API, en-têtes d'implémentation). "
+                     "N'invente, ne traduis et ne reformule AUCUNE phrase — la prose "
+                     "réinventée arrive corrompue (mesuré 17/11) :\n"
+                     + "\n\n".join(parts)[:16000] + "\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
         "(squelette + metadata de série déjà posés) ; tu n'écris aucun fichier et tu "
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
-        + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n\n"
+        + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
+        + prose + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
         "qu'une partie, ne rends QUE celles listées.\n\n"
@@ -720,7 +747,8 @@ def segment_keep_valid(got: list, seg: list) -> tuple[list, list]:
 
 
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
-                          n_src_cells: int, conventions: str) -> dict:
+                          n_src_cells: int, conventions: str,
+                          src_cells: list | None = None) -> dict:
     """Stage 2 of creation mode, SEGMENT by SEGMENT. Each tour renders the sources of
     the plan's cells i..i+CREATE_SEGMENT only; the harness concatenates in plan order
     and hands ONE payload to apply_create (the single-write discipline holds). Returns
@@ -737,7 +765,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
         env = await sk_call_retry(session, args, rec, f"2-build+{si}",
-                                  creation_json_prompt(seg, n_src_cells, conventions), conv)
+                                  creation_json_prompt(seg, n_src_cells, conventions,
+                                                       src_cells), conv)
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
         part = parse_json_block(env.get("response") or "")
@@ -827,10 +856,12 @@ def repair_prompt(failing: list[dict], conventions: str = "") -> str:
     )
 
 
-def apply_repairs(nb_path: Path, payload: dict) -> dict:
-    """Replace the sources of the given cells (by idx) in ONE write. A repaired cell
+def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) -> dict:
+    """Replace the sources of the given cells (by idx) in ONE write. A repaired CODE cell
     loses its outputs and execution_count: they must come back from EXECUTION, never
-    from the repair itself (same rule as creation)."""
+    from the repair itself (same rule as creation). MARKDOWN cells are accepted only
+    with allow_markdown=True (the prose-repair round): source replaced, nothing to
+    reset — markdown has no outputs, execution stays valid."""
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
     rep = {"replaced": [], "unknown_idx": [], "bad": []}
     for c in payload.get("cells") or []:
@@ -839,7 +870,11 @@ def apply_repairs(nb_path: Path, payload: dict) -> dict:
         except (TypeError, ValueError):
             rep["bad"].append(c)
             continue
-        if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
+        if not (0 <= i < len(nb["cells"])):
+            rep["unknown_idx"].append(i)
+            continue
+        ct = nb["cells"][i].get("cell_type")
+        if ct != "code" and not (ct == "markdown" and allow_markdown):
             rep["unknown_idx"].append(i)
             continue
         src = c.get("source") or ""
@@ -848,12 +883,37 @@ def apply_repairs(nb_path: Path, payload: dict) -> dict:
             continue
         cell = nb["cells"][i]
         cell["source"] = _lines(src)
-        cell["outputs"] = []
-        cell["execution_count"] = None
+        if ct == "code":
+            cell["outputs"] = []
+            cell["execution_count"] = None
         rep["replaced"].append(i)
     nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
                        encoding="utf-8")
     return rep
+
+
+def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
+    """One PROSE repair round for markdown cells carrying foreign-script corruption
+    (17/11 #27104: Cyrillic/CJK hallucinated inside regenerated French prose — the
+    gate catches the script class; the twin's own prose is the authority, so the
+    model COPIES it instead of re-deriving)."""
+    blocks = [f"### Cellule {f['idx']} (markdown)\n"
+              f"TEXTE ACTUEL (corrompu, extrait autour des caractères étrangers) :\n"
+              f"…{f['excerpt']}…\n\n"
+              f"PROSE DU JUMEAU PYTHON (autorité — recopie-la) :\n{f.get('twin_source') or '(absente du jumeau — réécris la cellule en français propre, sans caractère étranger)'}"
+              for f in failing]
+    return (
+        "TOUR RÉPARATION PROSE — les cellules markdown ci-dessous contiennent des caractères "
+        "d'alphabets étrangers insérés dans la prose française. Réécris chaque cellule en "
+        "recopiant la prose du jumeau Python fournie, en n'adaptant QUE les termes propres "
+        "au code .NET. Ne change aucune autre cellule, ne reformule rien.\n\n"
+        + "\n\n".join(blocks)
+        + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
+        + "\nRends UNIQUEMENT un bloc ```json :\n"
+        '{"cells":[{"idx":<index inchangé>,"cell_type":"markdown",'
+        '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
+        "TOUTES les cellules listées, index inchangés, aucune autre cellule."
+    )
 
 
 def verify_structure_create(src_path: Path, built_path: Path) -> dict:
@@ -1023,6 +1083,23 @@ FOREIGN_SCRIPT_RE = re.compile("[\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF"
                                "\uAC00-\uD7AF\u3000-\u303F]")
 
 
+def foreign_script_hits(built_cells: list, src_cells: list) -> list[dict]:
+    """Foreign-script corruption hits on BUILD-CHANGED cells (delta rule, same as
+    coord-refs/secrets). Shared by the run_gates gate and the IN-SESSION pre-check
+    that arms the markdown prose-repair round — the round needs the sk session,
+    which is closed by the time stage-3 gates run."""
+    hits: list[dict] = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        m = FOREIGN_SCRIPT_RE.search(txt)
+        if m:
+            hits.append({"cell": i,
+                         "excerpt": txt[max(0, m.start() - 30):m.end() + 30]})
+    return hits
+
+
 def _outputs_text(cell: dict) -> str:
     """What a cell DISPLAYS: streams, the text stubs of its rich data, and error tracebacks."""
     parts: list[str] = []
@@ -1059,15 +1136,7 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                   "detail": {"cells": offenders[:10]}})
     # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
     # pre-existing script in the SOURCE is the repo's business, not this build's.
-    fs_hits = []
-    for i, c in enumerate(built_cells):
-        txt = _text(c.get("source"))
-        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
-            continue                      # untouched by the build
-        m = FOREIGN_SCRIPT_RE.search(txt)
-        if m:
-            fs_hits.append({"cell": i,
-                            "excerpt": txt[max(0, m.start() - 30):m.end() + 30]})
+    fs_hits = foreign_script_hits(built_cells, src_cells)
     gates.append({"gate": "foreign-script", "ok": not fs_hits,
                   "detail": {"hits": fs_hits[:10]}})
     # Delta-judged like coord-refs (#433 review): a secret sitting UNTOUCHED in the
@@ -1452,7 +1521,8 @@ async def run(args, rec: dict) -> dict:
             env2: dict = {}                # correction branch fills it; creation never reads it
             if create_mode:
                 built = await create_segments(sk, args, rec, conv, plan.get("cells") or [],
-                                              len(src_cells), conventions)
+                                              len(src_cells), conventions,
+                                              src_cells=src_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
                 if built:
@@ -1585,6 +1655,45 @@ async def run(args, rec: dict) -> dict:
                                     break
                                 rec["execution"] = await execute_cells(
                                     pm, scratch, kid, exec_targets)
+                        # ---- markdown prose repair: the foreign-script class caught by
+                        # the gate is REPAIRABLE in-session (17/11 #27104 blank pass 2:
+                        # Cyrillic/CJK hallucinated inside regenerated French prose —
+                        # verify rejected 5 majors). One round, while the sk session is
+                        # still open (stage-3 gates run after it closes). Markdown has
+                        # no outputs: apply_repairs(allow_markdown=True) replaces the
+                        # source only, no kernel cycle. The stage-3 gate re-measures
+                        # and stays the judge of what remains.
+                        if create_mode and args.repair_rounds > 0:
+                            fs_hits = foreign_script_hits(_cells(scratch), src_cells)
+                            if fs_hits:
+                                detail_md = []
+                                for h in fs_hits[:8]:
+                                    twin_src = ""
+                                    ci = h.get("cell")
+                                    if isinstance(ci, int) and 0 <= ci < len(src_cells):
+                                        twin_src = _text(src_cells[ci].get("source"))[:3000]
+                                    detail_md.append({"idx": ci,
+                                                      "excerpt": h.get("excerpt") or "",
+                                                      "twin_source": twin_src})
+                                env = await sk_call_retry(
+                                    sk, args, rec, "2.6-mdrepair",
+                                    md_repair_prompt(detail_md, conventions), conv)
+                                conv = env.get("conversation_id") or conv
+                                part = parse_json_block(env.get("response") or "")
+                                if part and part.get("cells"):
+                                    rep_md = apply_repairs(scratch, part,
+                                                           allow_markdown=True)
+                                    rec.setdefault("md_repairs", []).append(
+                                        {"asked": len(detail_md),
+                                         "replaced": rep_md["replaced"],
+                                         "unknown_idx": rep_md["unknown_idx"],
+                                         "bad": rep_md["bad"]})
+                                else:
+                                    rec.setdefault("md_repairs", []).append(
+                                        {"verdict": call_failure(env) or "unparsed",
+                                         "raw_tail": (env.get("response") or "")[-1500:]})
+                                rec["md_hits_after"] = len(
+                                    foreign_script_hits(_cells(scratch), src_cells))
                     # kernel hygiene: an hourly cadence must not leak one kernel per run
                     if rec.get("kernel_id"):
                         rec["kernel_stop"] = await pm_call(
