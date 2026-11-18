@@ -298,6 +298,46 @@ def test_the_prev_field_round_trips_through_the_coursia_parser():
     assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
 
 
+# ---- creation kernel selection (vllm#484, measured on CoursIA#27106) ----
+
+def test_creation_execution_uses_the_canonical_twin_kernelspec():
+    """A C# target is absent, so its GameTheory path defaults to python3. The C# twin's
+    metadata is the only source that names the deliverable's actual execution kernel.
+
+    Wiring pin, deliberately: unit-testing series_kernel() alone would miss the real bug,
+    which was the driver choosing it BEFORE reading create_metadata. The call-site order
+    and assignment are what keep execution, repair, stripping and the PR trace coherent.
+    """
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
+    selection = run.split("kernel = series_kernel", 1)[1].split('rec["kernel"]', 1)[0]
+    assert "if create_mode:" in selection
+    assert "series_canonical_meta(wt_path, args.notebook)" in selection
+    assert '(twin_meta.get("kernelspec") or {}).get("name")' in selection
+    assert 'kernel["kernel_name"] = twin_kernel' in selection
+    assert 'kernel["kernel_source"] = "canonical-twin-kernelspec"' in selection
+    assignment = next(line for line in selection.splitlines()
+                      if 'kernel["kernel_name"] = twin_kernel' in line)
+    guard = next(line for line in selection.splitlines()
+                 if "if twin_kernel:" in line)
+    assert guard.endswith("if twin_kernel:"), "the twin selection is no longer reachable"
+    assert selection.index(guard) < selection.index(assignment)
+
+
+def test_creation_metadata_and_execution_read_the_same_twin():
+    """Do not grow two independent metadata reads that could select different kernels."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
+    assert run.count("series_canonical_meta(wt_path, args.notebook)") == 1, (
+        "creation reads the twin twice; selection and delivered metadata can diverge")
+    assert '\n                meta = series_canonical_meta(wt_path, args.notebook)' not in run
+    assert ('rec["create_metadata"] = {"kernelspec": '
+            '(twin_meta.get("kernelspec") or {}).get("name")') in run
+
+
+def test_explicit_kernel_override_still_wins_at_every_execution_site():
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
 # ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
 
 def test_the_banner_strip_covers_the_discovery_bootstrap():
