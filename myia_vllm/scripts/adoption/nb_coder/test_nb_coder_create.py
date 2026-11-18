@@ -549,5 +549,52 @@ def test_execute_cells_opts_into_error_output_persistence(monkeypatch):
     assert all(r["ok"] is False for r in res)  # status error -> not ok, unchanged semantics
 
 
+def test_apply_repairs_prose_refuses_real_code_cell(tmp_path):
+    """Round 2 (finding 1): in the prose round the refusal keys on the cell's REAL
+    type, not the payload's declared one — a payload omitting cell_type (or declaring
+    markdown) used to sail past the declared-type check and then reset a real code
+    cell's outputs at the ct=='code' branch."""
+    nb = tmp_path / "s.ipynb"
+    write_nb(nb, [
+        {"cell_type": "code", "source": "print(1)", "metadata": {},
+         "execution_count": 2, "outputs": [{"name": "stdout", "text": "1"}]},
+        {"cell_type": "markdown", "source": "ni случай générateur", "metadata": {}},
+    ])
+    # idx 0 IS in only_idx (so this isolates the real-type refusal) but the target's
+    # real type is code -> refused whatever the payload declares.
+    for declared in (None, "markdown", "code"):
+        entry = {"idx": 0, "source": "ÉCRASÉ EN PROSE"}
+        if declared:
+            entry["cell_type"] = declared
+        rep = D.apply_repairs(nb, {"cells": [entry, {"idx": 1, "cell_type": "markdown",
+                                                     "source": "ni un générateur"}]},
+                              allow_markdown=True, only_idx={0, 1})
+        assert rep["out_of_scope"] == [0], f"declared={declared!r} bypassed the refusal"
+        assert rep["replaced"] == [1]
+        cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
+        assert _join(cells[0]["source"]) == "print(1)"
+        assert cells[0]["execution_count"] == 2 and cells[0]["outputs"], \
+            "the code cell's outputs/execution must survive a prose-round bypass"
+        write_nb(nb, [  # restore cell 1 for the next declared-variant pass
+            cells[0],
+            {"cell_type": "markdown", "source": "ni случай générateur", "metadata": {}},
+        ])
+
+
+def test_gate_call_uses_explicit_propagated_path(tmp_path):
+    """Round 2 (finding 2): gate_call must honour an explicit probe path (the scheduler
+    forwards its resolved --gate) over the module env default — proven by a marker only
+    the custom script emits."""
+    custom = tmp_path / "seat_gate.py"
+    custom.write_text(
+        "import json; print(json.dumps({'verdict': 'green', 'marker': 'custom-seat'}))",
+        encoding="utf-8")
+    out = D.gate_call("warn", gate_path=custom)
+    assert out["marker"] == "custom-seat" and out["exit"] == 0
+    off = D.gate_call("off")                       # off never spawns, path irrelevant
+    assert off == {"verdict": "off", "mode": "off", "exit": None,
+                   "blocking_refusal": False}
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
