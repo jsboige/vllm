@@ -254,14 +254,19 @@ def engine_tokens() -> dict:
         return {}
 
 
-def gate_call(mode: str) -> dict:
+def gate_call(mode: str, gate_path: Path | None = None) -> dict:
     """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window).
     off = no local gate: capacity is enforced elsewhere (MiniMax variant -> claudish lane
-    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code)."""
+    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code).
+
+    ``gate_path`` (pre-review round 2): an explicitly propagated probe path wins over the
+    module-level env default — the scheduler resolves its own ``--gate`` (incl. $NBCODER_GATE)
+    and forwards it, so a custom probe set on the parent reaches the child WITHOUT the
+    operator having to export the env var in the parent shell."""
     if mode == "off":
         return {"verdict": "off", "mode": "off", "exit": None, "blocking_refusal": False}
-    p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=60)
+    p = subprocess.run([sys.executable, str(gate_path or GATE)], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=60)
     try:
         verdict = json.loads((p.stdout or "").strip().splitlines()[-1])
     except Exception:
@@ -956,9 +961,16 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
         if ct != "code" and not (ct == "markdown" and allow_markdown):
             rep["unknown_idx"].append(i)
             continue
-        # In the prose round, refuse a payload that re-labels the cell as CODE:
-        # applying it would reset outputs/execution_count on a cell this round has
-        # no mandate to touch (finding 1 — CODE smuggled under allow_markdown).
+        # In the prose round, a cell whose REAL type is code is out of scope WHATEVER
+        # the payload declares (round 2: a payload declaring markdown, or omitting
+        # cell_type entirely, sailed past the declared-type check and then reset the
+        # real code cell's outputs at the `ct == "code"` branch below).
+        if allow_markdown and ct == "code":
+            rep["out_of_scope"].append(i)
+            continue
+        # And refuse a payload that re-labels ANY cell as CODE in the prose round:
+        # applying it on a markdown cell is a type-confusion the round never asked
+        # for (finding 1 — CODE smuggled under allow_markdown).
         if allow_markdown and (c.get("cell_type") or "").lower() == "code":
             rep["out_of_scope"].append(i)
             continue
@@ -1757,7 +1769,7 @@ async def run(args, rec: dict) -> dict:
         return rec
     kernel = series_kernel(wt_path, args.notebook)
     rec["kernel"] = kernel
-    gate = gate_call(args.gate_mode)
+    gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
     if gate["blocking_refusal"]:
         rec["verdict"] = "deferred-by-capacity-gate"
@@ -2135,6 +2147,11 @@ def main() -> int:
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--gate", type=Path, default=None,
+                    help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
+                         "bundled swift_capacity_gate.py). The scheduler forwards its own "
+                         "resolved --gate here, so parent-side custom paths propagate "
+                         "without env mutation (pre-review round 2)")
     ap.add_argument("--lane", default=LANE,
                     help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
                          "no fallback — --claim refuses without it, F1/vllm#438)")

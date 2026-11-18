@@ -314,6 +314,10 @@ class Scheduler:
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
+            # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
+            # set on the scheduler reaches the driver child without env mutation —
+            # the child's env default only fires when this scheduler runs standalone.
+            ("--gate", a.gate),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
             ("--source-nb", item.get("source_nb", a.source_nb)),
             ("--max-stage", item.get("max_stage", a.max_stage)),
