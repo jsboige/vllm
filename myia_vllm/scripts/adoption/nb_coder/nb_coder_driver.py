@@ -1049,11 +1049,20 @@ async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
 
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
-    """The harness owns execution and the verdict: real outputs, never the model's word."""
+    """The harness owns execution and the verdict: real outputs, never the model's word.
+
+    persist_error_outputs is opted IN (#4817 / ms#1803): the MCP default refuses to write a
+    raised cell's error output into the .ipynb (committed sources stay intangible), but this
+    path only ever executes the SCRATCH copy — and the repair rounds plus the verify critic
+    read that artifact back from disk after the process is gone. Without the opt-in, a
+    compiler error lives only in the in-memory response and the evidence dies with it
+    (the exact hole ms#1799 closed for committed sources; the scratch contract is the
+    mirror image, which is why the flag exists at all)."""
     results = []
     for idx in indexes:
         r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kernel_id, "mode": "notebook_cell",
                                                     "path": str(nb_path), "cell_index": idx,
+                                                    "persist_error_outputs": True,
                                                     "timeout": 300})
         status = r.get("status") or r.get("error") or "?"
         outs = r.get("outputs") or []
@@ -1061,6 +1070,7 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                            if isinstance(o, dict) and o.get("output_type") == "error")
         results.append({"cell": idx, "status": status, "ok": status == "ok" and not err_txt,
                         "elapsed_s": r.get("execution_time") or r.get("elapsed_s"),
+                        "error_outputs_persisted": r.get("error_outputs_persisted"),
                         "outputs_tail": str(outs)[-800:], "error": err_txt[:500] or None})
     return results
 

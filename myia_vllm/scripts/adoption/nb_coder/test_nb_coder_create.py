@@ -433,5 +433,30 @@ def test_initialize_handshake_has_a_timeout():
         "the papermill initialize handshake must carry a wait_for timeout"
 
 
+def test_execute_cells_opts_into_error_output_persistence(monkeypatch):
+    """#4817 / ms#1803: the MCP default REFUSES to persist a raised cell's error output
+    into the .ipynb (committed sources stay intangible). execute_cells only ever runs
+    the SCRATCH copy, and the repair rounds + verify critic read that artifact from
+    disk after the process is gone — so the payload must opt IN, and the record must
+    carry the instrument's own error_outputs_persisted proof."""
+    seen = []
+
+    async def fake_pm_call(session, tool, payload):
+        seen.append((tool, payload))
+        return {"status": "error", "outputs": [],
+                "error_outputs_persisted": True}
+
+    monkeypatch.setattr(D, "pm_call", fake_pm_call)
+    res = asyncio.run(D.execute_cells(object(), Path("scratch.ipynb"), "k1", [3, 7]))
+    payloads = [p for t, p in seen if t == "execute_on_kernel"]
+    assert len(payloads) == 2
+    for p in payloads:
+        assert p["persist_error_outputs"] is True
+        assert p["kernel_id"] == "k1" and p["mode"] == "notebook_cell"
+    assert all(r["error_outputs_persisted"] is True for r in res), \
+        "the instrument's persistence proof must survive into the record"
+    assert all(r["ok"] is False for r in res)  # status error -> not ok, unchanged semantics
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
