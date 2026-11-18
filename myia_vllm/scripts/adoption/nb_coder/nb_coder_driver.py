@@ -1658,8 +1658,20 @@ async def run(args, rec: dict) -> dict:
                                       cwd=str(PM_CWD))
     async with stdio_client(sk_params) as (r1, w1), stdio_client(pm_params) as (r2, w2):
         async with ClientSession(r1, w1) as sk, ClientSession(r2, w2) as pm:
-            await sk.initialize()
-            await pm.initialize()
+            # The initialize roundtrip is the ONE MCP wait with no per-call
+            # read_timeout: per-call timeouts (sk_call: args.timeout+120,
+            # pm_call: 300s) only arm AFTER the handshake. Measured 18/11
+            # 00:27->03:35Z (wave-1b, py-spy stacks in the state-dir post-mortem):
+            # a child blocked in StreamHandler.emit never answered initialize and
+            # both drivers hung 2h30 with zero LLM traffic. Fail loud instead.
+            try:
+                await asyncio.wait_for(sk.initialize(), 180.0)
+                await asyncio.wait_for(pm.initialize(), 180.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    "MCP initialize handshake timed out after 180s (child never "
+                    "answered; suspect an undrained stderr pipe blocking the "
+                    "child's logging — see the wave-1b post-mortem 18/11)") from None
             # ---- stage 1 PLAN (correction) / CREATION PLAN (--source-nb)
             t1 = time.time()
             if create_mode:

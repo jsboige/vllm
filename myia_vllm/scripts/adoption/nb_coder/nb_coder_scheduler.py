@@ -272,6 +272,24 @@ class Scheduler:
         return out
 
     def _spawn_driver(self, cmd: list[str]):
+        # Wave-1b hang (18/11 00:27->03:35Z, py-spy post-mortem in the state dir):
+        # PIPE + read-at-reap-only means NOBODY drains the driver's output while
+        # it runs. The driver relays its MCP children's stderr (stdio_client
+        # errlog defaults to the parent's stderr), so a chatty child fills the
+        # 64 KiB OS pipe, the child then blocks inside StreamHandler.emit, the
+        # MCP initialize handshake never completes and the driver waits forever.
+        # Writing straight to runs/issue-N/driver.log removes the cap AND gives
+        # the operator live logs (this post-mortem took hours without them).
+        if "--out-dir" in cmd:
+            out_dir = Path(cmd[cmd.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            fh = open(out_dir / "driver.log", "ab")
+            try:
+                proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
+            finally:
+                fh.close()
+            proc._nb_driver_log = str(out_dir / "driver.log")   # reap-side marker
+            return proc
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
 
@@ -365,16 +383,31 @@ class Scheduler:
                     previous=report["max_active"])
 
     # ---------------------------------------------------------------- lifecycle
+    def _driver_output(self, entry: dict) -> str:
+        """Final driver output: the pipe for piped children (tests/fakes), the
+        driver.log tail for file-redirected ones (see _spawn_driver)."""
+        proc = entry["proc"]
+        log = getattr(proc, "_nb_driver_log", None)
+        if log:                                        # file-redirected real child
+            try:
+                return Path(log).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return ""
+        if hasattr(proc, "communicate"):               # piped Popen and test fakes
+            try:
+                out, _ = proc.communicate(timeout=5)
+                return out or ""
+            except Exception:
+                return ""
+        return getattr(proc, "stdout", "") or ""
+
     def _reap(self, now: float) -> None:
         for key, entry in list(self.active.items()):
             proc = entry["proc"]
             rc = proc.poll()
             if rc is None:
                 continue
-            try:
-                out, _ = proc.communicate(timeout=5)
-            except Exception:
-                out = ""
+            out = self._driver_output(entry)
             verdict = ""
             for line in reversed((out or "").strip().splitlines()):
                 line = line.strip()
@@ -630,6 +663,14 @@ def parse_args(argv=None):
         args.worktree_root = str(Path(args.state_dir) / "worktrees")
     if not args.stop_file:
         args.stop_file = str(Path(args.state_dir) / "STOP")
+    # Paths handed to the DRIVER must be ABSOLUTE. The worktree path reaches
+    # `git -C <repo> worktree add <path>`, which resolves a relative path against
+    # the REPO root, while the driver resolves the same path against its own cwd —
+    # the two disagree and the driver then reports source-nb-not-found on a
+    # worktree that exists (measured 17/11 21:30Z: 10/10 wave-1 grains failed,
+    # worktrees materialized under <repo>/.tmp/... instead of <vllm>/.tmp/...).
+    for name in ("state_dir", "out_root", "worktree_root", "stop_file"):
+        setattr(args, name, str(Path(getattr(args, name)).resolve()))
     return args
 
 
