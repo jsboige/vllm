@@ -143,3 +143,15 @@ def test_verify_output_budget_default_is_32768():
     src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
     line = [l for l in src.splitlines() if '"--max-tokens"' in l]
     assert len(line) == 1 and "default=32768" in line[0]
+
+
+def test_empty_response_gets_one_retry():
+    """18/11 wave-1c: critic (GLM-5.3) returned 200-empty TWICE (308 s and 609 s) at
+    the 32 768 budget — cloud-side empties, not the token-budget case. The verifier
+    must retry ONCE with the shorter-reasoning note before settling on
+    error:unparsable; a retry that answers replaces the empty envelope."""
+    src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
+    assert "verify_retry" in src, "the retry marker must be recorded for the trace"
+    assert src.count("asyncio.run(call_verifier(") == 2, \
+        "exactly two call sites: first attempt + one empty-response retry"
+    assert "RETRY_NOTE" in src, "the retry re-asks with the shorter-reasoning note"
