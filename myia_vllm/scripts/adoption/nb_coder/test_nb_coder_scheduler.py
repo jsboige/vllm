@@ -292,5 +292,16 @@ def test_driver_command_passes_creation_fields(tmp_path):
     assert "--source-nb" not in joined2
 
 
+def test_parse_args_makes_driver_paths_absolute():
+    # 17/11 21:30Z wave-1 incident: a relative --state-dir produced a relative
+    # --worktree path, which `git -C <repo> worktree add` resolved against the
+    # REPO root while the driver resolved it against its own cwd -> 10/10 grains
+    # failed source-nb-not-found on worktrees that DID exist (under <repo>/.tmp).
+    args = S.parse_args(["--queue", "q.jsonl", "--state-dir", "rel-state",
+                         "--repo", "D:/CoursIA", "--max-active", "2"])
+    for name in ("state_dir", "out_root", "worktree_root"):
+        assert Path(getattr(args, name)).is_absolute(), name
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

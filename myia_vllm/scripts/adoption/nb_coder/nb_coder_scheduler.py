@@ -630,6 +630,14 @@ def parse_args(argv=None):
         args.worktree_root = str(Path(args.state_dir) / "worktrees")
     if not args.stop_file:
         args.stop_file = str(Path(args.state_dir) / "STOP")
+    # Paths handed to the DRIVER must be ABSOLUTE. The worktree path reaches
+    # `git -C <repo> worktree add <path>`, which resolves a relative path against
+    # the REPO root, while the driver resolves the same path against its own cwd —
+    # the two disagree and the driver then reports source-nb-not-found on a
+    # worktree that exists (measured 17/11 21:30Z: 10/10 wave-1 grains failed,
+    # worktrees materialized under <repo>/.tmp/... instead of <vllm>/.tmp/...).
+    for name in ("state_dir", "out_root", "worktree_root", "stop_file"):
+        setattr(args, name, str(Path(getattr(args, name)).resolve()))
     return args
 
 
