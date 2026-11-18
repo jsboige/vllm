@@ -922,14 +922,24 @@ def repair_prompt(failing: list[dict], conventions: str = "") -> str:
     )
 
 
-def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) -> dict:
+def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
+                  only_idx: set[int] | None = None) -> dict:
     """Replace the sources of the given cells (by idx) in ONE write. A repaired CODE cell
     loses its outputs and execution_count: they must come back from EXECUTION, never
     from the repair itself (same rule as creation). MARKDOWN cells are accepted only
     with allow_markdown=True (the prose-repair round): source replaced, nothing to
-    reset — markdown has no outputs, execution stays valid."""
+    reset — markdown has no outputs, execution stays valid.
+
+    ``only_idx`` (pre-review cutover finding 1): when given, ONLY those indices may be
+    replaced — a response naming any other cell (code out of scope, an idx the round
+    never asked for) is refused into ``out_of_scope`` and left untouched. The prose
+    round passes the failing cells' idx so a hallucinated extra edit cannot silently
+    rewrite an uninvolved cell. In markdown mode a cell whose payload declares
+    ``cell_type: "code"`` is also refused: the prose round must not reset a code cell's
+    outputs by smuggling it in as a markdown edit.
+    """
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    rep = {"replaced": [], "unknown_idx": [], "bad": []}
+    rep = {"replaced": [], "unknown_idx": [], "bad": [], "out_of_scope": []}
     for c in payload.get("cells") or []:
         try:
             i = int(c.get("idx"))
@@ -939,9 +949,18 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) ->
         if not (0 <= i < len(nb["cells"])):
             rep["unknown_idx"].append(i)
             continue
+        if only_idx is not None and i not in only_idx:
+            rep["out_of_scope"].append(i)
+            continue
         ct = nb["cells"][i].get("cell_type")
         if ct != "code" and not (ct == "markdown" and allow_markdown):
             rep["unknown_idx"].append(i)
+            continue
+        # In the prose round, refuse a payload that re-labels the cell as CODE:
+        # applying it would reset outputs/execution_count on a cell this round has
+        # no mandate to touch (finding 1 — CODE smuggled under allow_markdown).
+        if allow_markdown and (c.get("cell_type") or "").lower() == "code":
+            rep["out_of_scope"].append(i)
             continue
         src = c.get("source") or ""
         if not src.strip():
@@ -1984,8 +2003,14 @@ async def run(args, rec: dict) -> dict:
                                 conv = env.get("conversation_id") or conv
                                 part = parse_json_block(env.get("response") or "")
                                 if part and part.get("cells"):
+                                    # Scope the prose round to the cells it asked for
+                                    # (finding 1): a response editing any other cell is
+                                    # refused, not applied.
+                                    _md_idx = {d["idx"] for d in detail_md
+                                               if isinstance(d.get("idx"), int)}
                                     rep_md = apply_repairs(scratch, part,
-                                                           allow_markdown=True)
+                                                           allow_markdown=True,
+                                                           only_idx=_md_idx)
                                     rec.setdefault("md_repairs", []).append(
                                         {"asked": len(detail_md),
                                          "replaced": rep_md["replaced"],
