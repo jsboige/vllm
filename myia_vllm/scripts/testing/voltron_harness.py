@@ -121,14 +121,18 @@ def extract_expression(text: str) -> str | None:
 
 
 # --- engine access ----------------------------------------------------------
-def ask(base: str, key: str, model: str, prompt: str, system=None, temperature=0.0) -> str:
+def ask(base: str, key: str, model: str, prompt: str, system=None, temperature=0.0,
+        max_tokens=None, extra_body=None) -> str:
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
-    payload = {"model": model, "max_tokens": MAX_TOKENS, "temperature": temperature,
+    payload = {"model": model, "max_tokens": max_tokens or MAX_TOKENS,
+               "temperature": temperature,
                "chat_template_kwargs": {"enable_thinking": False},
                "messages": msgs}
+    if extra_body:
+        payload.update(extra_body)
     req = urllib.request.Request(base + "/v1/chat/completions",
                                  data=json.dumps(payload).encode(),
                                  headers={"Authorization": f"Bearer {key}",
@@ -140,6 +144,22 @@ def ask(base: str, key: str, model: str, prompt: str, system=None, temperature=0
     if not content and msg.get("reasoning_content"):
         content = msg["reasoning_content"]
     return content
+
+
+# --- coordinator (tier ABOVE the worker; routes via the fleet claudish hub,
+# exactly like sk-agent's own configs — swift-1.5-27b/no-thinking, key never
+# leaves the hub; called ONLY on residuals the deterministic layer REFUSES) ---
+COORD_SYSTEM = ("Tu es coordonnateur-vérificateur dans un harnais fiabilisation. "
+                "Un modèle worker (1.7B) a échoué cette tâche malgré relances. "
+                "Donne la réponse correcte, rien d'autre — pas d'explication.")
+
+
+def coordinator_call(cfg: dict, task_prompt: str, worker_best: str, gate_msg: str) -> str:
+    prompt = (f"{task_prompt}\n\nMeilleure tentative du worker (rejetée — {gate_msg}) :\n"
+              f"{worker_best[:400]}\n\nRéponds UNIQUEMENT par la réponse correcte "
+              "à la tâche, dans le format demandé par la tâche.")
+    return ask(cfg["url"], cfg["key"], cfg["model"], prompt,
+               system=COORD_SYSTEM, temperature=0.0, max_tokens=120)
 
 
 # --- per-class harness pipelines -------------------------------------------
@@ -161,63 +181,69 @@ def run_green(task, ask1):
     return out, {"route": "green", "calls": 1, "rounds": 0}
 
 
-def run_ok(task, ask_with):
-    """93 % classes. transform: 3 siblings, majority on normalized output.
-    sort: VERIFIABLE — gate = the answer must be the ascending permutation of
-    the prompt's numbers (a deterministic check; majority alone was measured
-    AMPLIFYING the temp-0 error at #107/#114 on 18/11). Majority picks among
-    gate-passers only; no passer after 1 directed repair -> REFUS."""
-    if task["cat"] == "sort":
-        nums = [int(x) for x in re.findall(r"\d+", task["prompt"].rsplit(":", 1)[-1])]
-        want = sorted(nums)
+def sort_want(task):
+    nums = [int(x) for x in re.findall(r"\d+", task["prompt"].rsplit(":", 1)[-1])]
+    return sorted(nums)
 
-        def gate(o: str) -> bool:
-            got = [int(x) for x in re.findall(r"-?\d+", o)]
-            return got[:len(want)] == want
 
-        outs = [ask_with(s, task["prompt"]) for s in SIBLINGS]
-        calls = 3
-        passers = [o for o in outs if gate(o)]
-        if not passers:  # one directed repair
-            outs.append(ask_with(SIBLINGS[0],
-                                 task["prompt"] + "\nAttention : ta liste doit être "
-                                 "EXACTEMENT les mêmes nombres que ceux donnés, triés "
-                                 "du plus petit au plus grand. Réponds uniquement la liste."))
-            calls += 1
-            if gate(outs[-1]):
-                passers.append(outs[-1])
-        if not passers:
-            return "REFUS: aucune liste triée valide", {
-                "route": "ok", "calls": calls, "rounds": 1, "agree": 0,
-                "gated": True, "sibling_norms": [qb.norm(o) for o in outs]}
-        norms = [qb.norm(o) for o in passers]
-        val, cnt = majority(norms)
-        raw = passers[norms.index(val)]
-        return raw, {"route": "ok", "calls": calls, "rounds": 0,
-                     "agree": cnt, "gated": True,
-                     "sibling_norms": [qb.norm(o) for o in outs]}
-    # transform — verifiable too when the transform is mechanical (uppercase):
-    # gate = output must equal phrase.upper() of the « … » quoted input.
+def sort_gate(o: str, want) -> bool:
+    got = [int(x) for x in re.findall(r"-?\d+", o or "")]
+    return got[:len(want)] == want
+
+
+def transform_want(task):
     m = re.search(r"«\s*(.+?)\s*»", task["prompt"])
-    want = m.group(1).upper() if m else None
+    return m.group(1).upper() if m else None
 
-    def tgate(o: str) -> bool:
-        return want is not None and qb.norm(o).upper() == want
 
+def transform_gate(o: str, want) -> bool:
+    return want is not None and qb.norm(o).upper() == want
+
+
+def constraint_gate(o: str, n: int) -> bool:
+    return word_count(o) == n
+
+
+def regate(cat: str, out: str, task) -> bool | None:
+    """Deterministic re-verification of ANY answer (worker or coordinator).
+    None = class not mechanically re-checkable."""
+    if cat == "sort":
+        return sort_gate(out, sort_want(task))
+    if cat == "transform":
+        return transform_gate(out, transform_want(task))
+    if cat == "constraint":
+        return constraint_gate(out, int(task["oracle"]))
+    return None
+
+
+def run_ok(task, ask_with):
+    """93 % classes, both VERIFIABLE. Gate first (sort = ascending permutation
+    of the prompt's numbers; transform = exact uppercase of the quoted phrase);
+    majority picks among gate-passers only — plain majority was measured
+    AMPLIFYING the temp-0 error (sort 14->13 on 18/11). No passer after 1
+    directed repair -> REFUS (main() may then escalate to the coordinator)."""
+    if task["cat"] == "sort":
+        want = sort_want(task)
+        gate = lambda o: sort_gate(o, want)  # noqa: E731
+        repair = ("\nAttention : ta liste doit être EXACTEMENT les mêmes nombres "
+                  "que ceux donnés, triés du plus petit au plus grand. "
+                  "Réponds uniquement la liste.")
+    else:
+        want = transform_want(task)
+        gate = lambda o: transform_gate(o, want)  # noqa: E731
+        repair = ("\nRéponds uniquement la phrase source entre guillemets, en "
+                  "MAJUSCULES EXACTES, mot pour mot, rien en moins ni en plus.")
     outs = [ask_with(s, task["prompt"]) for s in SIBLINGS]
     calls = 3
-    passers = [o for o in outs if tgate(o)]
-    if not passers and want:  # directed repair with the exact delta
-        outs.append(ask_with(SIBLINGS[0],
-                             f"Ta réponse : « {qb.norm(outs[0])} »\nLa phrase source entre guillemets "
-                             f"comporte {len(want.split())} mots ; la réponse attendue est sa "
-                             "MAJUSCULE EXACTE (même mots, même ordre, rien en moins). "
-                             "Renvoie uniquement la phrase complète en majuscules."))
+    passers = [o for o in outs if gate(o)]
+    if not passers and want:  # one directed repair
+        outs.append(ask_with(SIBLINGS[0], task["prompt"] + repair))
         calls += 1
-        if tgate(outs[-1]):
+        if gate(outs[-1]):
             passers.append(outs[-1])
     if not passers:
-        return f"REFUS: majuscule incomplète — « {qb.norm(outs[0])[:80]} »", {
+        best = qb.norm(outs[0]) if outs else ""
+        return f"REFUS: gate échouée après repair — « {best[:80]} »", {
             "route": "ok", "calls": calls, "rounds": 1, "agree": 0, "gated": True,
             "sibling_norms": [qb.norm(o) for o in outs]}
     norms = [qb.norm(o) for o in passers]
@@ -328,7 +354,21 @@ def main() -> None:
     ap.add_argument("--label", required=True)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only-cat", default="", help="restrindre à une catégorie (debug)")
+    ap.add_argument("--no-coord", action="store_true",
+                    help="désactiver le coordonnateur (REFUS finals restent des refus)")
+    ap.add_argument("--coord-url", default="http://192.168.0.50:3000",
+                    help="hub claudish (même route que sk-agent)")
+    ap.add_argument("--coord-model", default="swift-1.5-27b")
     args = ap.parse_args()
+
+    coord = None
+    if not args.no_coord:
+        ckey = os.environ.get("ZAI_API_KEY", "")
+        if ckey:
+            coord = {"url": args.coord_url, "key": ckey, "model": args.coord_model}
+        else:
+            print("NOTE: ZAI_API_KEY absent — coordonnateur désactivé (REFUS finals)")
+    coord_calls = 0
 
     key = qb.load_key()
     tasks = qb.build_tasks()
@@ -350,6 +390,7 @@ def main() -> None:
         t0 = time.time()
         cat = t["cat"]
         route = ROUTE[cat]
+        coord_used = coord_ok = None
         try:
             if route == "green":
                 out, meta = run_green(t, ask1)
@@ -361,15 +402,37 @@ def main() -> None:
                 out, meta = run_red(t, ask_with, cat)
             ok, detail = qb.score(cat, out, t["oracle"])
             err = None
+            if coord and not ok and out.startswith("REFUS"):
+                # residual: the deterministic layer refused. The coordinator
+                # (tier ABOVE) gets task + worker best + gate reason; its
+                # answer is RE-GATED whenever the class is verifiable —
+                # even the 27B is not trusted on parole.
+                coord_used = True
+                coord_calls += 1
+                out_c = coordinator_call(coord, t["prompt"], out, detail)
+                rg = regate(cat, out_c, t)
+                if rg is True:
+                    out, coord_ok, ok = out_c, True, True
+                    detail = f"[coord + regate OK] {detail}"
+                elif rg is False:
+                    coord_ok = False  # coordinator also failed the gate: keep REFUS
+                    detail = f"[coord rejeté par gate] {detail}"
+                else:  # class not re-checkable (red routes): adopt, marked
+                    out, coord_ok, ok = out_c, True, qb.score(cat, out_c, t["oracle"])[0]
+                    detail = f"[coord adopté, sans regate] {detail}"
         except Exception as e:
             out, ok, detail, err, meta = "", False, "appel en échec", repr(e), {}
         row = dict(i=i, cat=cat, ok=ok, detail=detail, err=err,
                    out=out[:400], dt=round(time.time() - t0, 2))
         row.update({f"h_{k}": v for k, v in meta.items() if k != "sibling_norms"})
+        if coord_used is not None:
+            row["h_coord_used"] = coord_used
+            row["h_coord_ok"] = coord_ok
         results.append(row)
         calls = meta.get("calls", "?")
+        ctag = " COORD" if coord_used else ""
         print(f"[{i:>3}/{len(tasks)}] {cat:<10} {'OK ' if ok else 'FAIL'} "
-              f"calls={calls:<2} {detail[:90]}", flush=True)
+              f"calls={calls:<2}{ctag} {detail[:90]}", flush=True)
 
     total = len(results)
     ok_total = sum(int(r["ok"]) for r in results)
@@ -387,7 +450,8 @@ def main() -> None:
         "n": total, "ok": ok_total,
         "acc": round(ok_total / total, 4) if total else None,
         "total_llm_calls": tot_calls,
-        "calls_per_task": round(tot_calls / total, 2) if total else None,
+        "coord_calls": coord_calls,
+        "calls_per_task": round((tot_calls + coord_calls) / total, 2) if total else None,
         "by_cat": {k: v for k, v in sorted(cats.items())},
         "results": results,
     }
@@ -398,7 +462,8 @@ def main() -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
     print(f"\n== {args.label}: {ok_total}/{total} = {summary['acc']:.3f} "
-          f"({tot_calls} appels LLM, {summary['calls_per_task']}/tâche)")
+          f"({tot_calls} appels worker + {coord_calls} coord, "
+          f"{summary['calls_per_task']}/tâche)")
     for k, v in cats.items():
         print(f"   {k:<10} {v['ok']}/{v['n']} = {v['ok'] / v['n']:.3f}  ({v['calls']} appels)")
     print(f"-> {path}")
