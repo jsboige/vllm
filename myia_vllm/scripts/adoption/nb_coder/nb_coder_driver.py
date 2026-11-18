@@ -1264,6 +1264,38 @@ def foreign_script_hits(built_cells: list, src_cells: list) -> list[dict]:
     return hits
 
 
+# CoursIA #26921 (user ask 16/11, scoping jsboige/vllm#464): a figure cell emitting its SVG
+# as stdout / text-html instead of a display_data image/svg+xml renders inconsistently and
+# hides from every mime-keyed digest. The series idiom (record Svg + Formatter.Register)
+# produces display_data; <svg in a code cell's TEXT output with no svg display_data in the
+# SAME cell is the defect. Markdown cells are never scanned.
+SVG_RE = re.compile(r"(?i)<svg")
+
+
+def _has_svg_display(cell: dict) -> bool:
+    for o in cell.get("outputs") or []:
+        if isinstance(o, dict) and "image/svg+xml" in (o.get("data") or {}):
+            return True
+    return False
+
+
+def _svg_text_offenders(cells: list) -> list[int]:
+    """Code cells whose SVG travels as text (stream or text-html) with no svg display_data."""
+    out = []
+    for i, c in enumerate(cells):
+        if c.get("cell_type") != "code" or _has_svg_display(c):
+            continue
+        for o in c.get("outputs") or []:
+            if not isinstance(o, dict):
+                continue
+            hay = _text(o.get("text")) if o.get("output_type") == "stream" else ""
+            hay += "\n" + _text((o.get("data") or {}).get("text/html"))
+            if SVG_RE.search(hay):
+                out.append(i)
+                break
+    return out
+
+
 def _outputs_text(cell: dict) -> str:
     """What a cell DISPLAYS: streams, the text stubs of its rich data, and error tracebacks."""
     parts: list[str] = []
@@ -1342,6 +1374,17 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     gates.append({"gate": "machine-path", "ok": not new_hits,
                   "detail": {"cells": new_hits[:10], "source_hits": src_hits[:10],
                              "build_hits": built_hits[:10]}})
+    # Delta judged like machine-path (#464): an untouched cell keeps its pre-existing
+    # SVG-as-text defect (the repo's business, reported in detail); only what THIS build
+    # introduces or rewrites fails the gate.
+    svg_src = _svg_text_offenders(src_cells)
+    svg_built = _svg_text_offenders(built_cells)
+    svg_new = [i for i in svg_built
+               if not (i < len(src_cells)
+                       and _outputs_text(built_cells[i]) == _outputs_text(src_cells[i]))]
+    gates.append({"gate": "svg-display", "ok": not svg_new,
+                  "detail": {"cells": svg_new[:10], "source_hits": svg_src[:10],
+                             "build_hits": svg_built[:10]}})
     return gates
 
 

@@ -72,6 +72,16 @@ def cell_output_text(cell: dict) -> str:
             continue
         data = o.get("data") or {}
         bits = [_text(data.get(mime)) for mime in ("text/plain", "text/html", "text/markdown")]
+        # A non-text payload (image, PDF) IS part of the output's content: without a
+        # fingerprint of its bytes, a silent image swap leaves every digest unchanged
+        # (finding 26858 c.17 — the display_data image was invisible to the annex).
+        for mime in sorted(data):
+            if mime.startswith("text/") or mime == "application/json":
+                continue
+            blob = _text(data.get(mime))
+            if blob:
+                bits.append(f"[{mime} {len(blob)}b sha1:"
+                            f"{hashlib.sha1(blob.encode()).hexdigest()[:12]}]")
         bits.append(_text(o.get("traceback")))
         bits.append(str(o.get("evalue") or ""))
         chunks.append((False, "\n".join(b for b in bits if b)))
@@ -193,15 +203,29 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "SOURCE et non justifiés par les critères d'acceptation ?\n"
         "3. **Critères satisfaits ?** Les gestes du LIVRABLE satisfont-ils les critères "
         "d'acceptation de l'issue ?\n"
-        "4. **Conventions** : en-tête sans référence de coordination, note de provenance en pied "
-        "de carnet à la forme exacte, sorties réelles non éditées (pour les cellules NON "
-        "éditées, même sha dans l'annexe ; pour les cellules éditées, juge le texte de "
-        "l'annexe différences).\n\n"
+        "4. **Conventions** : juge-les sur ce que le LIVRABLE introduit ou modifie. En-tête sans "
+        "référence de coordination dans les cellules éditées, sorties réelles non éditées (pour "
+        "les cellules NON éditées, même sha dans l'annexe ; pour les cellules éditées, juge le "
+        "texte de l'annexe différences). La note de provenance en pied n'est exigée que si "
+        "l'issue l'impose explicitement.\n\n"
+        "## Périmètre — ce qui ne justifie PAS un rejet\n"
+        "- Un défaut de convention **déjà présent à l'identique dans la SOURCE**, hors des "
+        "cellules que le livrable édite : signale-le en `minor` seulement (le grain ne répare "
+        "pas la série ; un balayage dédié s'en charge).\n"
+        "- La **procédure de la chaîne** : claim, publication via l'App de lane, usage de MCP "
+        "papermill, `model_used`, validations C.1/C.2/B.0, approbation du coordinateur. Ces "
+        "étapes ne sont pas observables sur les deux vues ; le harnais (traces, gates, "
+        "exécution réelle) et le coordinateur les attestent avant merge. Leur absence de ce "
+        "dossier ne prouve rien : ne rejette jamais pour ce motif, au plus un `minor`.\n"
+        "- Le fait que les faits mécaniques soient des affirmations du producteur : ils sont "
+        "prévus pour être contre-vérifiés sur les deux vues, et c'est ce que tu fais ; leur "
+        "seule présence ne suffit ni à approuver ni à rejeter.\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
-        'Réponds "reject" si un contenu a été perdu, inventé, ou si un critère d\'acceptation '
-        'n\'est pas satisfait ; "approve" sinon. Base chaque constat sur les deux vues.'
+        'Réponds "reject" si un contenu du LIVRABLE a été perdu ou inventé hors du geste demandé, '
+        'ou si un critère d\'acceptation n\'est pas satisfait PAR LE LIVRABLE ; "approve" sinon. '
+        'Base chaque constat sur les deux vues.'
     )
 
 
