@@ -150,6 +150,11 @@ def check_report(out, payload):
             return True  # la mention de la clé suffit pour une absence
         if isinstance(v, bool):
             forms |= {"présent" if v else "absent", "present" if v else "absent"}
+        if max((len(f) for f in forms), default=0) > 60:
+            return True  # valeur non scalaire volumineuse : la mention de la clé
+            # + le qualificatif de divergence suffisent (un rapport en prose ne
+            # recopie pas 50 lignes d'objet — mesuré 18/11, le 1.7B disait
+            # correctement "appears only in coder, not in merge")
         return any(re.search(rf"(?<![\w.]){re.escape(f)}(?![\w.])", out)
                    for f in forms if f)
 

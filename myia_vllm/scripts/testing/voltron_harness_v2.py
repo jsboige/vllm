@@ -119,18 +119,29 @@ def run_phase_a(url, model, limit=0):
         transcript = list(msgs) + [{"role": "assistant", "content": out}]
         # pivot-outil cfg-diff (v2.1) : le diff est un CALCUL — sur échec brut,
         # l'outil fournit le diff et le modèle rédige le rapport (re-gaté).
+        mode = "raw"
         if not ok and t["cat"] == "cfg-diff" and "report_prompt" in t:
             transcript.append({"role": "user", "content": t["report_prompt"]})
-            out = chat(url, model, transcript)
+            out = chat(url, model, transcript, max_tokens=1000)  # rapport prose+JSON:
+            # 400 tokens tronquaient la citation des clés avant la fin
             ok_report, detail = rb.CHECKERS["report"](out, t["report_oracle"])
             transcript.append({"role": "assistant", "content": out})
             turns += 1
             ok = ok_report  # le report EST la réussite de la tâche (contrat outil+modèle)
+            mode = "report"
         while not ok and turns <= MAX_REPAIR_ROUNDS:
-            fb = build_feedback(t, out, ok, detail)
+            if mode == "report":
+                fb = (f"Le vérificateur a rejeté ton rapport : {detail}. "
+                      f"Cite CHAQUE clé divergente du diff fourni avec ses deux valeurs, "
+                      f"en 2 à 5 phrases, sans clé ni valeur inventée.")
+            else:
+                fb = build_feedback(t, out, ok, detail)
             transcript.append({"role": "user", "content": fb})
-            out = chat(url, model, transcript)
-            ok, detail = gate(t, out)
+            out = chat(url, model, transcript, max_tokens=1000 if mode == "report" else 400)
+            if mode == "report":
+                ok, detail = rb.CHECKERS["report"](out, t["report_oracle"])
+            else:
+                ok, detail = gate(t, out)
             transcript.append({"role": "assistant", "content": out})
             turns += 1
         results.append(dict(i=i, cat=t["cat"], ok=ok, turns=turns,
@@ -146,7 +157,10 @@ def load_residuals(path):
 
 
 def run_phase_b(url, model, residuals_path):
-    """Le sibling critique : reçoit la transcription, rend une réponse corrigée, re-gatée."""
+    """Le sibling critique : reçoit la transcription, rend une réponse corrigée, re-gatée.
+
+    cfg-diff : même contrat que la phase A post-pivot — le critique rend un
+    RAPPORT du diff-outil (gate report), pas le diff brut."""
     residuals = load_residuals(residuals_path)
     tasks = rb.build_tasks()
     out_all = []
@@ -156,12 +170,19 @@ def run_phase_b(url, model, residuals_path):
         # dernières réponse + erreur du gate
         last_asst = next((m["content"] for m in reversed(transcript)
                           if m["role"] == "assistant"), "")
-        prompt = (t["prompt"] + "\n\n=== RÉPONSE REJETÉE DU WORKER ===\n" + last_asst +
-                  "\n\n=== ERREUR DU VÉRIFICATEUR ===\n" + r["detail"] +
-                  "\n\nProduis la réponse CORRIGÉE, au format exact demandé, rien d'autre.")
+        if t["cat"] == "cfg-diff" and "report_prompt" in t:
+            prompt = (t["report_prompt"] + "\n\n=== RAPPORT REJETÉ DU WORKER ===\n" +
+                      last_asst + "\n\n=== ERREUR DU VÉRIFICATEUR ===\n" + r["detail"] +
+                      "\n\nRédige le rapport CORRIGÉ.")
+            gate_fn = lambda o: rb.CHECKERS["report"](o, t["report_oracle"])
+        else:
+            prompt = (t["prompt"] + "\n\n=== RÉPONSE REJETÉE DU WORKER ===\n" + last_asst +
+                      "\n\n=== ERREUR DU VÉRIFICATEUR ===\n" + r["detail"] +
+                      "\n\nProduis la réponse CORRIGÉE, au format exact demandé, rien d'autre.")
+            gate_fn = lambda o: gate(t, o)
         try:
-            out = chat(url, model, [{"role": "user", "content": prompt}], max_tokens=500)
-            ok, detail = gate(t, out)
+            out = chat(url, model, [{"role": "user", "content": prompt}], max_tokens=1000)
+            ok, detail = gate_fn(out)
         except Exception as e:
             out, ok, detail = "", False, f"appel échoué: {e!r}"
         out_all.append(dict(i=r["i"], cat=t["cat"], ok=ok, detail=detail, out=out[:400]))
@@ -183,14 +204,20 @@ def run_phase_c(residuals_path):
     out_all = []
     for r in residuals:
         t = tasks[r["i"]]
-        prompt = (t["prompt"] +
+        if t["cat"] == "cfg-diff" and "report_prompt" in t:
+            base = t["report_prompt"]
+            gate_fn = lambda o: rb.CHECKERS["report"](o, t["report_oracle"])
+        else:
+            base = t["prompt"]
+            gate_fn = lambda o: gate(t, o)
+        prompt = (base +
                   "\n\n(Les tentatives précédentes d'un modèle plus petit ont toutes été "
                   "rejetées par un vérificateur mécanique. Réponds au format exact "
                   "demandé, rien d'autre.)")
         try:
             out = chat(HUB_URL, HUB_MODEL, [{"role": "user", "content": prompt}],
                        max_tokens=3000, timeout=300, api_key=key)
-            ok, detail = gate(t, out)
+            ok, detail = gate_fn(out)
         except Exception as e:
             out, ok, detail = "", False, f"appel hub échoué: {e!r}"
         out_all.append(dict(i=r["i"], cat=t["cat"], ok=ok, detail=detail, out=out[:400]))
