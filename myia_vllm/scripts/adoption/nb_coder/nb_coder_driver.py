@@ -176,15 +176,40 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
     return issue
 
 
-def check_claim(repo: Path, n: int, lane: str) -> dict:
+def check_claim(repo: Path, n: int, lane: str, notebook: str) -> dict:
+    """#466: the check is SCOPED to this run's notebook (--paths). Unscoped, the guard
+    answers NOT_SCOPED (rc=2) whenever any PR touches the issue but none names this
+    notebook -- and the pre-#466 driver let rc=2 pass where a scoped check says BLOCKED
+    (measured on CoursIA#27018 vs PR #27025)."""
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane],
+    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
+                        "--paths", notebook],
                        cwd=repo, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=120)
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": (p.stdout or p.stderr).strip()[:2000]}
+
+
+def claim_verdict(cc: dict) -> str | None:
+    """Fail-closed reading of a SCOPED claim check (#466).
+
+    rc=1  -> a live claim conflicts on THIS notebook's path: refuse.
+    rc=2  -> the scoped check still cannot decide (old script without --paths, path
+             absent from every open diff): refuse rather than run unprotected -- the
+             pre-#466 driver treated this as pass-through.
+    no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
+    rc=0  -> clear, proceed.
+    """
+    rc = cc.get("rc")
+    if rc == 1:
+        return "refused-claim-held-by-another-lane"
+    if rc is None:
+        return "refused-claim-check-broken"
+    if rc != 0:
+        return "refused-claim-check-not-scoped"
+    return None
 
 
 def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
@@ -1413,9 +1438,10 @@ async def run(args, rec: dict) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane)
-    if rec["stages"]["claim_check"]["rc"] == 1:
-        rec["verdict"] = "refused-claim-held-by-another-lane"
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane, args.notebook)
+    refused = claim_verdict(rec["stages"]["claim_check"])
+    if refused:
+        rec["verdict"] = refused
         return rec
     issue = fetch_issue("jsboige/CoursIA", args.issue, token)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
