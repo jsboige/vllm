@@ -1413,8 +1413,71 @@ def _short_desc(args, plan: dict) -> str:
 GRAIN_TIERS = ("DEEP", "MED", "LIGHT")
 
 
-def grain_tag(tier: str, lane: str, issue: int, genre: str = "notebook-python") -> str:
-    """The PR's leading `Grain: <TIER>/<GENRE> — lane … — issue …` line, in CoursIA's grammar.
+# CoursIA's canonical tag line (variation-protocol §1). The `prev:` field is REQUIRED there:
+# `variation-tag-prev-absent` is posed on any tag that declares no predecessor, because
+# G-VAR-3 adjacency ("never the same LIGHT genre twice in a row") is evaluated from it.
+# Measured 16/11 on CoursIA#26943: the harness tag carried no `prev:` and the guard labelled
+# the PR the moment it opened -- the same class as `Grain: auto` (#459), one field further.
+GRAIN_PREV_FIRST = "none (premier grain)"
+# `<TIER>/<GENRE>` + optional ` #<PR>`. Strict on purpose: a stray value here would be read
+# as a predecessor and make an adjacency verdict on a citation that is not one.
+_GRAIN_PREV_RE = re.compile(r"^(?:%s)/[A-Za-z0-9._-]+(?: #\d+)?$" % "|".join(GRAIN_TIERS))
+# What the lane's own PR bodies say a grain line looks like. `--`, `-` and the em dash are
+# all accepted: the guard normalises dashes, and a driver that only read its own dialect
+# would report "no predecessor" precisely when another writer used the documented `--`.
+_GRAIN_LINE_RE = re.compile(
+    r"Grain:\s*(%s)\s*/\s*([A-Za-z0-9._-]+)\s*(?:—|--|-)\s*lane\s+(\S+)"
+    % "|".join(GRAIN_TIERS))
+
+
+def lane_predecessor(repo_slug: str, lane: str, token: str | None) -> str | None:
+    """The lane's most recent grain in `repo_slug`, as `prev:` wants it (vllm#459).
+
+    `prev:` is lane HISTORY, not a value this run can know: only GitHub holds it. Three
+    outcomes, each named rather than guessed --
+      * `"none (premier grain)"` — the lane has no earlier grain in this repo (the
+        protocol's documented exemption: not a claim of priority, an absence of predecessor);
+      * `"<TIER>/<GENRE> #<PR>"` — the predecessor as its own body declares it;
+      * `None` — the history could not be read, so the tag declares no predecessor instead
+        of inventing one. The label that follows is then TRUE, and the trace says why.
+
+    Never a fourth outcome: citing an ISSUE number as a PR number (a `#N` sitting on the
+    same line) is exactly the wrong-pointer defect this function exists to avoid -- hence
+    the `prev:` field is the last field of the tag, with nothing scannable after it.
+    """
+    rc, out = gh(["pr", "list", "--repo", repo_slug, "--state", "all",
+                  "--search", f'in:body "lane {lane}"',
+                  "--json", "number,body", "--limit", "30"], token, timeout=90)
+    if rc != 0:
+        return None
+    try:
+        prs = json.loads(out or "[]")
+    except Exception:
+        return None
+    best: tuple[int, str] | None = None
+    for pr in prs:
+        body = pr.get("body") or ""
+        for m in _GRAIN_LINE_RE.finditer(body):
+            # The search is a substring match: `lane a` also returns `lane ab`. The tag's
+            # own lane field is what decides, so an older grain of a sibling lane is skipped
+            # rather than cited as this lane's predecessor.
+            if m.group(3).rstrip(".,;") != lane:
+                continue
+            try:
+                num = int(pr.get("number") or 0)
+            except (TypeError, ValueError):
+                continue
+            # By NUMBER, not by list order: GitHub's search ordering is not creation order
+            # (measured 16/11 on CoursIA -- #26790 came back before #26806), and the
+            # predecessor is whichever grain has the highest number below this run's PR.
+            if best is None or num > best[0]:
+                best = (num, f"{m.group(1)}/{m.group(2)} #{num}")
+    return best[1] if best else GRAIN_PREV_FIRST
+
+
+def grain_tag(tier: str, lane: str, genre: str = "notebook-python",
+              prev: str | None = GRAIN_PREV_FIRST) -> str:
+    """The PR's leading `Grain: <TIER>/<GENRE> — lane … — prev: …` line, CoursIA's grammar.
 
     `auto` is NOT a tier. CoursIA's shared parser (`scripts/grain_tag.py`) reads
     `auto/notebook-python` as `grain-tier-unknown:AUTO`, and `merge_ready` refuses such a PR
@@ -1425,10 +1488,20 @@ def grain_tag(tier: str, lane: str, issue: int, genre: str = "notebook-python") 
     is never inferred here: a harness that guesses DEEP on a one-cell edit buys its own
     review cost. Normalisation is argparse's job (`type=str.upper`); this function is strict
     on purpose, so a caller that bypasses the flag gets a loud refusal, not a silent `auto`.
+
+    `prev=None` means the lane history was UNREADABLE: the field is then omitted and the
+    guard's `variation-tag-prev-absent` is the honest verdict. Writing `none (premier grain)`
+    instead would assert a first grain nobody checked.
     """
     if tier not in GRAIN_TIERS:
         raise ValueError(f"grain tier must be one of {GRAIN_TIERS}, got {tier!r}")
-    return f"Grain: {tier}/{genre} — lane {lane} — issue #{issue}"
+    head = f"Grain: {tier}/{genre} — lane {lane}"
+    if prev is None:
+        return head
+    if prev != GRAIN_PREV_FIRST and not _GRAIN_PREV_RE.match(prev):
+        raise ValueError(f"prev must be {GRAIN_PREV_FIRST!r} or '<TIER>/<GENRE> #<PR>', "
+                         f"got {prev!r}")
+    return f"{head} — prev: {prev}"
 
 
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
@@ -1485,8 +1558,22 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     n_exec = len(rec.get("execution") or [])
     gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
     findings = (rec.get("verify") or {}).get("findings") or []
+    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
+    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
+    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
+    # claim registry. Resolved HERE, before the body is composed, because the `prev:` field
+    # is read from that same repo's lane history (vllm#459).
+    repo_slug = args.pr_repo or _repo_slug(wt_path)
+    if not repo_slug:
+        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
+                          "unparseable) -- pass --pr-repo owner/repo explicitly")
+        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
+        return
+    entry["repo"] = repo_slug
+    prev = lane_predecessor(repo_slug, args.lane, token)
+    entry["grain_prev"] = prev if prev else "unreadable (tag declares no predecessor)"
     pr_body = (
-        f"{grain_tag(args.grain_tier, args.lane, args.issue)}\n\n"
+        f"{grain_tag(args.grain_tier, args.lane, prev=prev)}\n\n"
         f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
         f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
         f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
@@ -1508,17 +1595,6 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"run record complet dans le out-dir du harnais.\n\n"
         f"Closes #{args.issue}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
-    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
-    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
-    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
-    # claim registry.
-    repo_slug = args.pr_repo or _repo_slug(wt_path)
-    if not repo_slug:
-        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
-                          "unparseable) -- pass --pr-repo owner/repo explicitly")
-        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
-        return
-    entry["repo"] = repo_slug
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
