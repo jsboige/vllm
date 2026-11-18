@@ -445,11 +445,41 @@ def test_apply_repairs_markdown_needs_flag(tmp_path):
     ]}
     strict = D.apply_repairs(nb, payload)                    # flag off
     assert strict["replaced"] == [1] and strict["unknown_idx"] == [0]
+    # restore the code cell so the prose round is measured from a clean state
+    write_nb(nb, [
+        {"cell_type": "markdown", "source": "ni случай générateur", "metadata": {}},
+        {"cell_type": "code", "source": "var x = 1;", "metadata": {},
+         "execution_count": 2, "outputs": []},
+    ])
     md = D.apply_repairs(nb, payload, allow_markdown=True)    # prose round
-    assert md["replaced"] == [0, 1] and md["unknown_idx"] == []
+    # finding 1: in the prose round a payload cell declaring cell_type "code" is
+    # REFUSED (out_of_scope) — the round must not reset a code cell's outputs by
+    # smuggling it in as a markdown edit. Only the markdown cell is replaced.
+    assert md["replaced"] == [0] and md["out_of_scope"] == [1]
     cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
     assert _join(cells[0]["source"]) == "ni un générateur ni un dictateur"
-    assert cells[1]["execution_count"] is None and cells[1]["outputs"] == []
+    # the code cell was NOT reset (finding 1 — it must keep its outputs/exec count)
+    assert cells[1]["execution_count"] == 2 and cells[1]["outputs"] == []
+
+
+def test_apply_repairs_only_idx_scopes_the_round(tmp_path):
+    """Finding 1 (cutover): with only_idx, a response editing a cell the round never
+    asked for is refused (out_of_scope) and left untouched — a hallucinated extra
+    edit cannot silently rewrite an uninvolved cell."""
+    nb = tmp_path / "s.ipynb"
+    write_nb(nb, [
+        {"cell_type": "markdown", "source": "garde-moi", "metadata": {}},
+        {"cell_type": "markdown", "source": "ni случай générateur", "metadata": {}},
+    ])
+    payload = {"cells": [
+        {"idx": 1, "cell_type": "markdown", "source": "ni un générateur"},
+        {"idx": 0, "cell_type": "markdown", "source": "ÉCRASÉ"},   # not asked for
+    ]}
+    rep = D.apply_repairs(nb, payload, allow_markdown=True, only_idx={1})
+    assert rep["replaced"] == [1] and rep["out_of_scope"] == [0]
+    cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
+    assert _join(cells[0]["source"]) == "garde-moi"               # untouched
+    assert _join(cells[1]["source"]) == "ni un générateur"
 
 
 def test_md_repair_prompt_contract():

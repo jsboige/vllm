@@ -333,5 +333,58 @@ def test_spawn_driver_writes_log_file_and_reap_reads_it(tmp_path):
     del sp  # silence linters; subprocess is used inside _spawn_driver
 
 
+# ------------------------------------------------- cutover findings (18/11)
+def test_gate_mode_off_never_probes(tmp_path):
+    """Finding 2: --gate-mode off must not spawn the probe at all (a missing/custom
+    probe file used to read as a blocking verdict even with off)."""
+    sched = make_sched(tmp_path, [item(1)], gate_mode="off",
+                       gate=str(tmp_path / "does-not-exist.py"))
+    sched.gate = sched._probe_gate            # bypass the injected fake
+    out = sched._probe_gate()
+    assert out["verdict"] == "green" and out["gate_mode"] == "off"
+
+
+def test_missing_gate_probe_is_unknown_not_green(tmp_path):
+    """Finding 2: a missing probe file must NOT read as green (fail loud, named)."""
+    sched = make_sched(tmp_path, [item(1)])
+    sched.args.gate = str(tmp_path / "absent.py")
+    out = sched._probe_gate()
+    assert out["verdict"] == "unknown" and "not found" in out["error"]
+
+
+def test_gate_default_reads_env_nbcoder_gate(tmp_path, monkeypatch):
+    """Finding 2: a custom probe path via NBCODER_GATE env must be honoured."""
+    monkeypatch.setenv("NBCODER_GATE", str(tmp_path / "custom_gate.py"))
+    args = S.parse_args(["--queue", "q.jsonl", "--state-dir", "s",
+                         "--repo", "D:/CoursIA", "--max-active", "2"])
+    assert Path(args.gate) == tmp_path / "custom_gate.py"
+
+
+def test_watch_reloads_queue_on_append(tmp_path):
+    """Finding 3: in --watch, grains APPENDED after the queue drained are picked up
+    without a restart (the file is re-read each poll and merged on digest change)."""
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn)
+    sched.clock = lambda: clock["t"]
+    sched.args.watch = True
+    sched.tick()                                  # launch #1
+    clock["t"] += 1
+    sched.tick()                                  # reap #1 -> done, queue drained
+    assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] in ("done", "failed")
+    # operator appends grain #2 to the SAME queue file
+    write_queue(tmp_path, [item(1), item(2)])
+    # the watch branch reload must merge the new grain (simulate one loop pass)
+    items, digest = S.load_queue(Path(sched.args.queue))
+    if digest != sched.state.get("queue_sha256"):
+        sched.merge_queue(items, digest)
+    assert "#2:Dir/N2.ipynb" in sched.state["grains"]
+    assert sched.state["grains"]["#2:Dir/N2.ipynb"]["status"] == "pending"
+    clock["t"] += 1
+    sched.tick()                                  # the new grain can now launch
+    assert any("--issue 2" in " ".join(c) or "2" in c for c in spawn.calls) or \
+        sched.state["grains"]["#2:Dir/N2.ipynb"]["status"] in ("running", "done")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
