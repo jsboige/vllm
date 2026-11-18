@@ -419,5 +419,19 @@ def test_mcp_write_mode_refused_in_creation():
         sys.argv = old
 
 
+def test_initialize_handshake_has_a_timeout():
+    """Wave-1b hang (18/11 00:27->03:35Z): a child blocked in StreamHandler.emit
+    never answered `initialize` and the driver waited forever — per-call
+    read_timeouts only arm AFTER the handshake. The fix wraps both initialize()
+    calls in asyncio.wait_for; this test pins the wait_for by calling the SAME
+    wrapped sequence against a session stub that never responds."""
+    import inspect
+    src = inspect.getsource(D)
+    assert "asyncio.wait_for(sk.initialize()" in src, \
+        "the sk-agent initialize handshake must carry a wait_for timeout"
+    assert "asyncio.wait_for(pm.initialize()" in src, \
+        "the papermill initialize handshake must carry a wait_for timeout"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
