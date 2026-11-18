@@ -277,6 +277,16 @@ def main() -> int:
                                outputs_digest(src_p), outputs_digest(built_p), diffs)
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
+        if not (env.get("response") or "").strip() and not env.get("error"):
+            # 18/11 wave-1c: critic (GLM-5.3) returned 200-empty TWICE (308 s and
+            # 609 s elapsed) — not the 16/11 token-budget case (32 768 already the
+            # default here): cloud-side empties. One retry asking for shorter
+            # reasoning, mirroring the driver's empty-response retry; still empty
+            # keeps the error:unparsable verdict exactly as before.
+            rec["verify_retry"] = "empty-response"
+            env2, dt2 = asyncio.run(call_verifier(args, prompt + nbcd.RETRY_NOTE))
+            if (env2.get("response") or "").strip() or env2.get("error"):
+                env, dt = env2, round(dt + dt2, 1)
         rec["elapsed_s"] = dt
         rec["model_used"] = env.get("model_used")
         rec["conversation_id"] = env.get("conversation_id")
