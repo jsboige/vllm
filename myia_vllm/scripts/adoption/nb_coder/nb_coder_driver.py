@@ -808,28 +808,69 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+
+    async def ask_tranche(tranche: list, stage: str):
+        """One build tour; returns (kept, missing, parsed, env). Raises nothing — an
+        unparsed/empty answer returns parsed=None and the caller decides."""
+        env = await sk_call_retry(session, args, rec, stage,
+                                  creation_json_prompt(tranche, n_src_cells, conventions,
+                                                       src_cells), conv,
+                                  max_tokens=BUILD_MAX_TOKENS)
+        part = parse_json_block(env.get("response") or "")
+        kept, missing = segment_keep_valid((part or {}).get("cells") or [], tranche)
+        return kept, missing, part, env
+
+    def truncated(env: dict) -> bool:
+        r = (env.get("response") or "").rstrip()
+        return bool(r) and not (r.endswith("```") or r.endswith("}"))
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
-        env = await sk_call_retry(session, args, rec, f"2-build+{si}",
-                                  creation_json_prompt(seg, n_src_cells, conventions,
-                                                       src_cells), conv)
+        kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
-        part = parse_json_block(env.get("response") or "")
-        got = (part or {}).get("cells") or []
-        if not part or not got:
-            rec["verdict"] = (f"stage2-{call_failure(env) or 'unparsed'}:{si}"
-                              if not part else f"stage2-empty-segment:{si}")
+        if not part and truncated(env):
+            # 18/11 wave-1c: two grains died here — the JSON was CUT mid-cell (raw
+            # tails end inside a "source" string) because thinking counts toward
+            # max_tokens. Bisect ONCE: halves the output AND the thinking a tour
+            # needs; each half parses or the grain fails named, never silent.
+            halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
+            kept, missing, chars_first = [], [], 0
+            for hi, half in enumerate(h for h in halves if h):
+                hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
+                conv = henv.get("conversation_id") or conv
+                chars_first += len(henv.get("response") or "")
+                if not hpart or not (hpart.get("cells") or []):
+                    if gate_refusal(henv):
+                        rec["verdict"] = gate_refusal(henv)   # scheduler defer contract
+                    else:
+                        rec["verdict"] = (f"stage2-truncated:{si}+h{hi}"
+                                          if truncated(henv)
+                                          else f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
+                    rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
+                    return {}
+                kept += hkept
+                missing += hmiss
+            kept.sort(key=lambda c: int(c["idx"]))
+            missing.sort(key=lambda c: int(c["idx"]))
+            rec.setdefault("bisected", []).append(si)
+        elif not part or not (part.get("cells") or []):
+            if gate_refusal(env):
+                rec["verdict"] = gate_refusal(env)   # scheduler defer contract
+            elif not part:
+                rec["verdict"] = f"stage2-{call_failure(env) or 'unparsed'}:{si}"
+            else:
+                rec["verdict"] = f"stage2-empty-segment:{si}"
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
             return {}
-        kept, missing = segment_keep_valid(got, seg)
         repair = None
         if missing:
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
                                       creation_json_prompt(missing, n_src_cells,
-                                                           conventions), conv)
+                                                           conventions), conv,
+                                      max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
             part2 = parse_json_block(env.get("response") or "")
             extra, missing = segment_keep_valid((part2 or {}).get("cells") or [], missing)
@@ -984,8 +1025,18 @@ def verify_structure_create(src_path: Path, built_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------- sk-agent / papermill calls
-async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
-    spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.4}}
+# Build/repair tours emit JSON with FULL cell sources, and Swift's thinking counts
+# toward the sampling max_tokens — a thinking-heavy tour truncates its visible JSON
+# mid-cell. Measured 18/11 wave-1c (7/7 failed): segment answers cut at 9.8K and
+# 28.5K chars, both raw tails ending mid-`"source"` string. 32 768 leaves the JSON
+# whole even when the tour thinks at length (same figure the verifier needed, 16/11).
+BUILD_MAX_TOKENS = 32768
+
+
+async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
+                  max_tokens: int | None = None) -> tuple[dict, float]:
+    spec = {"extends": args.agent,
+            "sampling": {"max_tokens": max_tokens or args.max_tokens, "temperature": 0.4}}
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -1011,10 +1062,11 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
 
 
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
-                        conv: str | None) -> dict:
+                        conv: str | None, max_tokens: int | None = None) -> dict:
     for attempt in range(2):
         tob = engine_tokens()
-        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv)
+        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv,
+                                max_tokens)
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
                              "elapsed_s": dt, "error": env.get("error"),
@@ -1096,6 +1148,22 @@ def call_failure(env: dict) -> str:
     return f"{kind}: {_excerpt(err, hit)}"
 
 
+_GATE_REFUSAL_RE = re.compile(r"capacity gate refused", re.I)
+
+
+def gate_refusal(env: dict) -> str:
+    """A mid-flight capacity-gate refusal (the sk-agent pre-dispatch gate) is a
+    DEFERRABLE condition, not a harness failure: the scheduler retries any verdict
+    starting with `deferred-by-capacity-gate` with backoff. Measured 18/11 wave-1c
+    (#27103): 'capacity gate refused dispatch ... (verdict yellow); retry after
+    3600s' arrived as stage1-call-failed and terminally burned the grain — the
+    refusal's own message says retry, the verdict must say it too."""
+    err = (env.get("error") or "").strip()
+    if _GATE_REFUSAL_RE.search(err):
+        return f"deferred-by-capacity-gate: {err[:160]}"
+    return ""
+
+
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
     try:
         res = await session.call_tool(tool, payload, read_timeout_seconds=timedelta(seconds=300))
@@ -1110,11 +1178,20 @@ async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
 
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
-    """The harness owns execution and the verdict: real outputs, never the model's word."""
+    """The harness owns execution and the verdict: real outputs, never the model's word.
+
+    persist_error_outputs is opted IN (#4817 / ms#1803): the MCP default refuses to write a
+    raised cell's error output into the .ipynb (committed sources stay intangible), but this
+    path only ever executes the SCRATCH copy — and the repair rounds plus the verify critic
+    read that artifact back from disk after the process is gone. Without the opt-in, a
+    compiler error lives only in the in-memory response and the evidence dies with it
+    (the exact hole ms#1799 closed for committed sources; the scratch contract is the
+    mirror image, which is why the flag exists at all)."""
     results = []
     for idx in indexes:
         r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kernel_id, "mode": "notebook_cell",
                                                     "path": str(nb_path), "cell_index": idx,
+                                                    "persist_error_outputs": True,
                                                     "timeout": 300})
         status = r.get("status") or r.get("error") or "?"
         outs = r.get("outputs") or []
@@ -1122,6 +1199,7 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                            if isinstance(o, dict) and o.get("output_type") == "error")
         results.append({"cell": idx, "status": status, "ok": status == "ok" and not err_txt,
                         "elapsed_s": r.get("execution_time") or r.get("elapsed_s"),
+                        "error_outputs_persisted": r.get("error_outputs_persisted"),
                         "outputs_tail": str(outs)[-800:], "error": err_txt[:500] or None})
     return results
 
@@ -1694,10 +1772,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else f"stage1-{call_failure(env) or 'unparsed'}")
+                                  else gate_refusal(env)
+                                  or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
-                rec["verdict"] = f"stage1-{call_failure(env) or 'unparsed'}"
+                # a mid-flight gate refusal defers (scheduler retries with backoff),
+                # everything else that killed the plan call stays terminal — 18/11
+                # wave-1c #27103 burned terminally on exactly this distinction.
+                rec["verdict"] = (gate_refusal(env)
+                                  or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
@@ -1831,7 +1914,8 @@ async def run(args, rec: dict) -> dict:
                                     break
                                 env = await sk_call_retry(
                                     sk, args, rec, f"2.5-repair+{rnd}",
-                                    repair_prompt(detail, conventions), conv)
+                                    repair_prompt(detail, conventions), conv,
+                                    max_tokens=BUILD_MAX_TOKENS)
                                 conv = env.get("conversation_id") or conv
                                 part = parse_json_block(env.get("response") or "")
                                 if not part or not part.get("cells"):
