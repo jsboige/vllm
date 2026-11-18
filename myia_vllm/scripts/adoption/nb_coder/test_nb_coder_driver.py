@@ -347,3 +347,55 @@ def test_an_empty_cell_assembly_never_reaches_apply_create():
     guard = run.index('if not built or not built.get("cells"):')
     applied = run.index("rec[\"apply\"] = apply_create", guard)
     assert guard < applied
+# ---- creation kernel selection (vllm#484, measured on CoursIA#27106) ----
+
+def test_creation_execution_uses_the_canonical_twin_kernelspec():
+    """A C# target is absent, so its GameTheory path defaults to python3. The C# twin's
+    metadata is the only source that names the deliverable's actual execution kernel.
+
+    Wiring pin, deliberately: unit-testing series_kernel() alone would miss the real bug,
+    which was the driver choosing it BEFORE reading create_metadata. The call-site order
+    and assignment are what keep execution, repair, stripping and the PR trace coherent.
+    """
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
+    selection = run.split("kernel = series_kernel", 1)[1].split('rec["kernel"]', 1)[0]
+    assert "if create_mode:" in selection
+    assert "series_canonical_meta(wt_path, args.notebook)" in selection
+    assert '(twin_meta.get("kernelspec") or {}).get("name")' in selection
+    assert 'kernel["kernel_name"] = twin_kernel' in selection
+    assert 'kernel["kernel_source"] = "canonical-twin-kernelspec"' in selection
+    assignment = next(line for line in selection.splitlines()
+                      if 'kernel["kernel_name"] = twin_kernel' in line)
+    guard = next(line for line in selection.splitlines()
+                 if "if twin_kernel:" in line)
+    assert guard.endswith("if twin_kernel:"), "the twin selection is no longer reachable"
+    assert selection.index(guard) < selection.index(assignment)
+
+
+def test_creation_metadata_and_execution_read_the_same_twin():
+    """Do not grow two independent metadata reads that could select different kernels."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
+    assert run.count("series_canonical_meta(wt_path, args.notebook)") == 1, (
+        "creation reads the twin twice; selection and delivered metadata can diverge")
+    assert '\n                meta = series_canonical_meta(wt_path, args.notebook)' not in run
+    assert ('rec["create_metadata"] = {"kernelspec": '
+            '(twin_meta.get("kernelspec") or {}).get("name")') in run
+
+
+def test_explicit_kernel_override_still_wins_at_every_execution_site():
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
+# ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
+
+def test_the_banner_strip_covers_the_discovery_bootstrap():
+    """#27104: the probe-only strip reported ok while the committed cell-3 output
+    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
+    verify rejected it MAJOR. The deliverable is stripped --variant both; the
+    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
+    fresh deliverable. Source pin: the wiring is a CLI argument list."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
+    assert '"--variant", "both"' in fn, \
+        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"

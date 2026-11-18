@@ -221,13 +221,34 @@ def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
 
 
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
-    """Detached worktree of origin/main: the dirty checkout is never read or touched."""
-    if dest.exists() and (dest / ".git").exists() and not fresh:
-        head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
-        return {"path": str(dest), "reused": True, "head": head}
+    """Detached worktree of origin/main: the dirty checkout is never read or touched.
+
+    Reuse contract (#460): the shared default worktree is reused ONLY if it is
+    clean and its HEAD is exactly origin/main. A worktree left on the previous
+    run's branch (PR still open) must not be reused: stage 5 is born
+    `checkout -b` off the worktree HEAD, so that run's unmerged commit would
+    ride into the next PR as a stowaway (measured 16/11: CoursIA#26986 was born
+    with two files). Clean-but-elsewhere is rebuilt (the branch itself survives
+    in the repo — only the scratch checkout is discarded); dirty is REFUSED,
+    because rebuilding would discard uncommitted work."""
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
                    capture_output=True, text=True, timeout=300)
+    origin_main = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"],
+                                 capture_output=True, text=True).stdout.strip()
+    if dest.exists() and (dest / ".git").exists() and not fresh:
+        head_full = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"],
+                                   capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(dest), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout.strip()
+        if head_full == origin_main and not dirty:
+            return {"path": str(dest), "reused": True, "head": head_full[:9], "ok": True}
+        if dirty:
+            return {"path": str(dest), "refused": "dirty", "head": head_full[:9],
+                    "origin_main": origin_main[:9], "ok": False,
+                    "err": ("shared worktree holds uncommitted changes; refusing to rebuild "
+                            "-- commit or stash them, or use --fresh-worktree / another "
+                            "--worktree")}
+        # clean but not at origin/main: previous run's branch or stale base -> rebuild
     if dest.exists():
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(dest)],
                        capture_output=True, text=True)
@@ -254,14 +275,19 @@ def engine_tokens() -> dict:
         return {}
 
 
-def gate_call(mode: str) -> dict:
+def gate_call(mode: str, gate_path: Path | None = None) -> dict:
     """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window).
     off = no local gate: capacity is enforced elsewhere (MiniMax variant -> claudish lane
-    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code)."""
+    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code).
+
+    ``gate_path`` (pre-review round 2): an explicitly propagated probe path wins over the
+    module-level env default — the scheduler resolves its own ``--gate`` (incl. $NBCODER_GATE)
+    and forwards it, so a custom probe set on the parent reaches the child WITHOUT the
+    operator having to export the env var in the parent shell."""
     if mode == "off":
         return {"verdict": "off", "mode": "off", "exit": None, "blocking_refusal": False}
-    p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=60)
+    p = subprocess.run([sys.executable, str(gate_path or GATE)], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=60)
     try:
         verdict = json.loads((p.stdout or "").strip().splitlines()[-1])
     except Exception:
@@ -955,14 +981,24 @@ def repair_prompt(failing: list[dict], conventions: str = "") -> str:
     )
 
 
-def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) -> dict:
+def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
+                  only_idx: set[int] | None = None) -> dict:
     """Replace the sources of the given cells (by idx) in ONE write. A repaired CODE cell
     loses its outputs and execution_count: they must come back from EXECUTION, never
     from the repair itself (same rule as creation). MARKDOWN cells are accepted only
     with allow_markdown=True (the prose-repair round): source replaced, nothing to
-    reset — markdown has no outputs, execution stays valid."""
+    reset — markdown has no outputs, execution stays valid.
+
+    ``only_idx`` (pre-review cutover finding 1): when given, ONLY those indices may be
+    replaced — a response naming any other cell (code out of scope, an idx the round
+    never asked for) is refused into ``out_of_scope`` and left untouched. The prose
+    round passes the failing cells' idx so a hallucinated extra edit cannot silently
+    rewrite an uninvolved cell. In markdown mode a cell whose payload declares
+    ``cell_type: "code"`` is also refused: the prose round must not reset a code cell's
+    outputs by smuggling it in as a markdown edit.
+    """
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    rep = {"replaced": [], "unknown_idx": [], "bad": []}
+    rep = {"replaced": [], "unknown_idx": [], "bad": [], "out_of_scope": []}
     for c in payload.get("cells") or []:
         try:
             i = int(c.get("idx"))
@@ -972,9 +1008,25 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) ->
         if not (0 <= i < len(nb["cells"])):
             rep["unknown_idx"].append(i)
             continue
+        if only_idx is not None and i not in only_idx:
+            rep["out_of_scope"].append(i)
+            continue
         ct = nb["cells"][i].get("cell_type")
         if ct != "code" and not (ct == "markdown" and allow_markdown):
             rep["unknown_idx"].append(i)
+            continue
+        # In the prose round, a cell whose REAL type is code is out of scope WHATEVER
+        # the payload declares (round 2: a payload declaring markdown, or omitting
+        # cell_type entirely, sailed past the declared-type check and then reset the
+        # real code cell's outputs at the `ct == "code"` branch below).
+        if allow_markdown and ct == "code":
+            rep["out_of_scope"].append(i)
+            continue
+        # And refuse a payload that re-labels ANY cell as CODE in the prose round:
+        # applying it on a markdown cell is a type-confusion the round never asked
+        # for (finding 1 — CODE smuggled under allow_markdown).
+        if allow_markdown and (c.get("cell_type") or "").lower() == "code":
+            rep["out_of_scope"].append(i)
             continue
         src = c.get("source") or ""
         if not src.strip():
@@ -1407,11 +1459,18 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     (the canonical-kernel criterion). 17/11 #27104 blank pass: the verify rejected the
     banner as a MAJOR finding. The tool lives in the CoursIA tree (the worktree carries
     it); a missing tool or failure is RECORDED, not fatal — the verify stays the judge
-    of the delivered file."""
+    of the delivered file. 18/11 #482: --variant BOTH, not the probe default — a
+    creation-mode .NET notebook carries the DISCOVERY bootstrap (`dotnet-interactive-
+    this-cell` + require.js fetch), a disjoint signature set on purpose (#22728: the
+    repo-wide COMMITTED-corpus guard stays probe-only until the 177 inherited
+    notebooks are swept; that constraint binds the guard, never a fresh deliverable).
+    Measured: probe-only strip reported ok while the verify rejected the discovery
+    banner as MAJOR; `--variant both` removed exactly that output."""
     if not tool.is_file():
         return {"ok": False, "error": f"strip tool absent: {tool}"}
     try:
-        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path)],
+        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
+                            "--variant", "both"],
                            capture_output=True, text=True, timeout=120)
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
@@ -1742,6 +1801,11 @@ async def run(args, rec: dict) -> dict:
         rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
+    if not wt.get("ok", True):
+        # #460: a refused/broken worktree must stop the run BEFORE any stage pays a
+        # token -- and a rebuild failure must not fall through to stage 1 either.
+        rec["verdict"] = f"worktree-refused:{wt.get('refused', 'rebuild-failed')}"
+        return rec
     rec["stage0_s"] = round(time.time() - t0, 1)
     if args.max_stage < 1:
         rec["verdict"] = "stage0-only"
@@ -1770,8 +1834,18 @@ async def run(args, rec: dict) -> dict:
         rec["verdict"] = f"notebook-not-found:{target_nb}"
         return rec
     kernel = series_kernel(wt_path, args.notebook)
+    if create_mode:
+        # The target is absent, so the path map can only describe its Python neighbours.
+        # The canonical C# twin owns the deliverable's kernelspec: execution must use the
+        # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
+        # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
+        twin_meta = series_canonical_meta(wt_path, args.notebook)
+        twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
+        if twin_kernel:
+            kernel["kernel_name"] = twin_kernel
+            kernel["kernel_source"] = "canonical-twin-kernelspec"
     rec["kernel"] = kernel
-    gate = gate_call(args.gate_mode)
+    gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
     if gate["blocking_refusal"]:
         rec["verdict"] = "deferred-by-capacity-gate"
@@ -1840,8 +1914,8 @@ async def run(args, rec: dict) -> dict:
             if scratch.exists():
                 scratch.unlink()
             if create_mode:
-                meta = series_canonical_meta(wt_path, args.notebook)
-                rec["create_metadata"] = {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
+                meta = twin_meta
+                rec["create_metadata"] = {"kernelspec": (twin_meta.get("kernelspec") or {}).get("name"),
                                           "language_version":
                                               (meta.get("language_info") or {}).get("version")}
                 skeleton = {"cells": [], "metadata": meta,
@@ -2018,8 +2092,14 @@ async def run(args, rec: dict) -> dict:
                                 conv = env.get("conversation_id") or conv
                                 part = parse_json_block(env.get("response") or "")
                                 if part and part.get("cells"):
+                                    # Scope the prose round to the cells it asked for
+                                    # (finding 1): a response editing any other cell is
+                                    # refused, not applied.
+                                    _md_idx = {d["idx"] for d in detail_md
+                                               if isinstance(d.get("idx"), int)}
                                     rep_md = apply_repairs(scratch, part,
-                                                           allow_markdown=True)
+                                                           allow_markdown=True,
+                                                           only_idx=_md_idx)
                                     rec.setdefault("md_repairs", []).append(
                                         {"asked": len(detail_md),
                                          "replaced": rep_md["replaced"],
@@ -2144,6 +2224,11 @@ def main() -> int:
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--gate", type=Path, default=None,
+                    help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
+                         "bundled swift_capacity_gate.py). The scheduler forwards its own "
+                         "resolved --gate here, so parent-side custom paths propagate "
+                         "without env mutation (pre-review round 2)")
     ap.add_argument("--lane", default=LANE,
                     help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
                          "no fallback — --claim refuses without it, F1/vllm#438)")
