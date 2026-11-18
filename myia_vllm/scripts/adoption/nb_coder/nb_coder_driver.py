@@ -1763,6 +1763,16 @@ async def run(args, rec: dict) -> dict:
         rec["verdict"] = f"notebook-not-found:{target_nb}"
         return rec
     kernel = series_kernel(wt_path, args.notebook)
+    if create_mode:
+        # The target is absent, so the path map can only describe its Python neighbours.
+        # The canonical C# twin owns the deliverable's kernelspec: execution must use the
+        # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
+        # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
+        twin_meta = series_canonical_meta(wt_path, args.notebook)
+        twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
+        if twin_kernel:
+            kernel["kernel_name"] = twin_kernel
+            kernel["kernel_source"] = "canonical-twin-kernelspec"
     rec["kernel"] = kernel
     gate = gate_call(args.gate_mode)
     rec["gate"] = gate
@@ -1833,8 +1843,8 @@ async def run(args, rec: dict) -> dict:
             if scratch.exists():
                 scratch.unlink()
             if create_mode:
-                meta = series_canonical_meta(wt_path, args.notebook)
-                rec["create_metadata"] = {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
+                meta = twin_meta
+                rec["create_metadata"] = {"kernelspec": (twin_meta.get("kernelspec") or {}).get("name"),
                                           "language_version":
                                               (meta.get("language_info") or {}).get("version")}
                 skeleton = {"cells": [], "metadata": meta,
