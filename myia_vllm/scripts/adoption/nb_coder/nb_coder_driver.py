@@ -771,6 +771,34 @@ def segment_keep_valid(got: list, seg: list) -> tuple[list, list]:
             [asked[i] for i in sorted(asked) if i not in kept])
 
 
+def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
+    """Validate the addresses stage 2 will use, before paying for any build call.
+
+    CoursIA#27106 rerun: MiniMax returned 12 valid-looking plan entries with no idx.
+    segment_keep_valid() correctly dropped every one, but an empty repair then returned
+    parsed JSON and apply_create reported success with cells_written=0. Never invent the
+    indices: an unaddressable plan is a stage-1 defect and must say so, with every reason.
+    """
+    errors = []
+    seen = set()
+    if not plan_cells:
+        return ["cells is empty"]
+    for pos, cell in enumerate(plan_cells):
+        try:
+            idx = int(cell.get("idx")) if isinstance(cell, dict) else None
+        except (TypeError, ValueError):
+            idx = None
+        if idx is None:
+            errors.append(f"position {pos}: missing/non-integer idx")
+        elif not 0 <= idx < n_src_cells:
+            errors.append(f"position {pos}: idx {idx} outside 0..{n_src_cells - 1}")
+        elif idx in seen:
+            errors.append(f"position {pos}: duplicate idx {idx}")
+        else:
+            seen.add(idx)
+    return errors
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
                           src_cells: list | None = None) -> dict:
@@ -787,6 +815,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
+    if addressing_errors:
+        rec["verdict"] = "stage1-unaddressable-creation-plan"
+        rec["creation_plan_addressing_errors"] = addressing_errors
+        return {}
 
     async def ask_tranche(tranche: list, stage: str):
         """One build tour; returns (kept, missing, parsed, env). Raises nothing — an
@@ -1827,10 +1860,11 @@ async def run(args, rec: dict) -> dict:
                                               src_cells=src_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
-                if built:
+                if not built or not built.get("cells"):
+                    if not rec.get("verdict"):
+                        rec["verdict"] = "build-no-cells"
+                elif built:
                     rec["apply"] = apply_create(scratch, built)
-                elif not rec.get("verdict"):
-                    rec["verdict"] = "build-no-cells"
                 if rec.get("verdict"):     # a failed segment returns NOW (tail persisted)
                     rec["stage2_s"] = round(time.time() - t2, 1)
                     return rec

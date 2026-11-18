@@ -296,3 +296,54 @@ def test_the_prev_field_round_trips_through_the_coursia_parser():
                                      prev="LIGHT/docs #26943"))
     assert cited["present"] is True
     assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
+
+
+# ---- creation plan addressing (vllm#486, measured on CoursIA#27106 rerun) ----
+
+def test_an_unaddressed_creation_plan_names_every_problem_before_building():
+    cells = [{"type": "markdown"}, {"idx": "bad"}, {"idx": 99},
+             {"idx": 1}, {"idx": 1}]
+    errors = d.creation_plan_addressing(cells, 3)
+    assert len(errors) == 4, errors
+    assert errors[0] == "position 0: missing/non-integer idx"
+    assert errors[1] == "position 1: missing/non-integer idx"
+    assert "outside 0..2" in errors[2]
+    assert errors[3] == "position 4: duplicate idx 1"
+
+
+def test_a_fully_addressed_creation_plan_is_accepted():
+    cells = [{"idx": 0, "cell_type": "markdown"},
+             {"idx": 1, "cell_type": "code"}, {"idx": 2, "cell_type": "markdown"}]
+    assert d.creation_plan_addressing(cells, 3) == []
+
+
+def test_an_empty_creation_plan_is_not_a_valid_noop():
+    assert d.creation_plan_addressing([], 35) == ["cells is empty"]
+
+
+def test_create_segments_refuses_before_any_model_call():
+    """The regression is the CALL COUNT, not merely a nicer final verdict."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("async def create_segments", 1)[1].split("\ndef ", 1)[0]
+    guard = fn.index("addressing_errors = creation_plan_addressing")
+    ask = fn.index("async def ask_tranche")
+    assert guard < ask, "an unaddressable plan can still pay for a build call"
+    # No session needed: reaching a model call would fail on this sentinel.
+    built = asyncio.run(d.create_segments(None, args, rec, None,
+                                          [{"type": "markdown"}], 35, ""))
+    assert built == {}
+    assert rec["verdict"] == "stage1-unaddressable-creation-plan"
+    assert rec["creation_plan_addressing_errors"]
+
+
+def test_an_empty_cell_assembly_never_reaches_apply_create():
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
+    assert 'if not built or not built.get("cells"):' in run
+    guard = run.index('if not built or not built.get("cells"):')
+    applied = run.index("rec[\"apply\"] = apply_create", guard)
+    assert guard < applied
