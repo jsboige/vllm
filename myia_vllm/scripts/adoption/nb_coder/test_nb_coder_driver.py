@@ -338,3 +338,15 @@ def test_creation_metadata_and_execution_read_the_same_twin():
 def test_explicit_kernel_override_still_wins_at_every_execution_site():
     src = Path(d.__file__).read_text(encoding="utf-8")
     assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
+# ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
+
+def test_the_banner_strip_covers_the_discovery_bootstrap():
+    """#27104: the probe-only strip reported ok while the committed cell-3 output
+    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
+    verify rejected it MAJOR. The deliverable is stripped --variant both; the
+    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
+    fresh deliverable. Source pin: the wiring is a CLI argument list."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
+    assert '"--variant", "both"' in fn, \
+        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"
