@@ -296,3 +296,17 @@ def test_the_prev_field_round_trips_through_the_coursia_parser():
                                      prev="LIGHT/docs #26943"))
     assert cited["present"] is True
     assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
+
+
+# ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
+
+def test_the_banner_strip_covers_the_discovery_bootstrap():
+    """#27104: the probe-only strip reported ok while the committed cell-3 output
+    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
+    verify rejected it MAJOR. The deliverable is stripped --variant both; the
+    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
+    fresh deliverable. Source pin: the wiring is a CLI argument list."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
+    assert '"--variant", "both"' in fn, \
+        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"
