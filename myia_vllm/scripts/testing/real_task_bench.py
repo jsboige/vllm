@@ -24,7 +24,7 @@ CORPUS = r"D:\vllm-data\bench\real_corpus"
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "myia_vllm", "_logs")
 
-NUM_RE = re.compile(r"\d+")
+NUM_RE = re.compile(r"(?<![A-Za-z0-9_])\d+(?![A-Za-z0-9_])")  # pas le '3' de lfm3-2xmerge
 
 # ---------------------------------------------------------------- corpus load
 
@@ -59,19 +59,55 @@ def extract_json_obj(s):
     return None
 
 
+def extract_json_objs(s):
+    """Tous les objets JSON complets de la réponse, dans l'ordre."""
+    dec = json.JSONDecoder()
+    objs = []
+    for m in re.finditer(r"\{", s):
+        try:
+            obj, _ = dec.raw_decode(s, m.start())
+            if isinstance(obj, dict):
+                objs.append(obj)
+        except json.JSONDecodeError:
+            continue
+    return objs
+
+
+def extract_json_obj(s):
+    """Dernier objet JSON COMPLET de la réponse (raw_decode équilibré, pas un
+    regex greedy — un préambule textuel autour du JSON ne casse plus l'oracle)."""
+    objs = extract_json_objs(s)
+    return objs[-1] if objs else None
+
+
+def merged_json_obj(out):
+    """Union shallow des objets trouvés (un modèle qui rend un objet par
+    entité au lieu d'un objet unique a quand même les bonnes valeurs)."""
+    objs = extract_json_objs(out)
+    if not objs:
+        return None
+    merged = {}
+    for o in objs:
+        merged.update(o)
+    return merged
+
+
 def check_json_eq(out, expected):
-    got = extract_json_obj(out)
-    if got is None:
+    objs = extract_json_objs(out)
+    if not objs:
         return False, "pas de JSON dans la réponse"
-    if got == expected:
+    if any(o == expected for o in objs):
         return True, ""
-    return False, f"attendu {json.dumps(expected, ensure_ascii=False)[:160]} / lu {json.dumps(got, ensure_ascii=False)[:160]}"
+    merged = merged_json_obj(out)
+    if merged == expected:
+        return True, ""
+    return False, f"attendu {json.dumps(expected, ensure_ascii=False)[:160]} / lu {json.dumps(objs[-1], ensure_ascii=False)[:160]}"
 
 
 def check_num_fidelity(out, payload):
     must, src_text = payload["must_contain"], payload["source"]
     missing = [v for v in must
-               if not re.search(rf"(?<![\d.]){re.escape(v)}(?![\d.])", out)]
+               if not re.search(rf"(?<!\d){re.escape(v)}(?!\d)", out)]
     src_nums = set(NUM_RE.findall(src_text))
     out_nums = set(NUM_RE.findall(out))
     invented = sorted(out_nums - src_nums)
@@ -87,14 +123,54 @@ def check_classify(out, expected):
     fam = got.get("famille")
     if fam != expected["famille"]:
         return False, f"famille attendue {expected['famille']} / lue {fam}"
-    key = got.get("ligne_cle", "")
-    if not any(m in key for m in expected["markers"]):
-        return False, f"ligne_cle sans marqueur {expected['markers']}"
+    key = str(got.get("ligne_cle", ""))
+    if any(m in key for m in expected["markers"]):
+        return True, ""
+    # sinon : une ligne VERBATIM (>= 20 chars) de la fenêtre source vaut
+    # diagnostique — le marqueur canonique n'est qu'UNE des lignes valides
+    # (mesuré 18/11 : le 27B recopiait `assert ... == loaded_weight.shape`,
+    # ligne réellement diagnostique, sans le marqueur d'une autre ligne)
+    src = expected.get("source", "")
+    stripped = key.strip().strip('"')
+    if len(stripped) >= 15 and stripped in src:
+        return True, ""
+    return False, f"ligne_cle sans marqueur {expected['markers']} et non citée verbatim depuis la fenêtre"
+
+
+def check_report(out, payload):
+    """Rapport fidèle d'un diff fourni par outil : chaque clé divergente citée
+    avec ses deux valeurs (None/true/false en forme json OU vernaculaire),
+    zéro clé de config inventée."""
+    diff = payload["diff"]
+    missing = []
+
+    def cited(v):
+        forms = {json.dumps(v), str(v)}  # true/True, null/None, 124900
+        if v is None:
+            return True  # la mention de la clé suffit pour une absence
+        if isinstance(v, bool):
+            forms |= {"présent" if v else "absent", "present" if v else "absent"}
+        return any(re.search(rf"(?<![\w.]){re.escape(f)}(?![\w.])", out)
+                   for f in forms if f)
+
+    for k, (va, vb) in diff.items():
+        if not (re.search(rf"(?<![\w]){re.escape(k)}(?![\w])", out)
+                and cited(va) and cited(vb)):
+            missing.append(k)
+    if missing:
+        return False, f"clés non citées ou valeurs absentes: {missing[:6]}"
+    allowed = set(diff)
+    src = payload.get("source", "")
+    candidates = re.findall(r'"?([a-z][a-z0-9]*(?:_[a-z0-9]+){1,})"?', out)  # snake_case
+    invented = sorted({c for c in candidates
+                       if c not in allowed and len(c) > 5 and c not in src})
+    if invented:
+        return False, f"clés snake_case absentes du diff (invention): {invented[:6]}"
     return True, ""
 
 
 CHECKERS = {"json_eq": check_json_eq, "num_fidelity": check_num_fidelity,
-            "classify": check_classify}
+            "classify": check_classify, "report": check_report}
 
 # ---------------------------------------------------------------- task builders
 
@@ -102,7 +178,7 @@ def build_classify():
     """12 fenêtres réelles labellisées -> famille + ligne clé."""
     fams = {
         "weight-shape": ["load_column_parallel_weight", "AssertionError"],
-        "engine-init": ["Engine core initialization failed"],
+        "engine-init": ["Engine core initialization failed", "EngineCore failed to start"],
         "path-mangling": ["Repo id must be"],
         "benign-boot": ["Initializing", "Loading safetensors", "health OK"],
         "bench-fail": ["FAIL"],
@@ -115,8 +191,11 @@ def build_classify():
         ("socle_run.log", 52, 58, "container-died"),
         ("boot_msys_fail.log", 24, 33, "path-mangling"),
         ("boot_msys_fail.log", 55, 64, "path-mangling"),
-        ("diag_lfm3-coder.log", 28, 33, "benign-boot"),
-        ("socle_run.log", 0, 5, "benign-boot"),
+        ("diag_lfm3-coder.log", 28, 33, "engine-init"),  # corrigé 18/11 : la fenêtre
+        # TERMINE par `EngineCore failed to start` — le label benign-boot initial
+        # était indéfendable (le 27B avait raison contre l'oracle)
+        ("socle_run.log", 0, 4, "benign-boot"),  # resserré : 0:5 chevauchait la
+        # 1re ligne de bench ([112/120] sort OK), citée à tort comme ligne_cle
         ("socle_run.log", 4, 8, "bench-fail"),
         ("socle_run.log", 27, 32, "bench-fail"),
         ("socle_run.log", 12, 17, "bench-fail"),
@@ -138,7 +217,7 @@ def build_classify():
             "du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n" + txt)
         tasks.append(dict(cat="err-classify", prompt=prompt,
                           checker="classify",
-                          oracle=dict(famille=fam, markers=fams[fam])))
+                          oracle=dict(famille=fam, markers=fams[fam], source=txt)))
     return tasks
 
 
@@ -247,7 +326,11 @@ def build_extract():
 
 
 def build_cfgdiff():
-    """6 paires de configs -> clés de premier niveau divergentes."""
+    """6 paires de configs -> clés de premier niveau divergentes.
+
+    Chaque tâche porte aussi un oracle `report` : le harnais v2.1, sur échec du
+    diff brut, fournit le diff CALCULÉ PAR OUTIL au modèle et lui fait rédiger
+    le rapport (vrai flux agentique : calcul à l'outil, rédaction au modèle)."""
     pairs = [("cfg_voltron.json", "voltron", "cfg_2xmerge.json", "lfm3-2xmerge"),
              ("cfg_2xmerge.json", "lfm3-2xmerge", "cfg_coder.json", "lfm3-coder"),
              ("cfg_2xmerge.json", "lfm3-2xmerge", "cfg_fable51.json", "lfm3-fable51"),
@@ -266,12 +349,24 @@ def build_cfgdiff():
                 diff[k] = [va, vb]
         block = (f"=== config {na} ===\n{json.dumps(a, indent=1, ensure_ascii=False)}\n\n"
                  f"=== config {nb} ===\n{json.dumps(b, indent=1, ensure_ascii=False)}")
+        src = block
         prompt = (f"Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont "
                   f"la valeur diffère entre {na} et {nb}.\n"
                   f"Réponds en JSON : {{\"<cle>\": [<valeur dans {na}>, <valeur dans {nb}>]}} "
                   f"pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n"
                   f"{block}")
-        out.append(dict(cat="cfg-diff", prompt=prompt, checker="json_eq", oracle=diff))
+        # diff-outil pour le pivot harnais : même contenu, forme ligne par ligne
+        tool_lines = "\n".join(
+            f"- {k}: {json.dumps(v[0], ensure_ascii=False)} ({na}) vs "
+            f"{json.dumps(v[1], ensure_ascii=False)} ({nb})" for k, v in diff.items())
+        report_prompt = (f"Un outil a comparé les configs {na} et {nb}. Voici son diff exact :\n\n"
+                         f"{tool_lines}\n\n"
+                         f"Rédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé "
+                         f"divergente avec ses deux valeurs. Pas de clé absente du diff, "
+                         f"pas de valeur inventée.")
+        out.append(dict(cat="cfg-diff", prompt=prompt, checker="json_eq", oracle=diff,
+                        report_prompt=report_prompt,
+                        report_oracle=dict(diff=diff, source=src)))
     return out
 
 

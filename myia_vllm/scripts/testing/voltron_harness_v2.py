@@ -114,8 +114,18 @@ def run_phase_a(url, model, limit=0):
         t0 = time.time()
         out = chat(url, model, msgs)
         ok, detail = gate(t, out)
+        ok_report = True  # tâche satisfaite (gate brut OU, cfg-diff, gate report)
         turns = 1
         transcript = list(msgs) + [{"role": "assistant", "content": out}]
+        # pivot-outil cfg-diff (v2.1) : le diff est un CALCUL — sur échec brut,
+        # l'outil fournit le diff et le modèle rédige le rapport (re-gaté).
+        if not ok and t["cat"] == "cfg-diff" and "report_prompt" in t:
+            transcript.append({"role": "user", "content": t["report_prompt"]})
+            out = chat(url, model, transcript)
+            ok_report, detail = rb.CHECKERS["report"](out, t["report_oracle"])
+            transcript.append({"role": "assistant", "content": out})
+            turns += 1
+            ok = ok_report  # le report EST la réussite de la tâche (contrat outil+modèle)
         while not ok and turns <= MAX_REPAIR_ROUNDS:
             fb = build_feedback(t, out, ok, detail)
             transcript.append({"role": "user", "content": fb})
@@ -242,7 +252,11 @@ def main():
     else:
         results = run_phase_c(args.residuals)
         summary = summarize(f"v2c-{HUB_MODEL}", results)
+        residuals = [dict(i=r["i"], cat=r["cat"], detail=r["detail"], out=r["out"])
+                     for r in results if not r["ok"]]
+        p = save(f"residuals_after_c_{stamp}.json", residuals)
         print(f"\n== phase C {HUB_MODEL} : {summary['ok']}/{summary['n']} sauvés par le coordinateur")
+        print(f"résiduels restants: {len(residuals)} -> {p}")
     save(f"summary_{args.phase}_{stamp}.json", summary)
 
 
