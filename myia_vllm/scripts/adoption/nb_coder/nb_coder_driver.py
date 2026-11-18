@@ -1405,11 +1405,18 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     (the canonical-kernel criterion). 17/11 #27104 blank pass: the verify rejected the
     banner as a MAJOR finding. The tool lives in the CoursIA tree (the worktree carries
     it); a missing tool or failure is RECORDED, not fatal — the verify stays the judge
-    of the delivered file."""
+    of the delivered file. 18/11 #482: --variant BOTH, not the probe default — a
+    creation-mode .NET notebook carries the DISCOVERY bootstrap (`dotnet-interactive-
+    this-cell` + require.js fetch), a disjoint signature set on purpose (#22728: the
+    repo-wide COMMITTED-corpus guard stays probe-only until the 177 inherited
+    notebooks are swept; that constraint binds the guard, never a fresh deliverable).
+    Measured: probe-only strip reported ok while the verify rejected the discovery
+    banner as MAJOR; `--variant both` removed exactly that output."""
     if not tool.is_file():
         return {"ok": False, "error": f"strip tool absent: {tool}"}
     try:
-        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path)],
+        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
+                            "--variant", "both"],
                            capture_output=True, text=True, timeout=120)
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
