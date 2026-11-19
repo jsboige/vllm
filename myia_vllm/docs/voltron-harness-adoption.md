@@ -171,6 +171,52 @@ gate.
 un jugement de fond, un comptage. Le service **lit, recopie, classe avec
 preuve et rédige sous contrat** ; l'appelant **juge et agit**.
 
+## 6b. Driver « 0-token » (recette W1 — productivité de l'appelant)
+
+Le coût d'adoption réel n'est pas l'appel, c'est le boilerplate. Une lane
+n'a qu'à **coller ce bloc PowerShell** pour consommer sans dépenser de tokens
+à réinventer la requête. Depuis n'importe quel agent sur **po-2028** :
+
+```powershell
+# === VOLTRON HARNESS — driver copiable (po-2028) ===
+$SVC = "http://127.0.0.1:5029"
+function VTask($type, $data, $extra) {
+  $body = @{ type = $type; data = $data } + $extra | ConvertTo-Json -Depth 8 -Compress
+  (Invoke-WebRequest -Uri "$SVC/v1/task" -Method POST -ContentType "application/json" `
+    -Body $body -TimeoutSec 180).Content | ConvertFrom-Json
+}
+# --- exemples (décommenter et adapter) ---
+# VTask classify (Get-Content C:\log.txt -Raw) @{ classes = @("oom","engine-init","path-mangling") }
+# VTask extract  (Get-Content C:\bench.json -Raw) @{ fields = @("score","acc"); verbatim = $false;
+#   instruction = "la plus basse accuracy -> JSON {score,acc}" }
+# VTask numbers  (Get-Content C:\metrics.txt -Raw) @{ numbers = @("455","44");
+#   report_prompt = "Rapport une phrase citant mémoire GPU et température." }
+```
+
+Résultat : `$r.ok` (bool), `$r.stage` (`a` worker seul · `c` coordinateur
+27B), `$r.answer` (le livrable **déjà gaté**), `$r.detail` (pourquoi pas si
+`ok=false`), `$r.turns`, `$r.dt_s`. **C'est `answer` qu'on consomme, pas un
+texte à re-lire** — le service a déjà payé la vérification.
+
+**Tâche longue en fond** (le réflexe « je lance et j'oublie ») :
+
+```powershell
+$tasks = Get-ChildItem C:\logs\*.txt | ForEach-Object {
+  @{ type = "classify"; data = (Get-Content $_.FullName -Raw);
+     classes = @("oom","engine-init","path-mangling","benign-boot") } }
+$body = @{ name = "triage-logs"; tasks = $tasks } | ConvertTo-Json -Depth 8 -Compress
+$job = (Invoke-WebRequest -Uri "$SVC/v1/jobs" -Method POST -ContentType "application/json" `
+  -Body $body -TimeoutSec 60).Content | ConvertFrom-Json
+$job.job_id   # → stocker ; relire en fin de session :
+# (Invoke-WebRequest "$SVC/v1/jobs/$($job.job_id)").Content | ConvertFrom-Json
+```
+
+Le job tourne **en fond du service**, persiste après chaque tâche : l'agent
+peut fermer sa session, relire le lendemain, rien n'est perdu. **~0 token
+pendant**, livrable forme fixe à la fin (contrat BG FrogNano). Depuis une
+**autre machine**, remplacer `127.0.0.1` par l'IP po-2028 — mais le service
+bind local : demander l'exposition hub au siège po-2028:vllm (§7).
+
 ## 7. Feuille de route
 
 1. ✅ Service HTTP + moteur persistant + jobs background (ce document).
