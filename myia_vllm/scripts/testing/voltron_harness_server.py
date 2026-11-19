@@ -52,6 +52,9 @@ HUB_URL = "http://192.168.0.50:3000"  # chat() ajoute /v1/chat/completions
 HUB_MODEL = "swift-1.5-27b"
 PORT = 5029
 JOBS_DIR = r"D:\vllm-data\bench\v2_jobs"
+USAGE_PATH = r"D:\vllm-data\bench\v2_usage.json"  # compteur DURABLE (piège po-2025 :
+# les compteurs engine avancent en fin de requête et repartent à zéro au boot —
+# l'instrument d'adoption doit survivre aux restarts)
 MAX_DATA_CHARS = 20000  # garde contexte 32K : data + prompt + réponse
 MAX_REPAIR_ROUNDS = 2
 HUB_KEY = os.environ.get("ZAI_API_KEY")  # figé au démarrage du serveur
@@ -309,6 +312,7 @@ def run_job(job_id):
     for i, t in enumerate(job["tasks"]):
         res = run_task(t)
         res["task"] = i
+        _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
         with _jobs_lock:
             job["results"].append(res)
             job["done"] = i + 1
@@ -326,6 +330,46 @@ def _persist(job_id):
         json.dump(job, f, ensure_ascii=False, indent=1)
 
 
+# ------------------------------------------------- compteur d'usage durable
+
+_usage_lock = threading.Lock()
+
+
+def _usage():
+    """Compteurs persistés — l'instrument de mesure d'ADOPTION (usage réel,
+    survit aux restarts serveur ET engine)."""
+    try:
+        with open(USAGE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+                "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
+                "last": None}
+
+
+def _bump_usage(ttype, ok, job=False, via_job=False):
+    """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+replace."""
+    with _usage_lock:
+        u = _usage()
+        if job:
+            u["jobs_total"] = u.get("jobs_total", 0) + 1
+        else:
+            u["tasks_total"] = u.get("tasks_total", 0) + 1
+            if via_job:
+                u["job_tasks"] = u.get("job_tasks", 0) + 1
+            bt = u["by_type"].setdefault(str(ttype), {"n": 0, "ok": 0})
+            bt["n"] += 1
+            bt["ok"] += int(bool(ok))
+            u["ok"] = u.get("ok", 0) + int(bool(ok))
+        u["last"] = datetime.now(timezone.utc).isoformat()
+        os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
+        tmp = USAGE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(u, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, USAGE_PATH)
+        return u
+
+
 # ---------------------------------------------------------------- HTTP
 
 CAPABILITIES = {
@@ -336,6 +380,7 @@ CAPABILITIES = {
         "POST /v1/task": {"type": "extract|classify|numbers|diff", "...": "voir types"},
         "POST /v1/jobs": {"tasks": ["<task>..."], "name": "optionnel"},
         "GET /v1/jobs/<id>": "statut + résultats (persistés sur disque)",
+        "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument d'adoption",
         "GET /health": "engine + hub + serveur",
         "GET /v1/capabilities": "ce document"},
     "types": {
@@ -376,6 +421,9 @@ class Handler(BaseHTTPRequestHandler):
                              "engine_url": ENGINE_URL})
         elif self.path == "/v1/capabilities":
             self._send(200, CAPABILITIES)
+        elif self.path == "/v1/usage":
+            with _usage_lock:
+                self._send(200, _usage())
         elif self.path.startswith("/v1/jobs/"):
             jid = self.path.split("/", 3)[3]
             with _jobs_lock:
@@ -401,12 +449,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"JSON invalide: {exc}"})
             return
         if self.path == "/v1/task":
-            self._send(200, run_task(body))
+            res = run_task(body)
+            _bump_usage(body.get("type", "?"), res.get("ok"))
+            self._send(200, res)
         elif self.path == "/v1/jobs":
             tasks = body.get("tasks")
             if not isinstance(tasks, list) or not tasks:
                 self._send(400, {"error": "'tasks' = liste non vide requis"})
                 return
+            _bump_usage(None, None, job=True)
             jid = f"job-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
             with _jobs_lock:
                 _jobs[jid] = {"status": "running", "name": body.get("name", ""),

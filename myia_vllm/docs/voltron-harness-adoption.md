@@ -18,10 +18,10 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 ## 1. Le service
 
 | | |
-| --- |---|
+| --- | --- |
 | URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
 | Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, tier RAM 4 Gio, ~6,2/8 Gio VRAM) |
-| Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` |
+| Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) |
 | Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Rollback | `docker stop voltron-harness` + kill du process python :5029 — aucune donnée perdue |
@@ -112,7 +112,7 @@ fin de session (contrat BG FrogNano : ~0 token pendant, livrable forme fixe).
 ## 4. Mesures
 
 | Étage | Score (vérité banc 40 tâches réelles) | Appels/tâche |
-| --- |---| --- |
+| --- | --- | --- |
 | Solo voltron t0 | 10/40 = 25 % | 1 |
 | Chaîne complète A→B→C (bench, engine-swap par phase) | **40/40 = 100 %** | 2,4 voltron + 0,53 sibling + 0,25 swift-27B |
 | **Service A→C en direct (v4, 18/11 soir)** | **38/40 = 95 %** — contrat appelant **40/40** | 2,70 |
@@ -123,7 +123,7 @@ est PLUS FORTE que le contrat : valeur d'égalité, pas seulement verbatim).
 L'arc des 4 passes de ce soir — chacune a corrigé un défaut réel :
 
 | Passe | Vérité banc | Défaut corrigé |
-| --- |---| --- |
+| --- | --- | --- |
 | v1 | 30/40 = 75 % | état initial (gate sur réponse brute, contrat extract sans sémantique) |
 | v2 | 37/40 = 92,5 % | **gate sur le livrable nettoyé** (on certifie ce qu'on livre, pas le brouillon de raisonnement) + champ `instruction` du contrat extract |
 | v3 | 34/40 = 85 % | contre-essai : amputer le format de l'instruction coûte 4 tâches — **l'ancre de forme fait partie de la sémantique** (liste vs dict, booléens vs « non ») |
@@ -175,7 +175,10 @@ preuve et rédige sous contrat** ; l'appelant **juge et agit**.
 
 1. ✅ Service HTTP + moteur persistant + jobs background (ce document).
 2. Mesure service-mode 40 tâches (`service_mode_eval.py`) — chiffre publié au
-   §4 au fil des runs.
+   §4 au fil des runs. ✅ v4 : 95 % vérité banc, contrat 40/40.
+2b. ✅ Compteur d'usage durable `GET /v1/usage` (19/11) — baseline adoption 0 à
+   partir du 2026-11-19T05:50Z ; piège po-2025 « compteurs engine reset-boot »
+   neutralisé (persistance disque atomique, survit serveur ET engine).
 3. Présets sk-agent voltron (si les lanes veulent un routage hub) — à demander
    au PO sk-agent le cas échéant.
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
