@@ -66,6 +66,52 @@ def test_failed_and_empty_calls_do_not_count_as_producer_work():
     assert idt["status"] == "distinct" and idt["producer"] == ["swift-1.5-27b"]
 
 
+# ms#1824 (#4844 c.7042525323): `served_model` is the LAST round's value only; the distinct
+# values of a multi-round call live in `served_model_variants`, present only when > 1.
+def test_a_non_last_producer_round_served_by_the_verifier_model_is_same():
+    c = dict(call("2-build", "swift-1.5-27b"), served_model_variants=["glm-5.3", "swift-1.5-27b"])
+    idt = d.served_identity([c], {"served_model": "glm-5.3"})
+    assert idt["status"] == "same" and idt["shared"] == ["glm-5.3"]
+
+
+def test_a_non_last_verifier_round_served_by_the_producer_model_is_same():
+    v = {"served_model": "glm-5.3", "served_model_variants": ["swift-1.5-27b", "glm-5.3"]}
+    idt = d.served_identity([call("2-build", "swift-1.5-27b")], v)
+    assert idt["status"] == "same" and idt["shared"] == ["swift-1.5-27b"]
+
+
+def test_disjoint_variants_stay_distinct():
+    c = dict(call("2-build", "swift-1.5-27b"), served_model_variants=["kimi", "swift-1.5-27b"])
+    v = {"served_model": "glm-5.3", "served_model_variants": ["minimax", "glm-5.3"]}
+    idt = d.served_identity([c], v)
+    assert idt["status"] == "distinct"
+    assert idt["producer"] == ["kimi", "swift-1.5-27b"] and idt["verifier"] == "glm-5.3, minimax"
+
+
+def test_variants_alone_name_the_served_model():
+    c = dict(call("2-build"), served_model_variants=["swift-1.5-27b"])
+    assert d.served_identity([c], {"served_model": "glm-5.3"})["status"] == "distinct"
+
+
+def test_calls_record_the_variant_fields(monkeypatch):
+    envs = [{"response": "ok", "served_model": "swift-1.5-27b",
+             "served_model_variants": ["glm-5.3", "swift-1.5-27b"],
+             "failover_notice": "b", "failover_notice_variants": ["a", "b"]}]
+
+    async def fake_sk(session, args, prompt, conv, max_tokens):
+        return envs.pop(0), 1.0
+
+    monkeypatch.setattr(d, "sk_call", fake_sk)
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    rec = {"calls": []}
+    asyncio.run(d.sk_call_retry(None, None, rec, "2-build", "p", None))
+    (c,) = rec["calls"]
+    assert c["served_model_variants"] == ["glm-5.3", "swift-1.5-27b"]
+    assert c["failover_notice_variants"] == ["a", "b"]
+    assert d.served_identity(rec["calls"], {})["failovers"] == [
+        {"stage": "2-build", "notice": "a | b"}]
+
+
 def test_failover_notices_are_listed_whatever_the_status():
     calls = [call("1-plan", notice="role=nb, served by glm-5.3")]
     idt = d.served_identity(calls, {"failover_notice": "role=verify, served by kimi"})
@@ -130,6 +176,20 @@ def test_an_approval_by_the_model_that_served_the_draft_is_refused(monkeypatch, 
                   {"verdict": "approve", "model_used": "glm-5.3", "served_model": "glm-5.3"}, 0)
     assert rec["verdict"] == "verify-same-served-model"
     assert rec["verify"]["identity"]["status"] == "same"
+
+
+def test_an_approval_is_refused_when_only_a_non_last_round_matches(monkeypatch, tmp_path):
+    c = dict(call("2-build", "swift-1.5-27b"), served_model_variants=["glm-5.3", "swift-1.5-27b"])
+    rec = _stage4(monkeypatch, tmp_path, [c],
+                  {"verdict": "approve", "served_model": "glm-5.3"}, 0)
+    assert rec["verdict"] == "verify-same-served-model"
+    assert "MÊME modèle servi des deux côtés (glm-5.3)" in d.identity_line(
+        rec["verify"]["identity"])
+
+
+def test_a_pre_variants_same_record_still_renders():
+    idt = {"status": "same", "producer": ["glm-5.3"], "verifier": "glm-5.3", "failovers": []}
+    assert "(glm-5.3)" in d.identity_line(idt)
 
 
 def test_a_distinct_approval_stands(monkeypatch, tmp_path):
