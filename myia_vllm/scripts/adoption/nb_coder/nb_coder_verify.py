@@ -158,10 +158,36 @@ def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
     return diffs
 
 
+SPEC_TASK = (
+    "## Ta tâche — création depuis une spec\n"
+    "Il n'existe AUCUN carnet d'origine : la SOURCE ci-dessus est le jumeau de spec généré "
+    "par le harnais (une cellule `[SPEC cellule i — type]` par ligne du plan de l'issue). "
+    "Tout le contenu du LIVRABLE est nouveau par construction : ne le rejette jamais pour "
+    "cette seule raison.\n"
+    "1. **Plan réalisé ?** La cellule i du LIVRABLE réalise-t-elle la cellule [SPEC] i "
+    "(même type, rôle décrit tenu) ? Une cellule [SPEC] non réalisée est un `major`.\n"
+    "2. **Attendus affichés ?** Chaque valeur, statut ou propriété que l'issue déclare "
+    "attendu est-il AFFICHÉ par une sortie réelle d'une cellule code du LIVRABLE, et "
+    "exact ? Recalcule ce qui peut l'être à la main. Une valeur annoncée dans la prose sans "
+    "sortie qui la montre, ou contredite par une sortie, est un `major`.\n"
+    "3. **Exactitude** : aucune affirmation fausse dans la prose ; aucune source, citation "
+    "ou numéro de page que l'issue ne fournit pas ; aucun code qui triche (valeur codée "
+    "en dur présentée comme calculée, assertion qui ne teste rien).\n"
+    "4. **Conventions** : en-tête sans référence de coordination, stubs d'exercice "
+    "exécutables avec valeur neutre (pas d'exception levée), pied de provenance en "
+    "dernière cellule markdown, prose en français sans caractère d'alphabet étranger.\n\n"
+)
+
+
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
-                  diffs: list[dict] | None = None) -> str:
+                  diffs: list[dict] | None = None, mode: str = "source") -> str:
+    spec = mode == "spec"
+    if spec:
+        # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
+        # "edited", every source digest empty) — the built view already shows outputs.
+        src_digest = built_digest = diffs = None
     annex = ""
     if src_digest is not None and built_digest is not None:
         annex += ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
@@ -186,16 +212,22 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
     return (
         "MODE VÉRIFICATION — tu es le vérificateur INDÉPENDENT d'un carnet produit par un autre "
         "agent. Tu n'as pas produit ce carnet et tu ne dois croire AUCUNE de ses affirmations : "
-        "ta référence est la SOURCE (carnet d'origine) et les critères d'acceptation de l'issue.\n\n"
-        f"## Issue — critères d'acceptation\nTITRE : {issue['title']}\n\n"
+        + ("ta référence est la SPEC de l'issue (plan des cellules, attendus testables, "
+           "interdits) ; le carnet est une CRÉATION, sans carnet d'origine.\n\n" if spec else
+           "ta référence est la SOURCE (carnet d'origine) et les critères d'acceptation de "
+           "l'issue.\n\n")
+        + f"## Issue — critères d'acceptation\nTITRE : {issue['title']}\n\n"
         f"CORPS :\n{nbcd._cut(issue['body'], 30000, 'corps de l issue')}\n\n"
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
-        + f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n"
+        + (f"## SOURCE — jumeau de spec (plan imposé, généré par le harnais)\n{src_view}\n\n"
+           if spec else
+           f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n")
         + f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
         + annex
         + "## Faits mécaniques du harnais (des AFFIRMATIONS du producteur — à contre-vérifier "
         "sur les deux vues, jamais à croire sur parole)\n"
         f"{json.dumps(facts, ensure_ascii=False, indent=1)[:6000]}\n\n"
+        + (SPEC_TASK if spec else
         "## Ta tâche\n"
         "1. **Contenu perdu ?** Une cellule, un bloc de code ou une sortie de code de la SOURCE "
         "a-t-il disparu du LIVRABLE sans que l'issue le demande ?\n"
@@ -207,8 +239,8 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "référence de coordination dans les cellules éditées, sorties réelles non éditées (pour "
         "les cellules NON éditées, même sha dans l'annexe ; pour les cellules éditées, juge le "
         "texte de l'annexe différences). La note de provenance en pied n'est exigée que si "
-        "l'issue l'impose explicitement.\n\n"
-        "## Périmètre — ce qui ne justifie PAS un rejet\n"
+        "l'issue l'impose explicitement.\n\n")
+        + "## Périmètre — ce qui ne justifie PAS un rejet\n"
         "- Un défaut de convention **déjà présent à l'identique dans la SOURCE**, hors des "
         "cellules que le livrable édite : signale-le en `minor` seulement (le grain ne répare "
         "pas la série ; un balayage dédié s'en charge).\n"
@@ -270,12 +302,15 @@ def main() -> int:
     # the verdict (28 685 tok in / 756 out). Re-confirmed 17/11 on the #27104 blank
     # creation pass: response_chars 0 at the 4 096 default, driver passes no override.
     ap.add_argument("--max-tokens", type=int, default=32768)
+    # 20/11 --from-spec: the --source-nb is a harness-made [SPEC] twin, not an origin
+    # notebook — the verifier judges the plan + displayed expectations instead.
+    ap.add_argument("--mode", choices=["source", "spec"], default="source")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = {"issue": args.issue, "agent": args.agent, "started": utcnow(),
-           "source_nb": args.source_nb, "built_nb": args.built_nb}
+           "source_nb": args.source_nb, "built_nb": args.built_nb, "mode": args.mode}
     try:
         src_p, built_p = Path(args.source_nb), Path(args.built_nb)
         for p in (src_p, built_p):
@@ -298,7 +333,8 @@ def main() -> int:
         rec["diff_kinds"] = [d["kind"] for d in diffs]
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
-                               outputs_digest(src_p), outputs_digest(built_p), diffs)
+                               outputs_digest(src_p), outputs_digest(built_p), diffs,
+                               mode=args.mode)
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         if not (env.get("response") or "").strip() and not env.get("error"):

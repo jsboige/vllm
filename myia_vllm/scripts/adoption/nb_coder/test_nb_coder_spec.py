@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Offline pins for --from-spec (20/11): creating a NEW notebook with no twin.
+
+The driver only created from a twin (--source-nb, C#/Rust ports); a new series grain
+(CoursIA InformationTheory carnet 08, parent #27077) has no twin and rendered
+`notebook-not-found`. --from-spec turns the issue's « Plan des cellules » table into a
+harness-made [SPEC] twin, so the structure gate and the verifier keep a reference.
+
+Pinned here: the plan parser is fail-closed, the twin passes `verify_structure_create`
+against a matching deliverable, an unusable spec is refused BEFORE any reservation
+(zero [CLAIMED] comment, zero worktree, zero token), the CLI guards, and the verifier's
+spec-mode prompt. No engine, no MCP session, no GitHub.
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("mcp")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import nb_coder_driver as D  # noqa: E402
+import nb_coder_verify as V  # noqa: E402
+
+GOOD = """## Objet
+
+Créer le carnet 08.
+
+## Plan des cellules
+
+| # | Type | Titre | Contenu |
+|---|---|---|---|
+| 1 | markdown | Titre | En-tête du carnet, objectifs. |
+| 2 | code | Imports | `numpy`, `math` ; graine fixe. |
+| 3 | markdown | Canal à accès multiple | Région de capacité, $\\|R\\| \\le C$. |
+| 4 | code | Calcul | Affiche C = 1 - H(p) pour p = 0,11. |
+| 5 | markdown | Provenance | Pied de provenance. |
+
+## Attendus testables
+
+- C(0,11) ≈ 0,5 bit.
+"""
+
+
+# ---------------------------------------------------------------- parse_spec_cells
+def test_parse_good_plan_keeps_order_types_and_unescapes_pipes():
+    cells, errors = D.parse_spec_cells(GOOD)
+    assert errors == []
+    assert [c["cell_type"] for c in cells] == ["markdown", "code", "markdown", "code",
+                                              "markdown"]
+    assert [c["idx"] for c in cells] == [0, 1, 2, 3, 4]          # re-indexed from 0
+    assert cells[2]["titre"] == "Canal à accès multiple"
+    assert "$|R| \\le C$" in cells[2]["role"]                    # escaped pipe kept whole
+    assert cells[3]["role"].startswith("Affiche C")
+
+
+def test_parse_stops_at_the_next_section():
+    cells, _ = D.parse_spec_cells(GOOD)
+    assert not any("Attendus" in c["role"] or "0,5 bit" in c["role"] for c in cells)
+
+
+@pytest.mark.parametrize("body, needle", [
+    ("## Objet\n\nrien", "no « Plan des cellules »"),
+    ("## Plan des cellules\n\npas de table\n", "has no table"),
+    ("## Plan des cellules\n\n| # | Titre | Contenu |\n|---|---|---|\n| 1 | a | b |\n",
+     "no « Type » column"),
+    ("## Plan des cellules\n\n| # | Type | Titre |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | code | b |\n| 3 | markdown | c |\n",
+     "no content column"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | raw | b |\n| 3 | markdown | c |\n",
+     "is not markdown|code"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | code | a |\n| 2 | code | b |\n| 3 | markdown | c |\n",
+     "first plan cell must be markdown"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | code | b |\n| 3 | code | c |\n",
+     "last plan cell must be markdown"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | markdown | b |\n| 3 | markdown | c |\n",
+     "no code cell"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 3 | code | b |\n| 4 | markdown | c |\n",
+     "not contiguous"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | code | b | extra |\n| 3 | markdown | c |\n",
+     "columns, header has"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | code | b |\n",
+     "at least 3 required"),
+    ("## Plan des cellules\n\n| # | Type | Contenu |\n|---|---|---|\n"
+     "| 1 | markdown | a |\n| 2 | code |  |\n| 3 | markdown | c |\n",
+     "no title and no content"),
+])
+def test_parse_is_fail_closed(body, needle):
+    cells, errors = D.parse_spec_cells(body)
+    assert cells == []
+    assert any(needle in e for e in errors), errors
+
+
+# ---------------------------------------------------------------- spec_twin
+def _write(path: Path, nb: dict) -> Path:
+    path.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_twin_carries_the_plan_and_the_meta_only(tmp_path):
+    cells, _ = D.parse_spec_cells(GOOD)
+    meta = {"kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "language_info": {"name": "python", "version": "3.11.9"}}
+    tw = D.spec_twin(cells, meta)
+    assert tw["metadata"] == meta and tw["nbformat"] == 4
+    assert [c["id"] for c in tw["cells"]] == [f"spec-{i}" for i in range(5)]
+    assert tw["cells"][0]["source"].startswith("[SPEC cellule 0 — markdown] Titre")
+    code = tw["cells"][3]
+    assert code["outputs"] == [] and code["execution_count"] is None
+    assert all(ln.startswith("# ") for ln in code["source"].splitlines())
+
+
+def test_spec_meta_reads_kernelspec_and_language_info_only(tmp_path):
+    p = _write(tmp_path / "m.ipynb", {"cells": [{"cell_type": "code"}], "metadata": {
+        "kernelspec": {"name": "python3"}, "language_info": {"name": "python"},
+        "papermill": {"duration": 3.2}, "widgets": {}}, "nbformat": 4, "nbformat_minor": 5})
+    assert D.spec_meta(p) == {"kernelspec": {"name": "python3"},
+                              "language_info": {"name": "python"}}
+
+
+def test_structure_gate_against_the_twin(tmp_path):
+    cells, _ = D.parse_spec_cells(GOOD)
+    twin = _write(tmp_path / "twin.ipynb", D.spec_twin(cells, {}))
+    built = {"cells": [{"cell_type": c["cell_type"], "metadata": {},
+                        "source": "x = 1" if c["cell_type"] == "code" else "# t",
+                        **({"outputs": [], "execution_count": None}
+                           if c["cell_type"] == "code" else {})} for c in cells],
+             "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    ok = D.verify_structure_create(twin, _write(tmp_path / "ok.ipynb", built))
+    assert ok["ok"]
+    built["cells"].insert(1, {"cell_type": "markdown", "metadata": {}, "source": "extra"})
+    bad = D.verify_structure_create(twin, _write(tmp_path / "bad.ipynb", built))
+    assert not bad["ok"] and not bad["counts_ok"]
+
+
+# ---------------------------------------------------------------- run(): refusal order
+def _run_args(tmp_path, **kw):
+    base = dict(out_dir=str(tmp_path), repo="D:/repo", issue=27999,
+                notebook="Series/New-08.ipynb", source_nb=None, from_spec=True,
+                meta_from="Series/Old-01.ipynb", allow_foreign_origin=False,
+                lane="lane:a", claim=True, intention="witness", conventions="",
+                max_stage=5, worktree=str(tmp_path / "wt"), fresh_worktree=False,
+                gate_mode="advisory", gate=None)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _stub_common(monkeypatch, body):
+    monkeypatch.setattr(D, "app_token", lambda repo: "")
+    monkeypatch.setattr(D, "read_conventions", lambda p: "")
+    monkeypatch.setattr(D, "check_claim", lambda *a: {"rc": 0, "ok": True})
+    monkeypatch.setattr(D, "fetch_issue", lambda *a: {
+        "title": "N", "state": "open", "labels": [], "body": body})
+    monkeypatch.setattr(D.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="https://github.com/jsboige/CoursIA.git\n"))
+
+
+def test_an_unusable_spec_is_refused_before_any_reservation(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, "## Objet\n\nPas de plan.")
+    monkeypatch.setattr(D, "reserve_claim", lambda *a: (_ for _ in ()).throw(
+        AssertionError("an unusable spec must not post a [CLAIMED] comment")))
+    monkeypatch.setattr(D, "prepare_worktree", lambda *a: (_ for _ in ()).throw(
+        AssertionError("an unusable spec must not prepare a worktree")))
+    rec = {"stages": {}, "calls": []}
+    got = asyncio.run(D.run(_run_args(tmp_path), rec))
+    assert got["verdict"] == "refused-spec-plan-unusable"
+    assert got["stages"]["spec_plan"]["errors"]
+    assert got["calls"] == []
+
+
+def test_a_usable_spec_reaches_the_reservation(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    seen = {}
+
+    def fake_reserve(repo, n, lane, intention, nb):
+        seen["nb"] = nb
+        return {"verdict": "refused-claim-post-failed"}
+
+    monkeypatch.setattr(D, "reserve_claim", fake_reserve)
+    rec = {"stages": {}, "calls": []}
+    got = asyncio.run(D.run(_run_args(tmp_path), rec))
+    assert seen["nb"] == "Series/New-08.ipynb"
+    assert got["stages"]["spec_plan"]["cells"] == 5
+    assert got["verdict"] == "refused-claim-post-failed"
+
+
+def _admitted(monkeypatch, tmp_path, wt_files: dict):
+    wt = tmp_path / "wt"
+    for rel, nb in wt_files.items():
+        (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+        _write(wt / rel, nb)
+    monkeypatch.setattr(D, "reserve_claim", lambda *a: {"verdict": None})
+    monkeypatch.setattr(D, "prepare_worktree", lambda *a: {"path": str(wt), "ok": True})
+    monkeypatch.setattr(D, "gate_call", lambda *a: {"blocking_refusal": True})
+
+
+def test_from_spec_refuses_an_existing_target(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/New-08.ipynb": {"cells": [], "metadata": {}}})
+    got = asyncio.run(D.run(_run_args(tmp_path), {"stages": {}, "calls": []}))
+    assert got["verdict"] == "target-already-exists:Series/New-08.ipynb"
+
+
+def test_from_spec_refuses_a_meta_without_kernelspec(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": {"cells": [], "metadata": {}}})
+    got = asyncio.run(D.run(_run_args(tmp_path), {"stages": {}, "calls": []}))
+    assert got["verdict"] == "meta-from-no-kernelspec:Series/Old-01.ipynb"
+
+
+def test_from_spec_writes_the_twin_outside_the_worktree(monkeypatch, tmp_path):
+    """Admitted path up to the capacity gate (stubbed blocking): twin in the out dir,
+    kernel from --meta-from, kernel cwd = the TARGET's folder (created)."""
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": {"cells": [], "metadata": {
+        "kernelspec": {"name": "python3"}, "language_info": {"name": "python"}}}})
+    got = asyncio.run(D.run(_run_args(tmp_path), {"stages": {}, "calls": []}))
+    assert got["verdict"] == "deferred-by-capacity-gate"
+    twin = Path(got["create_mode"]["spec_twin"])
+    assert twin.parent == tmp_path and twin.is_file()
+    assert not list((tmp_path / "wt").rglob("spec-twin-*"))
+    assert len(json.loads(twin.read_text(encoding="utf-8"))["cells"]) == 5
+    assert got["kernel"]["kernel_name"] == "python3"
+    assert got["kernel"]["kernel_source"] == "meta-from-kernelspec"
+    assert (tmp_path / "wt" / "Series").is_dir()
+
+
+# ---------------------------------------------------------------- CLI guards
+@pytest.mark.parametrize("extra, needle", [
+    (["--from-spec", "--source-nb", "S/T.ipynb", "--meta-from", "S/M.ipynb"], "exclusive"),
+    (["--from-spec"], "requires --meta-from"),
+    (["--from-spec", "--meta-from", "S/M.ipynb", "--write-mode", "mcp"], "--write-mode json"),
+])
+def test_cli_guards(monkeypatch, capsys, extra, needle):
+    monkeypatch.setattr(sys, "argv", ["nb_coder_driver.py", "--issue", "1", "--notebook",
+                                      "S/N.ipynb", "--repo", "D:/repo", "--max-stage", "0",
+                                      *extra])
+    with pytest.raises(SystemExit) as e:
+        D.main()
+    assert e.value.code == 2
+    assert needle in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- verifier prompt
+def test_verify_prompt_spec_mode_swaps_reference_and_task():
+    issue = {"title": "T", "body": GOOD}
+    sp = V.verify_prompt(issue, "SRCVIEW", "BUILTVIEW", {}, "", [{"cell": 0}],
+                         [{"cell": 0}], [{"cell": 0, "kind": "edited"}], mode="spec")
+    assert "jumeau de spec" in sp and "carnet d'origine (branche main" not in sp
+    assert "création depuis une spec" in sp
+    assert "Contenu perdu" not in sp
+    assert "SRCVIEW" in sp and "BUILTVIEW" in sp
+    src = V.verify_prompt(issue, "SRCVIEW", "BUILTVIEW", {}, "")
+    assert "carnet d'origine (branche main, RÉFÉRENCE)" in src
+    assert "création depuis une spec" not in src
+    # the JSON verdict contract is shared by both modes
+    tail = src[src.index("## Périmètre"):]
+    assert tail == sp[sp.index("## Périmètre"):]

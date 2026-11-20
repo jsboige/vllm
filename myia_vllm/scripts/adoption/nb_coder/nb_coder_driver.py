@@ -829,6 +829,164 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     )
 
 
+# ---------------------------------------------------------------- creation from a spec (--from-spec)
+# 20/11 (InformationTheory, CoursIA#27077): a NEW series has no twin to port from, so
+# --source-nb cannot apply and the driver answered notebook-not-found. The spec issue's
+# « Plan des cellules » table becomes a harness-made SPEC TWIN: one [SPEC] cell per plan
+# row, same type. Structure, gates and the verifier keep a mechanical reference; nothing
+# of the twin's prose is pinned (the [SPEC] cells describe, they are not text to copy).
+SPEC_PLAN_RE = re.compile(r"^#{2,4}[ \t]*Plan des cellules\b.*$", re.I | re.M)
+SPEC_SEP_RE = re.compile(r"^\|?[\s:\-|]+\|?$")
+SPEC_TYPES = {"markdown": "markdown", "md": "markdown", "code": "code"}
+
+
+def _spec_row(line: str) -> list[str]:
+    """Split one markdown table row on UNESCAPED pipes (a formula may carry `\\|x\\|`)."""
+    inner = line.strip()
+    inner = inner[1:] if inner.startswith("|") else inner
+    inner = inner[:-1] if inner.endswith("|") and not inner.endswith("\\|") else inner
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", inner)]
+
+
+def parse_spec_cells(body: str) -> tuple[list[dict], list[str]]:
+    """The issue's « Plan des cellules » table -> [{idx, cell_type, titre, role}].
+
+    Fail-closed: every defect is named and the plan is refused whole — an approximate
+    plan would only surface at the final verify, after every token was spent. Required:
+    a `Type` column (markdown|md|code) and a content column (`Contenu`/`Rôle`/`Attendu`);
+    optional `#`/`Idx` column, contiguous from 0 or 1; a title cell (markdown) first, a
+    provenance footer (markdown) last, at least one code cell."""
+    m = SPEC_PLAN_RE.search(body or "")
+    if not m:
+        return [], ["no « Plan des cellules » section (## heading) in the issue body"]
+    rows: list[str] = []
+    for line in (body or "")[m.end():].splitlines():
+        s = line.strip()
+        if s.startswith("|"):
+            rows.append(s)
+        elif rows or s.startswith("#"):
+            break                              # table ended, or next section reached
+    if len(rows) < 3:
+        return [], ["« Plan des cellules » has no table (header + separator + rows)"]
+    header = [h.strip("`* ").lower() for h in _spec_row(rows[0])]
+
+    def col(*names: str) -> int | None:
+        for i, h in enumerate(header):
+            if any(h == n or h.startswith(n) for n in names):
+                return i
+        return None
+
+    ci_type = col("type")
+    ci_idx = col("#", "idx", "index", "cellule")
+    ci_title = col("titre", "title")
+    ci_role = col("contenu", "rôle", "role", "attendu", "ce que")
+    if ci_type is None:
+        return [], ["plan table has no « Type » column"]
+    errors: list[str] = []
+    if ci_role is None:
+        errors.append("plan table has no content column (Contenu / Rôle / Attendu)")
+    cells, idx_raw = [], []
+    for pos, r in enumerate(rows[1:]):
+        if SPEC_SEP_RE.match(r):
+            continue
+        parts = _spec_row(r)
+        if len(parts) != len(header):
+            errors.append(f"row {pos}: {len(parts)} columns, header has {len(header)} "
+                          "(escape a literal pipe as \\|)")
+            continue
+        t = SPEC_TYPES.get(parts[ci_type].strip("`* ").lower())
+        if t is None:
+            errors.append(f"row {pos}: type {parts[ci_type]!r} is not markdown|code")
+            continue
+        idx_raw.append(parts[ci_idx] if ci_idx is not None else None)
+        cells.append({"cell_type": t,
+                      "titre": parts[ci_title] if ci_title is not None else "",
+                      "role": parts[ci_role] if ci_role is not None else ""})
+    if ci_idx is not None and cells:
+        try:
+            nums = [int(str(v).strip("`* ")) for v in idx_raw]
+        except ValueError:
+            errors.append("index column is not integer")
+        else:
+            if not nums or nums[0] not in (0, 1) \
+                    or nums != list(range(nums[0], nums[0] + len(nums))):
+                errors.append(f"index column not contiguous from 0 or 1: {nums[:8]}")
+    if len(cells) < 3:
+        errors.append(f"plan has {len(cells)} usable rows, at least 3 required")
+    if cells and cells[0]["cell_type"] != "markdown":
+        errors.append("first plan cell must be markdown (the title)")
+    if cells and cells[-1]["cell_type"] != "markdown":
+        errors.append("last plan cell must be markdown (the provenance footer)")
+    if cells and not any(c["cell_type"] == "code" for c in cells):
+        errors.append("plan has no code cell")
+    empty = [i for i, c in enumerate(cells) if not (c["role"] or c["titre"]).strip()]
+    if empty:
+        errors.append(f"plan rows with no title and no content: {empty[:8]}")
+    if errors:
+        return [], errors
+    for i, c in enumerate(cells):
+        c["idx"] = i
+    return cells, []
+
+
+def spec_twin(cells: list[dict], meta: dict) -> dict:
+    """The harness-made reference notebook for --from-spec: one [SPEC] cell per plan row,
+    no outputs. It is written to the OUT dir, never to the worktree, and never committed."""
+    out = []
+    for c in cells:
+        head = f"[SPEC cellule {c['idx']} — {c['cell_type']}] {c.get('titre') or ''}".rstrip()
+        role = (c.get("role") or "").strip()
+        if c["cell_type"] == "markdown":
+            out.append({"cell_type": "markdown", "id": f"spec-{c['idx']}", "metadata": {},
+                        "source": f"{head}\n\n{role}".rstrip()})
+        else:
+            lines = [head] + (role.splitlines() if role else [])
+            out.append({"cell_type": "code", "id": f"spec-{c['idx']}", "metadata": {},
+                        "execution_count": None, "outputs": [],
+                        "source": "\n".join("# " + ln for ln in lines)})
+    return {"cells": out, "metadata": meta, "nbformat": 4, "nbformat_minor": 5}
+
+
+def spec_meta(meta_nb: Path) -> dict:
+    """kernelspec + language_info of the --meta-from notebook: the series' canonical
+    metadata a from-spec deliverable inherits (nothing else of that notebook is read)."""
+    full = json.loads(meta_nb.read_text(encoding="utf-8")).get("metadata") or {}
+    return {k: full[k] for k in ("kernelspec", "language_info") if k in full}
+
+
+def spec_creation_prompt(issue_n: int, issue: dict, rel: str, kernel: dict,
+                         ctx: str, view: str, conventions: str = "") -> str:
+    """Stage 1 of --from-spec: same LIGHT plan contract as creation_prompt, without a
+    twin — the issue's spec is the only reference, the [SPEC] twin fixes the skeleton."""
+    return (
+        f"MODE CRÉATION DEPUIS LA SPEC — tu prépares la CRÉATION COMPLÈTE d'un carnet NEUF "
+        f"pour l'issue jsboige/CoursIA#{issue_n}. Il n'existe AUCUN carnet source : la spec "
+        "de l'issue est la seule référence.\n\n"
+        f"## Issue — la spec\nTITRE : {issue['title']}\n\n"
+        f"CORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        f"## Fil (extrait récent)\n{_cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+        + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
+        + f"## Carnet à CRÉER : {rel} (absent d'origin/main — sa création EST la livraison)\n"
+        f"Noyau d'exécution : {kernel['kernel_name']}\n\n"
+        f"## Contexte de série\n{ctx}\n\n"
+        "## Jumeau de spec (structure IMPOSÉE, générée par le harnais depuis la table "
+        f"« Plan des cellules » de l'issue)\n{view}\n\n"
+        "Chaque cellule `[SPEC cellule i — type]` du jumeau de spec est UNE cellule du carnet : "
+        "même index, même type, même ordre — le harnais refuse un carnet dont la signature de "
+        "types diffère. Les cellules [SPEC] DÉCRIVENT la cellule à écrire ; ce ne sont pas des "
+        "textes à recopier. Respecte les interdits et les attendus de l'issue : sorties "
+        "réelles, aucune valeur annoncée sans le calcul qui l'affiche, stubs d'exercice "
+        "exécutables avec valeur neutre, aucun appel réseau, aucune source citée que l'issue "
+        "ne fournit pas. La dernière cellule markdown est le pied de provenance.\n\n"
+        "Rends UNIQUEMENT un bloc ```json — le PLAN, SANS les sources complètes :\n"
+        '{"cells":[{"idx":<0..N-1>,"cell_type":"markdown|code","titre":"<titre ou 1ère ligne>'
+        '","role":"<ce que fait cette cellule en une phrase>"}],'
+        '"expectations":["..."],"risques":["..."]}\n'
+        "UNE ligne par cellule du jumeau de spec, dans l'ordre. Les sources seront réclamées "
+        "au tour suivant, par tranches."
+    )
+
+
 CREATE_SEGMENT = 8   # cells per stage-2 tour in creation mode — measured 17/11 (#27099):
                      # a whole-notebook single-shot answer (16 268 chars) never parsed;
                      # the sources of ~29 cells do not fit one output budget
@@ -1557,6 +1715,10 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) 
            "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
            "--facts", str(facts), "--agent", args.verifier_agent,
            "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    if getattr(args, "from_spec", False):
+        # the SOURCE is a [SPEC] twin, not an origin notebook: the correction-mode task
+        # ("content lost / invented vs SOURCE") would reject every new cell by design
+        cmd += ["--mode", "spec"]
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # the child prints non-ASCII JSON
     t0 = time.time()
     try:
@@ -1882,6 +2044,17 @@ async def run(args, rec: dict) -> dict:
     issue = fetch_issue("jsboige/CoursIA", args.issue, token)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
+    from_spec = bool(getattr(args, "from_spec", False))
+    spec_cells: list[dict] = []
+    if from_spec:
+        # Parsed BEFORE the reservation: a spec without a usable cell plan must never
+        # post a [CLAIMED] comment, open a worktree or pay a token.
+        spec_cells, spec_errors = parse_spec_cells(issue["body"])
+        rec["stages"]["spec_plan"] = {"cells": len(spec_cells), "errors": spec_errors,
+                                      "types": [c["cell_type"] for c in spec_cells]}
+        if spec_errors:
+            rec["verdict"] = "refused-spec-plan-unusable"
+            return rec
     if args.claim:
         rec["stages"]["claim_reservation"] = reserve_claim(
             repo, args.issue, args.lane, args.intention, claim_nb)
@@ -1915,12 +2088,29 @@ async def run(args, rec: dict) -> dict:
     target_nb = wt_path / args.notebook
     src_nb = target_nb
     create_mode = False
+    spec_meta_d: dict = {}
     if target_nb.is_file():
-        if args.source_nb:
+        if args.source_nb or from_spec:
             # both present: an operator typo would silently CORRECT the twin instead of
             # creating the target — refuse loud.
             rec["verdict"] = f"target-already-exists:{args.notebook}"
             return rec
+    elif from_spec:
+        meta_nb = wt_path / getattr(args, "meta_from", "")
+        if not meta_nb.is_file():
+            rec["verdict"] = f"meta-from-not-found:{meta_nb}"
+            return rec
+        spec_meta_d = spec_meta(meta_nb)
+        if not (spec_meta_d.get("kernelspec") or {}).get("name"):
+            rec["verdict"] = f"meta-from-no-kernelspec:{args.meta_from}"
+            return rec
+        # The twin lives in the OUT dir: never in the worktree, never committed.
+        src_nb = out_dir / f"spec-twin-{args.issue}.ipynb"
+        src_nb.write_text(json.dumps(spec_twin(spec_cells, spec_meta_d), ensure_ascii=False,
+                                     indent=1) + "\n", encoding="utf-8")
+        create_mode = True
+        rec["create_mode"] = {"spec_twin": str(src_nb), "target": args.notebook,
+                              "meta_from": args.meta_from}
     elif args.source_nb:
         src_nb = wt_path / args.source_nb
         if not src_nb.is_file():
@@ -1937,12 +2127,19 @@ async def run(args, rec: dict) -> dict:
         # The canonical C# twin owns the deliverable's kernelspec: execution must use the
         # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
         # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
-        twin_meta = series_canonical_meta(wt_path, args.notebook)
+        twin_meta = spec_meta_d if from_spec else series_canonical_meta(wt_path, args.notebook)
         twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
         if twin_kernel:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
+            if from_spec:
+                kernel["kernel_source"] = "meta-from-kernelspec"
     rec["kernel"] = kernel
+    # The kernel runs where the DELIVERABLE will live: a from-spec twin sits in the out
+    # dir, so its parent would make every relative path resolve outside the series.
+    exec_dir = target_nb.parent if from_spec else src_nb.parent
+    if from_spec:
+        exec_dir.mkdir(parents=True, exist_ok=True)
     gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
     if gate["blocking_refusal"]:
@@ -1974,7 +2171,11 @@ async def run(args, rec: dict) -> dict:
                     "child's logging — see the wave-1b post-mortem 18/11)") from None
             # ---- stage 1 PLAN (correction) / CREATION PLAN (--source-nb)
             t1 = time.time()
-            if create_mode:
+            if from_spec:
+                prompt = spec_creation_prompt(args.issue, issue, args.notebook, kernel,
+                                              series_context(wt_path, args.notebook),
+                                              build_view(src_nb), conventions)
+            elif create_mode:
                 prompt = creation_prompt(args.issue, issue, args.notebook, args.source_nb,
                                          kernel, series_context(wt_path, args.notebook),
                                          build_view(src_nb), conventions)
@@ -2027,9 +2228,11 @@ async def run(args, rec: dict) -> dict:
             rec["write_mode"] = args.write_mode
             env2: dict = {}                # correction branch fills it; creation never reads it
             if create_mode:
+                # from-spec: no prose pin — the [SPEC] cells describe, they are not
+                # authoritative text (a twin's prose pin would copy the placeholders).
                 built = await create_segments(sk, args, rec, conv, plan.get("cells") or [],
                                               len(src_cells), conventions,
-                                              src_cells=src_cells)
+                                              src_cells=None if from_spec else src_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
                 if not built or not built.get("cells"):
@@ -2074,9 +2277,9 @@ async def run(args, rec: dict) -> dict:
                     rec["verdict"] = "built-structure-mismatch"
                 else:
                     kid = await start_kernel(pm, args.kernel_override or kernel["kernel_name"],
-                                             src_nb.parent)
+                                             exec_dir)
                     rec["kernel_id"] = kid
-                    rec["kernel_cwd"] = str(src_nb.parent)
+                    rec["kernel_cwd"] = str(exec_dir)
                     if kid is None and args.exec_mode != "none":
                         # a kernel that fails to start must never read as a pass: without
                         # this, an absent .net-csharp kernelspec would produce a
@@ -2157,7 +2360,7 @@ async def run(args, rec: dict) -> dict:
                                     break
                                 await pm_call(pm, "manage_kernel",
                                               {"action": "stop", "kernel_id": kid})
-                                kid = await start_kernel(pm, kname, src_nb.parent)
+                                kid = await start_kernel(pm, kname, exec_dir)
                                 rec["kernel_id"] = kid
                                 if kid is None:
                                     rec["verdict"] = "kernel-start-failed"
@@ -2179,7 +2382,10 @@ async def run(args, rec: dict) -> dict:
                                 for h in fs_hits[:8]:
                                     twin_src = ""
                                     ci = h.get("cell")
-                                    if isinstance(ci, int) and 0 <= ci < len(src_cells):
+                                    if (not from_spec and isinstance(ci, int)
+                                            and 0 <= ci < len(src_cells)):
+                                        # a [SPEC] placeholder is no prose authority: an
+                                        # empty twin_source asks for a clean French rewrite
                                         twin_src = _text(src_cells[ci].get("source"))[:3000]
                                     detail_md.append({"idx": ci,
                                                       "excerpt": h.get("excerpt") or "",
@@ -2305,6 +2511,12 @@ def main() -> int:
                     help="repo-relative TWIN notebook (creation mode: the target is ABSENT "
                          "from origin/main and gets created from this source, e.g. the "
                          "C# parity wave-1 grains #27099-#27116)")
+    ap.add_argument("--from-spec", action="store_true",
+                    help="creation of a NEW notebook with no twin (new series): the issue's "
+                         "« Plan des cellules » table is the reference; requires --meta-from")
+    ap.add_argument("--meta-from", default=None,
+                    help="repo-relative notebook whose kernelspec + language_info the "
+                         "--from-spec deliverable inherits (nothing else is read from it)")
     ap.add_argument("--repo", default=os.environ.get("NBCODER_REPO", ""),
                     help="CoursIA checkout (claim guard + worktree source); required — a "
                          "per-seat default path is not a harness binding (F2, vllm#438)")
@@ -2382,6 +2594,14 @@ def main() -> int:
         ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
                  "assembles the whole notebook in one write, MCP cell tools would race "
                  "on an empty skeleton")
+    if args.from_spec and args.source_nb:
+        ap.error("--from-spec and --source-nb are exclusive: a twin port is --source-nb, "
+                 "a new notebook with no twin is --from-spec")
+    if args.from_spec and not args.meta_from:
+        ap.error("--from-spec requires --meta-from <repo-relative notebook>: the deliverable "
+                 "inherits that notebook's kernelspec + language_info (no default kernel)")
+    if args.from_spec and args.write_mode == "mcp":
+        ap.error("--from-spec requires --write-mode json (one harness write, like --source-nb)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
