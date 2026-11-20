@@ -1932,34 +1932,59 @@ def _archive_verify_trace(out_dir: Path, issue: int, tag: str) -> str | None:
 # fields carry what actually served the call (claudish `x-claudish-failover-notice` #229,
 # served model claudish#1128); they are recorded when present and NEVER inferred from the
 # requested id.
-SERVED_FIELDS = ("served_model", "failover_notice")
+# One call_agent call can make several HTTP round-trips (agent rounds, SDK retries). When
+# they disagree, sk-agent (ms#1824, squash 756dd4f4) puts the LAST value in `served_model`
+# and every distinct value in `served_model_variants` -- the latter only exists when there
+# is more than one. Comparing `served_model` alone misses a round served by the verifier's
+# model that was not the last one (#4844 c.7042525323).
+SERVED_FIELDS = ("served_model", "served_model_variants",
+                 "failover_notice", "failover_notice_variants")
 
 
 def served_fields(env: dict) -> dict:
     return {k: env[k] for k in SERVED_FIELDS if env.get(k)}
 
 
-def served_identity(calls: list, verify: dict) -> dict:
-    """Producer vs verifier, by the model that SERVED them, as far as the envelopes say.
+def served_models(env: dict) -> set[str]:
+    """Every concrete model the envelope says served the call; empty = not known."""
+    out = {str(v) for v in (env.get("served_model_variants") or []) if v}
+    if env.get("served_model"):
+        out.add(str(env["served_model"]))
+    return out
 
-    `same`: the verifier's served model also served a producer call -> the producer judged
-    its own work, and no approval stands. `distinct`: every answered producer call names its
-    served model and none is the verifier's. `unknown` otherwise: said in clear, never read
-    as distinct. Failover notices are listed whatever the status."""
+
+def _notices(env: dict) -> list[str]:
+    seen = [str(v) for v in (env.get("failover_notice_variants") or []) if v]
+    if env.get("failover_notice") and str(env["failover_notice"]) not in seen:
+        seen.append(str(env["failover_notice"]))
+    return seen
+
+
+def served_identity(calls: list, verify: dict) -> dict:
+    """Producer vs verifier, by the models that SERVED them, as far as the envelopes say.
+
+    `same`: a model that served the verifier also served a producer call (any round, not
+    only the last) -> the producer judged its own work, and no approval stands. `distinct`:
+    every answered producer call names what served it and no model is on both sides.
+    `unknown` otherwise: said in clear, never read as distinct. Failover notices are listed
+    whatever the status."""
     answered = [c for c in calls or [] if c.get("response_chars") and not c.get("error")]
-    prod = sorted({c["served_model"] for c in answered if c.get("served_model")})
-    ver = verify.get("served_model")
-    if ver and ver in prod:
+    prod_sets = [served_models(c) for c in answered]
+    prod = set().union(*prod_sets)
+    ver = served_models(verify)
+    shared = sorted(prod & ver)
+    if shared:
         status = "same"
-    elif ver and answered and all(c.get("served_model") for c in answered):
+    elif ver and answered and all(prod_sets):
         status = "distinct"
     else:
         status = "unknown"
-    fo = [{"stage": c.get("stage"), "notice": str(c["failover_notice"])[:300]}
-          for c in calls or [] if c.get("failover_notice")]
-    if verify.get("failover_notice"):
-        fo.append({"stage": "4-verify", "notice": str(verify["failover_notice"])[:300]})
-    return {"status": status, "producer": prod, "verifier": ver, "failovers": fo}
+    fo = [{"stage": c.get("stage"), "notice": " | ".join(_notices(c))[:300]}
+          for c in calls or [] if _notices(c)]
+    if _notices(verify):
+        fo.append({"stage": "4-verify", "notice": " | ".join(_notices(verify))[:300]})
+    return {"status": status, "producer": sorted(prod),
+            "verifier": ", ".join(sorted(ver)) or None, "shared": shared, "failovers": fo}
 
 
 def identity_line(identity: dict | None) -> str:
@@ -1969,7 +1994,8 @@ def identity_line(identity: dict | None) -> str:
         head = (f"producteur {', '.join(identity['producer'])} ≠ vérificateur "
                 f"{identity['verifier']}")
     elif st == "same":
-        head = f"MÊME modèle servi des deux côtés ({identity['verifier']})"
+        both = identity.get("shared") or [identity["verifier"]]   # records before variants
+        head = f"MÊME modèle servi des deux côtés ({', '.join(map(str, both))})"
     else:
         head = "modèle servi inconnu (l'enveloppe sk-agent ne le publie pas)"
     if (identity or {}).get("failovers"):
