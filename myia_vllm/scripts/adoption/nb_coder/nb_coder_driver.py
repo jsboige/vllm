@@ -2536,6 +2536,15 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         rec["verdict"] = "verify-error"
 
 
+# Inline commit identity (ms#1813, upstreamed here after two re-copies dropped it
+# from the sk-agent harness): a CI runner configures no user.name/user.email and
+# the stage5 commit is the FIRST commit of a fresh worktree — without these two
+# `-c` pairs git dies "Author identity unknown" and the whole grain fails at the
+# last step, after every token was spent.
+_GIT_IDENTITY = ("-c", "user.name=nb-coder",
+                 "-c", "user.email=nb-coder@users.noreply.github.com")
+
+
 def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
     p = subprocess.run(["git", "-C", str(wt), *git_args], capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=timeout)
@@ -2744,7 +2753,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
     msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
     msg_file.write_text(commit_body, encoding="utf-8")
-    rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     if rc != 0:
         # Pre-commit auto-fixer pattern (measured 2/2 on fresh .ipynb grains,
         # CoursIA #27113 + #27102): an auto-fix hook rewrites the staged file
@@ -2755,7 +2764,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         if st_rc == 0 and st_out.strip().startswith("AM"):
             entry["commit_retry"] = "pre-commit-auto-fix-read"
             _git(wt_path, "add", "--", nb_rel)
-            rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+            rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     msg_file.unlink(missing_ok=True)
     if rc != 0:
         entry["error"] = f"commit: {out[:300]}"
