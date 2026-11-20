@@ -460,14 +460,57 @@ def series_context(repo: Path, rel: str, max_headers: int = 10) -> str:
     return "\n".join(lines)
 
 
-def parse_json_block(text: str) -> dict | None:
-    m = re.findall(r"```json\s*(\{.*?\})\s*```", text, re.S)
-    for cand in reversed(m or [text]):
+def _json_candidates(text: str) -> list[str]:
+    """Where the answer's JSON object may sit, most plausible first.
+
+    The LAST fenced block is the model's final answer. The outermost-brace slice comes after
+    it: it catches an unfenced answer behind a reasoning preamble, and a fenced answer the
+    non-greedy fence regex cut short because a cell's own source contains a ``` fence."""
+    cands = list(reversed(re.findall(r"```json\s*(\{.*?\})\s*```", text, re.S)))
+    i, j = text.find("{"), text.rfind("}")
+    if i >= 0 and j > i and text[i:j + 1] not in cands:
+        cands.append(text[i:j + 1])
+    return cands
+
+
+def parse_json_report(text: str) -> tuple[dict | None, str]:
+    """(parsed object, "") or (None, the decoder's error on the most plausible candidate).
+
+    `strict=False` accepts raw control characters inside strings: a literal newline or tab
+    in a cell's source is the commonest malformation of a long build answer, and its
+    meaning is unambiguous (po-2028:claudish, 20/11 — stage-2 answers unreadable on literal
+    newlines). An unescaped quote is NOT guessed here: where the string ends is ambiguous,
+    and a wrong guess would write a silently different cell. That case goes back to the
+    model with this error (`parse_or_repair`)."""
+    bare = text.strip()
+    if bare[:1] in ("{", "["):
+        # A bare answer that decodes is final, whatever its shape: a well-formed list is a
+        # wrong answer, not a format slip, and is never mined for an inner object.
         try:
-            return json.loads(cand)
-        except Exception:
+            obj = json.loads(bare, strict=False)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(obj, dict):
+                return obj, ""
+            return None, f"la réponse est un JSON {type(obj).__name__}, pas un objet"
+    err = ""
+    for cand in _json_candidates(text):
+        try:
+            obj = json.loads(cand, strict=False)
+        except json.JSONDecodeError as exc:
+            if not err:
+                lo = max(0, exc.pos - 80)
+                err = (f"{exc.msg} (ligne {exc.lineno}, colonne {exc.colno}), "
+                       f"près de : {cand[lo:exc.pos + 80]!r}")
             continue
-    return None
+        if isinstance(obj, dict):
+            return obj, ""
+    return None, err or "aucun objet JSON dans la réponse"
+
+
+def parse_json_block(text: str) -> dict | None:
+    return parse_json_report(text)[0]
 
 
 # ---------------------------------------------------------------- prompts
@@ -1085,7 +1128,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                                   creation_json_prompt(tranche, n_src_cells, conventions,
                                                        src_cells), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
-        part = parse_json_block(env.get("response") or "")
+        part, env = await parse_or_repair(session, args, rec, stage, env, conv,
+                                          max_tokens=BUILD_MAX_TOKENS)
         kept, missing = segment_keep_valid((part or {}).get("cells") or [], tranche)
         return kept, missing, part, env
 
@@ -1141,7 +1185,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                                                            conventions), conv,
                                       max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
-            part2 = parse_json_block(env.get("response") or "")
+            part2, env = await parse_or_repair(session, args, rec, f"2-build+{si}+repair",
+                                               env, conv, max_tokens=BUILD_MAX_TOKENS)
             extra, missing = segment_keep_valid((part2 or {}).get("cells") or [], missing)
             kept += extra
             kept.sort(key=lambda c: int(c["idx"]))   # repair fills holes mid-segment
@@ -1566,6 +1611,50 @@ def gate_refusal(env: dict) -> str:
     if _GATE_REFUSAL_RE.search(err):
         return f"deferred-by-capacity-gate: {err[:160]}"
     return ""
+
+
+def looks_truncated(env: dict) -> bool:
+    """An answer cut by max_tokens ends inside the JSON, not on its fence or brace. Asking
+    the model to re-emit it under the same budget would cut it again: that case is the
+    bisect's (create segments), never the format repair's."""
+    r = (env.get("response") or "").rstrip()
+    return bool(r) and not (r.endswith("```") or r.endswith("}"))
+
+
+FORMAT_REPAIR_PROMPT = (
+    "Ta réponse précédente ne se lit pas comme du JSON. Erreur du décodeur : {err}\n\n"
+    "Rends EXACTEMENT le même contenu (mêmes cellules, mêmes champs, aucune modification "
+    "de fond) dans un seul bloc ```json valide, sans texte autour. Dans les chaînes JSON : "
+    "guillemet = \\\", retour à la ligne = \\n, tabulation = \\t, antislash = \\\\.{prev}")
+
+
+async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, env: dict,
+                          conv: str | None, max_tokens: int | None = None
+                          ) -> tuple[dict | None, dict]:
+    """Parse a model answer; if it does not decode, ONE format-repair turn, then give up.
+
+    The repair sends the decoder's own error back on the same conversation and asks for the
+    same content re-emitted. It is skipped when there is nothing to repair: an error envelope
+    or a gate refusal (no answer at all), an empty answer, or a truncated one (see
+    `looks_truncated`). Returns (parsed, env): the repair's env when it parsed, the original
+    otherwise, so the caller's raw-tail diagnostics keep showing the answer that broke."""
+    text = env.get("response") or ""
+    obj, err = parse_json_report(text)
+    if obj is not None or env.get("error") or not text.strip() or looks_truncated(env):
+        return obj, env
+    rconv = env.get("conversation_id") or conv
+    # No conversation to continue: the model would not see the answer it must re-emit.
+    prev = "" if rconv else f"\n\nRéponse à reprendre :\n{text}"
+    env2 = await sk_call_retry(session, args, rec, f"{stage}-format",
+                               FORMAT_REPAIR_PROMPT.format(err=err, prev=prev), rconv,
+                               max_tokens=max_tokens)
+    obj2, err2 = parse_json_report(env2.get("response") or "")
+    rec.setdefault("format_repairs", []).append(
+        {"stage": stage, "error": err[:400], "ok": obj2 is not None,
+         "error_after": err2[:400] if obj2 is None else "",
+         "failure": call_failure(env2) or gate_refusal(env2)})
+    # A gate refusal on the repair call is a deferral, and the caller reads it from env.
+    return (obj2, env2) if obj2 is not None or gate_refusal(env2) else (None, env)
 
 
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
@@ -2199,7 +2288,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                                   repair_prompt(detail, conventions), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         conv = env.get("conversation_id") or conv
-        part = parse_json_block(env.get("response") or "")
+        part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
+                                          max_tokens=BUILD_MAX_TOKENS)
         if not part or not part.get("cells"):
             rec.setdefault("repairs", []).append(
                 {"stage": stage, "round": rnd, "verdict": call_failure(env) or "unparsed",
@@ -2315,7 +2405,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                 spec=bool(getattr(args, "from_spec", False))),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
-            part = parse_json_block(env.get("response") or "")
+            part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
+                                              max_tokens=BUILD_MAX_TOKENS)
             if not part or not part.get("cells"):
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
@@ -2649,7 +2740,7 @@ async def run(args, rec: dict) -> dict:
             env = await sk_call_retry(sk, args, rec, "1-plan", prompt, None)
             conv = env.get("conversation_id")
             rec["conversation_id"] = conv      # the agentic trace the PR body must carry
-            plan = parse_json_block(env.get("response") or "")
+            plan, env = await parse_or_repair(sk, args, rec, "1-plan", env, conv)
             rec["plan"] = plan
             if not plan:
                 # raw tail persisted for offline diagnosis (17/11: the unparsed 16 268-char
@@ -2712,7 +2803,7 @@ async def run(args, rec: dict) -> dict:
                            else build_prompt(scratch_nb, plan, exec_idx, src_cells,
                                              len(src_cells), conventions))
                 env2 = await sk_call_retry(sk, args, rec, "2-build", prompt2, conv)
-                built = parse_json_block(env2.get("response") or "")
+                built, env2 = await parse_or_repair(sk, args, rec, "2-build", env2, conv)
                 rec["build_model_answer"] = {"parsed": built,
                                              "chars": len(env2.get("response") or "")}
                 if args.write_mode == "json" and built:
@@ -2808,7 +2899,8 @@ async def run(args, rec: dict) -> dict:
                                     sk, args, rec, "2.6-mdrepair",
                                     md_repair_prompt(detail_md, conventions), conv)
                                 conv = env.get("conversation_id") or conv
-                                part = parse_json_block(env.get("response") or "")
+                                part, env = await parse_or_repair(sk, args, rec,
+                                                                  "2.6-mdrepair", env, conv)
                                 if part and part.get("cells"):
                                     # Scope the prose round to the cells it asked for
                                     # (finding 1): a response editing any other cell is
