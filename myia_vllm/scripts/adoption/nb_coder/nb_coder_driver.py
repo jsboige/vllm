@@ -1634,9 +1634,459 @@ def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str
     return out
 
 
+# ---- Crate API grounding (Rust; MGS-25 #27133 + 2.3b #27134, 20/11) ----------------------
+# MGS-25 spent three repair rounds on `rng.next_f64()` under `:dep rand = "0.10"`. The
+# compiler's only hint was "there is a method `next_u64`"; the model's memory of rand stops
+# at 0.8, and rand 0.10 moved sampling to the extension trait `RngExt` (`random`,
+# `random_range`). 2.3b failed the same way on linfa (`GaussianNb::params()`, not
+# `default()`) and plotters (`BitMapBackend`, behind the `bitmap_backend` feature). The
+# kernel compiled exact crate sources that sit in the local cargo registry: a round that
+# quotes them teaches what the compiler hint cannot.
+CRATE_API_CAP = 3200
+CRATE_API_MAX_CRATES = 3
+_DEP_LINE_RE = re.compile(r"^\s*:dep\s+([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$", re.M)
+_CRATE_DIR_RE = re.compile(r"^([A-Za-z0-9_-]+?)-(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
+_RUST_API_ERR_RES = (
+    ("method", re.compile(r"no method named `(\w+)` found for [\w ]*?`([^`]+)`")),
+    ("assoc", re.compile(r"no (?:associated function or constant|associated function|"
+                         r"associated item|function or associated item|"
+                         r"variant or associated item|variant) named `(\w+)` found for "
+                         r"[\w ]*?`([^`]+)`")),
+    ("name", re.compile(r"cannot find (?:type|value|function|struct|macro|trait|"
+                        r"struct, variant or union type|derive macro|attribute macro) "
+                        r"`(\w+)` in (?:this scope|module `([^`]+)`|crate `([^`]+)`)")),
+    ("name", re.compile(r"use of undeclared type `(\w+)`")),
+    ("import", re.compile(r"unresolved import `([\w:]+)`")),
+    ("import", re.compile(r"could not find `(\w+)` in `([\w:]+)`")),
+)
+
+
+def _crate_norm(name: str) -> str:
+    return (name or "").replace("-", "_").lower()
+
+
+def cell_deps(cells: list[dict]) -> dict[str, dict]:
+    """`:dep` declarations of an evcxr notebook: name -> {req, features, default_features,
+    idx}. `:dep x = "0.10"` and `:dep x = { version = "0.3", default-features = false,
+    features = ["evcxr"] }`; path/git deps carry no registry version (req None)."""
+    out: dict[str, dict] = {}
+    for idx, c in enumerate(cells):
+        if c.get("cell_type") != "code":
+            continue
+        for m in _DEP_LINE_RE.finditer(_text(c.get("source"))):
+            name, spec = m.group(1), m.group(2)
+            req, feats, dflt = None, [], True
+            if spec.startswith('"'):
+                req = spec.strip('"').strip()
+            else:
+                v = re.search(r'\bversion\s*=\s*"([^"]+)"', spec)
+                req = v.group(1) if v else None
+                f = re.search(r"\bfeatures\s*=\s*\[([^\]]*)\]", spec)
+                feats = re.findall(r'"([^"]+)"', f.group(1)) if f else []
+                d = re.search(r"\bdefault[-_]features\s*=\s*(true|false)", spec)
+                dflt = not (d and d.group(1) == "false")
+            out.setdefault(name, {"req": req, "features": feats, "default_features": dflt,
+                                  "idx": idx})
+    return out
+
+
+def _req_matches(req: str | None, ver: tuple[int, int, int]) -> bool:
+    """Cargo's default (caret) requirement, plus `=`, `~`, `>=` and `*`."""
+    r = (req or "*").split(",")[0].strip()
+    if r in ("", "*"):
+        return True
+    op = ""
+    for o in (">=", "^", "=", "~"):
+        if r.startswith(o):
+            op, r = o, r[len(o):].strip()
+            break
+    m = re.match(r"(\d+)(?:\.(\d+|\*))?(?:\.(\d+|\*))?", r)
+    if not m:
+        return False
+    parts = [int(x) if x and x != "*" else None for x in m.groups()]
+    floor = tuple(p or 0 for p in parts)
+    if op == ">=":
+        return ver >= floor
+    if op == "=":
+        return all(p is None or p == v for p, v in zip(parts, ver))
+    if ver < floor:
+        return False
+    maj, mnr, pat = parts
+    if op == "~":
+        return ver[0] == maj and (mnr is None or ver[1] == mnr)
+    if maj > 0:
+        return ver[0] == maj
+    if mnr is None:
+        return ver[0] == 0
+    if mnr > 0:
+        return ver[:2] == (0, mnr)
+    return ver[:2] == (0, 0) if pat is None else ver == (0, 0, pat)
+
+
+def cargo_registry_roots() -> list[Path]:
+    home = Path(os.environ.get("CARGO_HOME") or (Path.home() / ".cargo"))
+    src = home / "registry" / "src"
+    return sorted(p for p in src.iterdir() if p.is_dir()) if src.is_dir() else []
+
+
+def registry_crate_dir(name: str, req: str | None,
+                       roots: list[Path] | None = None) -> tuple[Path, str] | None:
+    """The highest stable version of `name` in the local cargo registry that `req` accepts —
+    the copy evcxr resolved and compiled on this host — as (dir, "X.Y.Z")."""
+    best: tuple[tuple[int, int, int], Path] | None = None
+    for root in roots if roots is not None else cargo_registry_roots():
+        for d in root.iterdir():
+            m = _CRATE_DIR_RE.match(d.name)
+            if not m or m.group(5) or _crate_norm(m.group(1)) != _crate_norm(name):
+                continue
+            ver = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            if _req_matches(req, ver) and (best is None or ver > best[0]):
+                best = (ver, d)
+    return (best[1], ".".join(map(str, best[0]))) if best else None
+
+
+def rust_api_errors(errors: str) -> list[dict]:
+    """API misses a rustc diagnostic names: {kind, item, owner, crate}. `owner` is the type a
+    method/associated item was looked up on, generics and path stripped; `crate` is the
+    path's first segment when the diagnostic spells one (`plotters::series::LineSeries`)."""
+    text = _ANSI_RE.sub("", errors or "")
+    out: list[dict] = []
+    for kind, rx in _RUST_API_ERR_RES:
+        for m in rx.finditer(text):
+            g = [x for x in m.groups()]
+            item, owner, path = g[0], None, None
+            if kind in ("method", "assoc"):
+                full = re.sub(r"<.*$", "", g[1]).lstrip("&").strip()
+                full = re.sub(r"^(?:mut|dyn|impl)\s+", "", full)
+                segs = full.split("::")
+                owner, path = segs[-1], (full if len(segs) > 1 else None)
+            elif kind == "name":
+                path = next((x for x in g[1:] if x), None)
+            elif kind == "import":
+                if len(g) > 1 and g[1]:
+                    path = g[1]
+                else:
+                    segs = item.split("::")
+                    item, path = segs[-1], ("::".join(segs[:-1]) or None)
+            e = {"kind": kind, "item": item, "owner": owner,
+                 "crate": path.split("::")[0] if path else None}
+            if e not in out:
+                out.append(e)
+    return out
+
+
+def _crate_files(crate_dir: Path) -> list[tuple[str, list[str]]]:
+    """(relpath, lines) of the crate's library sources, tests/benches/examples excluded."""
+    src = crate_dir / "src"
+    out = []
+    for p in sorted(src.rglob("*.rs")) if src.is_dir() else []:
+        rel = p.relative_to(crate_dir).as_posix()
+        if re.search(r"(^|/)(tests?|benches|examples)(/|\.rs$)", rel[4:]):
+            continue
+        try:
+            out.append((rel, p.read_text(encoding="utf-8", errors="replace").split("\n")))
+        except OSError:
+            continue
+    return out
+
+
+def _code_part(line: str) -> str:
+    """The line without `//` comments and string/char literals (for brace counting)."""
+    s = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
+    s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
+    return s.split("//", 1)[0]
+
+
+def _signature(lines: list[str], i: int) -> str:
+    """One declaration, joined over up to 5 lines, cut before its body or `where` clause."""
+    buf = []
+    for line in lines[i:i + 5]:
+        buf.append(_code_part(line).strip())
+        if re.search(r"[{;]", buf[-1]) or re.search(r"^\s*where\b", buf[-1]):
+            break
+    sig = re.sub(r"\s+", " ", " ".join(buf))
+    sig = re.split(r"\s*\{|\s+where\b|;", sig)[0].replace("( ", "(").replace(" )", ")")
+    return sig[:220]
+
+
+def _block_end(lines: list[str], i: int) -> int:
+    """Index of the line closing the `{` block opened at (or just after) line i."""
+    depth, opened = 0, False
+    for j in range(i, len(lines)):
+        code = _code_part(lines[j])
+        depth += code.count("{") - code.count("}")
+        opened = opened or "{" in code
+        if opened and depth <= 0:
+            return j
+    return len(lines) - 1
+
+
+def _feature_gates(lines: list[str], i: int) -> list[str]:
+    """Features of the `#[cfg(feature = "...")]` attributes right above line i."""
+    gates: list[str] = []
+    j = i - 1
+    while j >= 0 and re.match(r"^\s*(#\[|///|//!|$)", lines[j]) and lines[j].strip():
+        if re.match(r"^\s*#\[cfg\(", lines[j]):
+            gates += re.findall(r'feature\s*=\s*"([^"]+)"', lines[j])
+        j -= 1
+    return gates
+
+
+def _module_path(crate: str, rel: str, lines: list[str], i: int) -> str:
+    """`crate::a::b` of the item at line i: file path + enclosing inline `mod x {`."""
+    mods = [m for m in rel[4:-3].split("/") if m not in ("lib", "mod", "main")]
+    inline: list[str] = []
+    depth = 0
+    for j in range(i - 1, -1, -1):
+        code = _code_part(lines[j])
+        depth += code.count("}") - code.count("{")
+        if depth < 0:
+            m = re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)", code)
+            if m:
+                inline.insert(0, m.group(1))
+            depth = 0
+    return "::".join([_crate_norm(crate)] + mods + inline)
+
+
+def _crate_features(crate_dir: Path) -> dict[str, list[str]]:
+    try:
+        toml = (crate_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    m = re.search(r"^\[features\]\s*$(.*?)(?=^\[|\Z)", toml, re.M | re.S)
+    if not m:
+        return {}
+    return {k: re.findall(r'"([^"]+)"', v)
+            for k, v in re.findall(r"^([A-Za-z0-9_-]+)\s*=\s*\[(.*?)\]", m.group(1), re.M | re.S)}
+
+
+def _enabled_features(spec: dict, table: dict[str, list[str]]) -> set[str]:
+    todo = list(spec.get("features") or []) + (["default"] if spec.get("default_features", True)
+                                              else [])
+    seen: set[str] = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        todo.extend(x for x in table.get(f, []) if x in table)
+    return seen
+
+
+_PUB_DEF_RE = r"^\s*pub(?:\([^)]*\))?\s+(?:struct|enum|type|trait|union)\s+{n}\b"
+# What DECLARES or re-exports a name; the broad form (any `pub` line naming it, e.g. a
+# return type) is only the fallback when nothing declares it.
+_PUB_NAME_RE = (r"^\s*pub(?:\([^)]*\))?\s+(?:use\s+[^;]*\b{n}\b|(?:struct|enum|type|trait|"
+                r"union|fn|mod|const|static)\s+{n}\b)")
+
+
+def _find_name(files, item: str, limit: int = 3):
+    n = re.escape(item)
+    return (_find(files, _PUB_NAME_RE.format(n=n), re.I, limit=limit)
+            or _find(files, rf"^\s*pub\b.*\b{n}\b", re.I, limit=limit))
+
+
+def _find(files, pattern: str, flags: int = 0, limit: int = 4):
+    rx = re.compile(pattern, flags)
+    hits = []
+    for rel, lines in files:
+        for i, line in enumerate(lines):
+            if not line.lstrip().startswith("//") and rx.search(line):
+                hits.append((rel, lines, i))
+                if len(hits) >= limit:
+                    return hits
+    return hits
+
+
+def _impl_header_type(header: str) -> tuple[str | None, str | None]:
+    """(trait, self type name) of an `impl<...> Trait for Type<...>` header line."""
+    h = _code_part(header).strip()
+    if not h.startswith("impl"):
+        return None, None
+    h = h[4:].lstrip()
+    if h.startswith("<"):                        # skip the balanced generic list
+        depth = 0
+        for k, ch in enumerate(h):
+            depth += (ch == "<") - (ch == ">")
+            if depth == 0:
+                h = h[k + 1:].lstrip()
+                break
+    m = re.match(r"(?:(.+?)\s+for\s+)?&?(?:mut\s+)?([\w:]+)", h)
+    if not m:
+        return None, None
+    trait = re.sub(r"<.*$", "", m.group(1)).split("::")[-1] if m.group(1) else None
+    return trait, m.group(2).split("::")[-1]
+
+
+def _qualified_fn(lines: list[str], i: int) -> str:
+    """`Type::name(…)` for a method, from the nearest enclosing less-indented `impl`."""
+    sig = re.sub(r"^pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+", "",
+                 _signature(lines, i))
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    for j in range(i - 1, -1, -1):
+        line = lines[j]
+        if line.strip() and len(line) - len(line.lstrip()) < indent:
+            if re.match(r"^\s*impl\b", line):
+                trait, ty = _impl_header_type(_signature(lines, j))
+                if ty:
+                    return f"{ty}::{sig}"
+            if re.match(r"^\s*(?:pub\s+)?(?:mod|fn|trait)\b", line):
+                break
+    return f"fn {sig}"
+
+
+def _owner_api(files, owner: str) -> list[str]:
+    """Inherent `pub fn` signatures of `owner` and the traits it implements."""
+    out, traits = [], []
+    for rel, lines in files:
+        for i, line in enumerate(lines):
+            if not re.match(r"^\s*impl\b", line) or owner not in line:
+                continue
+            trait, ty = _impl_header_type(_signature(lines, i))
+            if ty != owner:
+                continue
+            if trait:
+                if trait not in traits:
+                    traits.append(trait)
+                continue
+            end = _block_end(lines, i)
+            for k in range(i + 1, end):
+                if re.match(r"^\s*pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+\w+",
+                            lines[k]):
+                    sig = re.sub(r"^pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+",
+                                 "", _signature(lines, k))
+                    out.append(f"  {owner}::{sig}   [{rel}:{k + 1}]")
+    if traits:
+        out.append(f"  {owner} implémente : {', '.join(traits[:12])}")
+    return out[:14]
+
+
+def _extension_traits(files, crate: str) -> list[str]:
+    """Methods of the traits the crate DEFINES and re-exports at its root (`pub use
+    rng::{Fill, RngExt}`): an extension trait must be imported for its methods to exist."""
+    lib = next((ls for rel, ls in files if rel == "src/lib.rs"), [])
+    names: list[str] = []
+    for line in lib:
+        if re.match(r"^pub use\b", line):
+            names += [n for n in re.findall(r"\b([A-Z]\w*)\b", line) if n not in names]
+    out = []
+    for n in names:
+        for rel, lines, i in _find(files, rf"^\s*pub\s+trait\s+{re.escape(n)}\b", limit=1):
+            end = _block_end(lines, i)
+            meths = [f"    {_signature(lines, k)}" for k in range(i + 1, end)
+                     if re.match(r"^\s{4}fn\s+\w+", lines[k])]
+            if meths:
+                out.append(f"  trait {_crate_norm(crate)}::{n} (à importer : "
+                           f"`use {_crate_norm(crate)}::{n};`) [{rel}:{i + 1}]")
+                out += meths[:9]
+    return out[:22]
+
+
+def crate_api_block(cells: list[dict], errors: list[str],
+                    roots: list[Path] | None = None) -> tuple[str, dict]:
+    """The REAL API of the crates a Rust repair round's errors touch, quoted from the
+    registry copy the kernel compiled. Returns (block, info) — info = {crates, dep_cell,
+    gated, unknown} for the round record; ("", {}) when nothing applies."""
+    deps = cell_deps(cells)
+    errs: list[dict] = []
+    for t in errors:
+        errs += [e for e in rust_api_errors(t) if e not in errs]
+    if not deps or not errs:
+        return "", {}
+    resolved: dict[str, tuple[Path, str]] = {}
+    for name, spec in deps.items():
+        hit = registry_crate_dir(name, spec["req"], roots)
+        if hit:
+            resolved[name] = hit
+    if not resolved:
+        return "", {}
+    files_of: dict[str, list] = {}
+
+    def files(name):
+        if name not in files_of:
+            files_of[name] = _crate_files(resolved[name][0])
+        return files_of[name]
+
+    by_norm = {_crate_norm(n): n for n in resolved}
+    per_crate: dict[str, list[dict]] = {}
+    unknown: list[str] = []
+    for e in errs:
+        target = by_norm.get(_crate_norm(e["crate"])) if e["crate"] else None
+        key = e["owner"] or e["item"]
+        if target is None:
+            for name in resolved:
+                if e["kind"] in ("method", "assoc"):
+                    if _find(files(name), _PUB_DEF_RE.format(n=re.escape(key)), limit=1):
+                        target = name
+                        break
+                elif _find_name(files(name), e["item"], limit=1):
+                    target = name
+                    break
+        if target is not None:
+            per_crate.setdefault(target, []).append(e)
+        elif (e["kind"] in ("name", "import") and e["item"][:1].isupper()
+              and not any(c.get("cell_type") == "code"
+                          and (declares(_text(c.get("source")), e["item"])
+                               or binds(_text(c.get("source")), e["item"]))
+                          for c in cells) and e["item"] not in unknown):
+            unknown.append(e["item"])
+    if not per_crate and not unknown:
+        return "", {}
+    parts: list[str] = []
+    gated: list[str] = []
+    for name in list(per_crate)[:CRATE_API_MAX_CRATES]:
+        crate_dir, version = resolved[name]
+        spec, fl = deps[name], files(name)
+        table = _crate_features(crate_dir)
+        enabled = _enabled_features(spec, table)
+        lines = [f"crate {name} {version} — `:dep` demande "
+                 f"\"{spec['req']}\" (cellule {spec['idx']})"]
+        for e in per_crate[name]:
+            if e["kind"] in ("method", "assoc"):
+                lines.append(f"- `{e['owner']}` n'a pas `{e['item']}` ; ce qui existe :")
+                for rel, ls, i in _find(fl, _PUB_DEF_RE.format(n=re.escape(e["owner"])),
+                                        limit=1):
+                    lines.append(f"  {_signature(ls, i)}   [{rel}:{i + 1}]")
+                lines += _owner_api(fl, e["owner"])
+                if e["kind"] == "method":
+                    lines += _extension_traits(fl, name)
+                near = _find(fl, rf"^\s*pub\s+fn\s+(?:\w+_)?{re.escape(e['item'])}(?:_\w+)?\b",
+                             re.I, limit=4)
+                lines += [f"  voisin : {_qualified_fn(ls, i)}   [{rel}:{i + 1}]"
+                          for rel, ls, i in near]
+            else:
+                hits = _find_name(fl, e["item"])
+                lines.append(f"- `{e['item']}` introuvable tel quel ; dans les sources :")
+                for rel, ls, i in hits:
+                    gates = _feature_gates(ls, i)
+                    off = [g for g in gates if g not in enabled]
+                    gated += [g for g in off if g not in gated]
+                    lines.append(f"  {_signature(ls, i)}   [{rel}:{i + 1}, chemin "
+                                 f"{_module_path(name, rel, ls, i)}"
+                                 + (f", feature {', '.join(gates)}"
+                                    + (" NON activée" if off else " activée") if gates else "")
+                                 + "]")
+        if table:
+            lines.append(f"  features de {name} : {', '.join(sorted(table)[:30])} ; "
+                         f"activées ici : {', '.join(sorted(f for f in enabled if f in table)) or 'aucune'}")
+        parts.append("\n".join(dict.fromkeys(lines)))
+    if unknown:
+        parts.append(f"Introuvables dans les sources de {', '.join(resolved)} : "
+                     + ", ".join(f"`{u}`" for u in unknown)
+                     + " — ces noms n'existent pas dans ces versions, ne les utilise pas.")
+    block = "\n\n".join(parts)
+    if len(block) > CRATE_API_CAP:
+        block = block[:CRATE_API_CAP].rsplit("\n", 1)[0] + "\n[… extrait tronqué …]"
+    used = list(per_crate)[:CRATE_API_MAX_CRATES]
+    dep_cells = sorted({deps[n]["idx"] for n in used})
+    return block, {"crates": [f"{n} {resolved[n][1]}" for n in used],
+                   "dep_cell": dep_cells[0] if dep_cells else None,
+                   "gated": gated, "unknown": unknown}
+
+
 def repair_prompt(failing: list[dict], conventions: str = "",
                   upstream: list[dict] | None = None,
-                  deferred: list[dict] | None = None) -> str:
+                  deferred: list[dict] | None = None, crate_api: str = "") -> str:
     """One repair round: the REAL kernel errors of the failing cells (line + cause, as
     persisted by execution) and a demand for corrected FULL sources of those cells only.
     Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
@@ -1659,7 +2109,13 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         blocks.append(f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
                       f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n"
                       f"{f['errors']}{cite_txt}")
+    api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
+               "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
+               "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
+               "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
     up = upstream or []
+    dep_up = [u for u in up if u.get("via") == "dep"]
+    up = [u for u in up if u.get("via") != "dep"]
     up_txt = ""
     if up:
         def _why(u: dict) -> str:
@@ -1676,6 +2132,14 @@ def repair_prompt(failing: list[dict], conventions: str = "",
                   "divergent du jumeau dans une définition plus haut), corrige-la ICI plutôt "
                   "que de contourner l'appel ou d'affaiblir le test ; sinon ne les rends pas."
                   "\n\n" + "\n\n".join(up_blocks))
+    if dep_up:
+        up_txt += ("\n\nCELLULE DES DÉPENDANCES — elle fixe versions et features des crates "
+                   "ci-dessus. Rends-la seulement si la correction l'exige (feature à activer, "
+                   "autre version), et adapte alors les cellules qui en dépendent.\n\n"
+                   + "\n\n".join(f"### Cellule {u['idx']} (code, `:dep` — "
+                                 f"{', '.join(u['names'])})\nSOURCE ACTUELLE :\n{u['source']}"
+                                 for u in dep_up))
+        up = up + dep_up
     dfr_txt = ""
     if deferred:
         by_root: dict[int, list[dict]] = {}
@@ -1698,7 +2162,7 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
         "leur code : même rôle pédagogique, API de la série correcte — les messages du "
         "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
-        "passent.\n\n" + "\n\n".join(blocks) + up_txt + dfr_txt
+        "passent.\n\n" + "\n\n".join(blocks) + api_txt + up_txt + dfr_txt
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
@@ -3004,6 +3468,15 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                              if source_cell(cells_now, n, before=d["idx"]) in kept]
                     deferred.append({"idx": d["idx"], "roots": kept, "names": names})
             detail = [d for d in detail if d["idx"] not in roots]
+        # Rust: the real API of the crates the errors touch (MGS-25, 2.3b), from the
+        # registry copy the kernel compiled.
+        crate_api, api_info = ("", {})
+        if kname == "rust":
+            try:
+                crate_api, api_info = crate_api_block(cells_now,
+                                                      [d["_raw_errors"] for d in detail])
+            except Exception as ex:  # grounding is an aid: never fail the round on it
+                api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
         failing_idx = {d["idx"] for d in detail}
         upstream: list[dict] = []
@@ -3043,8 +3516,18 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                                  "source": cap_source(_text(cells_now[j].get("source")))})
         for d in detail:
             d.pop("_raw_errors", None)
+        # The `:dep` cell decides versions and features: offered next to the grounding (a
+        # feature gate such as plotters' `bitmap_backend` is fixed there, never in the cell).
+        dep_idx = api_info.get("dep_cell")
+        if (crate_api and isinstance(dep_idx, int) and dep_idx not in all_failing
+                and dep_idx in exec_targets and dep_idx < len(cells_now)
+                and all(u["idx"] != dep_idx for u in upstream)):
+            upstream.append({"idx": dep_idx, "names": list(api_info.get("crates") or []),
+                             "for": detail[0]["idx"], "via": "dep",
+                             "source": cap_source(_text(cells_now[dep_idx].get("source")))})
         env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions, upstream, deferred), conv,
+                                  repair_prompt(detail, conventions, upstream, deferred,
+                                                crate_api), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
@@ -3061,6 +3544,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
              "upstream": [u["idx"] for u in upstream],
              "deferred": [x["idx"] for x in deferred],
+             "crate_api": api_info or None,
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
              "out_of_scope": rep["out_of_scope"]})
         if not rep["replaced"]:
