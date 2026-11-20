@@ -1924,10 +1924,32 @@ async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -
     server's own cwd wins, and any notebook loading a sibling file of its series dies —
     measured twice: CoursIA#27021 (`import ict`, PR #467) and #27099 in CREATION mode
     (`#load "Z3NativeLoader.cs"` -> CS1504 while the file sits next to the Python twin,
-    then CS0246 cascade on every cell that used the Z3 namespace)."""
-    r = await pm_call(pm, "manage_kernel", {"action": "start", "kernel_name": kernel_name,
-                                            "working_dir": str(working_dir)})
-    return r.get("kernel_id")
+    then CS0246 cascade on every cell that used the Z3 namespace).
+
+    A start that returns no kernel id is retried (20/11): the MCP server gives a kernel
+    30 s to answer, and the evcxr `rust` kernel's first start of a session overshoots it
+    (`Kernel didn't respond in 30 seconds`) while the next one passes — measured on
+    CoursIA#27133, where the miss came at stage 3 after 1,273 s of paid model work. The
+    server cleans up the spawned process of a failed start, so a retry leaks nothing."""
+    payload = {"action": "start", "kernel_name": kernel_name, "working_dir": str(working_dir)}
+    for attempt in range(1, KERNEL_START_ATTEMPTS + 1):
+        r = await pm_call(pm, "manage_kernel", payload)
+        kid = r.get("kernel_id")
+        if kid:
+            if attempt > 1:
+                print(f"[kernel] {kernel_name} started on attempt {attempt}", file=sys.stderr)
+            return kid
+        why = str(r.get("error") or r.get("raw") or r)[:300]
+        print(f"[kernel] start of {kernel_name} failed (attempt {attempt}/"
+              f"{KERNEL_START_ATTEMPTS}): {why}", file=sys.stderr)
+        if attempt < KERNEL_START_ATTEMPTS:
+            await _kernel_retry_sleep(KERNEL_START_BACKOFF_S * attempt)
+    return None
+
+
+KERNEL_START_ATTEMPTS = 3
+KERNEL_START_BACKOFF_S = 5.0
+_kernel_retry_sleep = asyncio.sleep
 
 
 # ---------------------------------------------------------------- stages 3-5
