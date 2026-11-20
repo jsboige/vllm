@@ -1195,6 +1195,41 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     return errors
 
 
+def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
+    """Name the EXACT addressing constraint the corrected plan must satisfy.
+
+    CoursIA#27580 (20/11): MiniMax planned 24 cells for a 22-cell source — idx 22 and 23
+    address nothing. The plan is validated before any build call (CoursIA#27106), but
+    that defect then terminated the grain; one bounded re-ask can convert it into a
+    plan the harness can actually build.
+    """
+    last = n_src_cells - 1
+    reasons = "\n".join(f"- {e}" for e in errors)
+    return (
+        "TON PLAN NE PEUT PAS ÊTRE ADRESSÉ : le carnet source a exactement "
+        f"{n_src_cells} cellules, idx 0..{last}.\n{reasons}\n\n"
+        "Rends UNIQUEMENT un bloc ```json corrigé, de la MÊME forme que le plan :\n"
+        '{"stage":"plan","cells":[{"idx":<entier 0..' + str(last) + '>,'
+        '"cell_type":"markdown|code","titre":"<titre>","role":"<rôle en une phrase>"}]}\n'
+        "avec EXACTEMENT une entrée par cellule source, idx entiers distincts couvrant "
+        f"0..{last}, dans l'ordre — ni plus, ni moins."
+    )
+
+
+async def repair_creation_plan(session, args, rec: dict, conv: str | None,
+                               errors: list[str], n_src_cells: int) -> list | None:
+    """ONE bounded corrected-plan re-ask on the same conversation.
+
+    Returns the plan's cells, or None when nothing usable came back. The caller
+    re-validates: a repair that still overruns keeps the terminal verdict, with both
+    error sets recorded in rec['creation_plan_repair']."""
+    env = await sk_call_retry(session, args, rec, "1-plan-repair",
+                              creation_plan_repair_prompt(errors, n_src_cells), conv)
+    plan = parse_json_block(env.get("response") or "")
+    cells = (plan or {}).get("cells") or []
+    return cells or None
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
                           src_cells: list | None = None) -> dict:
@@ -1212,6 +1247,21 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     all_cells: list = []
     seg_reports: list = []
     addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
+    if addressing_errors and session is not None:
+        # ONE bounded repair re-ask before the terminal verdict (CoursIA#27580,
+        # 20/11: 3 of 7 recent attempts died on an overrunning plan while the
+        # defect is the cheapest one to state back). The repaired plan is
+        # re-validated; a still-unaddressable answer keeps the honest verdict
+        # with BOTH error sets recorded.
+        repaired = await repair_creation_plan(session, args, rec, conv,
+                                              addressing_errors, n_src_cells)
+        after = creation_plan_addressing(repaired or [], n_src_cells)
+        rec["creation_plan_repair"] = {"errors_before": addressing_errors,
+                                       "errors_after": after, "kept": not after}
+        if not after:
+            plan_cells[:] = repaired   # in place: rec['plan']['cells'] is this same list,
+                                       # so the trace carries the REPAIRED (built) plan
+        addressing_errors = after
     if addressing_errors:
         rec["verdict"] = "stage1-unaddressable-creation-plan"
         rec["creation_plan_addressing_errors"] = addressing_errors
@@ -2589,6 +2639,15 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         rec["verdict"] = "verify-error"
 
 
+# Inline commit identity (ms#1813, upstreamed here after two re-copies dropped it
+# from the sk-agent harness): a CI runner configures no user.name/user.email and
+# the stage5 commit is the FIRST commit of a fresh worktree — without these two
+# `-c` pairs git dies "Author identity unknown" and the whole grain fails at the
+# last step, after every token was spent.
+_GIT_IDENTITY = ("-c", "user.name=nb-coder",
+                 "-c", "user.email=nb-coder@nb-coder.invalid")
+
+
 def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
     p = subprocess.run(["git", "-C", str(wt), *git_args], capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=timeout)
@@ -2797,7 +2856,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
     msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
     msg_file.write_text(commit_body, encoding="utf-8")
-    rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     if rc != 0:
         # Pre-commit auto-fixer pattern (measured 2/2 on fresh .ipynb grains,
         # CoursIA #27113 + #27102): an auto-fix hook rewrites the staged file
@@ -2808,7 +2867,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         if st_rc == 0 and st_out.strip().startswith("AM"):
             entry["commit_retry"] = "pre-commit-auto-fix-read"
             _git(wt_path, "add", "--", nb_rel)
-            rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+            rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     msg_file.unlink(missing_ok=True)
     if rc != 0:
         entry["error"] = f"commit: {out[:300]}"
