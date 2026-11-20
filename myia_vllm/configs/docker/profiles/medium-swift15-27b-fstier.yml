@@ -125,11 +125,13 @@
 
 services:
   vllm-medium-swift15-27b:
-    # 24/10: overlay = stock v0.32.0 + our fix for the tiering race
-    # "Chunk ... not found in cache" (configs/docker/overlay_v0320_tierpin).
-    # Build: docker build -t vllm-openai-v0320-tierpin:v1 configs/docker/overlay_v0320_tierpin
-    # Rollback: VLLM_IMAGE_SWIFT15=vllm/vllm-openai:v0.32.0 ... up -d --no-deps vllm-medium-swift15-27b
-    image: ${VLLM_IMAGE_SWIFT15:-vllm-openai-v0320-tierpin:v1}
+    # 19/11: overlay = stock v0.34.0 (digest cf5b2fdd…) + our port of the tiering
+    # fixes (configs/docker/overlay_v0340_tierpin), in service since 18/11 23:51Z.
+    # Build: docker build -t vllm-openai-v0340-tierpin:v1 configs/docker/overlay_v0340_tierpin
+    # Rollback to v0.32 (image, volume AND the v0.34-only flag below): restore this
+    # file from git before the v0.34 commit — see _iteration_log/v0340_bump/NOTES.md.
+    # 24/10 → 18/11: overlay_v0320_tierpin (stock v0.32.0 + the same race fix).
+    image: ${VLLM_IMAGE_SWIFT15:-vllm-openai-v0340-tierpin:v1}
     container_name: myia_vllm-medium-swift15-27b
     # Maintenance#303 (07/11): container limits. The 08/09 48g cap was a
     # `docker update` — dead since the 04/11 recreate left the engine at
@@ -175,6 +177,7 @@ services:
           --tensor-parallel-size 2 \
           --gdn-prefill-backend triton \
           --no-enable-flashinfer-autotune \
+          --disable-extensible-kv-cache \
           --gpu-memory-utilization ${GPU_UTIL_SWIFT15:-0.71} \
           --max-model-len 262144 \
           --kv-cache-dtype ${KV_DTYPE_SWIFT15:-nvfp4} \
@@ -242,7 +245,7 @@ services:
         target: /kv-tier-fs
         bind:
           create_host_path: false
-      - vllm-compile-cache-swift15-27b-v0320:/root/.cache/vllm
+      - vllm-compile-cache-swift15-27b-v0340:/root/.cache/vllm
       - ${VLLM_LOG_PATH:-./../../../logs}:/logs
       - ./../../../middleware:/middleware:ro
       - ./../../../kv_tier:/opt/kv_tier:ro
@@ -499,6 +502,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  vllm-compile-cache-swift15-27b-v0320:
+  vllm-compile-cache-swift15-27b-v0340:
+  vllm-compile-cache-swift15-27b-v0320: # kept: rollback volume for v0.32.0
   vllm-compile-cache-swift15-27b-v0310: # kept: rollback volume for v0.31.0
   vllm-compile-cache-swift15-27b-v1: # kept: rollback volume for v0.30.0
