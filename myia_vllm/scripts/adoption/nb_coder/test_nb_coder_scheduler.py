@@ -481,6 +481,71 @@ def test_watch_run_picks_up_appended_grain(tmp_path):
     assert any(e["kind"] == "queue-reloaded" for e in events)
 
 
+# ---------------------------------------------------------------- #506 palier 1: canon
+def test_launch_gap_starts_grains_in_canon_not_in_one_tick(tmp_path):
+    """Four free slots, three pending grains, gap 300 s, poll 30 s: the grains must
+    start at t, t+300, t+600 — never two in the same tick (the cohort of 18/11)."""
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(done_after=99)           # every grain stays in flight
+    sched = make_sched(tmp_path, [item(i) for i in (1, 2, 3)], spawn=spawn,
+                       max_active=4, launch_gap_s=300.0)
+    sched.clock = lambda: clock["t"]
+    starts = []
+    while clock["t"] <= 1900:
+        r = sched.tick()
+        starts += [clock["t"]] * r["launched"]
+        assert r["launched"] <= 1
+        clock["t"] += 30
+    assert starts == [1000.0, 1300.0, 1600.0]
+    held = [json.loads(l) for l in (sched.state_dir / "scheduler.jsonl").read_text().splitlines()
+            if '"held"' in l]
+    gaps = [e for e in held if e["reason"] == "launch-gap"]
+    assert gaps and all(0 < e["next_launch_in_s"] <= 300 for e in gaps)
+
+
+def test_zero_gap_keeps_the_old_same_tick_behavior(tmp_path):
+    spawn = SpawnRecorder(done_after=99)
+    sched = make_sched(tmp_path, [item(i) for i in (1, 2, 3)], spawn=spawn,
+                       max_active=4)
+    assert sched.tick()["launched"] == 3
+
+
+def test_launch_gap_survives_a_scheduler_restart(tmp_path):
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(done_after=99)
+    first = make_sched(tmp_path, [item(1), item(2)], spawn=spawn, max_active=4,
+                       launch_gap_s=300.0)
+    first.clock = lambda: clock["t"]
+    assert first.tick()["launched"] == 1
+    # a new instance on the same state dir, 100 s later: the gap still holds
+    clock["t"] = 1100.0
+    reborn = S.Scheduler(first.args, spawn=spawn, gate=lambda: dict(GREEN),
+                         sleep=lambda s=0: None, clock=lambda: clock["t"])
+    loaded, digest = S.load_queue(Path(first.args.queue))
+    reborn.merge_queue(loaded, digest)
+    r = reborn.tick()
+    assert r["launched"] == 0 and r["held"] == "launch-gap"
+    clock["t"] = 1300.0
+    assert reborn.tick()["launched"] == 1
+
+
+def test_launch_gap_never_bypasses_the_capacity_target(tmp_path):
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(done_after=99)
+    sched = make_sched(tmp_path, [item(i) for i in (1, 2, 3)], spawn=spawn,
+                       max_active=1, launch_gap_s=60.0)
+    sched.clock = lambda: clock["t"]
+    assert sched.tick()["launched"] == 1
+    clock["t"] = 2000.0                              # gap long elapsed
+    r = sched.tick()
+    assert r["launched"] == 0 and r["held"] == "capacity-target"
+
+
+def test_parse_args_refuses_a_negative_launch_gap(tmp_path):
+    with pytest.raises(SystemExit):
+        S.parse_args(["--queue", "q.jsonl", "--state-dir", str(tmp_path), "--repo", "R",
+                      "--max-active", "2", "--launch-gap-s", "-5"])
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

@@ -413,6 +413,7 @@ def main() -> int:
         rec["elapsed_s"] = dt
         rec["model_used"] = env.get("model_used")
         rec |= nbcd.served_fields(env)     # what actually served the verifier, when known
+        rec |= nbcd.usage_fields(env)      # the verifier call's own tokens (#506 palier 0)
         rec["conversation_id"] = env.get("conversation_id")
         rec["response_chars"] = len(env.get("response") or "")
         ans = nbcd.parse_json_block(env.get("response") or "")
