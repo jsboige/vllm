@@ -1,0 +1,11 @@
+# Every 30 min at :20 and :50 (the former Windows task's slots), catch-up after a WSL restart.
+[Unit]
+Description=Run the KV fs-tier pruner every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* *:20,50:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

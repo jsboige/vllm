@@ -1,0 +1,14 @@
+# KV fs-tier pruner for the Swift vLLM engine — owner ai-01:vllm.
+# Installed into the Ubuntu WSL distro (/etc/systemd/system), see README.md next to this file.
+# Same script and parameters as the former Windows task `fstier-prune` (fstier_prune.ps1 defaults).
+[Unit]
+Description=KV fs-tier pruner (Swift vLLM, cap 250 GiB, apply-if-over-cap, min-age 30 min)
+
+[Service]
+Type=oneshot
+# flock: never two pruners at once (a run can take ~5 min on a full tier); a conflict exits 0.
+ExecStart=/usr/bin/flock -n -E 0 /run/fstier-prune.lock /usr/bin/python3 /mnt/d/vllm/myia_vllm/scripts/monitoring/fstier_pruner.py --state-file /mnt/d/vllm/myia_vllm/logs/fstier_state.json --max-gib 250 --reserve-pct 12 --min-age-min 30 --guard-mounts /mnt/c --apply
+TimeoutStartSec=25min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

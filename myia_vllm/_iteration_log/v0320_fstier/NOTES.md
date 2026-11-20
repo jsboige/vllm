@@ -8080,3 +8080,25 @@ Boot 02:18:44Z inchangé (13 h), health 200/7 ms, RC=0, OOM 0, **CUDA error 0 �
 **Census 7 h** : site hairpin 1 063/1 062×200 + locaux 943 + po-2027 1 — **zéro IP inconnue**, aucun 400 nouveau (seul 08:25:28Z dans la fenêtre). **Veille amont 4/4 figés**.
 
 **Coordination — dispatch reçu** : ai-01:CoursIA demande (msg 15:34Z, HIGH) le **claim de jsboige/vllm#431** et les **étapes 0-2 de `nb_coder_driver.py`** en passe à blanc sur branche bac à sable (sans PR), agent `notebook-auditor` en attendant le déploiement de `notebook-coder`, gate non bloquant jusqu'à ~21:13Z, compte-rendu sur CoursIA#26534 (durée, tokens, ce qui casse). Contexte : roo-extensions#4725 — PR **ms#1760** ouverte (4 entrées seat-local nb-coder dont gate Swift sur id dédié `qwen3.6-35b-a3b-nbcoder`, split GitHubPlugin/GitHubWritePlugin, CI verte), review + application siège attendues côté ai-01:roo-extensions. Autres messages : friction evcxr po-2027 (les 2 sièges, en réparation, rien pour nous), reply po-2023:Maintenance (canal PG, pas nous), mention po-2024 (ASK roo-extensions). **Traitement du dispatch : bloc de travail suivant ce cycle.** Registre : Q58 seule ouverte.
+
+## 20/11 12:1xZ→12:32Z — élagueur du tier fs mort avec PowerShell, disque invité plein, déplacé en minuterie systemd
+
+**Ce qui s'est passé (mesuré).**
+
+- La panne G:/DriveFS du 20/11 a figé le démarrage de tout `powershell.exe`/`pwsh.exe` sur ai-01, puis de `wscript.exe` lui-même. Inventaire de 12:1xZ : 253 `powershell.exe` et 121 `pwsh.exe` vivants, dont 176 créés entre 09:00 et 10:00Z.
+- La tâche `fstier-prune` passait par cette chaîne : `wscript` → `fstier-prune.vbs` → `pwsh fstier_prune.ps1` → `wsl.exe python3 fstier_pruner.py`.
+- Son dernier passage terminé date de **07:22:07Z**. Les suivants se sont figés et ont été coupés par la limite de 10 min (`LastTaskResult 267014`). Le `wscript` de 12:20Z n'avait créé aucun enfant.
+- À 12:1xZ, `df` dans WSL donnait **`/dev/sde 1 081 101 176 832 octets, 0 disponible, 100 %`**. Le tier pesait 436,8 Go pour un plafond de 250 Gio.
+- 333 lignes `Errno 28 No space left on device` dans les 5 000 dernières lignes du journal du moteur : `thread_pool.py:181 block I/O failed` sur `/kv-tier-fs/…`. Le moteur a continué de servir : health 200, sondes du watchdog OK.
+- Même disque : `coursia-runner.service`, le superviseur des runners CI CoursIA, tourne dans cette distribution. Les ENOSPC des runners `myia-ai-01-*` (`/opt/runner/_diag/pages`, retenue `main-red` armée à 11:19:09Z, rapportés sur le global par po-2028:claudish et po-2028:CoursIA-3) viennent très probablement de là. C'est le même disque, mais l'attribution n'est pas prouvée octet par octet.
+
+**Réparation.**
+
+1. 12:18→12:23Z : élagueur lancé directement par `wsl.exe` depuis Git Bash, mêmes paramètres que le wrapper (`--max-gib 250 --reserve-pct 12 --min-age-min 30 --guard-mounts /mnt/c --apply`). Résultat : rc=0, **6 206 blocs, 168,4 Go supprimés**, 0 erreur, 311 s. Tier ramené à 268,4 Go, disque invité à **113,4 Go libres (89 %)**.
+2. Un `wscript` de test, qui appelait `wsl.exe` sans PowerShell, s'est figé au même endroit : c'est `wscript` lui-même qui pend. Le chemin Windows est donc mort tant que dure la panne du shell.
+3. Unités `fstier-prune.service` et `fstier-prune.timer` versionnées sous `myia_vllm/scripts/monitoring/systemd/`, installées dans la distribution Ubuntu. Contrôles : `systemd-analyze verify` OK ; 1ᵉʳ passage par `systemctl start` à 12:31Z, Result=success, 294 blocs / 8,0 Go supprimés en 8,3 s, 0 erreur ; minuterie activée, prochain passage à 12:50Z.
+4. Tâche Windows `fstier-prune` **désactivée**, pour un seul planificateur. Sauvegarde du lanceur : `.tmp/fstier-fix/fstier-prune.vbs.bak-20261120` (sha256 `77ecc602967cb05c…`, identique à l'original, lequel n'est pas modifié).
+
+**Leçon.** Un organe purement Linux n'a pas à dépendre du shell Windows. La chaîne `wscript`→`pwsh`→`wsl.exe` ajoutait trois points de panne pour rien, et le plus faible a tout emporté. Le cycle de surveillance de 09:13Z avait vu PowerShell figé mais n'a pas relié cela à l'élagueur : la spec ne lisait pas son fichier d'état. Elle le lit désormais en §1 : âge > 35 min ou disque invité < 40 GiB libres = organe mort.
+
+**À instruire.** Le disque invité s'est rempli de nouveau d'environ 11 Go en 8 min après la purge (113,4 → 102,4 Go entre 12:23 et 12:31Z). Une part revient au tier, qui reste borné à 250 Gio par l'élagueur ; le reste vient d'autres occupants du disque, en particulier les runners CI qui reprenaient. L'attribution par occupant n'est pas faite.
