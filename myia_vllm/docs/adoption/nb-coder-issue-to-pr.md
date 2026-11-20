@@ -202,6 +202,13 @@ python nb_coder_driver.py --issue <N> --from-spec `
 - Gardes CLI : `--from-spec` exclut `--source-nb`, exige `--meta-from` et refuse
   `--write-mode mcp`. Tests : `test_nb_coder_spec.py` (26 pins), 7 mutations des gardes
   toutes tuées.
+- File du scheduler : un grain de spec s'écrit
+  `{"issue": N, "notebook": "...", "from_spec": true, "meta_from": "<carnet repo-relatif>"}`.
+  `load_queue` applique les mêmes refus que le driver dès le chargement : `source_nb`
+  exclu, `meta_from` exigé, `write_mode` `mcp` refusé, `meta_from` sans `from_spec` refusé,
+  chemin repo-relatif `.ipynb` requis. Un grain de spec n'hérite jamais du `--source-nb`
+  par défaut du scheduler. Tests : 10 dans `test_nb_coder_scheduler.py`, 6 mutations
+  toutes tuées.
 
 ### 3.4 Agentic trace
 
