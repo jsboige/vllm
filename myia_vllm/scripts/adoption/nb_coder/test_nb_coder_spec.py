@@ -266,3 +266,48 @@ def test_verify_prompt_spec_mode_swaps_reference_and_task():
     # the JSON verdict contract is shared by both modes
     tail = src[src.index("## Périmètre"):]
     assert tail == sp[sp.index("## Périmètre"):]
+
+
+def _executed_nb(tmp_path: Path, big: int = 0) -> Path:
+    cells = [
+        {"cell_type": "markdown", "metadata": {}, "source": ["# T"]},
+        {"cell_type": "code", "metadata": {}, "execution_count": 1, "source": ["print(42)"],
+         "outputs": [{"output_type": "stream", "name": "stdout", "text": ["H = 1.0000 bit\n"]}]},
+        {"cell_type": "code", "metadata": {}, "execution_count": 2, "source": ["x"],
+         "outputs": [{"output_type": "execute_result", "execution_count": 2, "metadata": {},
+                      "data": {"text/plain": ["'Z' * big"]}}] if not big else
+         [{"output_type": "stream", "name": "stdout", "text": ["Z" * big]}]},
+    ]
+    nb = {"cells": cells, "nbformat": 4, "nbformat_minor": 5,
+          "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"},
+                       "language_info": {"name": "python", "version": "3.13.16"}}}
+    p = tmp_path / "built.ipynb"
+    p.write_text(json.dumps(nb), encoding="utf-8")
+    return p
+
+
+def test_spec_mode_shows_the_deliverable_outputs(tmp_path):
+    """IT08 #27460 (20/11): the verifier rejected a fully executed notebook as "no output
+    visible" because build_view shows sources only and spec mode dropped every output annex."""
+    built = _executed_nb(tmp_path)
+    annex = V.built_outputs_annex(built)
+    assert annex["kernelspec"] == "python3" and annex["language_version"] == "3.13.16"
+    assert [r["cell"] for r in annex["cells"]] == [1, 2]
+    assert annex["cells"][0]["execution_count"] == 1
+    assert annex["cells"][0]["text"] == "H = 1.0000 bit\n"
+    issue = {"title": "T", "body": GOOD}
+    sp = V.verify_prompt(issue, "SRCVIEW", "BUILTVIEW", {}, "", mode="spec",
+                         built_outputs=annex)
+    assert "Annexe sorties du LIVRABLE" in sp and "H = 1.0000 bit" in sp
+    assert '"execution_count": 1' in sp and "3.13.16" in sp
+    # source mode never carries it, even if passed by mistake
+    src = V.verify_prompt(issue, "SRCVIEW", "BUILTVIEW", {}, "", built_outputs=annex)
+    assert "Annexe sorties du LIVRABLE" not in src
+
+
+def test_spec_outputs_annex_declares_its_cut(tmp_path):
+    built = _executed_nb(tmp_path, big=V.CELL_TEXT_CAP + 500)
+    row = V.built_outputs_annex(built)["cells"][1]
+    assert row["bytes"] == V.CELL_TEXT_CAP + 500
+    assert row["text"].startswith("Z" * V.CELL_TEXT_CAP)
+    assert row["text"].endswith("[tronqué : 500 caractères non affichés]")
