@@ -1402,6 +1402,73 @@ def defining_cell(cells: list[dict], name: str, before: int) -> int | None:
     return None
 
 
+# What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
+# comments. Only names some upstream cell declares or binds ever matter (`using_cells`),
+# so the free names of the cell are filtered by the notebook itself; keywords are skipped
+# because `declares` would read `else if (` as a method named `if`.
+_IDENT_RE = re.compile(r"\b[A-Za-z_]\w+\b")
+_DQ_STRING_RE = re.compile(r'@?\$?"(?:[^"\\\n]|\\.)*"')
+# A compiler diagnostic names its own line: the cause is in the cell, not upstream.
+_COMPILE_ERROR_RE = re.compile(r"\(\d+,\d+\):\s*error\b|error\[E\d{4}\]|"
+                               r"\b(?:SyntaxError|IndentationError)\b")
+_USE_SKIP = frozenset(_CALL_LEADERS) | frozenset((
+    "nameof typeof sizeof default print len range str int float list dict set tuple super "
+    "self this base Self if elif else while for foreach do switch match when case return "
+    "break continue pass try catch except finally throw raise assert using import use mod "
+    "crate pub fn def class struct record enum interface trait impl type let mut var const "
+    "static readonly public private protected internal sealed abstract override virtual "
+    "async await yield lambda with global del is as not and or in out ref params new true "
+    "false null None True False void object string char bool byte long double decimal short "
+    "uint ulong usize isize i32 i64 u8 u32 u64 f32 f64 get value loop where").split())
+
+
+def used_names(source: str) -> list[str]:
+    """Identifiers a cell uses outside strings and comments, in order of first use."""
+    names: list[str] = []
+    for line in (source or "").split("\n"):
+        code = _DQ_STRING_RE.sub(" ", line)              # strings first: "https://…"
+        code = code.split("//", 1)[0]
+        for m in _IDENT_RE.finditer(code):
+            n = m.group(0)
+            if n not in _USE_SKIP and n not in names:
+                names.append(n)
+    return names
+
+
+def binds(source: str, name: str) -> bool:
+    """Does this cell BIND `name` as a value (`var TEMOINS = …`, `G = …`, `let mut g = …`)?
+    Complements `declares` for data: a witness graph built upstream is a value, not a
+    function. A false positive only widens a repair round's offer by one cell."""
+    n = re.escape(name)
+    return re.search(
+        rf"^\s*(?:(?:var|let|mut|const|static|readonly|public|private|internal)\s+"
+        rf"|[\w<>\[\],?.]+\s+)*{n}\s*(?::[^=\n]+)?=(?![=>])", source or "", re.M) is not None
+
+
+def using_cells(cells: list[dict], failing_idx: int, limit: int,
+                exclude: set[int] | frozenset[int] = frozenset()) -> list[tuple[int, list[str]]]:
+    """Upstream code cells that declare or bind what the failing cell uses, ranked by how
+    many of its names each defines (then nearest first). Names the failing cell declares
+    itself are its own business; `exclude` cells (already shown as failing) are skipped,
+    and the search for that name continues further up."""
+    src = _text(cells[failing_idx].get("source")) if failing_idx < len(cells) else ""
+    found: dict[int, list[str]] = {}
+    for name in used_names(src):
+        if declares(src, name) or binds(src, name):
+            continue
+        for j in range(min(failing_idx, len(cells)) - 1, -1, -1):
+            c = cells[j]
+            if c.get("cell_type") != "code":
+                continue
+            s = _text(c.get("source"))
+            if declares(s, name) or binds(s, name):
+                if j not in exclude:
+                    found.setdefault(j, []).append(name)
+                break
+    ranked = sorted(found.items(), key=lambda kv: (-len(kv[1]), -kv[0]))
+    return ranked[:limit]
+
+
 def cap_source(src: str, cap: int = REPAIR_SOURCE_CAP) -> str:
     """The cell's source for a repair round: whole up to `cap`, else head + tail around an
     explicit marker — never a silent cut (the model is asked for the COMPLETE source)."""
@@ -1454,13 +1521,20 @@ def repair_prompt(failing: list[dict], conventions: str = "",
     up = upstream or []
     up_txt = ""
     if up:
+        def _why(u: dict) -> str:
+            if u.get("via") == "use":
+                return f"utilisé par la cellule {u['for']}"
+            return f"traversé par la trace de la cellule {u['for']}"
         up_blocks = [f"### Cellule {u['idx']} (code, AMONT — définit {', '.join(u['names'])}, "
-                     f"traversé par la trace de la cellule {u['for']})\n"
-                     f"SOURCE ACTUELLE :\n{u['source']}" for u in up]
-        up_txt = ("\n\nCELLULES AMONT — la trace d'erreur traverse ces définitions. Si la "
-                  "cause est là (exception levée ou comportement divergent du jumeau dans une "
-                  "fonction définie plus haut), corrige-la ICI plutôt que de contourner "
-                  "l'appel ; sinon ne les rends pas.\n\n" + "\n\n".join(up_blocks))
+                     f"{_why(u)})\nSOURCE ACTUELLE :\n{u['source']}" for u in up]
+        by_use = any(u.get("via") == "use" for u in up)
+        up_txt = ("\n\nCELLULES AMONT — la trace d'erreur traverse ces définitions"
+                  + (", ou la cellule en échec les utilise (une assertion qui échoue désigne "
+                     "souvent une donnée ou une fonction définie plus haut)" if by_use else "")
+                  + ". Si la cause est là (exception levée, donnée fausse ou comportement "
+                  "divergent du jumeau dans une définition plus haut), corrige-la ICI plutôt "
+                  "que de contourner l'appel ou d'affaiblir le test ; sinon ne les rends pas."
+                  "\n\n" + "\n\n".join(up_blocks))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
         "leur code : même rôle pédagogique, API de la série correcte — les messages du "
@@ -2704,7 +2778,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             errs = _outputs_text(cells_now[i])
             detail.append({"idx": i, "source": cap_source(src),
                            "errors": errs[-2000:], "cited": cited_lines(src, errs),
-                           "_frames": error_frame_names(errs)})
+                           "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
@@ -2723,7 +2797,29 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                 if len(upstream) >= REPAIR_UPSTREAM_MAX:
                     continue
                 upstream.append({"idx": j, "names": [name], "for": d["idx"],
+                                 "via": "trace",
                                  "source": cap_source(_text(cells_now[j].get("source")))})
+        # Fallback by USE (#27302, 20/11): an assertion raised in the cell itself crosses no
+        # upstream frame, yet its cause is often data or a function defined above (the
+        # Petersen witness graph of cell 5). Runtime errors only: a compiler diagnostic
+        # names its own line, and the cause is in the cell.
+        traced = {u["for"] for u in upstream}
+        for d in detail:
+            if d["idx"] in traced or _COMPILE_ERROR_RE.search(d.pop("_raw_errors", "")):
+                continue
+            for j, names in using_cells(cells_now, d["idx"], REPAIR_UPSTREAM_MAX,
+                                        exclude=failing_idx):
+                known = next((u for u in upstream if u["idx"] == j), None)
+                if known is not None:
+                    known["names"].extend(n for n in names if n not in known["names"])
+                    continue
+                if len(upstream) >= REPAIR_UPSTREAM_MAX:
+                    break
+                upstream.append({"idx": j, "names": list(names), "for": d["idx"],
+                                 "via": "use",
+                                 "source": cap_source(_text(cells_now[j].get("source")))})
+        for d in detail:
+            d.pop("_raw_errors", None)
         env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
                                   repair_prompt(detail, conventions, upstream), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
