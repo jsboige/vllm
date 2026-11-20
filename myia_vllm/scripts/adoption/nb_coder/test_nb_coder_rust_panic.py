@@ -147,3 +147,56 @@ def test_verdict_fails_on_a_stderr_panic_end_to_end(monkeypatch, tmp_path):
     rec = {"execution": res}
     D.execution_verdict(rec, _scratch(tmp_path, [2, 3, 4]))
     assert rec["verdict"] == "built-execution-failed"
+
+
+# ---- the shape execute_on_kernel really answers (kernel_service.py:249-251) ----------
+# Verbatim from live/runs/issue-27302-dffc7835/issue-27302.json, cell 10 outputs_tail.
+WIRE_CS0246 = [
+    {"output_type": "stream", "content": {"name": "stderr", "text": (
+        "\r\n(27,18): error CS0246: Le nom de type ou d'espace de noms "
+        "'CpSolverParameters' est introuvable (vous manque-t-il une directive using ou une "
+        "référence d'assembly\xa0?)\r\n\r\n")}, "metadata": None, "execution_count": None},
+    {"output_type": "error", "content": {"ename": "Error", "evalue": "compilation error",
+                                         "traceback": []},
+     "metadata": None, "execution_count": None}]
+
+
+def _wire(name: str, text: str) -> dict:
+    return {"output_type": "stream", "content": {"name": name, "text": text},
+            "metadata": None, "execution_count": None}
+
+
+def test_wire_stderr_panic_fails_the_cell(monkeypatch):
+    """#518 read `name`/`text` at the top level: deaf to every live stream."""
+    res = _run_cells(monkeypatch, [_wire("stderr", MGS25_PANIC)])
+    assert res[0]["ok"] is False
+    assert res[0]["error"].startswith("thread '<unnamed>' (64040) panicked at")
+
+
+def test_wire_panic_split_across_chunks(monkeypatch):
+    res = _run_cells(monkeypatch, [_wire("stderr", line)
+                                   for line in MGS25_PANIC.splitlines(keepends=True)])
+    assert res[0]["ok"] is False
+
+
+def test_wire_stdout_panic_text_and_stderr_warning_stay_ok(monkeypatch):
+    res = _run_cells(monkeypatch, [_wire("stdout", MGS25_PANIC),
+                                   _wire("stderr", "warning: unused variable: `x`\n")])
+    assert res[0]["ok"] is True and res[0]["error"] is None
+
+
+def test_wire_dotnet_compile_error_is_recorded(monkeypatch):
+    """#27302: every failed cell recorded `error: null`."""
+    res = _run_cells(monkeypatch, WIRE_CS0246, status="error")
+    assert res[0]["ok"] is False
+    assert res[0]["error"] == "Error: compilation error"
+
+
+def test_wire_output_flattens_only_streams_and_errors():
+    assert D.wire_output(WIRE_CS0246[0])["name"] == "stderr"
+    assert D.wire_output(WIRE_CS0246[1])["evalue"] == "compilation error"
+    rich = {"output_type": "execute_result", "content": {"text/plain": "3"}}
+    assert D.wire_output(rich) is rich
+    nbf = {"output_type": "stream", "name": "stdout", "text": "x"}
+    assert D.wire_output(nbf) is nbf
+    assert D.wire_output("raw") == "raw"
