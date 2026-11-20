@@ -235,11 +235,93 @@ def test_from_spec_writes_the_twin_outside_the_worktree(monkeypatch, tmp_path):
     assert (tmp_path / "wt" / "Series").is_dir()
 
 
+# ---------------------------------------------------------------- port metadata (20/11)
+def _port_args(tmp_path, **kw):
+    base = dict(from_spec=False, source_nb="Series/Old-01.ipynb",
+                notebook="Series/New-08-Rust.ipynb", meta_from=None)
+    base.update(kw)
+    return _run_args(tmp_path, **base)
+
+
+_PY = {"cells": [], "metadata": {"kernelspec": {"name": "python3"},
+                                 "language_info": {"name": "python"}}}
+_CS = {"cells": [], "metadata": {"kernelspec": {"name": ".net-csharp"},
+                                 "language_info": {"name": "C#", "version": "9.0.117"}}}
+_RS = {"cells": [], "metadata": {"kernelspec": {"name": "rust"},
+                                 "language_info": {"name": "Rust", "version": "1.100.0"}}}
+
+
+def test_port_without_canonical_meta_is_refused_before_the_gate(monkeypatch, tmp_path):
+    """A Rust port in a folder with C# siblings only: before, the .NET kernelspec was
+    inherited; with none at all, the skeleton carried {} and the language-info gate
+    failed after the whole build. Now: refused before the capacity gate and any token."""
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Series/Old-02-CSharp.ipynb": _CS})
+    monkeypatch.setattr(D, "gate_call", lambda *a: (_ for _ in ()).throw(
+        AssertionError("no canonical meta must not reach the capacity gate")))
+    got = asyncio.run(D.run(_port_args(tmp_path), {"stages": {}, "calls": []}))
+    assert got["verdict"] == "create-no-canonical-meta:Series"
+    assert got["calls"] == []
+
+
+def test_port_inherits_the_sibling_with_the_target_language_tag(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Series/Old-02-CSharp.ipynb": _CS,
+                                      "Series/Old-03-Rust.ipynb": _RS})
+    got = asyncio.run(D.run(_port_args(tmp_path), {"stages": {}, "calls": []}))
+    assert got["verdict"] == "deferred-by-capacity-gate"
+    assert got["kernel"]["kernel_name"] == "rust"                  # not .net-csharp
+    assert got["kernel"]["kernel_source"] == "canonical-twin-kernelspec"
+    assert "meta_from" not in got["create_mode"]
+
+
+def test_port_meta_from_overrides_the_sibling(monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Other/First-Rust.ipynb": _RS})
+    got = asyncio.run(D.run(_port_args(tmp_path, meta_from="Other/First-Rust.ipynb"),
+                            {"stages": {}, "calls": []}))
+    assert got["verdict"] == "deferred-by-capacity-gate"
+    assert got["kernel"]["kernel_name"] == "rust"
+    assert got["kernel"]["kernel_source"] == "meta-from-kernelspec"
+    assert got["create_mode"] == {"source": "Series/Old-01.ipynb",
+                                  "target": "Series/New-08-Rust.ipynb",
+                                  "meta_from": "Other/First-Rust.ipynb"}
+
+
+@pytest.mark.parametrize("files, meta_from, verdict", [
+    ({"Series/Old-01.ipynb": _PY}, "Other/Missing.ipynb", "meta-from-not-found:"),
+    ({"Series/Old-01.ipynb": _PY, "Other/Bare.ipynb": {"cells": [], "metadata": {}}},
+     "Other/Bare.ipynb", "meta-from-no-kernelspec:Other/Bare.ipynb"),
+])
+def test_port_meta_from_is_checked(monkeypatch, tmp_path, files, meta_from, verdict):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, files)
+    got = asyncio.run(D.run(_port_args(tmp_path, meta_from=meta_from),
+                            {"stages": {}, "calls": []}))
+    assert got["verdict"].startswith(verdict)
+
+
+def test_series_canonical_meta_follows_the_target_tag(tmp_path):
+    (tmp_path / "S").mkdir()
+    for rel, nb in {"S/A-01-CSharp.ipynb": _CS, "S/A-02-Rust.ipynb": _RS,
+                    "S/A-03.ipynb": _PY}.items():
+        _write(tmp_path / rel, nb)
+    assert D.series_canonical_meta(tmp_path, "S/A-09-Rust.ipynb")["kernelspec"]["name"] == "rust"
+    assert D.series_canonical_meta(tmp_path, "S/A-09-CSharp.ipynb")["kernelspec"]["name"] \
+        == ".net-csharp"
+    assert D.series_canonical_meta(tmp_path, "S/Lean.ipynb") == {}       # no tag
+    assert D.series_canonical_meta(tmp_path, "S/A-09-Lean.ipynb") == {}  # no such sibling
+
+
 # ---------------------------------------------------------------- CLI guards
 @pytest.mark.parametrize("extra, needle", [
     (["--from-spec", "--source-nb", "S/T.ipynb", "--meta-from", "S/M.ipynb"], "exclusive"),
     (["--from-spec"], "requires --meta-from"),
     (["--from-spec", "--meta-from", "S/M.ipynb", "--write-mode", "mcp"], "--write-mode json"),
+    (["--meta-from", "S/M.ipynb"], "only read in creation mode"),
 ])
 def test_cli_guards(monkeypatch, capsys, extra, needle):
     monkeypatch.setattr(sys, "argv", ["nb_coder_driver.py", "--issue", "1", "--notebook",

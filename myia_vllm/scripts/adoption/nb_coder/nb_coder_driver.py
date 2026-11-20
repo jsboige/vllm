@@ -388,11 +388,17 @@ def series_kernel(repo: Path, rel: str) -> dict:
 
 
 def series_canonical_meta(repo: Path, rel: str) -> dict:
-    """Creation mode: kernelspec/language_info of the nearest existing TWIN in the target
-    folder. The built notebook inherits the series' canonical metadata (its .NET version),
-    never the Python twin's — that is what the language-info gate compares against."""
-    d = Path(rel).parent
-    for sib in sorted((repo / d).glob("*-CSharp.ipynb")):
+    """Creation mode: kernelspec/language_info of the nearest existing sibling in the target
+    folder that carries the TARGET's language tag (the last '-' segment of its stem:
+    X-08-CSharp -> *-CSharp, X-08-Rust -> *-Rust). The built notebook inherits the series'
+    canonical metadata, never the Python twin's — that is what the language-info gate
+    compares against. A hard-coded *-CSharp glob handed a Rust port the .NET kernelspec.
+    No tag or no such sibling -> {} : the caller refuses unless --meta-from names one."""
+    d, stem = Path(rel).parent, Path(rel).stem
+    if "-" not in stem:
+        return {}
+    tag = stem.rsplit("-", 1)[1]
+    for sib in sorted((repo / d).glob(f"*-{tag}.ipynb")):
         if sib.name == Path(rel).name:
             continue
         try:
@@ -2522,45 +2528,64 @@ async def run(args, rec: dict) -> dict:
             # creating the target — refuse loud.
             rec["verdict"] = f"target-already-exists:{args.notebook}"
             return rec
-    elif from_spec:
-        meta_nb = wt_path / getattr(args, "meta_from", "")
-        if not meta_nb.is_file():
-            rec["verdict"] = f"meta-from-not-found:{meta_nb}"
-            return rec
-        spec_meta_d = spec_meta(meta_nb)
-        if not (spec_meta_d.get("kernelspec") or {}).get("name"):
-            rec["verdict"] = f"meta-from-no-kernelspec:{args.meta_from}"
-            return rec
-        # The twin lives in the OUT dir: never in the worktree, never committed.
-        src_nb = out_dir / f"spec-twin-{args.issue}.ipynb"
-        src_nb.write_text(json.dumps(spec_twin(spec_cells, spec_meta_d), ensure_ascii=False,
-                                     indent=1) + "\n", encoding="utf-8")
-        create_mode = True
-        rec["create_mode"] = {"spec_twin": str(src_nb), "target": args.notebook,
-                              "meta_from": args.meta_from}
-    elif args.source_nb:
-        src_nb = wt_path / args.source_nb
-        if not src_nb.is_file():
-            rec["verdict"] = f"source-nb-not-found:{src_nb}"
-            return rec
-        create_mode = True
-        rec["create_mode"] = {"source": args.source_nb, "target": args.notebook}
     else:
-        rec["verdict"] = f"notebook-not-found:{target_nb}"
-        return rec
+        meta_rel = getattr(args, "meta_from", None)
+        if (from_spec or args.source_nb) and meta_rel:
+            # --meta-from is mandatory for --from-spec and optional for --source-nb (a port
+            # whose folder holds no sibling with the target's language tag, e.g. the first
+            # Rust notebook of a series). Checked before any token is spent.
+            meta_nb = wt_path / meta_rel
+            if not meta_nb.is_file():
+                rec["verdict"] = f"meta-from-not-found:{meta_nb}"
+                return rec
+            spec_meta_d = spec_meta(meta_nb)
+            if not (spec_meta_d.get("kernelspec") or {}).get("name"):
+                rec["verdict"] = f"meta-from-no-kernelspec:{meta_rel}"
+                return rec
+        if from_spec:
+            # The twin lives in the OUT dir: never in the worktree, never committed.
+            src_nb = out_dir / f"spec-twin-{args.issue}.ipynb"
+            src_nb.write_text(json.dumps(spec_twin(spec_cells, spec_meta_d),
+                                         ensure_ascii=False, indent=1) + "\n",
+                              encoding="utf-8")
+            create_mode = True
+            rec["create_mode"] = {"spec_twin": str(src_nb), "target": args.notebook,
+                                  "meta_from": meta_rel}
+        elif args.source_nb:
+            src_nb = wt_path / args.source_nb
+            if not src_nb.is_file():
+                rec["verdict"] = f"source-nb-not-found:{src_nb}"
+                return rec
+            create_mode = True
+            rec["create_mode"] = {"source": args.source_nb, "target": args.notebook}
+            if meta_rel:
+                rec["create_mode"]["meta_from"] = meta_rel
+        else:
+            rec["verdict"] = f"notebook-not-found:{target_nb}"
+            return rec
     kernel = series_kernel(wt_path, args.notebook)
     if create_mode:
         # The target is absent, so the path map can only describe its Python neighbours.
         # The canonical C# twin owns the deliverable's kernelspec: execution must use the
         # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
         # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
-        twin_meta = spec_meta_d if from_spec else series_canonical_meta(wt_path, args.notebook)
+        # --meta-from wins when given (mandatory for --from-spec); otherwise the sibling
+        # that carries the target's language tag.
+        twin_meta = spec_meta_d or series_canonical_meta(wt_path, args.notebook)
         twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
         if twin_kernel:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
-            if from_spec:
+            if spec_meta_d:
                 kernel["kernel_source"] = "meta-from-kernelspec"
+        else:
+            # No canonical metadata: the skeleton would carry {} and the language-info gate
+            # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
+            # Refuse before the capacity gate and any token; --meta-from is the remedy.
+            rec["kernel"] = kernel
+            rec["verdict"] = ("create-no-canonical-meta:"
+                              f"{Path(args.notebook).parent.as_posix()}")
+            return rec
     rec["kernel"] = kernel
     rec["src_nb"] = str(src_nb)
     # The kernel runs where the DELIVERABLE will live: a from-spec twin sits in the out
@@ -2872,7 +2897,9 @@ def main() -> int:
                          "« Plan des cellules » table is the reference; requires --meta-from")
     ap.add_argument("--meta-from", default=None,
                     help="repo-relative notebook whose kernelspec + language_info the "
-                         "--from-spec deliverable inherits (nothing else is read from it)")
+                         "created deliverable inherits (nothing else is read from it); "
+                         "required with --from-spec, optional with --source-nb where it "
+                         "overrides the sibling carrying the target's language tag")
     ap.add_argument("--repo", default=os.environ.get("NBCODER_REPO", ""),
                     help="CoursIA checkout (claim guard + worktree source); required — a "
                          "per-seat default path is not a harness binding (F2, vllm#438)")
@@ -2973,6 +3000,9 @@ def main() -> int:
     if args.from_spec and not args.meta_from:
         ap.error("--from-spec requires --meta-from <repo-relative notebook>: the deliverable "
                  "inherits that notebook's kernelspec + language_info (no default kernel)")
+    if args.meta_from and not (args.from_spec or args.source_nb or args.revise_from):
+        ap.error("--meta-from is only read in creation mode (--from-spec or --source-nb): "
+                 "a correction keeps the existing notebook's metadata")
     if args.from_spec and args.write_mode == "mcp":
         ap.error("--from-spec requires --write-mode json (one harness write, like --source-nb)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring

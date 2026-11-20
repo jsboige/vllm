@@ -56,7 +56,8 @@ ITEM_FIELDS = {
                                # path — every wave-1 parity grain (#27099-#27116) is a CREATION
     "from_spec": bool,         # creation with NO twin (--from-spec): the issue's cell plan is
                                # the reference; exclusive with source_nb, requires meta_from
-    "meta_from": str,          # --meta-from: repo-relative notebook whose kernelspec the new one inherits
+    "meta_from": str,          # --meta-from: repo-relative notebook whose kernelspec the new one
+                               # inherits; required with from_spec, optional with source_nb
     "max_stage": int,
     "claim": bool,
     "fresh_worktree": bool,
@@ -137,8 +138,9 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
                 raise QueueError(f"queue line {lineno}: from_spec requires meta_from")
             if item.get("write_mode") == "mcp":
                 raise QueueError(f"queue line {lineno}: from_spec requires write_mode json")
-        elif "meta_from" in item:
-            raise QueueError(f"queue line {lineno}: meta_from is only read with from_spec")
+        elif "meta_from" in item and "source_nb" not in item:
+            raise QueueError(f"queue line {lineno}: meta_from is only read in creation mode "
+                             "(from_spec or source_nb)")
         if "meta_from" in item:
             _check_repo_rel_nb(lineno, "meta_from", item["meta_from"])
         key = grain_key(item)
@@ -333,6 +335,7 @@ class Scheduler:
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
+        source_nb = None if from_spec else item.get("source_nb", a.source_nb)
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
@@ -342,8 +345,10 @@ class Scheduler:
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
             # a spec grain never inherits the scheduler's default twin: the driver
             # refuses --from-spec together with --source-nb
-            ("--source-nb", None if from_spec else item.get("source_nb", a.source_nb)),
-            ("--meta-from", item.get("meta_from") if from_spec else None),
+            ("--source-nb", source_nb),
+            # creation grains only: mandatory for from_spec, optional for a port whose
+            # folder has no sibling with the target's language tag
+            ("--meta-from", item.get("meta_from") if (from_spec or source_nb) else None),
             ("--max-stage", item.get("max_stage", a.max_stage)),
             ("--write-mode", item.get("write_mode", a.write_mode)),
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),

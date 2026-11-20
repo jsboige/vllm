@@ -318,7 +318,7 @@ def test_driver_command_passes_spec_fields(tmp_path):
     ({"source_nb": "A/Twin.ipynb"}, "exclusive"),
     ({"meta_from": None}, "requires meta_from"),
     ({"write_mode": "mcp"}, "write_mode json"),
-    ({"from_spec": False}, "only read with from_spec"),
+    ({"from_spec": False}, "only read in creation mode"),
     ({"meta_from": "../out.ipynb"}, "meta_from must be repo-relative"),
     ({"meta_from": "C:/abs.ipynb"}, "meta_from must be repo-relative"),
     ({"meta_from": "Cx/notes.md"}, "meta_from must be a repo-relative .ipynb"),
@@ -334,6 +334,29 @@ def test_queue_rejects_bad_spec_grain(tmp_path, patch, match):
     q = tmp_path / "q.jsonl"
     q.write_text(json.dumps(it) + "\n")
     with pytest.raises(S.QueueError, match=match):
+        S.load_queue(q)
+
+
+def test_port_grain_forwards_meta_from(tmp_path):
+    """A twin port may name its metadata source: the first Rust notebook of a series has
+    no *-Rust sibling to inherit from (claudish PROPOSAL 20/11)."""
+    port = {"issue": 45, "notebook": "Su/Su-02-X-Rust.ipynb",
+            "source_nb": "Su/Su-02-X.ipynb", "meta_from": "Su/Su-01-Rust.ipynb"}
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps(port) + "\n")
+    items, _ = S.load_queue(q)
+    assert items[0]["meta_from"] == "Su/Su-01-Rust.ipynb"
+    sched = make_sched(tmp_path / "s", [dict(port)])
+    joined = " ".join(sched.driver_command(sched.items_by_key["#45:Su/Su-02-X-Rust.ipynb"]))
+    assert "--source-nb Su/Su-02-X.ipynb" in joined
+    assert "--meta-from Su/Su-01-Rust.ipynb" in joined and "--from-spec" not in joined
+
+
+def test_queue_refuses_meta_from_on_a_correction(tmp_path):
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps({"issue": 46, "notebook": "A/E.ipynb",
+                             "meta_from": "A/M.ipynb"}) + "\n")
+    with pytest.raises(S.QueueError, match="only read in creation mode"):
         S.load_queue(q)
 
 
