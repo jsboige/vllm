@@ -1905,10 +1905,20 @@ def _repo_slug(wt: Path) -> str | None:
     return m.group(1) if m else None
 
 
-def _short_desc(args, plan: dict) -> str:
+def _short_desc(args, plan: dict, create_mode: dict | None = None) -> str:
     """One-line gesture description composed from the plan's own 'but' fields —
-    harness-only, no model turn. House form: '<notebook stem> cell N — <but>'."""
+    harness-only, no model turn. House form: '<notebook stem> cell N — <but>'.
+
+    A creation (spec twin or port) has no 'plan.plan' list — its plan carries
+    'cells' instead — so it gets its own form; without it the title fell back
+    to '— edit', which mislabels a whole new notebook (CoursIA#27481)."""
     stem = Path(args.notebook).stem
+    if isinstance(create_mode, dict):
+        n = len([c for c in (plan.get("cells") or []) if isinstance(c, dict)])
+        cells = f" ({n} cellules)" if n else ""
+        if create_mode.get("source"):
+            return f"{stem} — portage depuis {Path(str(create_mode['source'])).stem}{cells}"[:140]
+        return f"{stem} — création depuis spec{cells}"[:140]
     gestes = [g for g in (plan.get("plan") or []) if isinstance(g, dict)]
     if len(gestes) == 1 and gestes[0].get("geste") == "edit" and str(gestes[0].get("cell")).isdigit():
         but = _text(gestes[0].get("but")).strip()
@@ -2027,7 +2037,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
     branch = args.pr_branch or f"nbcoder/auto-{args.issue}"
-    desc = _short_desc(args, rec.get("plan") or {})
+    desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
 
     rc, out = _git(wt_path, "checkout", "-b", branch)

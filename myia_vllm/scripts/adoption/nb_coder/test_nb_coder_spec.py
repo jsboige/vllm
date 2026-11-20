@@ -393,3 +393,34 @@ def test_spec_outputs_annex_declares_its_cut(tmp_path):
     assert row["bytes"] == V.CELL_TEXT_CAP + 500
     assert row["text"].startswith("Z" * V.CELL_TEXT_CAP)
     assert row["text"].endswith("[tronqué : 500 caractères non affichés]")
+
+
+def test_short_desc_names_a_spec_creation():
+    """CoursIA#27481 (20/11): a from-spec creation was titled '<stem> — edit' because its
+    plan carries 'cells', not 'plan', and _short_desc only knew edit gestures."""
+    args = SimpleNamespace(notebook="InformationTheory/IT-08-Channel-Capacity.ipynb")
+    plan = {"cells": [{"type": "markdown"}, {"type": "code"}, {"type": "code"}],
+            "expectations": [], "risques": []}
+    cm = {"spec_twin": "x.md", "target": "IT-08.ipynb", "meta_from": "m.ipynb"}
+    d = D._short_desc(args, plan, cm)
+    assert d == "IT-08-Channel-Capacity — création depuis spec (3 cellules)"
+    assert "edit" not in d
+
+
+def test_short_desc_names_a_port_with_its_source():
+    args = SimpleNamespace(notebook="GameTheory/GT-03-Nash-CSharp.ipynb")
+    cm = {"source": "GameTheory/GT-03-Nash-Python.ipynb", "target": "GT-03-Nash-CSharp.ipynb"}
+    d = D._short_desc(args, {"cells": [{"type": "code"}]}, cm)
+    assert d == "GT-03-Nash-CSharp — portage depuis GT-03-Nash-Python (1 cellules)"
+    # no cell list → no count, still a creation label
+    assert D._short_desc(args, {}, cm) == "GT-03-Nash-CSharp — portage depuis GT-03-Nash-Python"
+
+
+def test_short_desc_edit_mode_unchanged():
+    args = SimpleNamespace(notebook="a/B.ipynb")
+    one = {"plan": [{"geste": "edit", "cell": 4, "but": "corrige la borne"}]}
+    assert D._short_desc(args, one) == "B cell 4 — corrige la borne"
+    assert D._short_desc(args, one, None) == "B cell 4 — corrige la borne"
+    two = {"plan": [{"geste": "edit", "cell": 1}, {"geste": "insert", "cell": 2}]}
+    assert D._short_desc(args, two) == "B — 2 gestes (edit,insert)"
+    assert D._short_desc(args, {}) == "B — edit"
