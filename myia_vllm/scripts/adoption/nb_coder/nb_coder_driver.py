@@ -2010,6 +2010,28 @@ async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
         return {"raw": raw}
 
 
+def wire_output(o):
+    """An execute_on_kernel output in the nbformat layout the checks read.
+
+    The MCP answers `{"output_type", "content": {name, text} | {ename, evalue, traceback}}`
+    (kernel_service.py:249-251) and only the copy it persists to disk is nbformat
+    (kernel_service.py:570-608). Read raw, every stream and error field sat one level
+    down: the per-cell `error` was null on every failure, and the stderr panic check
+    (#518) never saw a stream (#27302 attempt 2, outputs_tail, 2026-11-20)."""
+    if not isinstance(o, dict) or not isinstance(o.get("content"), dict):
+        return o
+    if o.get("output_type") not in ("stream", "error"):
+        return o
+    flat = {k: v for k, v in o.items() if k != "content"}
+    flat.update(o["content"])
+    return flat
+
+
+def _error_head(o: dict) -> str:
+    ename, evalue = str(o.get("ename") or ""), str(o.get("evalue") or "")
+    return f"{ename}: {evalue}" if ename and evalue else (ename or evalue)
+
+
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
     """The harness owns execution and the verdict: real outputs, never the model's word.
@@ -2028,8 +2050,8 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                                                     "persist_error_outputs": True,
                                                     "timeout": 300})
         status = r.get("status") or r.get("error") or "?"
-        outs = r.get("outputs") or []
-        err_txt = " ".join(str(o.get("text") or o.get("ename") or "") for o in outs
+        outs = [wire_output(o) for o in r.get("outputs") or []]
+        err_txt = " ".join(str(o.get("text") or _error_head(o)) for o in outs
                            if isinstance(o, dict) and o.get("output_type") == "error")
         # evcxr reports a Rust panic as stderr text only, with status "ok" (#27133 MGS-25).
         err_txt = err_txt or rust_panic_text(outs)
