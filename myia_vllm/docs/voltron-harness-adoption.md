@@ -59,8 +59,16 @@ POST /v1/task
 ```
 
 Gate : classe dans la taxonomie fournie ; `ligne_cle` recopiée **mot pour mot**
-depuis la source (≥15 caractères). La preuve voyage avec le verdict — pas de
+depuis la source (≥8 caractères — le seuil FrogNano de 15 rendait les lignes de
+code courtes structurellement ingatables, queue stage c 17 % mesurée sur le
+premier job d'adoption réel 20/11). La preuve voyage avec le verdict — pas de
 classification non étayée.
+
+**Exécution (mesuré 20/11)** : 2 appels préremplis au worker — la classe, puis
+la ligne qui la JUSTIFIE (ancre brute `LIGNE : `, copie directe, aucun
+échappement JSON à réussir). Sur un prompt combiné, le 1.7B délibère en prose et
+n'émet jamais le JSON ; prérempli, il complète mécaniquement : **stage a en
+0,26-0,64 s** (avant : escalade coordinateur systématique à 21-36 s).
 
 ### numbers — rapport chiffre fidèle
 
@@ -103,11 +111,14 @@ GET /v1/jobs/job-20261118T...-ab12cd
 
 ```
 
-Le job s'exécute en tâche de fond du service, **persisté sur disque après
-chaque tâche** (un redémarrage du serveur ne perd rien ; le `GET` relit le
-disque). Cas d'usage : balayer 30 fenêtres de logs, trier une inbox, rapporter
+Le job s'exécute en tâche de fond du service **à concurrence 6** (moteur mesuré
+N=64 = 3 673 t/s ; fumée 12 tâches : 12/12 stage a en <12 s), **persisté sur
+disque après chaque tâche** (un redémarrage du serveur ne perd rien ; le `GET`
+relit le disque). Cas d'usage : balayer 30 fenêtres de logs, trier une inbox, rapporter
 une série de diffs — l'agent appelant lance en début de session et relit en
 fin de session (contrat BG FrogNano : ~0 token pendant, livrable forme fixe).
+⚠ Un redémarrage serveur en cours de job **gèle** le job (pas de reprise — la
+charge n'est pas persistée) : relancer le POST.
 
 ## 4. Mesures
 
@@ -225,9 +236,18 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
 2b. ✅ Compteur d'usage durable `GET /v1/usage` (19/11) — baseline adoption 0 à
    partir du 2026-11-19T05:50Z ; piège po-2025 « compteurs engine reset-boot »
    neutralisé (persistance disque atomique, survit serveur ET engine).
+2c. ✅ Ancrage par préremplissage (20/11, commit `e66d607085`) : classify
+   2-étapes stage a 0,26-0,64 s (escalade coordinateur systématique avant) ;
+   seuil verbatim 15→8 ; extract/numbers livrent propre (extract reparsable) ;
+   jobs ×6 concurrents ; `GET /` sert les capacités.
 3. Présets sk-agent voltron (si les lanes veulent un routage hub) — à demander
    au PO sk-agent le cas échéant.
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
    recettes compatibles.
 5. Veille capacité : le moteur est surveillé par le cron vigie 6h du siège
    (santé + génération réelle, pas seulement /health).
+6. 🚀 **Première adoption réelle (20/11 00:07Z)** : claudish-cd (po-2028) lance
+   un job de **5 586 tâches classify** (1 par cellule code de 436 carnets C#
+   orphelins, taxonomie 5 archétypes, preuve liée à la classe) — lancé le cycle
+   même de la promo, « à 0,3-0,6 s c'est un non-choix » (verbatim consommateur).
+   Job initial orphané par le redéploiement des correctifs, relance demandée.
