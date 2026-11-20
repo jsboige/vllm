@@ -163,6 +163,46 @@ python nb_coder_driver.py --issue 27099 `
   canonique, gate création, prompts, garde mcp, applicateur de réparation) — aucun moteur,
   aucun MCP, aucun GitHub. 18 verts avec les pins correction.
 
+### 3.2ter Mode création depuis la spec (`--from-spec`) — carnet neuf sans jumeau (20/11)
+
+Le mode `--source-nb` exige un **jumeau** (portages C#/Rust). Un carnet neuf d'une série
+existante sur main — premier cas : CoursIA InformationTheory carnet 08, parent #27077 — n'en
+a pas, et rendait `notebook-not-found`. `--from-spec` en fabrique un à partir de l'issue :
+
+```powershell
+python nb_coder_driver.py --issue <N> --from-spec `
+  --notebook  MyIA.AI.Notebooks/<série>/<Nouveau-08>.ipynb `
+  --meta-from MyIA.AI.Notebooks/<série>/<Existant-01>.ipynb `
+  --repo D:/CoursIA --claim --lane ai-01:nb-coder --gate-mode block --max-stage 5
+```
+
+- **Contrat de spec** : section `## Plan des cellules` (niveau 2 à 4) contenant une table
+  avec une colonne `Type` (`markdown`|`md`|`code`) et une colonne de contenu
+  (`Contenu`/`Rôle`/`Attendu`). Colonnes `#` et `Titre` facultatives ; si `#` est présente,
+  les index se suivent à partir de 0 ou de 1. Il faut au moins 3 lignes, la première et la
+  dernière en markdown (titre, pied de provenance) et au moins une cellule code. Un pipe
+  littéral s'écrit `\|`.
+- **Refus fermé, AVANT la réservation** : `parse_spec_cells` nomme chaque défaut et rejette
+  le plan entier → `refused-spec-plan-unusable`, sans commentaire `[CLAIMED]`, sans worktree
+  et sans token. Un plan approximatif ne se révélerait qu'au vérificateur, une fois tout payé.
+- **Jumeau de spec** : `spec_twin` écrit une cellule `[SPEC cellule i — type] titre` par
+  ligne, sans sortie, dans le **out-dir** (`spec-twin-<N>.ipynb`), jamais dans le worktree,
+  jamais commité. `verify_structure_create` et le prompt de stage 1
+  (`spec_creation_prompt`) s'y réfèrent, avec le même contrat de plan léger.
+- **Metadata** : kernelspec + language_info de `--meta-from` uniquement (rien d'autre n'en
+  est lu) ; `kernel_source = meta-from-kernelspec`. Refus `meta-from-not-found` /
+  `meta-from-no-kernelspec`. Cible déjà présente → `target-already-exists`.
+- **Kernel cwd = dossier de la CIBLE** (créé si absent) : le jumeau vit hors série, son
+  dossier ferait résoudre chaque chemin relatif hors de la série.
+- **Vérificateur `--mode spec`** : la référence devient la spec de l'issue. La tâche
+  « contenu perdu/inventé » est remplacée par : plan réalisé, attendus **affichés par des
+  sorties réelles** et exacts, aucune source ou page que l'issue ne fournit pas, conventions.
+  Les digests et diffs contre le jumeau sont omis (bruit pur). Le contrat JSON du verdict
+  est inchangé.
+- Gardes CLI : `--from-spec` exclut `--source-nb`, exige `--meta-from` et refuse
+  `--write-mode mcp`. Tests : `test_nb_coder_spec.py` (26 pins), 7 mutations des gardes
+  toutes tuées.
+
 ### 3.4 Agentic trace
 
 - sk-agent `conversation_id` persists per notebook build → the PR body carries it;
