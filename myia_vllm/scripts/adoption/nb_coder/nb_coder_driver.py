@@ -1259,7 +1259,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         rec["creation_plan_repair"] = {"errors_before": addressing_errors,
                                        "errors_after": after, "kept": not after}
         if not after:
-            plan_cells[:] = repaired   # the caller's rec['plan'] stays the BUILT plan
+            plan_cells[:] = repaired   # in place: rec['plan']['cells'] is this same list,
+                                       # so the trace carries the REPAIRED (built) plan
         addressing_errors = after
     if addressing_errors:
         rec["verdict"] = "stage1-unaddressable-creation-plan"
@@ -2542,7 +2543,7 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
 # `-c` pairs git dies "Author identity unknown" and the whole grain fails at the
 # last step, after every token was spent.
 _GIT_IDENTITY = ("-c", "user.name=nb-coder",
-                 "-c", "user.email=nb-coder@users.noreply.github.com")
+                 "-c", "user.email=nb-coder@nb-coder.invalid")
 
 
 def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
