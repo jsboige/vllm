@@ -1431,6 +1431,20 @@ def defining_cell(cells: list[dict], name: str, before: int) -> int | None:
     return None
 
 
+def source_cell(cells: list[dict], name: str, before: int) -> int | None:
+    """Index of the LAST code cell above `before` that declares OR binds `name`, or None.
+    For cascade detection only: a failed .NET or evcxr submission defines none of its
+    names, functions and `var` alike. `defining_cell` stays declarations-only, since the
+    stack frames it resolves name functions, never values."""
+    for j in range(min(before, len(cells)) - 1, -1, -1):
+        c = cells[j]
+        if c.get("cell_type") == "code":
+            src = _text(c.get("source"))
+            if declares(src, name) or binds(src, name):
+                return j
+    return None
+
+
 # A name the compiler or interpreter reports as nonexistent (#27302 attempt 2, 20/11).
 _UNDEFINED_NAME_RES = (
     re.compile(r"error CS0103: (?:Le nom|The name) '(\w+)'"),
@@ -1458,13 +1472,15 @@ def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]
     five functions it declares never existed and seven cells below failed with CS0103 on
     them. Each round re-asked all of them (13, 12, 10 cells) and the root error survived
     three rounds. A cell listed here fails because of its root: repairing it before the
-    root can only work around a definition that is about to change."""
+    root can only work around a definition that is about to change. Values count too
+    (#27314 attempt 1: cell 22 failed on `ARCHIVE` and `CERTIFICAT`, which cell 19 binds
+    with `var` and never ran)."""
     failing = {d["idx"] for d in detail}
     out: dict[int, list[int]] = {}
     for d in detail:
         roots = set()
         for name in undefined_names(d.get("_raw_errors") or d.get("errors") or ""):
-            j = defining_cell(cells, name, before=d["idx"])
+            j = source_cell(cells, name, before=d["idx"])
             if j is not None and j in failing:
                 roots.add(j)
         if roots:
@@ -2926,7 +2942,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                     # waiting cell (29 on 20, #27302) follows it transitively.
                     kept = [r for r in roots[d["idx"]] if r not in roots]
                     names = [n for n in undefined_names(d["_raw_errors"])
-                             if defining_cell(cells_now, n, before=d["idx"]) in kept]
+                             if source_cell(cells_now, n, before=d["idx"]) in kept]
                     deferred.append({"idx": d["idx"], "roots": kept, "names": names})
             detail = [d for d in detail if d["idx"] not in roots]
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
