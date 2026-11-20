@@ -2129,6 +2129,45 @@ def served_identity(calls: list, verify: dict) -> dict:
             "verifier": ", ".join(sorted(ver)) or None, "shared": shared, "failovers": fo}
 
 
+def configured_target(entry_id: str | None, config: Path | None = None) -> str | None:
+    """What an sk-agent model ENTRY points at, as the seat's config declares it.
+
+    `model_used` is the sk-agent entry id, and entry ids keep historical names: on ai-01,
+    `qwen3.6-35b-a3b-nbcoder` points at :5002 with model `swift-1.5-27b`. A PR that cited the
+    entry id alone named the legacy MoE as producer, so Swift's work was counted as nobody's
+    (claudish #445 tally, 20/11: "0 PR où Swift est nommé producteur", while #27481 was Swift).
+
+    This is a CONFIGURED target, not a served model: an endpoint behind a hub can fail over
+    elsewhere, and only `served_model` in the envelope says what answered (#504). The PR body
+    labels it accordingly. Only the model id and the port are returned, never the host or a
+    key. None when the config is unreadable or has no such entry: unknown stays unknown.
+    """
+    if not entry_id:
+        return None
+    try:
+        cfg = json.loads(Path(config or SK_CONFIG).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    for m in cfg.get("models") or []:
+        if isinstance(m, dict) and m.get("id") == entry_id:
+            model = m.get("model_id") or m.get("model")
+            if not model:
+                return None
+            port = re.search(r":(\d+)(?:/|$)", str(m.get("base_url") or ""))
+            return f"{model} sur :{port.group(1)}" if port else str(model)
+    return None
+
+
+def producer_label(agent: str, entry_id: str | None, config: Path | None = None) -> str:
+    """`agent` (entrée `id` → cible configurée `model`), or as much of it as is known."""
+    if not entry_id:
+        return f"`{agent}` (entrée sk-agent inconnue)"
+    target = configured_target(entry_id, config)
+    if not target:
+        return f"`{agent}` (entrée sk-agent `{entry_id}`, cible non lue)"
+    return f"`{agent}` (entrée sk-agent `{entry_id}` → cible configurée `{target}`)"
+
+
 def identity_line(identity: dict | None) -> str:
     """One PR-body line: what served, or that it is not known."""
     st = (identity or {}).get("status")
@@ -2428,10 +2467,11 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     pr_body = (
         f"{grain_tag(args.grain_tier, args.lane, prev=prev)}\n\n"
         f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
-        f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
-        f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
-        f"vérificateur indépendant `{args.verifier_agent}` "
-        f"(`{(rec.get('verify') or {}).get('model_used')}`).\n\n"
+        f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur "
+        f"{producer_label(args.agent, (rec.get('calls') or [{}])[-1].get('model_used'))}, "
+        f"vérificateur indépendant "
+        f"{producer_label(args.verifier_agent, (rec.get('verify') or {}).get('model_used'))}"
+        f".\n\n"
         f"## Geste\n\n{desc}\n\n"
         + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
                     for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
