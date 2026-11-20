@@ -29,6 +29,7 @@ Clé hub : env ZAI_API_KEY au lancement du serveur (résolue en mémoire par
 start_voltron_service.ps1 depuis ~/.claude.json, jamais écrite sur disque).
 Absent → phase C sautée, la réponse porte stage="a" + note.
 """
+import concurrent.futures
 import json
 import os
 import re
@@ -56,7 +57,15 @@ USAGE_PATH = r"D:\vllm-data\bench\v2_usage.json"  # compteur DURABLE (piège po-
 # les compteurs engine avancent en fin de requête et repartent à zéro au boot —
 # l'instrument d'adoption doit survivre aux restarts)
 MAX_DATA_CHARS = 20000  # garde contexte 32K : data + prompt + réponse
+JOB_CONCURRENCY = 6     # moteur mesuré N=64 (3 673 t/s) ; 6 laisse la place
+                         # aux appels /v1/task directs et borne la charge hub
 MAX_REPAIR_ROUNDS = 2
+
+# Ancrage de format par contrat (mesuré 20/11) : sans préremplissage, le 1.7B
+# délibère en prose et le livrable arrive noyé — ou jamais (max_tokens épuisé
+# en raisonnement). Prérempli, il complète mécaniquement. La réponse du moteur
+# ne contient PAS le préfixe : gate et assemblage le recollent.
+PREFILLS = {"extract": "{", "numbers": "Rapport : "}
 HUB_KEY = os.environ.get("ZAI_API_KEY")  # figé au démarrage du serveur
 
 _jobs_lock = threading.Lock()
@@ -65,9 +74,18 @@ _jobs = {}  # id -> dict(status, name, total, done, results)
 
 # ---------------------------------------------------------------- transport
 
-def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None):
-    payload = {"model": model, "messages": messages,
+def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None, prefill=None):
+    msgs = list(messages)
+    if prefill:
+        msgs.append({"role": "assistant", "content": prefill})
+    payload = {"model": model, "messages": msgs,
                "max_tokens": max_tokens, "temperature": 0.0}
+    if prefill:
+        # continuation assistant : vLLM exige ce couple, 400 BadRequest sinon
+        # (mesuré 20/11). La réponse ne contient PAS le préfixe — l'appelant
+        # concatène prefill + complétion pour reconstituer le JSON complet.
+        payload["continue_final_message"] = True
+        payload["add_generation_prompt"] = False
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -172,14 +190,18 @@ def build_contract(t):
             if cls not in classes:
                 return False, f"classe '{cls}' hors taxonomie autorisée"
             ev = str(obj.get("ligne_cle", ""))
-            if len(ev) < 15 or ev not in data:
-                return False, "ligne_cle introuvable mot pour mot dans le texte (ou <15 caractères)"
+            # seuil 8 (était 15, héritage FrogNano) : une ligne de code juste
+            # fait souvent 8-14 chars — à 15, les cellules courtes sont
+            # structurellement ingatables en stage a (mesuré 20/11 : queue
+            # stage c 17 % sur cellules C# réelles)
+            if len(ev) < 8 or ev not in data:
+                return False, "ligne_cle introuvable mot pour mot dans le texte (ou <8 caractères)"
             return True, ""
 
         prompt = (f"Texte :\n{data}\n\nClasse ce texte dans EXACTEMENT une de ces classes : "
                   f"{classes}. Renvoie UNIQUEMENT un JSON {{\"classe\": ..., \"ligne_cle\": ...}} "
                   f"où ligne_cle est la ligne la plus diagnostique du texte, recopiée mot pour "
-                  f"mot (au moins 15 caractères).")
+                  f"mot (au moins 8 caractères).")
         return contract, prompt, gate, lambda d: (
             f"Classe incorrecte ou preuve invalide : {d}. Classes autorisées : {classes}. "
             f"Renvoie le JSON corrigé, ligne_cle recopiée mot pour mot depuis le Texte."), 400
@@ -251,8 +273,117 @@ def clean_answer(out):
     return out.split("</think>")[-1].strip() if "</think>" in out else out.strip()
 
 
+def run_classify(t):
+    """Classify en DEUX appels préremplis, un champ chacun. Sur un prompt
+    combiné, le 1.7B délibère en prose et n'émet jamais le JSON (mesuré 20/11 :
+    3/3 escalades en stage c, max_tokens épuisé en raisonnement) ; prérempli,
+    il complète mécaniquement. La preuve est LIÉE au verdict : l'étape B
+    reçoit la classe choisie en A et copie la ligne qui la justifie — gate
+    inchangé (classe ∈ taxonomie, ligne_cle verbatim ≥15)."""
+    built = build_contract(t)
+    if isinstance(built, tuple) and built[0] is None and len(built) == 2:
+        return {"ok": False, "stage": "reject", "answer": "", "detail": built[1],
+                "turns": 0, "dt_s": 0.0}
+    contract, prompt, gate, feedback, _ = built
+    data, classes = contract["data"], contract["classes"]
+    t0 = time.time()
+
+    ok_engine, msg = ensure_engine()
+    if not ok_engine:
+        return {"ok": False, "stage": "engine-down", "answer": "", "detail": msg,
+                "turns": 0, "dt_s": round(time.time() - t0, 2)}
+
+    pre_classe = '{"classe": "'
+    p_a = (f"Texte :\n{data}\n\nClasse ce texte dans EXACTEMENT une de ces "
+           f"classes : {classes}.")
+    turns, classe, ligne, out_a = 0, "", "", ""
+    try:
+        turns += 1
+        out_a = chat(ENGINE_URL, ENGINE_MODEL, [{"role": "user", "content": p_a}],
+                     max_tokens=60, prefill=pre_classe)
+        objs = rb.extract_json_objs(pre_classe + out_a)
+        if objs:
+            classe = str(objs[0].get("classe", ""))
+    except Exception as exc:
+        return {"ok": False, "stage": "engine-error", "answer": "",
+                "detail": f"étape classe: appel engine échoué: {exc!r}",
+                "turns": turns, "dt_s": round(time.time() - t0, 2)}
+
+    def step_b(extra=""):
+        p_b = (f"Texte :\n{data}\n\nCe texte relève de la classe {classe}. "
+               f"Recopie la ligne qui justifie le mieux cette classe "
+               f"(au moins 8 caractères ; s'il y a le choix, la plus diagnostique "
+               f"et longue), mot pour mot, sans rien changer.\n"
+               f"Réponds UNIQUEMENT cette ligne.{extra}")
+        # ancre BRUTE (pas de contexte JSON) : la complétion n'a aucun
+        # échappement à réussir, la première ligne EST la copie — mesuré 20/11 :
+        # l'ancre JSON faisait échouer l'échappement sur une part des lignes C#
+        out = chat(ENGINE_URL, ENGINE_MODEL, [{"role": "user", "content": p_b}],
+                   max_tokens=200, prefill="LIGNE : ")
+        return out.split("\n")[0].strip()
+
+    try:
+        turns += 1
+        ligne = step_b()
+        if not ligne:  # A avait parfois déjà les deux champs — repli
+            objs = rb.extract_json_objs(pre_classe + out_a)
+            if objs:
+                ligne = str(objs[0].get("ligne_cle", ""))
+    except Exception:
+        ligne = ""
+
+    combined = json.dumps({"classe": classe, "ligne_cle": ligne}, ensure_ascii=False)
+    ok, detail = gate(combined)
+    stage = "a"
+    # réparation dirigée : on relance l'ÉTAPE fautive avec le delta signé
+    while not ok and turns - 2 < MAX_REPAIR_ROUNDS:
+        turns += 1
+        try:
+            if "taxonomie" in detail:
+                out = chat(ENGINE_URL, ENGINE_MODEL,
+                           [{"role": "user", "content": p_a + "\n" + feedback(detail)}],
+                           max_tokens=60, prefill=pre_classe)
+                objs = rb.extract_json_objs(pre_classe + out)
+                if objs:
+                    classe = str(objs[0].get("classe", ""))
+            else:
+                ligne = step_b("\n" + feedback(detail))
+        except Exception:
+            pass
+        combined = json.dumps({"classe": classe, "ligne_cle": ligne},
+                              ensure_ascii=False)
+        ok, detail = gate(combined)
+
+    if ok:
+        return {"ok": True, "stage": "a", "answer": combined, "detail": "",
+                "turns": turns, "dt_s": round(time.time() - t0, 2)}
+
+    # --- phase C : coordinateur hub sur le prompt combiné original, re-gaté
+    coord_note = ""
+    stage = "c"
+    turns += 1
+    if HUB_KEY:
+        try:
+            out = clean_answer(chat(HUB_URL, HUB_MODEL,
+                                    [{"role": "user", "content": prompt + COORD_NOTE}],
+                                    max_tokens=3000, timeout=300, api_key=HUB_KEY))
+            ok, detail = gate(out)
+            return {"ok": ok, "stage": stage, "answer": clean_answer(out),
+                    "detail": detail, "turns": turns,
+                    "dt_s": round(time.time() - t0, 2)}
+        except Exception as exc:
+            detail = f"worker 2-étapes échoué ({detail}); coordinateur hub échoué: {exc!r}"
+    else:
+        coord_note = " (coordinateur indisponible: ZAI_API_KEY absent au démarrage)"
+    return {"ok": False, "stage": stage, "answer": combined,
+            "detail": detail + coord_note, "turns": turns,
+            "dt_s": round(time.time() - t0, 2)}
+
+
 def run_task(t):
     """Chaîne complète pour UNE tâche. Retourne le dict de réponse du service."""
+    if t.get("type") == "classify":
+        return run_classify(t)
     built = build_contract(t)
     if isinstance(built, tuple) and built[0] is None and len(built) == 2:
         return {"ok": False, "stage": "reject", "answer": "", "detail": built[1],
@@ -270,20 +401,23 @@ def run_task(t):
     # (mesuré 18/11 : clé citée dans le brouillon de raisonnement mais absente
     # du livrable final → svc OK / vérité FAIL).
     msgs = [{"role": "user", "content": prompt}]
+    pre = PREFILLS.get(t.get("type"))
     try:
-        out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs, max_tokens=max_tokens))
+        out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs,
+                                max_tokens=max_tokens, prefill=pre))
     except Exception as exc:
         return {"ok": False, "stage": "engine-error", "answer": "",
                 "detail": f"appel engine échoué: {exc!r}", "turns": 0,
                 "dt_s": round(time.time() - t0, 2)}
-    ok, detail = gate(out)
+    ok, detail = gate((pre or "") + out)
     turns = 1
     stage = "a"
     while not ok and turns <= MAX_REPAIR_ROUNDS:
-        msgs.append({"role": "assistant", "content": out})
+        msgs.append({"role": "assistant", "content": (pre or "") + out})
         msgs.append({"role": "user", "content": feedback(detail)})
-        out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs, max_tokens=max_tokens))
-        ok, detail = gate(out)
+        out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs,
+                                max_tokens=max_tokens, prefill=pre))
+        ok, detail = gate((pre or "") + out)
         turns += 1
 
     # --- phase C : coordinateur hub, prompt SEC (mesuré : les brouillons du 1.7B
@@ -302,21 +436,39 @@ def run_task(t):
     elif not ok:
         coord_note = " (coordinateur indisponible: ZAI_API_KEY absent au démarrage du serveur)"
 
-    return {"ok": ok, "stage": stage, "answer": clean_answer(out),
+    ans = clean_answer(out)
+    if ok and t.get("type") == "extract":
+        # livrer le JSON parsé, pas la prose autour (le 1.7B l'enveloppe
+        # parfois de délibération — objs[0] EST le livrable). Le préfixe de
+        # préremplissage doit être recollé AVANT parse ; le repli nu couvre
+        # une sortie de coordinateur (stage c, jamais préremplie).
+        objs = rb.extract_json_objs((pre or "") + ans) or rb.extract_json_objs(ans)
+        if objs:
+            ans = json.dumps(objs[0], ensure_ascii=False)
+    return {"ok": ok, "stage": stage, "answer": ans,
             "detail": detail + coord_note,
             "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
 
 def run_job(job_id):
     job = _jobs[job_id]
-    for i, t in enumerate(job["tasks"]):
-        res = run_task(t)
+    # concurrence : le moteur tient N=64 (3 673 t/s mesurés) alors qu'un job
+    # séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11)
+    def one(i_t):
+        i, t = i_t
+        try:
+            res = run_task(t)
+        except Exception as exc:  # une tâche ne tue jamais le job
+            res = {"ok": False, "stage": "error", "answer": "",
+                   "detail": f"exécution tâche {i}: {exc!r}", "turns": 0, "dt_s": 0.0}
         res["task"] = i
         _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
         with _jobs_lock:
             job["results"].append(res)
-            job["done"] = i + 1
+            job["done"] += 1
         _persist(job_id)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
+        list(ex.map(one, enumerate(job["tasks"])))
     with _jobs_lock:
         job["status"] = "done"
     _persist(job_id)
@@ -419,7 +571,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"server": "up", "engine": engine_healthy(),
                              "hub_key": bool(HUB_KEY), "jobs": len(_jobs),
                              "engine_url": ENGINE_URL})
-        elif self.path == "/v1/capabilities":
+        elif self.path in ("/", "/v1/capabilities"):
+            # "/" sert les capacités : premier réflexe d'un consommateur (mesuré,
+            # claudish-cd 20/11 — un 404 "route inconnue" à la racine est une friction)
             self._send(200, CAPABILITIES)
         elif self.path == "/v1/usage":
             with _usage_lock:
