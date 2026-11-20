@@ -1519,11 +1519,13 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
                              "elapsed_s": dt, "error": env.get("error"),
-                             # model_used/agent_used: the sk-agent envelope's own proof of what
-                             # actually served the call (routing evidence, self-service since
-                             # the 15/11 pilot where engine_delta alone had to stand in).
+                             # model_used/agent_used: the sk-agent ENTRY that routed the call,
+                             # not proof of the model that answered (20/11: a hub reroute left
+                             # `nb-minimax` here while glm-5.3 served). What served comes from
+                             # served_fields, when the envelope carries it.
                              "model_used": env.get("model_used"),
                              "agent_used": env.get("agent_used"),
+                             **served_fields(env),
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
@@ -1924,6 +1926,58 @@ def _archive_verify_trace(out_dir: Path, issue: int, tag: str) -> str | None:
     return str(dest)
 
 
+# `model_used` is the sk-agent ENTRY id, not the model that answered. 20/11, po-2028: 11
+# requests of the `nb-minimax` entry were served by glm-5.3 through a local sidecar reroute,
+# the verifier being glm-5.3 too, and the traces still read `nb-minimax`. These two envelope
+# fields carry what actually served the call (claudish `x-claudish-failover-notice` #229,
+# served model claudish#1128); they are recorded when present and NEVER inferred from the
+# requested id.
+SERVED_FIELDS = ("served_model", "failover_notice")
+
+
+def served_fields(env: dict) -> dict:
+    return {k: env[k] for k in SERVED_FIELDS if env.get(k)}
+
+
+def served_identity(calls: list, verify: dict) -> dict:
+    """Producer vs verifier, by the model that SERVED them, as far as the envelopes say.
+
+    `same`: the verifier's served model also served a producer call -> the producer judged
+    its own work, and no approval stands. `distinct`: every answered producer call names its
+    served model and none is the verifier's. `unknown` otherwise: said in clear, never read
+    as distinct. Failover notices are listed whatever the status."""
+    answered = [c for c in calls or [] if c.get("response_chars") and not c.get("error")]
+    prod = sorted({c["served_model"] for c in answered if c.get("served_model")})
+    ver = verify.get("served_model")
+    if ver and ver in prod:
+        status = "same"
+    elif ver and answered and all(c.get("served_model") for c in answered):
+        status = "distinct"
+    else:
+        status = "unknown"
+    fo = [{"stage": c.get("stage"), "notice": str(c["failover_notice"])[:300]}
+          for c in calls or [] if c.get("failover_notice")]
+    if verify.get("failover_notice"):
+        fo.append({"stage": "4-verify", "notice": str(verify["failover_notice"])[:300]})
+    return {"status": status, "producer": prod, "verifier": ver, "failovers": fo}
+
+
+def identity_line(identity: dict | None) -> str:
+    """One PR-body line: what served, or that it is not known."""
+    st = (identity or {}).get("status")
+    if st == "distinct":
+        head = (f"producteur {', '.join(identity['producer'])} ≠ vérificateur "
+                f"{identity['verifier']}")
+    elif st == "same":
+        head = f"MÊME modèle servi des deux côtés ({identity['verifier']})"
+    else:
+        head = "modèle servi inconnu (l'enveloppe sk-agent ne le publie pas)"
+    if (identity or {}).get("failovers"):
+        head += " ; bascule au hub sur " + ", ".join(
+            str(f["stage"]) for f in identity["failovers"])
+    return head
+
+
 def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
                   prior: dict | None = None) -> None:
     """Stage 4 — the independent verifier runs as a SEPARATE process and agent
@@ -1968,10 +2022,15 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         t = json.loads(trace.read_text(encoding="utf-8"))
         entry |= {"verdict": t.get("verdict"), "model_used": t.get("model_used"),
                   "findings": (t.get("answer") or {}).get("findings"),
-                  "conversation_id": t.get("conversation_id")}
+                  "conversation_id": t.get("conversation_id"), **served_fields(t)}
+    entry["identity"] = served_identity(rec.get("calls") or [], entry)
     rec["verify"] = entry
     rec["stage4_s"] = entry["elapsed_s"]
-    if rc == 0 and entry.get("verdict") == "approve":
+    if rc == 0 and entry.get("verdict") == "approve" and entry["identity"]["status"] == "same":
+        # producer != verifier is a rule on MODELS, not on agent names: an approval signed by
+        # the model that wrote the draft is no verification, so it never reaches a PR.
+        rec["verdict"] = "verify-same-served-model"
+    elif rc == 0 and entry.get("verdict") == "approve":
         rec["verdict"] = "verify-approved"
     elif rc == 1 and entry.get("verdict") == "reject":
         rec["verdict"] = "verify-reject"
@@ -2149,6 +2208,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + f"\nVérification indépendante : {args.verifier_agent} — "
         f"{(rec.get('verify') or {}).get('verdict')} "
         f"(modèle {(rec.get('verify') or {}).get('model_used')})."
+        + f"\nModèle servi : {identity_line((rec.get('verify') or {}).get('identity'))}."
         + f"\nExécution : kernel {rec.get('kernel', {}).get('kernel_name')}, "
         f"{len(rec.get('execution') or [])} cellules exécutées, C.2 "
         f"{'séquentiel' if (rec.get('c2') or {}).get('sequential') else 'BROKEN'}."
@@ -2215,6 +2275,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
         f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
         f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
+        f"- **Modèle servi** : {identity_line((rec.get('verify') or {}).get('identity'))}.\n"
         + (f"- **Revue constructive** : approuvé après {len(rec['revisions'])} tour(s) de "
            f"révision (constats en entrée par tour : "
            f"{', '.join(str(r.get('findings_in')) for r in rec['revisions'])}), chaque tour "

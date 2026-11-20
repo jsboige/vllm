@@ -412,6 +412,7 @@ def main() -> int:
                 env, dt = env2, round(dt + dt2, 1)
         rec["elapsed_s"] = dt
         rec["model_used"] = env.get("model_used")
+        rec |= nbcd.served_fields(env)     # what actually served the verifier, when known
         rec["conversation_id"] = env.get("conversation_id")
         rec["response_chars"] = len(env.get("response") or "")
         ans = nbcd.parse_json_block(env.get("response") or "")
