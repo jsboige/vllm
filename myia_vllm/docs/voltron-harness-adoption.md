@@ -65,7 +65,7 @@ premier job d'adoption réel 20/11). La preuve voyage avec le verdict — pas de
 classification non étayée.
 
 **Exécution (mesuré 20/11)** : 2 appels préremplis au worker — la classe, puis
-la ligne qui la JUSTIFIE (ancre brute `LIGNE : `, copie directe, aucun
+la ligne qui la JUSTIFIE (ancre brute `LIGNE :`, copie directe, aucun
 échappement JSON à réussir). Sur un prompt combiné, le 1.7B délibère en prose et
 n'émet jamais le JSON ; prérempli, il complète mécaniquement : **stage a en
 0,26-0,64 s** (avant : escalade coordinateur systématique à 21-36 s).
@@ -246,8 +246,16 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    recettes compatibles.
 5. Veille capacité : le moteur est surveillé par le cron vigie 6h du siège
    (santé + génération réelle, pas seulement /health).
-6. 🚀 **Première adoption réelle (20/11 00:07Z)** : claudish-cd (po-2028) lance
-   un job de **5 586 tâches classify** (1 par cellule code de 436 carnets C#
-   orphelins, taxonomie 5 archétypes, preuve liée à la classe) — lancé le cycle
-   même de la promo, « à 0,3-0,6 s c'est un non-choix » (verbatim consommateur).
-   Job initial orphané par le redéploiement des correctifs, relance demandée.
+6. ✅ **Première adoption réelle (20/11, complète à 01:46Z)** : claudish-cd
+   (po-2028) — job de **5 586 tâches classify** (1/cellule des 436 carnets C#
+   orphelins) : **5 558 ok = 99,5 %**, stages a=4 211 / c=1 375 (75 % local),
+   ~65 tâches/min, 85 min de mur ×6 concurrents. Consommation réelle : colonne
+   « Archetype (preuve) » dans 434 specs, `ligne_cle` citées verbatim dans les
+   fiches. Qualité fine mesurée (spot-check consommateur) : exact sur
+   l'inventaire et les cellules à marqueur ; ~60-75 % de précision fine
+   (sur-déclenchement « exercice » sur cellules `def` de fondations) —
+   **accélérateur de brouillon, pas verdict** (frontière vendue). Axe
+   d'amélioration suivant : définitions de classes optionnelles dans le
+   contrat (fondations vs exercice = principale source d'erreur). Verbatim
+   consommateur : « à 0,3-0,6 s c'est un non-choix ». Compteur au 01:46Z :
+   5 666 tâches / 4 jobs depuis la baseline 0 (19/11 05:50Z).
