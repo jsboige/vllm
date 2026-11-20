@@ -549,3 +549,78 @@ def test_parse_args_refuses_a_negative_launch_gap(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ---------------------------------------------------------------- retry generation
+# A failed grain is terminal, and the queue it was alone in cannot be emptied to withdraw
+# it (an empty queue is a reload error). Measured 20/11 on CoursIA#27314: the defect that
+# failed it was merged (#509) while the scheduler kept it terminal for want of a gesture.
+def _events(sched, kind):
+    return [json.loads(l) for l in
+            (sched.state_dir / "scheduler.jsonl").read_text().splitlines()
+            if json.loads(l)["kind"] == kind]
+
+
+def _requeue(sched, tmp_path, line):
+    q = write_queue(tmp_path, [line])
+    sched.args.queue = q
+    sched.merge_queue(*S.load_queue(q))
+
+
+def test_a_raised_retry_reoffers_a_failed_grain_once(tmp_path):
+    spawn = SpawnRecorder(verdict="built-execution-failed", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn)
+    sched.run()
+    key = "#1:Dir/N1.ipynb"
+    assert sched.state["grains"][key]["status"] == "failed"
+
+    _requeue(sched, tmp_path, item(1) | {"retry": 1})
+    g = sched.state["grains"][key]
+    assert g["status"] == "pending" and g["attempts"] == 0 and g["retry"] == 1
+    ev = _events(sched, "requeued")[-1]
+    assert ev["retry"] == 1 and ev["previous_attempts"] == 1
+    assert ev["previous_verdict"] == "built-execution-failed"
+
+    sched.run()                                   # the retry fails too
+    assert len(spawn.calls) == 2
+    _requeue(sched, tmp_path, item(1) | {"retry": 1})   # same generation: no second run
+    assert sched.state["grains"][key]["status"] == "failed"
+    _requeue(sched, tmp_path, item(1) | {"retry": 2})   # a new generation is a new decision
+    assert sched.state["grains"][key]["status"] == "pending"
+
+
+def test_a_retry_never_reruns_a_done_grain(tmp_path):
+    sched = make_sched(tmp_path, [item(1)], spawn=SpawnRecorder(done_after=0))
+    sched.run()
+    key = "#1:Dir/N1.ipynb"
+    assert sched.state["grains"][key]["status"] == "done"
+    _requeue(sched, tmp_path, item(1) | {"retry": 1})
+    assert sched.state["grains"][key]["status"] == "done"
+    assert _events(sched, "retry-ignored")[-1]["status"] == "done"
+
+
+def test_a_retry_written_before_the_failure_is_absorbed(tmp_path):
+    # Raised while the grain is still pending, the generation must not fire later on a
+    # failure nobody had seen when writing it.
+    spawn = SpawnRecorder(verdict="built-execution-failed", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [item(1) | {"retry": 1}], spawn=spawn)
+    key = "#1:Dir/N1.ipynb"
+    assert sched.state["grains"][key]["status"] == "pending"
+    sched.run()
+    assert sched.state["grains"][key]["status"] == "failed"
+    _requeue(sched, tmp_path, item(1) | {"retry": 1})
+    assert sched.state["grains"][key]["status"] == "failed"
+    assert len(spawn.calls) == 1
+
+
+def test_retry_is_scheduler_only_and_never_reaches_the_driver(tmp_path):
+    sched = make_sched(tmp_path, [item(1) | {"retry": 3}])
+    cmd = sched.driver_command(item(1) | {"retry": 3})
+    assert "--retry" not in cmd
+
+
+def test_retry_must_be_an_integer(tmp_path):
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps(item(1) | {"retry": "1"}) + "\n")
+    with pytest.raises(S.QueueError, match="retry must be int"):
+        S.load_queue(q)

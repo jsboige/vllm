@@ -72,6 +72,8 @@ ITEM_FIELDS = {
     "repair_rounds": int,
     "revise_rounds": int,      # constructive-review rounds after a verify-reject
     "allow_foreign_origin": bool,
+    "retry": int,              # retry generation: raise it to re-offer a FAILED grain once
+                               # (scheduler-only, never passed to the driver)
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
 # sync so a rc!=0 wrapper around a successful verdict is still classified done).
@@ -255,16 +257,44 @@ class Scheduler:
             g = grains.get(key)
             if g is None:
                 grains[key] = {"issue": item["issue"], "notebook": item["notebook"],
-                               "status": "pending", "attempts": 0, "not_before": None}
+                               "status": "pending", "attempts": 0, "not_before": None,
+                               "retry": item.get("retry", 0)}
                 self._event("queued", key=key)
             elif g.get("status") == "withdrawn":
                 # an explicit re-add after a withdrawal is an operator decision
                 g.update({"status": "pending", "not_before": None,
-                          "requeued": utcnow()})
+                          "requeued": utcnow(), "retry": item.get("retry", 0)})
                 self._event("requeued", key=key)
+            elif item.get("retry", 0) > g.get("retry", 0):
+                self._apply_retry(key, g, item["retry"])
         self.state["queue_sha256"] = digest
         self.items_by_key = by_key
         return [by_key[k] for k in by_key]
+
+    def _apply_retry(self, key: str, g: dict, retry: int) -> None:
+        """A raised `retry` generation re-offers a FAILED grain, once per generation.
+
+        A failed grain is terminal, and withdrawing it is no way out: the queue it was alone
+        in cannot be emptied (an empty queue is a reload error, fail-safe against a
+        half-written file), and a withdraw/re-add dance costs two watched edits. Measured
+        20/11 on CoursIA#27314: the harness defect that failed the grain was fixed and merged
+        (#509) while the scheduler kept it terminal for want of a gesture.
+
+        Only `failed` is re-offered. `done` delivered a PR, so running it again is a new grain
+        and not a retry. `orphaned` may still have a live driver, and its recovery is the
+        reconciliation gesture. A generation raised on any other status is absorbed, so it
+        can never fire later on a failure it was not written for. Attempts restart at 0
+        because they count deferrals of one try, and the previous count is kept in the event.
+        """
+        status = g.get("status")
+        g["retry"] = retry
+        if status != "failed":
+            self._event("retry-ignored", key=key, retry=retry, status=status)
+            return
+        self._event("requeued", key=key, retry=retry, previous_attempts=g.get("attempts", 0),
+                    previous_verdict=g.get("last_verdict"))
+        g.update({"status": "pending", "not_before": None, "attempts": 0,
+                  "requeued": utcnow()})
 
     def _reconcile_previous_runs(self) -> None:
         """A scheduler that died left 'running' entries it can no longer wait on.
