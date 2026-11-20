@@ -93,13 +93,28 @@ l'arbre (API `tree/<révision>`) ont tous la taille publiée, 0 écart. Les **19
 (18 shards + `tokenizer.json`) ont tous leur SHA-256 égal à l'`oid` LFS publié, 0 écart. Script :
 `.tmp/daisyrose/verify_sha.py` (brouillon, non versionné).
 
+## Chargement à sec, sans GPU (20/11 05:39Z, MESURÉ)
+
+Conteneur jetable `--rm --network none`, sans GPU, image `vllm-openai-v0340-tierpin:v1`, poids
+montés en lecture seule, `AutoConfig.from_pretrained(..., trust_remote_code=True)` :
+
+- la config se charge en `Qwen3_5Config`, `model_type qwen3_5`, `quant_method compressed-tensors` ;
+- le plugin s'enregistre à l'import : `CompressedTensorsLinearTransformMethod.apply` vient de
+  `transformers_modules.daisyrose.….vllm_warp_quant`, et `PYTHONPATH` vaut
+  `/tmp/warp_quant_vllm_boot_0` (l'auto-chargement des sous-processus est posé).
+
+Ce contrôle ne prouve ni le chargement des poids ni un forward : il élimine seulement une
+panne de chargeur avant de consommer un créneau GPU 2.
+
 ## Prochaine étape
 
 1. ~~Vérifier la taille téléchargée.~~ Fait, voir ci-dessus.
 2. Demander un créneau GPU 2 à CoursIA (le GPU 2 leur appartient).
-3. Banc : conteneur `vllm-openai-v0340-tierpin:v1` (ou stock v0.34.0) sur GPU 2 seul
-   (`CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=2` : `--gpus device=2` n'isole plus
-   depuis le 30/10), `--trust-remote-code`, `--enforce-eager`, 32K, NVFP4 KV, pas de MTP.
-   Mêmes prompts de qualité que Swift (harnais `qwen38_27b_gpu2/quality_27b.py`), en paires.
+3. Banc : `serve_daisyrose.sh` (GPU 2 seul par `CUDA_DEVICE_ORDER=PCI_BUS_ID` +
+   `CUDA_VISIBLE_DEVICES=2`, `--trust-remote-code`, `--enforce-eager`, 32K, NVFP4 KV, pas de
+   MTP, gabarit et échantillonnage identiques à Swift). Vérifier l'isolation et le montage avant
+   toute mesure. Puis `qwen38_27b_gpu2/quality_27b.py` sur DaisyRose et sur Swift dans la même
+   fenêtre, et `paired_27b.py` (McNemar sur paires appariées). La durée n'est pas mesurée : le
+   banc s'arrête à la fin du créneau, et seules les paires terminées des deux côtés comptent.
 4. Critère : DaisyRose ne devient candidate à une fenêtre TP=2 que si elle bat Swift sur les
    tâches à paires appariées. Sinon, la fiche se ferme ici.
