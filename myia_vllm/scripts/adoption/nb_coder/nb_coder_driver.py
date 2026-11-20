@@ -1233,16 +1233,27 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         r = (env.get("response") or "").rstrip()
         return bool(r) and not (r.endswith("```") or r.endswith("}"))
 
+    def why_bisect(env: dict) -> str:
+        """'truncated', 'timeout' or '' — the two failures a smaller tranche can cure."""
+        if truncated(env):
+            return "truncated"
+        return "timeout" if call_timed_out(env) else ""
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
-        if not part and truncated(env):
+        cause = "" if part else why_bisect(env)
+        if cause:
             # 18/11 wave-1c: two grains died here — the JSON was CUT mid-cell (raw
             # tails end inside a "source" string) because thinking counts toward
             # max_tokens. Bisect ONCE: halves the output AND the thinking a tour
             # needs; each half parses or the grain fails named, never silent.
+            # 20/11 conveyor (MGS-28, #27133): the same tour TIMED OUT instead — 8 Rust
+            # cells at ~25-35 tok/s per stream under 4-6 concurrent streams do not fit
+            # the model's 600 s request budget (x2 with the client's own retry: 1 201 s,
+            # 0 char). Half the tranche is half the output: the same cure.
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
@@ -1252,10 +1263,12 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                 if not hpart or not (hpart.get("cells") or []):
                     if gate_refusal(henv):
                         rec["verdict"] = gate_refusal(henv)   # scheduler defer contract
+                    elif truncated(henv):
+                        rec["verdict"] = f"stage2-truncated:{si}+h{hi}"
+                    elif call_timed_out(henv):
+                        rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        rec["verdict"] = (f"stage2-truncated:{si}+h{hi}"
-                                          if truncated(henv)
-                                          else f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
+                        rec["verdict"] = f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}"
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
                 kept += hkept
@@ -1263,6 +1276,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             kept.sort(key=lambda c: int(c["idx"]))
             missing.sort(key=lambda c: int(c["idx"]))
             rec.setdefault("bisected", []).append(si)
+            rec.setdefault("bisect_cause", {})[str(si)] = cause
         elif not part or not (part.get("cells") or []):
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
@@ -1891,6 +1905,22 @@ def call_failure(env: dict) -> str:
     else:
         kind = "call-failed"
     return f"{kind}: {_excerpt(err, hit)}"
+
+
+_TIMEOUT_RE = re.compile(r"APITimeoutError|ReadTimeout|TimeoutError|timed out", re.I)
+
+
+def call_timed_out(env: dict) -> bool:
+    """True when the call died on a time budget (model client or MCP read), not a refusal.
+
+    Only the error is read: a timed-out tour comes back with no response at all, which is
+    exactly why the truncation test never sees it (20/11, MGS-28: 1 201 s, 0 char).
+    """
+    err = env.get("error") or ""
+    if not err or gate_refusal(env):
+        return False
+    return (not call_failure(env).startswith(("auth-failed", "model-unresolved"))
+            and bool(_TIMEOUT_RE.search(err)))
 
 
 _GATE_REFUSAL_RE = re.compile(r"capacity gate refused", re.I)
