@@ -158,6 +158,36 @@ def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
     return diffs
 
 
+def built_outputs_annex(nb_path: Path) -> dict:
+    """Spec mode (20/11, IT08 CoursIA#27460): the DELIVERABLE's own displayed outputs.
+
+    `build_view` shows cell SOURCES only, and spec mode drops the digest + diff annexes (a
+    [SPEC] twin has no outputs to compare with). Without this annex the verifier judges
+    "expected value DISPLAYED by a real output" on code alone. Measured: #27460 rejected with
+    "no output, no execution count, no kernel metadata visible" on a notebook whose 10 code
+    cells had all executed. Any cut is DECLARED in the text (a silent cut fabricates findings).
+    """
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    meta = nb.get("metadata") or {}
+    rows, budget = [], TOTAL_TEXT_CAP
+    for i, c in enumerate(nb.get("cells") or []):
+        if c.get("cell_type") != "code":
+            continue
+        outs = [o for o in (c.get("outputs") or []) if isinstance(o, dict)]
+        text = cell_output_text(c)
+        room = max(0, min(len(text), CELL_TEXT_CAP, budget))
+        shown = text[:room]
+        if room < len(text):
+            shown += f"…[tronqué : {len(text) - room} caractères non affichés]"
+        budget -= room
+        rows.append({"cell": i, "execution_count": c.get("execution_count"),
+                     "types": sorted({o.get("output_type") for o in outs}),
+                     "bytes": len(text), "text": shown})
+    return {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
+            "language_version": (meta.get("language_info") or {}).get("version"),
+            "cells": rows}
+
+
 SPEC_TASK = (
     "## Ta tâche — création depuis une spec\n"
     "Il n'existe AUCUN carnet d'origine : la SOURCE ci-dessus est le jumeau de spec généré "
@@ -182,13 +212,24 @@ SPEC_TASK = (
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
-                  diffs: list[dict] | None = None, mode: str = "source") -> str:
+                  diffs: list[dict] | None = None, mode: str = "source",
+                  built_outputs: dict | None = None) -> str:
     spec = mode == "spec"
+    annex = ""
     if spec:
         # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
-        # "edited", every source digest empty) — the built view already shows outputs.
+        # "edited", every source digest empty). The views show SOURCES only, so the
+        # deliverable's outputs come in their own annex (IT08 #27460: rejected as
+        # "no output visible" on a fully executed notebook).
         src_digest = built_digest = diffs = None
-    annex = ""
+        if built_outputs is not None:
+            annex += ("## Annexe sorties du LIVRABLE — texte affiché par cellule code\n"
+                      "Les vues ci-dessus ne montrent que le CODE des cellules. Voici, pour "
+                      "chaque cellule code du LIVRABLE, son compteur d'exécution, les types de "
+                      "sortie et le TEXTE réellement affiché (images : empreinte des octets). "
+                      "C'est sur ce texte que tu juges le point 2 (attendus affichés). Une "
+                      "coupe est toujours signalée par `[tronqué : …]`.\n"
+                      f"{json.dumps(built_outputs, ensure_ascii=False, indent=1)}\n\n")
     if src_digest is not None and built_digest is not None:
         annex += ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
                   "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, "
@@ -334,7 +375,9 @@ def main() -> int:
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
                                outputs_digest(src_p), outputs_digest(built_p), diffs,
-                               mode=args.mode)
+                               mode=args.mode,
+                               built_outputs=(built_outputs_annex(built_p)
+                                              if args.mode == "spec" else None))
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         if not (env.get("response") or "").strip() and not env.get("error"):
