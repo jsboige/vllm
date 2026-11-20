@@ -2483,6 +2483,19 @@ def grain_tag(tier: str, lane: str, genre: str = "notebook-python",
     return f"{head} — prev: {prev}"
 
 
+def default_pr_branch(issue_n: int, notebook: str) -> str:
+    """`nbcoder/auto-<issue>-<notebook stem>-<6 hex>`: one branch per GRAIN.
+
+    `nbcoder/auto-<issue>` alone made the second grain of a lot issue fail at
+    `checkout -b` (the branch is held by the first grain's PR), after the whole
+    model run had been paid. The stem keeps the branch readable for the reviewer,
+    the hash of the repo-relative path keeps two same-stem notebooks apart."""
+    nb = _norm_rel(notebook)
+    stem = re.sub(r"[^a-z0-9]+", "-", Path(nb).stem.lower()).strip("-")[:40].rstrip("-")
+    h = hashlib.sha1(nb.encode("utf-8")).hexdigest()[:6]
+    return f"nbcoder/auto-{issue_n}-{stem or 'nb'}-{h}"
+
+
 def pr_title(issue_n: int, desc: str, create_mode) -> str:
     """House form. A creation (port or spec twin) ADDS a notebook: `Add(notebooks,…)`.
     Titling a port `Fix(notebooks,…) — portage` was a maintainer Concern on CoursIA#27598."""
@@ -2508,7 +2521,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
-    branch = args.pr_branch or f"nbcoder/auto-{args.issue}"
+    branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
 
@@ -3477,7 +3490,8 @@ def main() -> int:
                          "origin remote; the run refuses with pr-repo-unresolved if "
                          "unparseable -- never a hard-coded fallback)")
     ap.add_argument("--pr-branch", default=None,
-                    help="branch name (default nbcoder/auto-<issue>; seat-neutral, "
+                    help="branch name (default nbcoder/auto-<issue>-<notebook stem>-<hash>: "
+                         "one branch per grain, a lot issue holds several; seat-neutral, "
                          "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)

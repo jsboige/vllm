@@ -99,6 +99,20 @@ def grain_key(item: dict) -> str:
     return f"#{item['issue']}:{item['notebook']}"
 
 
+def grain_slug(item: dict) -> str:
+    """Per-GRAIN name for the run dir and the worktree: `<issue>-<8 hex of the notebook>`.
+
+    A lot issue carries several notebooks (CoursIA#27133: five Rust ports). Named
+    `issue-<N>` / `wt-<N>`, two grains of one lot shared one run dir (driver.log,
+    the built notebook and the verdict record overwritten) and one worktree: the
+    second driver's prepare_worktree reuses a tree that is still clean while the
+    first builds in it, then both write there. The hash keeps the Windows path short
+    (the CoursIA notebook paths are already long) and is stable across reloads."""
+    nb = "/".join(seg for seg in str(item["notebook"]).replace("\\", "/").split("/")
+                  if seg not in ("", "."))
+    return f"{item['issue']}-{hashlib.sha1(nb.encode('utf-8')).hexdigest()[:8]}"
+
+
 def _check_repo_rel_nb(lineno: int, field: str, nb) -> None:
     if not isinstance(nb, str) or not nb.endswith(".ipynb"):
         raise QueueError(f"queue line {lineno}: {field} must be a repo-relative .ipynb path")
@@ -359,8 +373,8 @@ class Scheduler:
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
         from_spec = bool(item.get("from_spec", False))
-        out_dir = Path(a.out_root) / f"issue-{item['issue']}"
-        worktree = Path(a.worktree_root) / f"wt-{item['issue']}"
+        out_dir = Path(a.out_root) / f"issue-{grain_slug(item)}"
+        worktree = Path(a.worktree_root) / f"wt-{grain_slug(item)}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
