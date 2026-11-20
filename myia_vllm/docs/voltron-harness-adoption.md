@@ -54,7 +54,8 @@ booléens).
 ```json
 
 POST /v1/task
-{"type": "classify", "data": "<fenêtre de log>", "classes": ["weight-shape", "engine-init", "..."]}
+{"type": "classify", "data": "<fenêtre de log>", "classes": ["weight-shape", "engine-init", "..."],
+ "class_definitions": {"weight-shape": "erreur de dimension de tenseur", "engine-init": "démarrage moteur"}}
 
 ```
 
@@ -63,6 +64,17 @@ depuis la source (≥8 caractères — le seuil FrogNano de 15 rendait les ligne
 code courtes structurellement ingatables, queue stage c 17 % mesurée sur le
 premier job d'adoption réel 20/11). La preuve voyage avec le verdict — pas de
 classification non étayée.
+
+`class_definitions` **optionnel** (axe consommateur 20/11) : un dictionnaire
+`{classe: définition}` injecté dans le prompt de l'étape A, après la ligne de
+taxonomie. Mesuré sur 6 cas discriminatifs : **4/6 juste avec vs 3/6 sans** ;
+les définitions placées AVANT « Texte : » faisaient copier leur texte par
+l'étape B (gate reject) — d'où leur placement après la taxonomie. **Limite
+mesurée** : sur les déclarations de classe multi-lignes, le worker 1.7B choisit
+par prior lexicale (une méthode nommée `Afficher()` → classe « affichage »
+malgré la définition de « fondations ») — les définitions aident les cas courts,
+elles ne remplacent pas le jugement ; l'appelant garde le tri final des cas
+ambigus.
 
 **Exécution (mesuré 20/11)** : 2 appels préremplis au worker — la classe, puis
 la ligne qui la JUSTIFIE (ancre brute `LIGNE :`, copie directe, aucun
@@ -255,7 +267,8 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    l'inventaire et les cellules à marqueur ; ~60-75 % de précision fine
    (sur-déclenchement « exercice » sur cellules `def` de fondations) —
    **accélérateur de brouillon, pas verdict** (frontière vendue). Axe
-   d'amélioration suivant : définitions de classes optionnelles dans le
-   contrat (fondations vs exercice = principale source d'erreur). Verbatim
+   suivant LIVRÉ (20/11 soir) : `class_definitions` optionnel dans le contrat
+   (§2) — 4/6 vs 3/6 sur cas discriminatifs, limite lexicale documentée.
+   Verbatim
    consommateur : « à 0,3-0,6 s c'est un non-choix ». Compteur au 01:46Z :
    5 666 tâches / 4 jobs depuis la baseline 0 (19/11 05:50Z).

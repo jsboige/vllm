@@ -288,6 +288,15 @@ def run_classify(t):
     data, classes = contract["data"], contract["classes"]
     t0 = time.time()
 
+    # définitions optionnelles (axe consommateur claudish-cd 20/11 : confusion
+    # fondations=def réutilisable vs exercice=consigne à compléter = 60-75 %
+    # de précision fine sans elles). Injectées comme contexte, la gate reste
+    # inchangée (classe ∈ taxonomie, preuve verbatim).
+    defs = t.get("class_definitions")
+    defs_ctx = ""
+    if isinstance(defs, dict) and defs:
+        defs_ctx = "\n".join(f"- {k} : {v}" for k, v in defs.items()) + "\n"
+
     ok_engine, msg = ensure_engine()
     if not ok_engine:
         return {"ok": False, "stage": "engine-down", "answer": "", "detail": msg,
@@ -295,7 +304,10 @@ def run_classify(t):
 
     pre_classe = '{"classe": "'
     p_a = (f"Texte :\n{data}\n\nClasse ce texte dans EXACTEMENT une de ces "
-           f"classes : {classes}.")
+           f"classes : {classes}.\n{defs_ctx}")
+    # defs APRÈS la taxonomie, jamais au-dessus du Texte (mesuré 20/11 : en
+    # amont, l'étape B recopiait la ligne de la définition — absente de data —
+    # → gate rejette → stage c ×4)
     turns, classe, ligne, out_a = 0, "", "", ""
     try:
         turns += 1
@@ -541,8 +553,9 @@ CAPABILITIES = {
                               "à la PLUS BASSE accuracy » — mesuré : sans elle, valeurs "
                               "verbatim mais hors-sujet)",
                     "gate": "JSON exact à ces clés ; valeurs chaînes verbatim de la source"},
-        "classify": {"champs": "data, classes [str]",
-                     "gate": "classe dans la taxonomie ; ligne_cle verbatim ≥15 chars"},
+        "classify": {"champs": "data, classes [str] ; class_definitions {classe: definition} "
+                               "OPTIONNEL (désambiguïsation fine — axe consommateur 20/11)",
+                     "gate": "classe dans la taxonomie ; ligne_cle verbatim ≥8 chars"},
         "numbers": {"champs": "data, report_prompt, numbers [str|int]",
                     "gate": "chaque nombre cité (bornes digits) ; aucun nombre inventé"},
         "diff": {"champs": "a, b (JSON tous deux)",
