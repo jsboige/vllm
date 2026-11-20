@@ -213,7 +213,7 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
                   diffs: list[dict] | None = None, mode: str = "source",
-                  built_outputs: dict | None = None) -> str:
+                  built_outputs: dict | None = None, prior: dict | None = None) -> str:
     spec = mode == "spec"
     annex = ""
     if spec:
@@ -250,6 +250,18 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   "fait qu'il diffère** : un changement demandé par l'issue n'est pas une "
                   "altération.\n"
                   f"{json.dumps(diffs, ensure_ascii=False, indent=1)}\n\n")
+    if prior:
+        # 20/11 review loop: the deliverable was REVISED after a reject. Without its own
+        # previous findings the verifier re-judges blind and can move the goalposts; with
+        # them it checks each one was really fixed — the builder's answer stays a claim.
+        annex += ("## Tour précédent — tes constats et la réponse du producteur\n"
+                  "Ce carnet a été RÉVISÉ après ton rejet précédent. Voici tes constats "
+                  "(`findings`) et ce que le producteur affirme en avoir fait (`addressed`) ou "
+                  "conteste (`contested`). Ce sont des AFFIRMATIONS : vérifie chacune sur le "
+                  "LIVRABLE et ses sorties. Un constat réellement traité ne se répète pas ; un "
+                  "constat contesté à tort se maintient, preuve à l'appui ; un défaut introduit "
+                  "par la révision est un constat comme un autre.\n"
+                  f"{nbcd._cut(json.dumps(prior, ensure_ascii=False, indent=1), 12000, 'tour précédent')}\n\n")
     return (
         "MODE VÉRIFICATION — tu es le vérificateur INDÉPENDENT d'un carnet produit par un autre "
         "agent. Tu n'as pas produit ce carnet et tu ne dois croire AUCUNE de ses affirmations : "
@@ -346,6 +358,9 @@ def main() -> int:
     # 20/11 --from-spec: the --source-nb is a harness-made [SPEC] twin, not an origin
     # notebook — the verifier judges the plan + displayed expectations instead.
     ap.add_argument("--mode", choices=["source", "spec"], default="source")
+    ap.add_argument("--prior", default=None,
+                    help="review loop: JSON of the previous round (findings + the builder's "
+                         "addressed/contested answer), shown as claims to counter-check")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -369,6 +384,10 @@ def main() -> int:
                                    for e in (t.get("execution") or [])]}
         rec["facts_chars"] = len(json.dumps(facts, ensure_ascii=False))
         conventions = nbcd.read_conventions(args.conventions)
+        prior = None
+        if args.prior and Path(args.prior).is_file():
+            prior = json.loads(Path(args.prior).read_text(encoding="utf-8"))
+            rec["prior_round"] = prior.get("round")
         diffs = cell_diffs(src_p, built_p)
         rec["diff_cells"] = [d["cell"] for d in diffs]
         rec["diff_kinds"] = [d["kind"] for d in diffs]
@@ -377,7 +396,8 @@ def main() -> int:
                                outputs_digest(src_p), outputs_digest(built_p), diffs,
                                mode=args.mode,
                                built_outputs=(built_outputs_annex(built_p)
-                                              if args.mode == "spec" else None))
+                                              if args.mode == "spec" else None),
+                               prior=prior)
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         if not (env.get("response") or "").strip() and not env.get("error"):

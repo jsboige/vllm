@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -1291,6 +1292,115 @@ def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
     )
 
 
+# ---------------------------------------------------------------- constructive-review loop
+# 20/11, IT08 CoursIA#27460: a verify-reject ended the grain, so a first draft could never
+# be improved by the review it had just received (user mandate 18/11: "Un premier jet
+# perfectible doit être améliorable après review constructive"). The revision round below
+# closes that loop; --revise-from resumes it on an already-built, already-rejected grain.
+REVISION_OUT_CAP = 1_500
+REVISION_VIEW_CAP = 90_000
+
+
+def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
+                  max_chars: int = REVISION_VIEW_CAP) -> str:
+    """The notebook as the REVISER must see it: every cell's source AND, for code cells, the
+    execution count and the text really displayed. build_view shows sources only — enough to
+    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared."""
+    parts = []
+    for i, c in enumerate(_cells(nb_path)):
+        ct = c.get("cell_type")
+        block = f"=== cellule {i} | {ct} ===\n{_text(c.get('source'))}"
+        if ct == "code":
+            out = _outputs_text(c)
+            shown = out[:out_cap]
+            if len(out) > out_cap:
+                shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+            block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
+                      f"{shown or '(aucune sortie)'}")
+        parts.append(block)
+    return _cut("\n\n".join(parts), max_chars, "vue du carnet")
+
+
+def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
+                    spec: bool = False) -> str:
+    """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
+    durable store here, and --revise-from runs in a new process). The reviser gets the
+    spec, the whole notebook with its REAL outputs, and the findings — and may contest a
+    finding instead of bending the notebook to a wrong one."""
+    fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
+          for f in findings if isinstance(f, dict)]
+    return (
+        "TOUR RÉVISION — un vérificateur INDÉPENDANT a rejeté ce carnet. Ses constats sont "
+        "ci-dessous. Corrige ce qu'ils exigent, et seulement cela : chaque constat `major` doit "
+        "être traité ; un `minor` l'est s'il ne coûte qu'une retouche locale.\n\n"
+        + ("## Issue — spec (plan des cellules, attendus, interdits)\n" if spec
+           else "## Issue — critères d'acceptation\n")
+        + f"TITRE : {issue['title']}\n\nCORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
+        + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
+        f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
+        "## Règles\n"
+        "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
+        "imposé). Tu peux modifier toute cellule existante, code ou markdown, y compris une "
+        "voisine de la cellule citée quand le constat l'exige.\n"
+        "- Les sorties viennent de l'EXÉCUTION : le harnais réexécute TOUT le carnet dans un "
+        "noyau neuf après ta révision. N'écris jamais une sortie toi-même ; ne code jamais en "
+        "dur une valeur présentée comme calculée.\n"
+        "- Une valeur attendue doit être AFFICHÉE par une sortie réelle, avec la précision "
+        "que l'issue demande.\n"
+        "- Si un constat te paraît faux, ne modifie rien pour lui donner raison : explique "
+        "pourquoi dans `contested`, en t'appuyant sur une sortie ou un calcul. Le vérificateur "
+        "relira ta réponse.\n\n"
+        "Rends UNIQUEMENT un bloc ```json :\n"
+        '{"cells":[{"idx":<index inchangé>,"cell_type":"code|markdown",'
+        '"source":"<source COMPLET>"}],"addressed":[{"cell":<index>,"how":"..."}],'
+        '"contested":[{"cell":<index>,"why":"..."}]}\n'
+        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source COMPLET."
+    )
+
+
+def apply_revision(nb_path: Path, payload: dict) -> dict:
+    """A revision may rewrite ANY existing cell, code or markdown — never its TYPE, never the
+    cell count (the plan of cells is imposed; the structure gate re-checks it). A rewritten
+    code cell loses its outputs: the harness re-executes the whole notebook afterwards.
+    Nothing is written when nothing is applicable."""
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    rep: dict = {"replaced": [], "unknown_idx": [], "bad": [], "type_changed": []}
+    for c in payload.get("cells") or []:
+        if not isinstance(c, dict):
+            rep["bad"].append(None)
+            continue
+        try:
+            i = int(c.get("idx"))
+        except (TypeError, ValueError):
+            rep["bad"].append(c.get("idx"))
+            continue
+        if not (0 <= i < len(nb["cells"])):
+            rep["unknown_idx"].append(i)
+            continue
+        cell = nb["cells"][i]
+        ct = cell.get("cell_type")
+        if ct not in ("code", "markdown"):
+            rep["unknown_idx"].append(i)
+            continue
+        if (c.get("cell_type") or ct).lower() != ct:
+            rep["type_changed"].append(i)
+            continue
+        src = _text(c.get("source"))
+        if not src.strip() or i in rep["replaced"]:     # empty, or a duplicate idx
+            rep["bad"].append(i)
+            continue
+        cell["source"] = _lines(src)
+        if ct == "code":
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        rep["replaced"].append(i)
+    if rep["replaced"]:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                           encoding="utf-8")
+    return rep
+
+
 def verify_structure_create(src_path: Path, built_path: Path) -> dict:
     """Mechanical proof for a CREATION: same cell count as the twin, same type signature.
     Minimal-edit is meaningless here (everything is new); the pedagogical-thread rule
@@ -1702,15 +1812,38 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
         return {"ok": False, "error": "strip tool timeout"}
 
 
-def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) -> None:
+def _archive_verify_trace(out_dir: Path, issue: int, tag: str) -> str | None:
+    """Move an existing verify trace aside (renamed, never deleted). stage4_verify reads
+    verify-<issue>.json after the child exits: a child that dies before writing would
+    otherwise hand back the PREVIOUS verdict — certain to happen once a grain is verified
+    more than once (revision rounds, --revise-from)."""
+    trace = out_dir / f"verify-{issue}.json"
+    if not trace.is_file():
+        return None
+    dest = trace.with_name(f"verify-{issue}.{tag}.json")
+    k = 1
+    while dest.exists():
+        dest = trace.with_name(f"verify-{issue}.{tag}-{k}.json")
+        k += 1
+    trace.replace(dest)
+    return str(dest)
+
+
+def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
+                  prior: dict | None = None) -> None:
     """Stage 4 — the independent verifier runs as a SEPARATE process and agent
     (producer != verifier, global rule). nb_coder_verify.py exits 0 approve /
-    1 reject / 2 instrument error — an error is NEVER read as a reject."""
+    1 reject / 2 instrument error — an error is NEVER read as a reject.
+
+    ``prior`` (revision rounds): the verifier's previous findings and the builder's
+    addressed/contested answer, passed as claims to counter-check."""
     facts = out_dir / f"facts-{args.issue}.json"
     facts.write_text(json.dumps(
         {k: rec.get(k) for k in ("plan", "apply", "structure", "exec_mode", "c2",
                                  "execution", "conversation_id")}, ensure_ascii=False),
         encoding="utf-8")
+    stale = _archive_verify_trace(out_dir, args.issue,
+                                  datetime.now(timezone.utc).strftime("pre%Y%m%dT%H%M%SZ"))
     cmd = [sys.executable, str(HERE / "nb_coder_verify.py"),
            "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
            "--facts", str(facts), "--agent", args.verifier_agent,
@@ -1719,6 +1852,10 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) 
         # the SOURCE is a [SPEC] twin, not an origin notebook: the correction-mode task
         # ("content lost / invented vs SOURCE") would reject every new cell by design
         cmd += ["--mode", "spec"]
+    if prior:
+        prior_p = out_dir / f"prior-{args.issue}.json"
+        prior_p.write_text(json.dumps(prior, ensure_ascii=False), encoding="utf-8")
+        cmd += ["--prior", str(prior_p)]
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # the child prints non-ASCII JSON
     t0 = time.time()
     try:
@@ -1729,6 +1866,8 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path) 
         rc, out = 2, "verify subprocess timeout"
     entry: dict = {"rc": rc, "agent": args.verifier_agent,
                    "elapsed_s": round(time.time() - t0, 1), "tail": out.strip()[-1500:]}
+    if stale:
+        entry["previous_trace"] = stale
     trace = out_dir / f"verify-{args.issue}.json"
     if trace.is_file():
         t = json.loads(trace.read_text(encoding="utf-8"))
@@ -1971,7 +2110,11 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
         f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
         f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
-        f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
+        + (f"- **Revue constructive** : approuvé après {len(rec['revisions'])} tour(s) de "
+           f"révision (constats en entrée par tour : "
+           f"{', '.join(str(r.get('findings_in')) for r in rec['revisions'])}), chaque tour "
+           f"réexécuté en noyau neuf et re-vérifié.\n" if rec.get("revisions") else "")
+        + f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
         f"run record complet dans le out-dir du harnais.\n\n"
         f"Closes #{args.issue}\n\n"
@@ -2009,6 +2152,290 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     rec["pr"] = entry
     rec["verdict"] = "pr-created"
     rec["stage5_s"] = round(time.time() - t0, 1)
+
+
+# ---------------------------------------------------------------- shared build/revise steps
+async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: str,
+                               exec_dir: Path, kid: str | None, exec_targets: list[int],
+                               conv: str | None, conventions: str,
+                               stage: str = "2.5-repair") -> tuple[str | None, str | None]:
+    """Repair loop: the REAL kernel errors go back to the model (max --repair-rounds, same
+    conversation). A repaired definition can change downstream semantics -> FRESH kernel per
+    round, then re-run the same targets (repair replaces sources only, indices stay valid).
+    Measured on #27099 attempt 3: content-level API errors (MkNe inexistent, Expr vs
+    ArithExpr) are exactly what the compiler messages teach back. Returns (kid, conv)."""
+    for rnd in range(args.repair_rounds):
+        failing = [e for e in (rec.get("execution") or []) if not e.get("ok")]
+        if not failing:
+            break
+        cells_now = _cells(scratch)
+        detail = []
+        for e in failing:
+            i = e.get("cell")
+            if not isinstance(i, int) or i >= len(cells_now):
+                continue
+            detail.append({"idx": i,
+                           "source": _text(cells_now[i].get("source"))[-1600:],
+                           "errors": _outputs_text(cells_now[i])[-2000:]})
+        if not detail:
+            break
+        env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
+                                  repair_prompt(detail, conventions), conv,
+                                  max_tokens=BUILD_MAX_TOKENS)
+        conv = env.get("conversation_id") or conv
+        part = parse_json_block(env.get("response") or "")
+        if not part or not part.get("cells"):
+            rec.setdefault("repairs", []).append(
+                {"stage": stage, "round": rnd, "verdict": call_failure(env) or "unparsed",
+                 "raw_tail": (env.get("response") or "")[-1500:]})
+            break
+        rep = apply_repairs(scratch, part)
+        rec.setdefault("repairs", []).append(
+            {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
+             "unknown_idx": rep["unknown_idx"], "bad": rep["bad"]})
+        if not rep["replaced"]:
+            break
+        await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": kid})
+        kid = await start_kernel(pm, kname, exec_dir)
+        rec["kernel_id"] = kid
+        if kid is None:
+            rec["verdict"] = "kernel-start-failed"
+            break
+        rec["execution"] = await execute_cells(pm, scratch, kid, exec_targets)
+    return kid, conv
+
+
+def execution_verdict(rec: dict, scratch: Path) -> None:
+    """C.2 proof (execution_count sequential 1..N over non-empty code cells) + the
+    execution verdict. A dead kernel keeps its failure verdict, never overwritten."""
+    counts = [c.get("execution_count") for c in _cells(scratch)
+              if c.get("cell_type") == "code" and _text(c.get("source")).strip()]
+    rec["c2"] = {"counts": counts, "sequential": counts == list(range(1, len(counts) + 1))}
+    exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
+    if rec.get("verdict") == "kernel-start-failed":
+        pass
+    elif not exec_ok:
+        rec["verdict"] = "built-execution-failed"
+    elif not rec.get("execution") or rec["c2"]["sequential"]:
+        rec["verdict"] = "built-executed-ok"
+    else:
+        rec["verdict"] = "built-executed-counts-broken"
+
+
+@contextlib.asynccontextmanager
+async def mcp_sessions(out_dir: Path):
+    """sk-agent + papermill MCP sessions, handshake bounded (the 18/11 wave-1b hang:
+    a child blocked in StreamHandler.emit never answered initialize, 2h30 lost)."""
+    sk_params = StdioServerParameters(command=str(SK_PY), args=[str(SK_DIR / "sk_agent.py")],
+                                      env={**os.environ, "SK_AGENT_CONFIG": str(SK_CONFIG)},
+                                      cwd=str(out_dir))
+    pm_params = StdioServerParameters(command=str(PM_PY), args=["-u", "-m", "papermill_mcp.main"],
+                                      env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                                      cwd=str(PM_CWD))
+    async with stdio_client(sk_params) as (r1, w1), stdio_client(pm_params) as (r2, w2):
+        async with ClientSession(r1, w1) as sk, ClientSession(r2, w2) as pm:
+            try:
+                await asyncio.wait_for(sk.initialize(), 180.0)
+                await asyncio.wait_for(pm.initialize(), 180.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError("MCP initialize handshake timed out after 180s") from None
+            yield sk, pm
+
+
+def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
+                      kname: str, wt_path: Path, out_dir: Path,
+                      prior: dict | None = None) -> None:
+    """Stages 3-4, harness-only (no model turn inside). .NET post-execution hygiene runs
+    BEFORE anything reads the file: gates and verify judge the DELIVERED state."""
+    if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
+        if kname.startswith(".net"):
+            rec["banner_strip"] = strip_dotnet_banner(
+                wt_path / "scripts" / "notebook_tools" / "strip_probe_banner.py", built_path)
+        tg = time.time()
+        rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
+                                 canon_version=(rec.get("create_metadata") or {})
+                                 .get("language_version"))
+        rec["gates_s"] = round(time.time() - tg, 1)
+        bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
+        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
+    if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
+        stage4_verify(args, rec, src_nb, built_path, out_dir, prior=prior)
+
+
+async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
+                      kname: str, exec_dir: Path, conventions: str, create_mode: bool,
+                      wt_path: Path, out_dir: Path) -> None:
+    """Constructive-review loop (20/11, IT08 #27460). Up to --revise-rounds rounds while the
+    independent verifier rejects WITH findings: the findings go to the builder agent in a
+    FRESH self-contained conversation (spec + whole notebook with real outputs + findings);
+    the harness applies the rewritten cells (no structural change), re-executes the WHOLE
+    notebook in a fresh kernel with the kernel-error repair rounds, re-runs the gates and
+    the verifier, which sees its previous findings and the builder's addressed/contested
+    answer. Every rejected draft is kept next to the deliverable (`.r<k>` copy)."""
+    if getattr(args, "revise_rounds", 0) <= 0 or args.max_stage < 4:
+        return
+    revisions = rec.setdefault("revisions", [])
+    first = len(revisions)
+    for rnd in range(first, first + args.revise_rounds):
+        if rec.get("verdict") != "verify-reject":
+            break
+        findings = [f for f in (rec.get("verify") or {}).get("findings") or []
+                    if isinstance(f, dict)]
+        entry: dict = {"round": rnd, "started": utcnow(), "findings_in": len(findings),
+                       "majors_in": sum(1 for f in findings if f.get("severity") == "major")}
+        revisions.append(entry)
+        if not findings:
+            entry["result"] = "no-findings"          # nothing actionable: the reject stands
+            break
+        backup = built_path.with_name(f"{built_path.stem}.r{rnd}{built_path.suffix}")
+        shutil.copy2(built_path, backup)
+        entry["draft_backup"] = str(backup)
+        t0 = time.time()
+        applied = False
+        async with mcp_sessions(out_dir) as (sk, pm):
+            env = await sk_call_retry(
+                sk, args, rec, f"6-revise+{rnd}",
+                revision_prompt(issue, revision_view(built_path), findings, conventions,
+                                spec=bool(getattr(args, "from_spec", False))),
+                None, max_tokens=BUILD_MAX_TOKENS)
+            entry["conversation_id"] = env.get("conversation_id")
+            part = parse_json_block(env.get("response") or "")
+            if not part or not part.get("cells"):
+                entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
+                entry["raw_tail"] = (env.get("response") or "")[-1500:]
+            else:
+                rep = apply_revision(built_path, part)
+                entry["apply"] = rep
+                entry["addressed"] = part.get("addressed") or []
+                entry["contested"] = part.get("contested") or []
+                if not rep["replaced"]:
+                    entry["result"] = "nothing-applied"
+                else:
+                    applied = True
+                    normalize_sources(built_path)
+                    rec["verdict"] = "revising"
+                    kid = await start_kernel(pm, kname, exec_dir)
+                    rec["kernel_id"] = kid
+                    if kid is None:
+                        rec["verdict"] = "kernel-start-failed"
+                    else:
+                        code_idx = [i for i, c in enumerate(_cells(built_path))
+                                    if c.get("cell_type") == "code"]
+                        rec["execution"] = await execute_cells(pm, built_path, kid, code_idx)
+                        if code_idx and rec.get("execution") and args.repair_rounds > 0:
+                            await repair_kernel_errors(
+                                sk, pm, args, rec, built_path, kname, exec_dir, kid, code_idx,
+                                entry["conversation_id"], conventions,
+                                stage=f"6-revise+{rnd}-repair")
+                    if rec.get("kernel_id"):
+                        rec["kernel_stop"] = await pm_call(
+                            pm, "manage_kernel", {"action": "stop",
+                                                  "kernel_id": rec["kernel_id"]})
+                    execution_verdict(rec, built_path)
+        entry["elapsed_build_s"] = round(time.time() - t0, 1)
+        if not applied:
+            break                       # the draft is untouched; verdict stays verify-reject
+        # No structure re-check: apply_revision never inserts, deletes or re-types a cell,
+        # and verify_structure_create would now flag the re-executed outputs as stale.
+        entry["exec_verdict"] = rec["verdict"]
+        prior = {"round": rnd, "findings": findings, "addressed": entry.get("addressed"),
+                 "contested": entry.get("contested")}
+        gates_then_verify(args, rec, src_nb, built_path, create_mode, kname, wt_path, out_dir,
+                          prior=prior)
+        entry["result"] = rec["verdict"]
+        if str(rec["verdict"]).startswith("verify-"):
+            entry["findings_out"] = len((rec.get("verify") or {}).get("findings") or [])
+        entry["elapsed_s"] = round(time.time() - t0, 1)
+
+
+def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
+    if prior.get("src_nb"):
+        return Path(prior["src_nb"])
+    cm = prior.get("create_mode") or {}
+    if cm.get("spec_twin"):
+        return Path(cm["spec_twin"])
+    if cm.get("source"):
+        return wt_path / cm["source"]
+    return wt_path / notebook
+
+
+# Keys a revised trace inherits so that it can itself be revised again (--revise-from chains)
+# and so that stage 5 composes the same PR body as an uninterrupted run.
+_REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata", "src_nb",
+                 "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
+                 "verify", "revisions", "exec_mode", "repo_origin")
+
+
+async def run_revision(args, rec: dict) -> dict:
+    """--revise-from <issue-N.json>: resume a grain the verifier REJECTED without re-paying
+    plan and build (IT08 #27460: 22.9 min and 4 calls already spent). Fail-closed before any
+    spend: same issue + notebook, a verify-reject verdict, a successful reservation in the
+    trace re-read NOW by the scoped claim guard (no new [CLAIMED] comment), and the
+    worktree, source/twin and built notebook still on disk."""
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    trace_p = Path(args.revise_from)
+    if not trace_p.is_file():
+        rec["verdict"] = f"refused-revise-trace-missing:{trace_p}"
+        return rec
+    prior = json.loads(trace_p.read_text(encoding="utf-8"))
+    rec["revised_from"] = {"trace": str(trace_p), "verdict": prior.get("verdict"),
+                           "started": prior.get("started")}
+    if (prior.get("issue") != args.issue
+            or _norm_rel(prior.get("notebook") or "") != _norm_rel(args.notebook)):
+        rec["verdict"] = "refused-revise-trace-mismatch"
+        return rec
+    if prior.get("verdict") != "verify-reject":
+        rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
+        return rec
+    if ((prior.get("stages") or {}).get("claim_reservation") or {}).get("verdict", "x") is not None:
+        rec["verdict"] = "refused-revise-no-reservation"
+        return rec
+    for k in _REVISE_CARRY:
+        if k in prior:
+            rec[k] = prior[k]
+    rec["stages"]["worktree"] = (prior.get("stages") or {}).get("worktree")
+    rec["stages"]["claim_reservation"] = (prior.get("stages") or {}).get("claim_reservation")
+    wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
+    built = Path((prior.get("built_notebook") or {}).get("path") or "")
+    src_nb = _prior_src_nb(prior, wt_path, args.notebook)
+    exec_dir = Path(prior.get("kernel_cwd") or "")
+    for label, p in (("worktree", wt_path), ("built", built), ("source", src_nb),
+                     ("kernel-cwd", exec_dir)):
+        if not str(p) or not p.exists():
+            rec["verdict"] = f"refused-revise-{label}-missing:{p}"
+            return rec
+    repo = Path(args.repo)
+    origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
+                            capture_output=True, text=True).stdout.strip()
+    if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
+        rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
+        return rec
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane,
+                                               _norm_rel(args.notebook))
+    refused = claim_verdict(rec["stages"]["claim_check"])
+    if refused:
+        rec["verdict"] = refused
+        return rec
+    token = app_token(repo)
+    issue = fetch_issue("jsboige/CoursIA", args.issue, token)
+    conventions = read_conventions(args.conventions)
+    gate = gate_call(args.gate_mode, getattr(args, "gate", None))
+    rec["gate"] = gate
+    if gate["blocking_refusal"]:
+        rec["verdict"] = "deferred-by-capacity-gate"
+        return rec
+    create_mode = bool(prior.get("create_mode"))
+    args.from_spec = bool((prior.get("create_mode") or {}).get("spec_twin"))
+    kname = args.kernel_override or (prior.get("kernel") or {}).get("kernel_name") or ""
+    rec["verdict"] = prior["verdict"]
+    await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
+                      exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
+                      wt_path=wt_path, out_dir=out_dir)
+    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+        stage5_pr(args, rec, wt_path, built, issue, token)
+    rec["finished"] = utcnow()
+    return rec
 
 
 # ---------------------------------------------------------------- main flow
@@ -2135,6 +2562,7 @@ async def run(args, rec: dict) -> dict:
             if from_spec:
                 kernel["kernel_source"] = "meta-from-kernelspec"
     rec["kernel"] = kernel
+    rec["src_nb"] = str(src_nb)
     # The kernel runs where the DELIVERABLE will live: a from-spec twin sits in the out
     # dir, so its parent would make every relative path resolve outside the series.
     exec_dir = target_nb.parent if from_spec else src_nb.parent
@@ -2312,61 +2740,12 @@ async def run(args, rec: dict) -> dict:
                             exec_targets = [int(i) for i in exec_idx if int(i) in code_idx]
                         rec["execution"] = (await execute_cells(pm, scratch, kid, exec_targets)
                                             if exec_targets else [])
-                        # ---- repair loop: the REAL kernel errors go back to the model
-                        # (max --repair-rounds, same conversation). A repaired definition
-                        # can change downstream semantics -> FRESH kernel per round, then
-                        # re-run the same targets (repair replaces sources only, indices
-                        # stay valid). Measured on #27099 attempt 3: content-level API
-                        # errors (MkNe inexistent, Expr vs ArithExpr) are exactly what
-                        # the compiler messages teach back.
+                        # ---- repair loop on REAL kernel errors (repair_kernel_errors)
                         if exec_targets and rec.get("execution") and args.repair_rounds > 0:
-                            kname = args.kernel_override or kernel["kernel_name"]
-                            for rnd in range(args.repair_rounds):
-                                failing = [e for e in (rec.get("execution") or [])
-                                           if not e.get("ok")]
-                                if not failing:
-                                    break
-                                cells_now = _cells(scratch)
-                                detail = []
-                                for e in failing:
-                                    i = e.get("cell")
-                                    if not isinstance(i, int) or i >= len(cells_now):
-                                        continue
-                                    detail.append({
-                                        "idx": i,
-                                        "source": _text(cells_now[i].get("source"))[-1600:],
-                                        "errors": _outputs_text(cells_now[i])[-2000:]})
-                                if not detail:
-                                    break
-                                env = await sk_call_retry(
-                                    sk, args, rec, f"2.5-repair+{rnd}",
-                                    repair_prompt(detail, conventions), conv,
-                                    max_tokens=BUILD_MAX_TOKENS)
-                                conv = env.get("conversation_id") or conv
-                                part = parse_json_block(env.get("response") or "")
-                                if not part or not part.get("cells"):
-                                    rec.setdefault("repairs", []).append(
-                                        {"round": rnd,
-                                         "verdict": call_failure(env) or "unparsed",
-                                         "raw_tail": (env.get("response") or "")[-1500:]})
-                                    break
-                                rep = apply_repairs(scratch, part)
-                                rec.setdefault("repairs", []).append(
-                                    {"round": rnd, "asked": len(detail),
-                                     "replaced": rep["replaced"],
-                                     "unknown_idx": rep["unknown_idx"],
-                                     "bad": rep["bad"]})
-                                if not rep["replaced"]:
-                                    break
-                                await pm_call(pm, "manage_kernel",
-                                              {"action": "stop", "kernel_id": kid})
-                                kid = await start_kernel(pm, kname, exec_dir)
-                                rec["kernel_id"] = kid
-                                if kid is None:
-                                    rec["verdict"] = "kernel-start-failed"
-                                    break
-                                rec["execution"] = await execute_cells(
-                                    pm, scratch, kid, exec_targets)
+                            kid, conv = await repair_kernel_errors(
+                                sk, pm, args, rec, scratch,
+                                args.kernel_override or kernel["kernel_name"], exec_dir,
+                                kid, exec_targets, conv, conventions)
                         # ---- markdown prose repair: the foreign-script class caught by
                         # the gate is REPAIRABLE in-session (17/11 #27104 blank pass 2:
                         # Cyrillic/CJK hallucinated inside regenerated French prose —
@@ -2420,41 +2799,18 @@ async def run(args, rec: dict) -> dict:
                         rec["kernel_stop"] = await pm_call(
                             pm, "manage_kernel", {"action": "stop",
                                                   "kernel_id": rec["kernel_id"]})
-                    counts = [c.get("execution_count") for c in _cells(scratch)
-                              if c.get("cell_type") == "code"
-                              and _text(c.get("source")).strip()]
-                    rec["c2"] = {"counts": counts,
-                                 "sequential": counts == list(range(1, len(counts) + 1))}
-                    exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
-                    if rec.get("verdict") == "kernel-start-failed":
-                        pass   # a dead kernel keeps its failure verdict, never overwritten
-                    elif not exec_ok:
-                        rec["verdict"] = "built-execution-failed"
-                    elif not rec.get("execution") or rec["c2"]["sequential"]:
-                        rec["verdict"] = "built-executed-ok"
-                    else:
-                        rec["verdict"] = "built-executed-counts-broken"
+                    execution_verdict(rec, scratch)
             rec["stage3_s"] = round(time.time() - t3, 1)
 
-    # ---- stages 3-5: harness-only (no model turn inside these)
+    # ---- stages 3-5: harness-only (no model turn inside these), then the review loop
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
-    if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
-        # .NET post-execution hygiene BEFORE anything reads the file: gates and verify
-        # must judge the DELIVERED state (issue-mandated strip, see strip_dotnet_banner)
-        kname_used = args.kernel_override or kernel["kernel_name"]
-        if kname_used.startswith(".net"):
-            rec["banner_strip"] = strip_dotnet_banner(
-                Path(wt["path"]) / "scripts" / "notebook_tools" / "strip_probe_banner.py",
-                built_path)
-        tg = time.time()
-        rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
-                                 canon_version=(rec.get("create_metadata") or {})
-                                 .get("language_version"))
-        rec["gates_s"] = round(time.time() - tg, 1)
-        bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
-        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
-    if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
-        stage4_verify(args, rec, src_nb, built_path, out_dir)
+    kname_used = args.kernel_override or kernel["kernel_name"]
+    gates_then_verify(args, rec, src_nb, built_path, create_mode, kname_used,
+                      Path(wt["path"]), out_dir)
+    if rec.get("verdict") == "verify-reject":
+        await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built_path,
+                          kname=kname_used, exec_dir=exec_dir, conventions=conventions,
+                          create_mode=create_mode, wt_path=Path(wt["path"]), out_dir=out_dir)
     if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
         stage5_pr(args, rec, Path(wt["path"]), built_path, issue, token)
     rec["finished"] = utcnow()
@@ -2580,6 +2936,16 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (0 disables)")
+    ap.add_argument("--revise-rounds", type=int, default=2,
+                    help="constructive-review rounds after a verify-reject WITH findings: "
+                         "the builder rewrites cells from the findings, the harness "
+                         "re-executes, re-gates and re-verifies (0 disables; needs "
+                         "--max-stage >= 4)")
+    ap.add_argument("--revise-from", default=None,
+                    help="resume a REJECTED grain from its issue-<N>.json trace: no new "
+                         "plan/build, no new [CLAIMED] comment (the reservation in the "
+                         "trace is re-read by the scoped claim guard); runs the review "
+                         "loop, then stage 5 if approved and --max-stage 5")
     args = ap.parse_args()
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
@@ -2594,6 +2960,13 @@ def main() -> int:
         ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
                  "assembles the whole notebook in one write, MCP cell tools would race "
                  "on an empty skeleton")
+    if args.revise_from and (args.from_spec or args.source_nb or args.meta_from):
+        ap.error("--revise-from reads the creation mode from the trace: do not pass "
+                 "--from-spec / --source-nb / --meta-from with it")
+    if args.revise_from and args.revise_rounds <= 0:
+        ap.error("--revise-from needs --revise-rounds >= 1")
+    if args.revise_from and args.max_stage < 4:
+        ap.error("--revise-from needs --max-stage >= 4 (the review loop re-verifies)")
     if args.from_spec and args.source_nb:
         ap.error("--from-spec and --source-nb are exclusive: a twin port is --source-nb, "
                  "a new notebook with no twin is --from-spec")
@@ -2608,7 +2981,7 @@ def main() -> int:
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
     try:
-        rec = asyncio.run(run(args, rec))
+        rec = asyncio.run(run_revision(args, rec) if args.revise_from else run(args, rec))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
         # away the calls, the last stage and the plan: a stage-5 crash produced the same
@@ -2624,6 +2997,12 @@ def main() -> int:
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
     out = Path(args.out_dir) / f"issue-{args.issue}.json"
+    if args.revise_from and out.is_file():
+        # the trace being revised is usually THIS file: keep it, renamed, never overwritten
+        keep = out.with_name(f"issue-{args.issue}.pre-revise-"
+                             f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
+        shutil.copy2(out, keep)
+        rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     with open(Path(args.out_dir) / "ledger.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({k: rec.get(k) for k in
@@ -2634,11 +3013,15 @@ def main() -> int:
                                "gate": (rec.get("gate") or {}).get("verdict"),
                                "verify": (rec.get("verify") or {}).get("verdict"),
                                "pr": (rec.get("pr") or {}).get("number"),
-                               "calls": len(rec.get("calls") or [])}, ensure_ascii=False) + "\n")
+                               "calls": len(rec.get("calls") or []),
+                               "revisions": len(rec.get("revisions") or []),
+                               "revised_from": bool(args.revise_from)},
+                              ensure_ascii=False) + "\n")
     print(json.dumps({k: rec.get(k) for k in
                       ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "stage4_s",
                        "stage5_s", "kernel_id")}
                      | {"verify": (rec.get("verify") or {}).get("verdict"),
+                        "revisions": [r.get("result") for r in rec.get("revisions") or []],
                         "pr": (rec.get("pr") or {}).get("number")}, ensure_ascii=False))
     return 0 if rec.get("verdict", "").endswith(
         ("ok", "stage0-only", "stage1-only", "verify-approved", "pr-created")) else 1
