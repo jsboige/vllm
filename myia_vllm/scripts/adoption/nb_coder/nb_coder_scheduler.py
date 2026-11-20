@@ -244,7 +244,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
         "failed": 0,
         "deferred": 0,
         "first_green_ts": None,
-        "dirty": False,          # red or unknown seen since the step started
+        "dirty": False,          # red or unknown seen since the step started (evidence)
         "samples": 0,
         "green_samples": 0,
         "running_max": 0.0,
@@ -570,6 +570,13 @@ class Scheduler:
                 ramp[field] = v
         if verdict in ("red", "unknown"):
             ramp["dirty"] = True
+            # A red or unknown sample restarts the green window. It used to set a flag
+            # that blocked promotion for the rest of the step, and step 0 has no demotion
+            # to reset it: one unknown probe at 13:00 froze the ramp at its first step for
+            # the whole session (measured 20/11, "red/unknown seen at this step" while the
+            # gate had been green for hours). The step must now hold ramp_green_s of
+            # continuous green after its last red or unknown sample.
+            ramp["first_green_ts"] = None
             if verdict == "red" and not ramp.get("fixed") and self.args.ramp_demote \
                and ramp["step_index"] > 0:
                 old = ramp["max_active"]
@@ -583,6 +590,22 @@ class Scheduler:
                 self._event("ramp-demoted", reason="red-gate",
                             max_active=ramp["max_active"], previous=old)
 
+    def _step_failures(self, ramp: dict) -> int:
+        """Grains that failed during this step and are still failed.
+
+        A counter incremented at each failure kept a grain's failure as evidence after
+        the grain had been retried: CoursIA#27314 failed on a harness defect, the fix
+        was merged (#509) and the grain relaunched, and its failure still blocked the
+        promotion of step 0. The latest outcome of a grain is what counts; a retried
+        grain that fails again counts again. A failure recorded before this rule
+        carries no `ramp_failed_ts` and is not counted.
+        """
+        since = ramp.get("step_started") or 0
+        return sum(1 for g in self.state["grains"].values()
+                   if g.get("status") == "failed"
+                   and g.get("ramp_failed_ts") is not None
+                   and g["ramp_failed_ts"] >= since)
+
     def _maybe_promote(self, pending_count: int, now: float) -> None:
         ramp = self.state["ramp"]
         if ramp.get("fixed") or ramp["step_index"] >= len(ramp["steps"]) - 1:
@@ -592,10 +615,9 @@ class Scheduler:
         reasons = []
         if ramp["done"] < self.args.ramp_min_done:
             reasons.append(f"done {ramp['done']}/{self.args.ramp_min_done}")
+        ramp["failed"] = self._step_failures(ramp)
         if ramp["failed"] > self.args.ramp_max_failures:
             reasons.append(f"failures {ramp['failed']}>{self.args.ramp_max_failures}")
-        if ramp.get("dirty"):
-            reasons.append("red/unknown seen at this step")
         if green_s < self.args.ramp_green_s:
             reasons.append(f"green {max(green_s, 0):.0f}/{self.args.ramp_green_s}s")
         if pending_count <= 0:
@@ -669,6 +691,7 @@ class Scheduler:
                             elapsed_s=elapsed)
             else:
                 g["status"] = "failed"
+                g["ramp_failed_ts"] = now
                 ramp["failed"] += 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed)
