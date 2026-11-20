@@ -1360,7 +1360,22 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _FRAME_RES = (
     re.compile(r"\bat\s+Submission#\d+\.(?:<<)?([A-Za-z_]\w*)"),
     re.compile(r", line \d+, in ([A-Za-z_]\w*)"),
+    # evcxr backtrace: `3: ctx::run_woa`, `<ctx::Swarm>::step`, `ctx::f::{{closure}}` —
+    # user code lives in module `ctx`; the LAST plain path segment is the function.
+    re.compile(r"^\s*\d+:\s+<?ctx::(?:\w+>?::)*([A-Za-z_]\w*)", re.M),
 )
+# A Rust panic as evcxr prints it on stderr: `thread '<unnamed>' (64040) panicked at …`.
+_RUST_PANIC_RE = re.compile(r"thread '[^']*'(?: \(\d+\))? panicked at ")
+
+
+def rust_panic_text(outputs: list) -> str:
+    """The panic, from its first line on, if a stderr stream carries one; else ''.
+    Only stderr and only the panic signature: warnings on stderr never fail a cell."""
+    text = "".join(_text(o.get("text")) for o in outputs or []
+                   if isinstance(o, dict) and o.get("output_type") == "stream"
+                   and o.get("name") == "stderr")
+    m = _RUST_PANIC_RE.search(text)
+    return text[m.start():] if m else ""
 _FRAME_SKIP = frozenset({"Initialize", "MoveNext", "module", "lambda", "genexpr",
                          "listcomp", "dictcomp", "setcomp"})
 # Line citations that are relative to the FAILING cell: every .NET compiler diagnostic
@@ -2016,6 +2031,8 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
         outs = r.get("outputs") or []
         err_txt = " ".join(str(o.get("text") or o.get("ename") or "") for o in outs
                            if isinstance(o, dict) and o.get("output_type") == "error")
+        # evcxr reports a Rust panic as stderr text only, with status "ok" (#27133 MGS-25).
+        err_txt = err_txt or rust_panic_text(outs)
         results.append({"cell": idx, "status": status, "ok": status == "ok" and not err_txt,
                         "elapsed_s": r.get("execution_time") or r.get("elapsed_s"),
                         "error_outputs_persisted": r.get("error_outputs_persisted"),
@@ -2881,12 +2898,25 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     return kid, conv
 
 
+def counts_contiguous(counts: list) -> bool:
+    """One top-to-bottom run: each count is the previous one + 1, from an int start ≥ 1.
+    The start is the kernel's: IPython and .NET begin at 1, evcxr at 2 — CoursIA's own
+    accepted Sudoku-02-DancingLinks-Rust.ipynb reads [2, 3, 4, …] and its validator only
+    demands a non-null count (MGS-25 #27133 was failed on that offset alone)."""
+    if not counts:
+        return True
+    first = counts[0]
+    if not isinstance(first, int) or isinstance(first, bool) or first < 1:
+        return False
+    return counts == list(range(first, first + len(counts)))
+
+
 def execution_verdict(rec: dict, scratch: Path) -> None:
-    """C.2 proof (execution_count sequential 1..N over non-empty code cells) + the
+    """C.2 proof (execution_count contiguous k..k+N-1 over non-empty code cells) + the
     execution verdict. A dead kernel keeps its failure verdict, never overwritten."""
     counts = [c.get("execution_count") for c in _cells(scratch)
               if c.get("cell_type") == "code" and _text(c.get("source")).strip()]
-    rec["c2"] = {"counts": counts, "sequential": counts == list(range(1, len(counts) + 1))}
+    rec["c2"] = {"counts": counts, "sequential": counts_contiguous(counts)}
     exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
     if rec.get("verdict") == "kernel-start-failed":
         pass
@@ -3420,7 +3450,7 @@ async def run(args, rec: dict) -> dict:
                         rec["verdict"] = "kernel-start-failed"
                     # exec policy: plan indexes are SOURCE-space and shift with deletes/inserts.
                     # auto = run ALL built code cells in order when the plan touches code
-                    # (state-safe: dependencies run first, execution_count sequential 1..N —
+                    # (state-safe: dependencies run first, execution_count contiguous —
                     # the C.2 proof), none for a markdown-only gesture.
                     exec_targets: list[int] = []
                     if kid:
