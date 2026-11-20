@@ -1,4 +1,4 @@
-# DaisyRose-27B-W4A16-HGPTQ — qualification du chargeur (20/11/2026)
+# DaisyRose-27B-W4A16-HGPTQ — chargeur qualifié, banc apparié, non retenue (20/11/2026)
 
 Demande user du 19/11 11:35Z : « étudier l'opportunité de remplacer notre modèle Swift par
 <https://huggingface.co/nchapman/DaisyRose-27B-W4A16-HGPTQ> », puis 11:41Z « réserver un test
@@ -106,15 +106,56 @@ montés en lecture seule, `AutoConfig.from_pretrained(..., trust_remote_code=Tru
 Ce contrôle ne prouve ni le chargement des poids ni un forward : il élimine seulement une
 panne de chargeur avant de consommer un créneau GPU 2.
 
-## Prochaine étape
+## Banc qualité sur GPU 2 (20/11 06:36→07:51Z, MESURÉ) — verdict : ne remplace pas Swift
 
-1. ~~Vérifier la taille téléchargée.~~ Fait, voir ci-dessus.
-2. Demander un créneau GPU 2 à CoursIA (le GPU 2 leur appartient).
-3. Banc : `serve_daisyrose.sh` (GPU 2 seul par `CUDA_DEVICE_ORDER=PCI_BUS_ID` +
-   `CUDA_VISIBLE_DEVICES=2`, `--trust-remote-code`, `--enforce-eager`, 32K, NVFP4 KV, pas de
-   MTP, gabarit et échantillonnage identiques à Swift). Vérifier l'isolation et le montage avant
-   toute mesure. Puis `qwen38_27b_gpu2/quality_27b.py` sur DaisyRose et sur Swift dans la même
-   fenêtre, et `paired_27b.py` (McNemar sur paires appariées). La durée n'est pas mesurée : le
-   banc s'arrête à la fin du créneau, et seules les paires terminées des deux côtés comptent.
-4. Critère : DaisyRose ne devient candidate à une fenêtre TP=2 que si elle bat Swift sur les
-   tâches à paires appariées. Sinon, la fiche se ferme ici.
+Créneau GPU 2 accordé par CoursIA-2 (06:00→08:00Z). Lanceur de la fenêtre :
+[`bench_window.sh`](bench_window.sh), exécuté sous `CoursIA/scripts/ci/run_guarded.py`
+(plafond 8 GiB, commit ≤ 90 %, réservation `myia-ai-01#gpu2` tenue puis rendue).
+
+**Déroulé.**
+
+- Une première tentative (06:31:59→06:33:36Z) s'est arrêtée avant tout lancement. La sonde
+  d'isolation rendait `1 0000:72:00.0`, avec un domaine PCI à 4 chiffres (`nvidia-smi` en écrit
+  8), et le motif ne reconnaissait pas cette forme. C'était un faux négatif : rien n'a démarré. Le
+  motif a été corrigé et l'essai relancé à 06:36Z.
+- Isolation prouvée : un seul device visible, pci `72:00.0`. Le contrôle de croissance de GPU 0
+  pendant le boot n'a pas déclenché (22 580 → 22 591 MiB).
+- Poids chargés en 139 s ; `Model loading took 15.93 GiB`. **KV GPU 67 795 tokens** à 32K, soit
+  une concurrence max de 2,07×. GPU 2 occupé à 19 341 MiB. Sain à 06:44:41Z (5 min de boot).
+- Le plugin `vllm_warp_quant` a tenu en TP=1 : **550 requêtes, 0 erreur**. Ce banc n'exerce ni
+  le chemin TP > 1 du plugin ni la vision, donc la lacune `assert bias is None` des couches de
+  vision n'a pas été testée.
+- Swift a été mesuré **en parallèle sur la prod** (:5002, 2 workers par tâche, trafic réel),
+  avec le même harnais `quality_27b.py`. DaisyRose tournait à 4 workers par tâche.
+- Les quatre runs se sont arrêtés au budget (`rc=124`, voulu). Teardown à 07:51:01Z,
+  observation `released` à 07:51:19Z, GPU 2 revenu à 98 MiB.
+
+**Résultat apparié** (`paired_27b.py`, McNemar sur les items terminés des deux côtés ; le
+script étiquette la référence « 3.6 », ici c'est Swift) :
+
+| Tâche | Paires | DaisyRose | Swift | Δ (IC95) | Discordants D / S | McNemar |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| GSM8K | 405 | 89,1 % | 89,1 % | +0,0 pt (±3,0) | 10 / 10 | χ² 0,05, ns |
+| IFEval (strict, toutes instructions) | 145 | 76,6 % | 78,6 % | −2,1 pts (±6,9) | 3 / 6 | χ² 0,44, ns |
+
+Tokens générés en moyenne : GSM8K 331 (DaisyRose) contre 314 (Swift), IFEval 921 contre 875.
+Aucun chiffre de débit n'est tiré de ce banc : DaisyRose tournait en `--enforce-eager` sur un
+seul GPU, Swift en TP=2 sous trafic réel, donc les régimes ne sont pas comparables.
+
+**Verdict.** Le critère fixé avant le banc n'est pas atteint : DaisyRose ne bat Swift sur
+aucune des deux tâches appariées. Elle est à égalité sur GSM8K et légèrement derrière, de
+façon non significative, sur IFEval. Côté coût, l'adoption exigerait un plugin tiers qui
+modifie l'intérieur de vLLM dans tous ses processus, plus un chemin TP=2 non relu en amont.
+**La fiche se ferme ici** : pas de fenêtre TP=2. Une réouverture demanderait un fait nouveau,
+par exemple un banc de tâche publié qui montre un gain, ou un support amont sans plugin.
+
+**Données brutes** (non versionnées, 1,8 Mo) : `D:\vllm_eval_results\daisyrose_20261120\`.
+Ce dossier contient `daisyrose/` et `swift-ref/` (JSONL + journaux de run), `window.log` et
+`tree.json`. Un `MANIFEST.sha256` les accompagne, vérifié identique à la source au moment de la
+copie. Empreintes des JSONL :
+
+- `daisyrose/gsm8k_results.jsonl` `87e302d6…`, `daisyrose/ifeval_results.jsonl` `68fd4eeb…`
+- `swift-ref/gsm8k_results.jsonl` `85ac8308…`, `swift-ref/ifeval_results.jsonl` `3b5227ab…`
+
+Les poids restent dans `C:\vllm_models\DaisyRose-27B-W4A16-HGPTQ` (16,14 GiB), hors du disque
+WSL. On peut les supprimer si le user ne veut pas d'autre banc.
