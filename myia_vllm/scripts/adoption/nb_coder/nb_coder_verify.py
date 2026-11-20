@@ -358,6 +358,9 @@ def main() -> int:
     # 20/11 --from-spec: the --source-nb is a harness-made [SPEC] twin, not an origin
     # notebook — the verifier judges the plan + displayed expectations instead.
     ap.add_argument("--mode", choices=["source", "spec"], default="source")
+    ap.add_argument("--target", default=None,
+                    help="repo-relative target notebook: scopes a lot issue's [SPEC-DRAFT] "
+                         "comments to this grain (same selection as the driver)")
     ap.add_argument("--prior", default=None,
                     help="review loop: JSON of the previous round (findings + the builder's "
                          "addressed/contested answer), shown as claims to counter-check")
@@ -373,7 +376,13 @@ def main() -> int:
             if not p.is_file():
                 rec["verdict"] = f"error:input-missing:{p}"
                 raise SystemExit(2)
-        issue = nbcd.fetch_issue("jsboige/CoursIA", args.issue, nbcd.app_token(Path("d:/CoursIA")))
+        issue = nbcd.fetch_issue("jsboige/CoursIA", args.issue, nbcd.app_token(Path("d:/CoursIA")),
+                                 args.target)
+        rec["spec_comment"] = issue.get("spec_comment")
+        if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
+            # the verifier must judge against THIS notebook's plan, never another one's
+            rec["verdict"] = "error:no-spec-for-target"
+            raise SystemExit(2)
         facts = {}
         if args.facts and Path(args.facts).is_file():
             t = json.loads(Path(args.facts).read_text(encoding="utf-8"))

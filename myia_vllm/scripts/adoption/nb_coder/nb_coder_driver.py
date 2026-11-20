@@ -164,7 +164,92 @@ def app_token(repo_dir: Path) -> str | None:
 
 
 # ---------------------------------------------------------------- stage 0
-def fetch_issue(slug: str, n: int, token: str | None) -> dict:
+# A lot issue (one issue, several notebooks) carries one `[SPEC-DRAFT]` comment per notebook,
+# each naming its own « Cible : `…ipynb` ». The prompts see the issue BODY (30 000 chars) and
+# only the TAIL of the thread (8 000 chars): on CoursIA#27133 that tail is the end of the
+# lot's LAST spec (Sudoku-05), so MGS-25 would have been built against another notebook's
+# plan. With a target, the target's own spec moves into the body and every other spec of
+# the lot leaves the thread, replaced by a line naming the notebook it specifies.
+SPEC_DRAFT_TAG = "[SPEC-DRAFT]"
+SPEC_DRAFT_TARGET_RE = re.compile(r"^[ \t>*-]*\**Cible\**[ \t]*:[ \t]*`([^`\n]+?\.ipynb)`", re.M)
+
+
+def spec_draft_target(body: str) -> str | None:
+    """The notebook a `[SPEC-DRAFT]` comment specifies (its first « Cible : `…` » line),
+    repo-relative and posix-normalized. None for any other comment, and for a spec
+    draft that names no target (it is then left in the thread as it was)."""
+    if not (body or "").lstrip().startswith(SPEC_DRAFT_TAG):
+        return None
+    m = SPEC_DRAFT_TARGET_RE.search(body)
+    return _norm_rel(m.group(1)) if m else None
+
+
+def _json_values(text: str) -> list:
+    """Concatenated JSON values (gh --paginate --jq prints one per line)."""
+    dec, i, out = json.JSONDecoder(), 0, []
+    text = text or ""
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            return out
+        v, i = dec.raw_decode(text, i)
+        out.append(v)
+
+
+def _thread_entry(c: dict, body: str | None = None) -> str:
+    return f"--- {c.get('login')} {c.get('created_at')}\n{c.get('body') if body is None else body}"
+
+
+def select_target_spec(issue: dict, comments: list[dict], target: str | None) -> dict:
+    """Rewrite ``issue`` body/thread for ``target`` and return what was decided.
+
+    status:
+      - ``no-target``         no target given: thread kept verbatim (pre-lot behavior)
+      - ``no-spec-comments``  the thread has no targeted spec draft: nothing changes
+      - ``selected``          the target's spec (the LATEST one if revised) joins the body
+      - ``none-for-target``   the lot has specs, none for this notebook: the caller refuses
+    """
+    specs = [(k, t) for k, c in enumerate(comments)
+             if (t := spec_draft_target(c.get("body") or ""))]
+    tgt = _norm_rel(target) if target else None
+    mine = [k for k, t in specs if t == tgt] if tgt else []
+    info: dict = {"status": "no-target" if not tgt else
+                  ("selected" if mine else ("none-for-target" if specs else "no-spec-comments")),
+                  "spec_comments": len(specs)}
+    if specs and tgt:
+        info["lot_targets"] = sorted({t for _, t in specs})
+    chosen = mine[-1] if mine else None
+    entries = []
+    for k, c in enumerate(comments):
+        t = next((t for kk, t in specs if kk == k), None)
+        if not tgt or t is None:
+            entries.append(_thread_entry(c))
+        elif k == chosen:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (spécification de ce carnet : "
+                                            "reportée en entier dans le corps ci-dessus)"))
+        elif t == tgt:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (version antérieure de la "
+                                            "spécification de ce carnet : remplacée par la "
+                                            "plus récente, reportée dans le corps)"))
+        else:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (spécification d'un AUTRE carnet "
+                                            f"du lot : `{t}` — omise, hors de ce grain)"))
+    issue["comments"] = "\n".join(entries)
+    if chosen is not None:
+        c = comments[chosen]
+        info.update({"comment_id": c.get("id"), "created_at": c.get("created_at"),
+                     "chars": len(c.get("body") or ""), "versions": len(mine)})
+        issue["body"] = (f"{issue.get('body') or ''}\n\n"
+                         f"## Spécification de ce carnet (commentaire {SPEC_DRAFT_TAG} "
+                         f"{c.get('id')} du {c.get('created_at')})\n\n{c.get('body') or ''}")
+    return info
+
+
+def fetch_issue(slug: str, n: int, token: str | None, target: str | None = None) -> dict:
+    """Issue body + thread. ``target`` (repo-relative notebook) scopes a lot issue's spec
+    drafts to that notebook — see select_target_spec. ``issue["spec_comment"]`` records
+    the decision; ``none-for-target`` must stop the run before any token is spent."""
     rc, out = gh(["api", f"repos/{slug}/issues/{n}",
                   "--jq", '{"title":.title,"state":.state,"body":(.body // ""),"labels":[.labels[].name]}'],
                  token)
@@ -172,8 +257,19 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
         raise RuntimeError(f"issue fetch failed rc={rc}: {out[:300]}")
     issue = json.loads(out)
     rc, out = gh(["api", f"repos/{slug}/issues/{n}/comments", "--paginate",
-                  "--jq", r'.[] | "--- \(.user.login) \(.created_at)\n\(.body)"'], token)
-    issue["comments"] = out if rc == 0 else f"(comments fetch failed rc={rc})"
+                  "--jq", '.[] | {id: .id, login: .user.login, created_at: .created_at, body: (.body // "")}'],
+                 token)
+    if rc != 0:
+        issue["comments"] = f"(comments fetch failed rc={rc})"
+        issue["spec_comment"] = {"status": "comments-unreadable"}
+        return issue
+    try:
+        comments = [c for c in _json_values(out) if isinstance(c, dict)]
+    except ValueError as e:
+        issue["comments"] = f"(comments unparsable: {e})"
+        issue["spec_comment"] = {"status": "comments-unreadable"}
+        return issue
+    issue["spec_comment"] = select_target_spec(issue, comments, target)
     return issue
 
 
@@ -2204,6 +2300,9 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
            "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
            "--facts", str(facts), "--agent", args.verifier_agent,
            "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    if getattr(args, "notebook", None):
+        # same spec scoping as the producer: on a lot issue, THIS notebook's [SPEC-DRAFT]
+        cmd += ["--target", _norm_rel(args.notebook)]
     if getattr(args, "from_spec", False):
         # the SOURCE is a [SPEC] twin, not an origin notebook: the correction-mode task
         # ("content lost / invented vs SOURCE") would reject every new cell by design
@@ -2384,6 +2483,24 @@ def grain_tag(tier: str, lane: str, genre: str = "notebook-python",
     return f"{head} — prev: {prev}"
 
 
+def pr_title(issue_n: int, desc: str, create_mode) -> str:
+    """House form. A creation (port or spec twin) ADDS a notebook: `Add(notebooks,…)`.
+    Titling a port `Fix(notebooks,…) — portage` was a maintainer Concern on CoursIA#27598."""
+    kind = "Add" if isinstance(create_mode, dict) else "Fix"
+    return f"{kind}(notebooks,#{issue_n}): {desc}"
+
+
+def issue_link_line(issue_n: int, issue: dict | None, target: str) -> str:
+    """`Closes #N`, except on a LOT issue (several [SPEC-DRAFT] targets): the first PR of
+    the lot must not close the issue the other notebooks still hang on."""
+    sc = (issue or {}).get("spec_comment") or {}
+    lot = [t for t in sc.get("lot_targets") or [] if t]
+    if sc.get("status") == "selected" and len(lot) > 1:
+        return (f"Refs #{issue_n} — lot de {len(lot)} carnets : cette PR livre "
+                f"`{_norm_rel(target)}` seulement, l'issue reste ouverte pour les autres.")
+    return f"Closes #{issue_n}"
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -2491,12 +2608,12 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
         f"run record complet dans le out-dir du harnais.\n\n"
-        f"Closes #{args.issue}\n\n"
+        f"{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
-                  "-f", f"title=Fix(notebooks,#{args.issue}): {desc}",
+                  "-f", f"title={pr_title(args.issue, desc, rec.get('create_mode'))}",
                   "-f", f"head={branch}", "-f", f"base={args.pr_base}",
                   "-F", f"body=@{body_file}"], token, timeout=120)
     body_file.unlink(missing_ok=True)
@@ -2817,7 +2934,10 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verdict"] = refused
         return rec
     token = app_token(repo)
-    issue = fetch_issue("jsboige/CoursIA", args.issue, token)
+    issue = fetch_issue("jsboige/CoursIA", args.issue, token, _norm_rel(args.notebook))
+    if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
+        rec["verdict"] = "refused-no-spec-for-target"
+        return rec
     conventions = read_conventions(args.conventions)
     gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
@@ -2867,9 +2987,15 @@ async def run(args, rec: dict) -> dict:
     if refused:
         rec["verdict"] = refused
         return rec
-    issue = fetch_issue("jsboige/CoursIA", args.issue, token)
+    issue = fetch_issue("jsboige/CoursIA", args.issue, token, claim_nb)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
-                              "labels": issue["labels"], "body_chars": len(issue["body"])}
+                              "labels": issue["labels"], "body_chars": len(issue["body"]),
+                              "spec_comment": issue.get("spec_comment")}
+    if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
+        # A lot issue whose spec drafts all name OTHER notebooks: building this one would
+        # follow nobody's plan. Refused before the reservation, the worktree and any token.
+        rec["verdict"] = "refused-no-spec-for-target"
+        return rec
     from_spec = bool(getattr(args, "from_spec", False))
     spec_cells: list[dict] = []
     if from_spec:
