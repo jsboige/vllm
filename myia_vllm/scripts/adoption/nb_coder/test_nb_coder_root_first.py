@@ -194,3 +194,70 @@ def test_repair_prompt_without_deferred_is_unchanged():
     f = [{"idx": 1, "source": "x", "errors": "e", "cited": []}]
     assert d.repair_prompt(f, "", None, None) == d.repair_prompt(f, "", None, [])
     assert "EN ATTENTE" not in d.repair_prompt(f)
+
+
+# ---- values: #27314 attempt 1 ----------------------------------------------------------
+# Verbatim from live/runs/issue-27314.attempt1/nb_27314_built.ipynb (cells 19 and 22).
+ERR_VOID = ("\r\n(47,37): error CS0023: Impossible d'appliquer l'opérateur '.' à un "
+            "opérande de type 'void'\r\n\r\n")
+ERR_VALUES = ("\r\n(40,36): error CS0103: Le nom 'ARCHIVE' n'existe pas dans le contexte "
+              "actuel\r\n\r\n(40,45): error CS0103: Le nom 'CERTIFICAT' n'existe pas dans le "
+              "contexte actuel\r\n\r\n")
+
+
+def _values_notebook() -> list[dict]:
+    """The #27314 shape, shrunk: cell 2 binds ARCHIVE and CERTIFICAT with `var` and fails
+    on another line, cell 3 fails on both names, cell 4 fails on its own."""
+    return [
+        {"cell_type": "markdown", "metadata": {}, "source": "# Compression"},
+        _code("var INDEX = new Dictionary<string, int>();\nvar OPS = new List<string>();"),
+        _code("Dictionary<string, byte[]> Archiver(Dictionary<string, int> i, List<string> o)"
+              " => new();\nvar ARCHIVE = Archiver(INDEX, OPS);\n"
+              "var CERTIFICAT = new Dictionary<string, object>();\n"
+              "var n = Console.WriteLine(\"x\").Length;", ERR_VOID),
+        _code("var bilan = Banc(ARCHIVE, CERTIFICAT);", ERR_VALUES),
+        _code("int z = Introuvable(3);", _cs0103("Introuvable")),
+    ]
+
+
+def test_source_cell_finds_bindings_and_defining_cell_stays_declarations_only():
+    cells = _values_notebook()
+    assert d.source_cell(cells, "ARCHIVE", before=3) == 2
+    assert d.source_cell(cells, "CERTIFICAT", before=3) == 2
+    assert d.source_cell(cells, "Archiver", before=3) == 2         # declarations still count
+    assert d.defining_cell(cells, "ARCHIVE", before=3) is None     # frames name functions
+    assert d.source_cell(cells, "ARCHIVE", before=2) is None       # only cells ABOVE
+
+
+def test_a_value_bound_by_a_failing_cell_makes_a_cascade():
+    cells = _values_notebook()
+    assert d.cascade_roots(cells, _detail(cells)) == {3: [2]}
+
+
+def test_reading_a_value_is_not_binding_it():
+    """A failing cell that only READS `ARCHIVE` does not explain a CS0103 on it below."""
+    cells = _values_notebook()
+    cells[2] = _code("var n = ARCHIVE.Count;\nif (CERTIFICAT == null) { }", ERR_VOID)
+    assert d.cascade_roots(cells, _detail(cells)) == {}
+
+
+def test_a_value_bound_by_a_cell_that_ran_is_not_a_root():
+    cells = _values_notebook()
+    cells[2] = _code(d._text(cells[2]["source"]))
+    assert d.cascade_roots(cells, _detail(cells)) == {}
+
+
+def test_a_round_holds_a_cell_waiting_on_values(tmp_path, monkeypatch):
+    answer = [{"idx": 2, "cell_type": "code",
+               "source": "var ARCHIVE = new Dictionary<string, byte[]>();\n"
+                         "var CERTIFICAT = new Dictionary<string, object>();"},
+              {"idx": 4, "cell_type": "code", "source": "int z = 3;"}]
+    prompts, r, executed, _ = _run_round(tmp_path, monkeypatch, _values_notebook(), answer)
+    p = prompts[0]
+    assert "### Cellule 2 (code)" in p and "### Cellule 4 (code)" in p
+    assert "### Cellule 3 (code)" not in p
+    assert "CELLULES EN ATTENTE (3)" in p
+    assert ("- cellule 2 : doit continuer à définir ARCHIVE, CERTIFICAT "
+            "(utilisés par les cellules 3)") in p
+    assert r["asked"] == 2 and r["deferred"] == [3] and r["replaced"] == [2, 4]
+    assert executed == [[1, 2, 3, 4]]
