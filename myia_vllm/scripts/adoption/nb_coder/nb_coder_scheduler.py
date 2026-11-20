@@ -69,6 +69,7 @@ ITEM_FIELDS = {
     "timeout": int,
     "max_tokens": int,
     "repair_rounds": int,
+    "revise_rounds": int,      # constructive-review rounds after a verify-reject
     "allow_foreign_origin": bool,
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
@@ -351,6 +352,7 @@ class Scheduler:
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
             ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
+            ("--revise-rounds", item.get("revise_rounds", a.revise_rounds)),
         ]
         for flag, val in opt:
             if val not in (None, ""):
@@ -667,6 +669,9 @@ def parse_args(argv=None):
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (driver flag, 0=off)")
+    ap.add_argument("--revise-rounds", type=int, default=2,
+                    help="constructive-review rounds after a verify-reject with findings "
+                         "(driver flag, 0=off)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")
