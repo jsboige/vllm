@@ -534,6 +534,7 @@ class Scheduler:
 
         pending = self._eligible(now)
         held = None
+        held_extra: dict = {}
         launched = 0
         stop = Path(self.args.stop_file)
         stop_now = stop.is_file()
@@ -562,12 +563,26 @@ class Scheduler:
                 # to /metrics through gate.running.
                 floor = max(len(self.active), int(gate.get("running") or 0))
                 budget = self.state["ramp"]["max_active"] - floor
+                gap = float(getattr(self.args, "launch_gap_s", 0) or 0)
                 for key in pending:
                     if budget <= 0:
                         held = held or "capacity-target"
                         break
+                    # #506 palier 1 — launch in canon, not in cohorts. Every launch
+                    # in one tick makes a homogeneous cohort whose conversations all
+                    # grow together (the funnel). With a gap, at most one grain starts
+                    # per gap, so the grains in flight sit at different stages. The
+                    # timestamp is persisted: a restarted scheduler keeps the spacing.
+                    if gap > 0:
+                        last = self.state.get("last_launch_ts")
+                        wait = (last + gap - self.clock()) if last is not None else 0.0
+                        if wait > 0:
+                            held = "launch-gap"
+                            held_extra["next_launch_in_s"] = round(wait, 1)
+                            break
                     item = self.items_by_key[key]
                     cmd = self.driver_command(item)
+                    self.state["last_launch_ts"] = self.clock()
                     if self.args.dry_run:
                         self._event("dry-launch", key=key, cmd=cmd)
                         budget -= 1
@@ -577,7 +592,7 @@ class Scheduler:
                     budget -= 1
         if held:
             self._event("held", reason=held, pending=len(pending),
-                        active=len(self.active), gate=gate.get("verdict"))
+                        active=len(self.active), gate=gate.get("verdict"), **held_extra)
         self._save_state()
         return {"gate": gate.get("verdict"), "launched": launched,
                 "active": len(self.active), "held": held,
@@ -695,6 +710,10 @@ def parse_args(argv=None):
     ap.add_argument("--max-attempts", type=int, default=6)
     ap.add_argument("--max-launch", type=int, default=0,
                     help="cap launches in THIS scheduler run (0 = unlimited)")
+    ap.add_argument("--launch-gap-s", type=float, default=0.0,
+                    help="minimum seconds between two grain launches, so grains in flight "
+                         "sit at different stages instead of one cohort (#506 palier 1; "
+                         "0 = every free slot is filled in the same tick, the old behavior)")
     ap.add_argument("--max-future-s", type=float, default=86400.0,
                     help="a deferred grain further than this still counts as unfinished")
     ap.add_argument("--timeout-s", type=float, default=0,
@@ -723,6 +742,8 @@ def parse_args(argv=None):
             ap.error("--ramp steps must be distinct")
         if args.ramp != sorted(args.ramp):
             ap.error("--ramp steps must be increasing (a ramp that starts high measures nothing)")
+    if args.launch_gap_s < 0:
+        ap.error("--launch-gap-s must be >= 0")
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE (same refusal as the driver, F1)")
     if not args.out_root:

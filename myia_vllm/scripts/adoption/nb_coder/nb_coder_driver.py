@@ -1526,6 +1526,7 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              "model_used": env.get("model_used"),
                              "agent_used": env.get("agent_used"),
                              **served_fields(env),
+                             **usage_fields(env),
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
@@ -1943,6 +1944,24 @@ SERVED_FIELDS = ("served_model", "served_model_variants",
 
 def served_fields(env: dict) -> dict:
     return {k: env[k] for k in SERVED_FIELDS if env.get(k)}
+
+
+def usage_fields(env: dict) -> dict:
+    """The call's OWN tokens, as sk-agent reports them (#506 palier 0).
+
+    `engine_delta` is the whole-engine counter delta over the call, Claude Code traffic
+    included (IT08 `1-plan`: +569 630 prompt tokens for one 93.7 s call), so it cannot
+    size a turn. sk-agent's UsageMeter sums `usage` over EVERY completion of one
+    call_agent (one per tool round), so `prompt_tokens` here is a cumulated cost, not the
+    resident context of the last round: the largest round is <= this value. Recorded only
+    when the envelope carries it; never zero-filled (a zero would read as a free call).
+    """
+    usage = env.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    out = {k: int(usage[k]) for k in ("prompt_tokens", "completion_tokens")
+           if isinstance(usage.get(k), (int, float)) and not isinstance(usage.get(k), bool)}
+    return {"usage": out} if out else {}
 
 
 def served_models(env: dict) -> set[str]:
