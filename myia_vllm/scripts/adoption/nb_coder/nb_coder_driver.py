@@ -1217,17 +1217,29 @@ def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
 
 
 async def repair_creation_plan(session, args, rec: dict, conv: str | None,
-                               errors: list[str], n_src_cells: int) -> list | None:
+                               errors: list[str], n_src_cells: int) -> dict:
     """ONE bounded corrected-plan re-ask on the same conversation.
 
-    Returns the plan's cells, or None when nothing usable came back. The caller
-    re-validates: a repair that still overruns keeps the terminal verdict, with both
-    error sets recorded in rec['creation_plan_repair']."""
+    Returns the TOUR OUTCOME — {"status", "cells", "failure"} — never bare cells:
+    a tour that never answered (capacity refusal, timeout, auth) must not read in
+    the trace like a model that answered badly (follow-up to #519, signalé par
+    ai-01 21/11 : refus de jauge/timeout indiscernables d'un plan invalide dans
+    rec['creation_plan_repair']). "ok" carries the answered cells (usable or not —
+    the caller re-validates and records both error sets); a capacity-gate refusal
+    sets the scheduler defer-contract verdict exactly like the stage-1 call sites,
+    because the refusal's own message says retry."""
     env = await sk_call_retry(session, args, rec, "1-plan-repair",
                               creation_plan_repair_prompt(errors, n_src_cells), conv)
+    if gate_refusal(env):
+        rec["verdict"] = gate_refusal(env)   # scheduler defer contract
+        return {"status": "deferred-by-capacity-gate", "cells": None, "failure": ""}
+    if env.get("error"):
+        return {"status": "call-failed", "cells": None,
+                "failure": call_failure(env) or _excerpt(env["error"])}
     plan = parse_json_block(env.get("response") or "")
     cells = (plan or {}).get("cells") or []
-    return cells or None
+    return {"status": "ok" if cells else "unparseable",
+            "cells": cells or None, "failure": ""}
 
 
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
@@ -1253,14 +1265,28 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         # defect is the cheapest one to state back). The repaired plan is
         # re-validated; a still-unaddressable answer keeps the honest verdict
         # with BOTH error sets recorded.
-        repaired = await repair_creation_plan(session, args, rec, conv,
-                                              addressing_errors, n_src_cells)
-        after = creation_plan_addressing(repaired or [], n_src_cells)
-        rec["creation_plan_repair"] = {"errors_before": addressing_errors,
+        outcome = await repair_creation_plan(session, args, rec, conv,
+                                             addressing_errors, n_src_cells)
+        if outcome["status"] == "deferred-by-capacity-gate":
+            # The defer-contract verdict is set; record that the repair tour was
+            # the refused call, then stop — the scheduler will retry the grain.
+            rec["creation_plan_repair"] = {"status": outcome["status"],
+                                           "errors_before": addressing_errors}
+            return {}
+        # Only an ANSWERED tour is re-validated: on call-failed/unparseable the
+        # empty re-validation would invent "every cell missing" errors that the
+        # model never saw — the original defect stands, named as such.
+        after = (creation_plan_addressing(outcome["cells"] or [], n_src_cells)
+                 if outcome["status"] == "ok" else addressing_errors)
+        rec["creation_plan_repair"] = {"status": outcome["status"],
+                                       "errors_before": addressing_errors,
                                        "errors_after": after, "kept": not after}
-        if not after:
-            plan_cells[:] = repaired   # in place: rec['plan']['cells'] is this same list,
-                                       # so the trace carries the REPAIRED (built) plan
+        if outcome["failure"]:
+            rec["creation_plan_repair"]["failure"] = outcome["failure"]
+        if outcome["status"] == "ok" and not after:
+            plan_cells[:] = outcome["cells"]   # in place: rec['plan']['cells'] is this
+                                               # same list, so the trace carries the
+                                               # REPAIRED (built) plan
         addressing_errors = after
     if addressing_errors:
         rec["verdict"] = "stage1-unaddressable-creation-plan"

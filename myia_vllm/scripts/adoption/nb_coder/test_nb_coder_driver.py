@@ -408,6 +408,81 @@ def test_the_repair_prompt_names_the_exact_source_range():
     assert "une entrée par cellule source" in prompt
 
 
+def test_a_repair_tour_that_never_answered_is_named_as_such(monkeypatch):
+    """Follow-up #519 (ai-01, 21/11): when the 1-plan-repair tour dies on a time
+    budget, the trace must NOT read like a model that answered badly. The empty
+    re-validation is skipped: errors_after IS errors_before — the original defect
+    stands, and the status/failure fields name the timeout."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+    seen = []
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        seen.append(stage)
+        return {"error": "APITimeoutError: Request timed out after 1401 ms",
+                "conversation_id": "conv-1"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    plan_cells = [{"idx": 0}, {"idx": 22}]
+    built = asyncio.run(d.create_segments(object(), args, rec, "conv-1",
+                                          plan_cells, 22, ""))
+    assert built == {}
+    assert seen == ["1-plan-repair"], "the dead tour is the only call, never a build"
+    assert rec["verdict"] == "stage1-unaddressable-creation-plan"
+    repair = rec["creation_plan_repair"]
+    assert repair["status"] == "call-failed"
+    assert "timed out" in repair["failure"].lower() or "APITimeoutError" in repair["failure"]
+    after = repair["errors_after"]
+    assert after == repair["errors_before"], "no invented errors from an empty re-validation"
+    assert any("idx 22" in e for e in after), "the ORIGINAL defect stands, named as such"
+    assert plan_cells == [{"idx": 0}, {"idx": 22}]
+
+
+def test_a_capacity_refused_repair_tour_defers_instead_of_burning(monkeypatch):
+    """The stage-1 defer contract applies to the repair tour too: 'capacity gate
+    refused dispatch … retry after 3600s' is DEFERRABLE (the message says retry),
+    so the grain comes back as deferred-by-capacity-gate, not terminal."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        return {"error": "capacity gate refused dispatch (verdict yellow); retry after 3600s",
+                "conversation_id": "conv-1"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    built = asyncio.run(d.create_segments(object(), args, rec, "conv-1",
+                                          [{"idx": 0}, {"idx": 22}], 22, ""))
+    assert built == {}
+    assert rec["verdict"].startswith("deferred-by-capacity-gate")
+    assert rec["creation_plan_repair"]["status"] == "deferred-by-capacity-gate"
+
+
+def test_an_unparseable_repair_answer_keeps_the_original_defect(monkeypatch):
+    """A tour that answers non-JSON is 'unparseable', not 'the model repaired
+    badly': the verdict stays terminal on the ORIGINAL plan defects."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        return {"response": "je ne peux pas produire de JSON ici", "conversation_id": "conv-1"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    built = asyncio.run(d.create_segments(object(), args, rec, "conv-1",
+                                          [{"idx": 0}, {"idx": 22}], 22, ""))
+    assert built == {}
+    assert rec["verdict"] == "stage1-unaddressable-creation-plan"
+    repair = rec["creation_plan_repair"]
+    assert repair["status"] == "unparseable"
+    assert repair["errors_after"] == repair["errors_before"]
+    assert any("idx 22" in e for e in repair["errors_after"])
+
+
 def test_an_empty_cell_assembly_never_reaches_apply_create():
     src = Path(d.__file__).read_text(encoding="utf-8")
     run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
