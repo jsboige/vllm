@@ -1431,6 +1431,47 @@ def defining_cell(cells: list[dict], name: str, before: int) -> int | None:
     return None
 
 
+# A name the compiler or interpreter reports as nonexistent (#27302 attempt 2, 20/11).
+_UNDEFINED_NAME_RES = (
+    re.compile(r"error CS0103: (?:Le nom|The name) '(\w+)'"),
+    re.compile(r"error CS0246: (?:Le nom de type ou d'espace de noms|"
+               r"The type or namespace name) '(\w+)'"),
+    re.compile(r"NameError: name '(\w+)' is not defined"),
+    re.compile(r"error\[E04(?:12|25|33)\]: [^`\n]*`(\w+)`"),
+)
+
+
+def undefined_names(errors: str) -> list[str]:
+    """The names an error text says do not exist, in order of first mention."""
+    seen: list[str] = []
+    for rx in _UNDEFINED_NAME_RES:
+        for m in rx.finditer(errors or ""):
+            if m.group(1) not in seen:
+                seen.append(m.group(1))
+    return seen
+
+
+def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]:
+    """failing idx -> the EARLIER failing cells that declare a name it reports undefined.
+
+    #27302 attempt 2: cell 10 did not compile (a type the OR-Tools C# API lacks), so the
+    five functions it declares never existed and seven cells below failed with CS0103 on
+    them. Each round re-asked all of them (13, 12, 10 cells) and the root error survived
+    three rounds. A cell listed here fails because of its root: repairing it before the
+    root can only work around a definition that is about to change."""
+    failing = {d["idx"] for d in detail}
+    out: dict[int, list[int]] = {}
+    for d in detail:
+        roots = set()
+        for name in undefined_names(d.get("_raw_errors") or d.get("errors") or ""):
+            j = defining_cell(cells, name, before=d["idx"])
+            if j is not None and j in failing:
+                roots.add(j)
+        if roots:
+            out[d["idx"]] = sorted(roots)
+    return out
+
+
 # What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
 # comments. Only names some upstream cell declares or binds ever matter (`using_cells`),
 # so the free names of the cell are filtered by the notebook itself; keywords are skipped
@@ -1528,7 +1569,8 @@ def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str
 
 
 def repair_prompt(failing: list[dict], conventions: str = "",
-                  upstream: list[dict] | None = None) -> str:
+                  upstream: list[dict] | None = None,
+                  deferred: list[dict] | None = None) -> str:
     """One repair round: the REAL kernel errors of the failing cells (line + cause, as
     persisted by execution) and a demand for corrected FULL sources of those cells only.
     Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
@@ -1538,7 +1580,11 @@ def repair_prompt(failing: list[dict], conventions: str = "",
     ``upstream`` (#27314, 20/11): cells ABOVE the failing ones whose definitions the error's
     stack trace crosses. The exception raised in `Decouper` (cell 8) surfaced in cell 16;
     a round that may only rewrite cell 16 can work around the call, never fix its cause.
-    They are offered as optional edits, never demanded."""
+    They are offered as optional edits, never demanded.
+
+    ``deferred`` (#27302, 20/11): failing cells held back this round because they fail on
+    names an earlier failing cell declares. They are named, not shown: the model must keep
+    those names defined, and must not rewrite the cells around a definition it is fixing."""
     blocks = []
     for f in failing:
         cites = f.get("cited") or []
@@ -1564,11 +1610,29 @@ def repair_prompt(failing: list[dict], conventions: str = "",
                   "divergent du jumeau dans une définition plus haut), corrige-la ICI plutôt "
                   "que de contourner l'appel ou d'affaiblir le test ; sinon ne les rends pas."
                   "\n\n" + "\n\n".join(up_blocks))
+    dfr_txt = ""
+    if deferred:
+        by_root: dict[int, list[dict]] = {}
+        for x in deferred:
+            for r in x["roots"]:
+                by_root.setdefault(r, []).append(x)
+        lines = []
+        for r in sorted(by_root):
+            names = sorted({n for x in by_root[r] for n in x["names"]})
+            cells = ", ".join(str(x["idx"]) for x in sorted(by_root[r], key=lambda x: x["idx"]))
+            lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
+                         f"(utilisés par les cellules {cells})")
+        waiting = ", ".join(str(x["idx"]) for x in sorted(deferred, key=lambda x: x["idx"]))
+        dfr_txt = (f"\n\nCELLULES EN ATTENTE ({waiting}) — elles échouent seulement parce que "
+                   "des noms définis dans une cellule ci-dessus n'existent pas tant qu'elle ne "
+                   "compile pas. Elles seront ré-exécutées après ta correction : ne les rends "
+                   "pas, et garde ces noms et leurs signatures dans la cellule qui les définit."
+                   + ("\n" + "\n".join(lines) if lines else ""))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
         "leur code : même rôle pédagogique, API de la série correcte — les messages du "
         "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
-        "passent.\n\n" + "\n\n".join(blocks) + up_txt
+        "passent.\n\n" + "\n\n".join(blocks) + up_txt + dfr_txt
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
@@ -2850,13 +2914,28 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                            "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
+        # Root cause first (#27302 attempt 2): a cell failing on a name an EARLIER failing
+        # cell declares waits for that cell's repair; it is re-executed after the round.
+        all_failing = {d["idx"] for d in detail}
+        roots = cascade_roots(cells_now, detail)
+        deferred: list[dict] = []
+        if roots and len(roots) < len(detail):
+            for d in detail:
+                if d["idx"] in roots:
+                    # Only roots asked this round are named; a cell waiting on another
+                    # waiting cell (29 on 20, #27302) follows it transitively.
+                    kept = [r for r in roots[d["idx"]] if r not in roots]
+                    names = [n for n in undefined_names(d["_raw_errors"])
+                             if defining_cell(cells_now, n, before=d["idx"]) in kept]
+                    deferred.append({"idx": d["idx"], "roots": kept, "names": names})
+            detail = [d for d in detail if d["idx"] not in roots]
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
         failing_idx = {d["idx"] for d in detail}
         upstream: list[dict] = []
         for d in detail:
             for name in d.pop("_frames"):
                 j = defining_cell(cells_now, name, before=d["idx"])
-                if j is None or j in failing_idx:
+                if j is None or j in all_failing:
                     continue
                 known = next((u for u in upstream if u["idx"] == j), None)
                 if known is not None:
@@ -2877,7 +2956,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             if d["idx"] in traced or _COMPILE_ERROR_RE.search(d.pop("_raw_errors", "")):
                 continue
             for j, names in using_cells(cells_now, d["idx"], REPAIR_UPSTREAM_MAX,
-                                        exclude=failing_idx):
+                                        exclude=all_failing):
                 known = next((u for u in upstream if u["idx"] == j), None)
                 if known is not None:
                     known["names"].extend(n for n in names if n not in known["names"])
@@ -2890,7 +2969,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         for d in detail:
             d.pop("_raw_errors", None)
         env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions, upstream), conv,
+                                  repair_prompt(detail, conventions, upstream, deferred), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
@@ -2906,6 +2985,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         rec.setdefault("repairs", []).append(
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
              "upstream": [u["idx"] for u in upstream],
+             "deferred": [x["idx"] for x in deferred],
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
              "out_of_scope": rep["out_of_scope"]})
         if not rep["replaced"]:
