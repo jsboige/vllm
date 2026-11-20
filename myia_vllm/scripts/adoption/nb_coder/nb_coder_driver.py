@@ -1235,25 +1235,148 @@ def apply_create(nb_path: Path, payload: dict) -> dict:
     return rep
 
 
-def repair_prompt(failing: list[dict], conventions: str = "") -> str:
+# A repair round shows the model the cell it must rewrite IN FULL. The old tail cut
+# (`source[-1600:]`) hid the head of every cell above 1 600 chars: on #27314 (20/11) the
+# compiler cited `(47,37): error CS0023` in a 2 876-char cell whose line 47 sat in the
+# cut-off head, and two rounds re-sent the cell without ever seeing the faulty line.
+REPAIR_SOURCE_CAP = 12000
+# Upstream cells a round may add because the error's stack crosses them (#27314: the
+# exception was raised in `Decouper`, defined 8 cells above the cell that displayed it).
+REPAIR_UPSTREAM_MAX = 3
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
+# IPython `Cell In[5], line 3, in decouper(` / classic `File "x.py", line 3, in decouper`.
+_FRAME_RES = (
+    re.compile(r"\bat\s+Submission#\d+\.(?:<<)?([A-Za-z_]\w*)"),
+    re.compile(r", line \d+, in ([A-Za-z_]\w*)"),
+)
+_FRAME_SKIP = frozenset({"Initialize", "MoveNext", "module", "lambda", "genexpr",
+                         "listcomp", "dictcomp", "setcomp"})
+# Line citations that are relative to the FAILING cell: every .NET compiler diagnostic
+# `(47,37): error`, and only the OUTERMOST IPython frame `Cell In[9], line 2` (the next
+# `Cell In[5], line 14` frames number OTHER cells' lines).
+_DOTNET_CITE_RE = re.compile(r"\((\d+),\d+\):\s*(?:error|warning)")
+_IPY_CITE_RE = re.compile(r"Cell In\[\d+\], line (\d+)")
+# Statement keywords that may precede `name(` on a line that CALLS rather than declares.
+_CALL_LEADERS = ("return", "await", "throw", "yield", "else", "new", "case", "using",
+                 "var", "foreach", "for", "if", "while", "switch", "lock", "from", "in",
+                 "let!", "do")
+
+
+def error_frame_names(errors: str) -> list[str]:
+    """User-code function names a kernel error's stack trace crosses, in trace order."""
+    text = _ANSI_RE.sub("", errors or "")
+    names: list[str] = []
+    for rx in _FRAME_RES:
+        for m in rx.finditer(text):
+            n = m.group(1)
+            if n not in _FRAME_SKIP and n not in names:
+                names.append(n)
+    return names
+
+
+def declares(source: str, name: str) -> bool:
+    """Does this cell DECLARE `name` (function/method/type), as opposed to calling it?
+    Heuristic across the series' kernels (Python, C#, F#, Rust). A false positive only
+    widens a repair round's scope by one cell; it never edits anything by itself."""
+    n = re.escape(name)
+    leaders = "|".join(re.escape(k) for k in _CALL_LEADERS)
+    pats = (
+        rf"^\s*(?:async\s+)?def\s+{n}\b",                                    # Python
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+{n}\b",  # Rust
+        rf"^\s*(?:[\w\[\]]+\s+)*(?:class|record|struct|enum|interface|trait|type)\s+{n}\b",
+        rf"^\s*let\s+(?:rec\s+|inline\s+)?{n}\b",                            # F#
+        # C#-style method / local function: a return type (generics, arrays, tuples,
+        # nullable) then the name and its parameter list — never after a statement keyword.
+        rf"^\s*(?=\S)(?:(?:public|private|protected|internal|static|async|override|virtual|"
+        rf"sealed|unsafe|partial|extern)\s+)*(?!(?:{leaders})\b)"
+        rf"[\w.<>\[\],?() ]*?[\w>\]?)]\s+{n}\s*(?:<[^>()]*>)?\s*\(",
+    )
+    return any(re.search(p, source or "", re.M) for p in pats)
+
+
+def defining_cell(cells: list[dict], name: str, before: int) -> int | None:
+    """Index of the LAST code cell above `before` that declares `name` (a notebook
+    redefinition shadows the earlier one), or None."""
+    for j in range(min(before, len(cells)) - 1, -1, -1):
+        c = cells[j]
+        if c.get("cell_type") == "code" and declares(_text(c.get("source")), name):
+            return j
+    return None
+
+
+def cap_source(src: str, cap: int = REPAIR_SOURCE_CAP) -> str:
+    """The cell's source for a repair round: whole up to `cap`, else head + tail around an
+    explicit marker — never a silent cut (the model is asked for the COMPLETE source)."""
+    if len(src) <= cap:
+        return src
+    half = cap // 2
+    return (src[:half] + f"\n[… {len(src) - 2 * half} caractères omis au milieu de la "
+            "cellule : reprends-les à l'identique depuis ta version précédente …]\n"
+            + src[-half:])
+
+
+def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str]]:
+    """The source lines the compiler/interpreter cites, quoted from the CURRENT source so
+    the model does not have to count lines."""
+    lines = (source or "").split("\n")
+    text = _ANSI_RE.sub("", errors or "")
+    nums = [int(m.group(1)) for m in _DOTNET_CITE_RE.finditer(text)]
+    first_ipy = _IPY_CITE_RE.search(text)
+    if first_ipy:
+        nums.append(int(first_ipy.group(1)))
+    out: list[tuple[int, str]] = []
+    for k in nums:
+        if 1 <= k <= len(lines) and all(k != o[0] for o in out):
+            out.append((k, lines[k - 1]))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def repair_prompt(failing: list[dict], conventions: str = "",
+                  upstream: list[dict] | None = None) -> str:
     """One repair round: the REAL kernel errors of the failing cells (line + cause, as
     persisted by execution) and a demand for corrected FULL sources of those cells only.
     Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
     .NET Z3 API (MkNe, Expr where ArithExpr is required) — the compiler messages cite
-    exactly what a repair round needs; the harness never shows the model its own claims."""
-    blocks = [f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
-              f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n{f['errors']}"
-              for f in failing]
+    exactly what a repair round needs; the harness never shows the model its own claims.
+
+    ``upstream`` (#27314, 20/11): cells ABOVE the failing ones whose definitions the error's
+    stack trace crosses. The exception raised in `Decouper` (cell 8) surfaced in cell 16;
+    a round that may only rewrite cell 16 can work around the call, never fix its cause.
+    They are offered as optional edits, never demanded."""
+    blocks = []
+    for f in failing:
+        cites = f.get("cited") or []
+        cite_txt = ("\nLIGNES CITÉES (source actuelle) :\n"
+                    + "\n".join(f"  {k} | {line}" for k, line in cites)) if cites else ""
+        blocks.append(f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
+                      f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n"
+                      f"{f['errors']}{cite_txt}")
+    up = upstream or []
+    up_txt = ""
+    if up:
+        up_blocks = [f"### Cellule {u['idx']} (code, AMONT — définit {', '.join(u['names'])}, "
+                     f"traversé par la trace de la cellule {u['for']})\n"
+                     f"SOURCE ACTUELLE :\n{u['source']}" for u in up]
+        up_txt = ("\n\nCELLULES AMONT — la trace d'erreur traverse ces définitions. Si la "
+                  "cause est là (exception levée ou comportement divergent du jumeau dans une "
+                  "fonction définie plus haut), corrige-la ICI plutôt que de contourner "
+                  "l'appel ; sinon ne les rends pas.\n\n" + "\n\n".join(up_blocks))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
         "leur code : même rôle pédagogique, API de la série correcte — les messages du "
         "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
-        "passent.\n\n" + "\n\n".join(blocks)
+        "passent.\n\n" + "\n\n".join(blocks) + up_txt
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
         '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
-        "TOUTES les cellules listées, index inchangés, aucune autre cellule."
+        "TOUTES les cellules en échec listées, index inchangés"
+        + (", plus les cellules amont que tu corriges" if up else "")
+        + " ; aucune autre cellule."
     )
 
 
@@ -2385,13 +2508,32 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             i = e.get("cell")
             if not isinstance(i, int) or i >= len(cells_now):
                 continue
-            detail.append({"idx": i,
-                           "source": _text(cells_now[i].get("source"))[-1600:],
-                           "errors": _outputs_text(cells_now[i])[-2000:]})
+            src = _text(cells_now[i].get("source"))
+            errs = _outputs_text(cells_now[i])
+            detail.append({"idx": i, "source": cap_source(src),
+                           "errors": errs[-2000:], "cited": cited_lines(src, errs),
+                           "_frames": error_frame_names(errs)})
         if not detail:
             break
+        # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
+        failing_idx = {d["idx"] for d in detail}
+        upstream: list[dict] = []
+        for d in detail:
+            for name in d.pop("_frames"):
+                j = defining_cell(cells_now, name, before=d["idx"])
+                if j is None or j in failing_idx:
+                    continue
+                known = next((u for u in upstream if u["idx"] == j), None)
+                if known is not None:
+                    if name not in known["names"]:
+                        known["names"].append(name)
+                    continue
+                if len(upstream) >= REPAIR_UPSTREAM_MAX:
+                    continue
+                upstream.append({"idx": j, "names": [name], "for": d["idx"],
+                                 "source": cap_source(_text(cells_now[j].get("source")))})
         env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions), conv,
+                                  repair_prompt(detail, conventions, upstream), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
@@ -2401,10 +2543,14 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                 {"stage": stage, "round": rnd, "verdict": call_failure(env) or "unparsed",
                  "raw_tail": (env.get("response") or "")[-1500:]})
             break
-        rep = apply_repairs(scratch, part)
+        # Scope = what the round showed: the failing cells + the upstream ones offered.
+        rep = apply_repairs(scratch, part,
+                            only_idx=failing_idx | {u["idx"] for u in upstream})
         rec.setdefault("repairs", []).append(
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
-             "unknown_idx": rep["unknown_idx"], "bad": rep["bad"]})
+             "upstream": [u["idx"] for u in upstream],
+             "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
+             "out_of_scope": rep["out_of_scope"]})
         if not rep["replaced"]:
             break
         await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": kid})
