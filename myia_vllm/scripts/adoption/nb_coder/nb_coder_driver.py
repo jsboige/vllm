@@ -4239,6 +4239,63 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
                        "findings": findings}}
 
 
+PROSE_ANCHOR_TOOL = Path("scripts") / "check_markdown_claims_output.py"
+
+
+def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
+    """The `findings` list of the repo's claims organ on one notebook (numeric values
+    in a markdown cell absent from the preceding code cells' outputs); None when the
+    organ did not answer with its JSON (rc 2, timeout, unparsable)."""
+    pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+    if pr.returncode not in (0, 1):
+        return None
+    try:
+        data = json.loads(pr.stdout)
+    except ValueError:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    return [f for r in rows if isinstance(r, dict) for f in (r.get("findings") or [])
+            if isinstance(f, dict)]
+
+
+def prose_anchor_gate(repo: Path, src_nb: Path, built_nb: Path) -> dict:
+    """Prose re-anchored on the BUILT notebook's own outputs (CoursIA#27864, 21/11): the
+    Rust port re-ran the 3SUM timing (1,5 → 77,1 ms, slope 1,927) while its « À retenir »
+    and quiz still quoted the Python run (42,7 → 2 836,7 ms, slope 2,016) — Hermes
+    CHANGES_REQUESTED. The repo's claims organ (markdown-claims-output-advisory) flags a
+    markdown number absent from the preceding outputs; judged on the DELTA: a finding
+    the source twin already has (same value in the same markdown cell, or the same
+    sentence) is the repo's stock, not this build's."""
+    tool = repo / PROSE_ANCHOR_TOOL
+    if not tool.is_file():
+        return _unmeasured("prose-anchor", skipped=f"tool absent: {PROSE_ANCHOR_TOOL.as_posix()}")
+    try:
+        built, src = _anchor_findings(tool, repo, built_nb), _anchor_findings(tool, repo, src_nb)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return _unmeasured("prose-anchor", error=f"{type(e).__name__}: {e}"[:300])
+    if built is None or src is None:
+        return _unmeasured("prose-anchor", error="claims organ gave no JSON report")
+    known_cell = {(f.get("markdown_cell"), f.get("normalized")) for f in src}
+    known_text = {(f.get("normalized"), (f.get("context") or "").strip()) for f in src}
+    new = [f for f in built
+           if (f.get("markdown_cell"), f.get("normalized")) not in known_cell
+           and (f.get("normalized"), (f.get("context") or "").strip()) not in known_text]
+    findings = [{"cell": f.get("markdown_cell"),
+                 "text": f"cellule {f.get('markdown_cell')} : « {str(f.get('raw')).strip()} » "
+                         f"n'apparaît dans aucune des sorties qui la précèdent "
+                         f"(« …{(f.get('context') or '').strip()}… ») : réaligner la prose "
+                         "sur les sorties de CE carnet, ou la formuler sans le chiffre"}
+                for f in new]
+    return {"gate": "prose-anchor", "ok": not findings,
+            "detail": {"measured": True,
+                       "cells": sorted({f["cell"] for f in findings
+                                        if f["cell"] is not None})[:10],
+                       "flagged": len(findings), "source_flagged": len(src),
+                       "findings": findings[:REPO_GUARD_FINDINGS_MAX]}}
+
+
 def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> list[dict]:
     """Stage-3 gates the repo's CI raises on the BUILT notebook itself (21/11: the first
     three Swift Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED
@@ -4365,6 +4422,11 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
+    if create_mode and repo is not None:
+        # Prose re-anchored on the built notebook's own outputs (CoursIA#27864): a port
+        # re-runs every measure, so prose copied from the twin can quote numbers this
+        # notebook never printed. Delta-judged against the twin's own unanchored stock.
+        gates.append(prose_anchor_gate(repo, src_nb, built_nb))
     if create_mode and rel and _norm_rel(rel).endswith("-Rust.ipynb"):
         conf = rust_conformance_gate(src_nb, built_nb)
         if conf is not None:
@@ -5558,6 +5620,11 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
+                    "n'affichent pas — souvent recopié du jumeau, dont les mesures "
+                    "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
+                    "qui précède, ou reformule sans chiffre (« la pente reste proche de "
+                    "2 ») ; ne modifie pas le code pour retrouver l'ancien chiffre",
     "rust-conformance": "la sortie de cette cellule Rust doit être le texte EXACT de la "
                         "sortie de la même cellule du jumeau Python (registre "
                         "rust_conformance.d, égalité stricte ; seules les valeurs de durée "
