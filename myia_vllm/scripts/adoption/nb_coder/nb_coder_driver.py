@@ -189,19 +189,88 @@ def rate_limit_verdict(reset: int | None) -> str:
 
 
 def app_token(repo_dir: Path) -> str | None:
-    """Requirement #5: 1-hour installation token, never persisted, never in the model context."""
+    """Requirement #5: 1-hour installation token, never persisted, never in the model context.
+    Without a GitHub App, the token of a logged-in gh account that can push (pinned_gh_token)."""
     app_id = os.environ.get("NBCODER_GH_APP_ID")
     key = os.environ.get("NBCODER_GH_KEY")
     if not app_id or not key:
-        return None
+        return pinned_gh_token()
     script = repo_dir / "scripts/secrets/github_app_token.py"
     if not script.is_file():
-        return None
+        return pinned_gh_token()
     p = subprocess.run([sys.executable, str(script), "--app-id", app_id, "--key", key,
                         "--repo", "jsboige/CoursIA", "--quiet"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     tok = (p.stdout or "").strip().splitlines()[-1] if p.returncode == 0 else ""
+    if tok:
+        GH_IDENTITY.update(source="github-app", login=None)
     return tok or None
+
+
+# Without a token, every gh call runs as the ACTIVE gh account, and other sessions on the
+# machine switch it (`gh auth switch`). On 21/11 CoursIA#27781 was approved, its branch pushed
+# (git has its own credentials), and the PR create died in 422 "must be a collaborator": the
+# active account had drifted to one with no push right while the driver ran. The driver now
+# pins, once per process, the token of ONE account: NBCODER_GH_USER when set (explicit, never
+# second-guessed), otherwise the first logged-in account -- active one first -- whose token
+# can push to the target repo. The pinned token is that account's own: a later switch cannot
+# move it. GH_IDENTITY records who was pinned and why, for the PR record.
+GH_IDENTITY: dict = {}
+_GH_PIN_REPO = "jsboige/CoursIA"
+
+
+def _gh_out(argv: list[str], timeout: int = 20, token: str | None = None) -> str | None:
+    env = {**os.environ}
+    if token:
+        env["GH_TOKEN"] = token
+    else:
+        env.pop("GH_TOKEN", None)
+    try:
+        p = subprocess.run(["gh", *argv], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (p.stdout or "").strip() if p.returncode == 0 else None
+
+
+def gh_logins() -> list[str]:
+    """Logged-in github.com accounts, the active one first."""
+    out = _gh_out(["auth", "status", "--json", "hosts"])
+    try:
+        accts = (json.loads(out or "{}").get("hosts") or {}).get("github.com") or []
+    except ValueError:
+        return []
+    ok = [a for a in accts if isinstance(a, dict) and a.get("state") == "success" and a.get("login")]
+    return [a["login"] for a in sorted(ok, key=lambda a: not a.get("active"))]
+
+
+def gh_can_push(token: str, repo: str = _GH_PIN_REPO) -> bool:
+    return _gh_out(["api", f"repos/{repo}", "--jq", ".permissions.push"], token=token) == "true"
+
+
+def pinned_gh_token(repo: str = _GH_PIN_REPO) -> str | None:
+    if GH_IDENTITY.get("pinned"):
+        return GH_IDENTITY.get("_token")
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        # an operator-provided token already fixes the identity; never override it
+        GH_IDENTITY.update(pinned=True, _token=None, login=None, source="env-token")
+        return None
+    want = os.environ.get("NBCODER_GH_USER", "").strip()
+    tried: list[str] = []
+    for login in ([want] if want else gh_logins()):
+        tok = _gh_out(["auth", "token", "-u", login])
+        tried.append(login)
+        if tok and (want or gh_can_push(tok, repo)):
+            GH_IDENTITY.update(pinned=True, _token=tok, login=login, tried=tried,
+                               source="NBCODER_GH_USER" if want else "push-probe")
+            return tok
+    GH_IDENTITY.update(pinned=True, _token=None, login=None, tried=tried,
+                       source="NBCODER_GH_USER-unavailable" if want else "no-account-can-push")
+    return None
+
+
+def gh_identity_record() -> dict:
+    return {k: v for k, v in GH_IDENTITY.items() if not k.startswith("_") and k != "pinned"}
 
 
 # ---------------------------------------------------------------- stage 0
@@ -4936,13 +5005,15 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
+    entry["gh_identity"] = gh_identity_record()
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
                   "-f", f"title={pr_title(args.issue, desc, rec.get('create_mode'))}",
                   "-f", f"head={branch}", "-f", f"base={args.pr_base}",
                   "-F", f"body=@{body_file}"], token, timeout=120)
     body_file.unlink(missing_ok=True)
     if rc != 0:
-        entry["error"] = f"pr create: {out[:300]}"
+        who = entry["gh_identity"].get("login") or "active gh account"
+        entry["error"] = f"pr create (as {who}): {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-create-failed", entry
         return
     pr = json.loads(out)
