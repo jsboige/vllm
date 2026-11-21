@@ -3287,6 +3287,8 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              # served_fields, when the envelope carries it.
                              "model_used": env.get("model_used"),
                              "agent_used": env.get("agent_used"),
+                             # which conversation the call grew: what sizes the next turn on it
+                             "conversation_id": env.get("conversation_id") or conv,
                              **served_fields(env),
                              **usage_fields(env),
                              "response_chars": len(env.get("response") or ""),
@@ -4392,6 +4394,89 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- shared build/revise steps
+# Swift's window (--max-model-len). Every repair round and bisect half used to continue the
+# build conversation. 21/11 conveyor (#27134 2.3d): prompt tokens 77 112 at 2.5-repair+0,
+# 208 828 at +2, 238 335 at +2+h0, then the second half was refused in 1.1 s (400 "This
+# model's maximum context length is 262144 tokens. However, your prompt contains at least
+# 262145 input tokens") and the grain ended with the first half's four cells repaired. A
+# repair prompt carries what its turn needs (failing sources, real errors, upstream cells,
+# conventions), so the turn can start a fresh conversation instead.
+CTX_WINDOW = 262144
+# chars -> tokens, rounded DOWN on purpose: the estimate must overstate, never understate
+CTX_CHARS_PER_TOKEN = 3
+_CTX_OVERFLOW_RE = re.compile(r"maximum context length is \d+ tokens")
+
+FRESH_REPAIR_HEAD = (
+    "NOUVELLE CONVERSATION — l'historique de ce carnet a rempli la fenêtre du modèle, ce "
+    "tour repart à vide. Carnet cible : `{nb}` (noyau {kernel}){twin}. Tout ce qu'il te faut "
+    "pour ce tour est dans ce message : les cellules en échec, leurs erreurs réelles et les "
+    "cellules amont utiles.\n\n")
+
+
+def context_overflow(env: dict) -> bool:
+    """The engine refused the prompt as longer than its window (a 400 on input tokens)."""
+    return bool(_CTX_OVERFLOW_RE.search(str(env.get("error") or "")))
+
+
+def conv_tokens(rec: dict, conv: str | None) -> int | None:
+    """Tokens `conv` holds after its last answered call: that call's prompt + completion.
+
+    An upper bound (the completion counts reasoning the history may drop). None when it
+    cannot be told: no answered call on `conv`, or the last one used tools — sk-agent then
+    sums usage over every tool round, which overstates the context by the round count."""
+    if not conv:
+        return None
+    for c in reversed(rec.get("calls") or []):
+        if c.get("conversation_id") != conv:
+            continue
+        u = c.get("usage") or {}
+        if "prompt_tokens" not in u:
+            continue        # refused or failed call: it committed nothing to size
+        if c.get("tools"):
+            return None
+        return int(u["prompt_tokens"]) + int(u.get("completion_tokens") or 0)
+    return None
+
+
+def ctx_overrun(rec: dict, conv: str | None, prompt: str, max_tokens: int,
+                budget: int) -> dict | None:
+    """The estimate, when continuing `conv` with `prompt` could not fit `budget`."""
+    resident = conv_tokens(rec, conv)
+    if resident is None:
+        return None
+    need = resident + len(prompt) // CTX_CHARS_PER_TOKEN + int(max_tokens or 0)
+    return {"resident": resident, "need": need, "budget": budget} if need > budget else None
+
+
+def fresh_repair_head(args, kname: str) -> str:
+    nb = getattr(args, "notebook", None) or "?"
+    twin = getattr(args, "source_nb", None)
+    return FRESH_REPAIR_HEAD.format(nb=nb, kernel=kname,
+                                    twin=f", portage de `{twin}`" if twin else "")
+
+
+async def repair_call(sk, args, rec: dict, stage: str, prompt: str, conv: str | None,
+                      head: str = "") -> dict:
+    """One repair turn, on `conv` while it has room, else in a fresh conversation.
+
+    Before the call: the estimate says whether `conv` can take the prompt and the answer.
+    After it: a 400 on the window (the estimate is blind after a tool turn) sends the same
+    prompt again, fresh. Either way the switch is recorded in rec["fresh_conversations"]."""
+    budget = int(getattr(args, "ctx_window", None) or CTX_WINDOW)
+    why = ctx_overrun(rec, conv, prompt, BUILD_MAX_TOKENS, budget)
+    if why is None:
+        env = await sk_call_retry(sk, args, rec, stage, prompt, conv,
+                                  max_tokens=BUILD_MAX_TOKENS)
+        if not (conv and context_overflow(env)):
+            return env
+        why = {"refused": True, "budget": budget}
+    env = await sk_call_retry(sk, args, rec, f"{stage}-fresh", head + prompt, None,
+                              max_tokens=BUILD_MAX_TOKENS)
+    rec.setdefault("fresh_conversations", []).append(
+        {"stage": stage, "from": conv, "to": env.get("conversation_id"), **why})
+    return env
+
+
 def repair_bisect_cause(env: dict) -> str:
     """'truncated', 'timeout' or '' — the two repair failures a smaller request can cure.
     A refusal, an auth error or a well-formed but wrong answer is not one of them."""
@@ -4404,7 +4489,7 @@ def repair_bisect_cause(env: dict) -> str:
 
 async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
                          conventions: str, upstream: list[dict], deferred: list[dict],
-                         crate_api: str, conv: str | None
+                         crate_api: str, conv: str | None, head: str = ""
                          ) -> tuple[dict | None, str | None, dict]:
     """Ask the failing cells in two halves (once, as the build does). Every half that
     parses contributes its cells; a half that fails is named, the other still counts.
@@ -4416,9 +4501,9 @@ async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
         hidx = {x["idx"] for x in half}
         hup = [u for u in upstream if u["for"] in hidx]
         hdef = [x for x in deferred if set(x["roots"]) & hidx]
-        henv = await sk_call_retry(sk, args, rec, f"{stage}+h{hi}",
-                                   repair_prompt(half, conventions, hup, hdef, crate_api),
-                                   conv, max_tokens=BUILD_MAX_TOKENS)
+        henv = await repair_call(sk, args, rec, f"{stage}+h{hi}",
+                                 repair_prompt(half, conventions, hup, hdef, crate_api),
+                                 conv, head=head)
         conv = henv.get("conversation_id") or conv
         hpart, henv = await parse_or_repair(sk, args, rec, f"{stage}+h{hi}", henv, conv,
                                             max_tokens=BUILD_MAX_TOKENS)
@@ -4544,10 +4629,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             upstream.append({"idx": dep_idx, "names": list(api_info.get("crates") or []),
                              "for": detail[0]["idx"], "via": "dep",
                              "source": cap_source(_text(cells_now[dep_idx].get("source")))})
-        env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions, upstream, deferred,
-                                                crate_api), conv,
-                                  max_tokens=BUILD_MAX_TOKENS)
+        head = fresh_repair_head(args, kname)
+        env = await repair_call(sk, args, rec, f"{stage}+{rnd}",
+                                repair_prompt(detail, conventions, upstream, deferred,
+                                              crate_api), conv, head=head)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -4561,7 +4646,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             # Each half carries the upstream cells and held cells that concern it.
             part, conv, bisect = await _repair_halves(
                 sk, args, rec, f"{stage}+{rnd}", detail, conventions, upstream, deferred,
-                crate_api, conv)
+                crate_api, conv, head=head)
             bisect["cause"] = cause
         if not part or not part.get("cells"):
             rec.setdefault("repairs", []).append(
@@ -5364,6 +5449,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (0 disables)")
+    ap.add_argument("--ctx-window", type=int, default=CTX_WINDOW,
+                    help="tokens a repair turn may need on its conversation (history + "
+                         "prompt + answer) before it starts a fresh one (default: the "
+                         "served --max-model-len)")
     ap.add_argument("--revise-rounds", type=int, default=2,
                     help="constructive-review rounds after a verify-reject WITH findings: "
                          "the builder rewrites cells from the findings, the harness "
