@@ -1757,6 +1757,11 @@ _RUST_API_ERR_RES = (
     ("name", re.compile(r"use of undeclared type `(\w+)`")),
     ("import", re.compile(r"unresolved import `([\w:]+)`")),
     ("import", re.compile(r"could not find `(\w+)` in `([\w:]+)`")),
+    # Linking, not API (2.3b, #27134): a crate the kernel did not link (its `:dep` cell
+    # failed, or no `:dep` declares it) and a crate linked at two versions. Neither is a
+    # name to look up INSIDE a crate; `_crate_link_lines` advises them.
+    ("crate", re.compile(r"unlinked crate `(\w+)`")),
+    ("version", re.compile(r"(?:two|multiple) different versions of crate `(\w+)`")),
 )
 
 
@@ -2081,6 +2086,110 @@ def _extension_traits(files, crate: str) -> list[str]:
     return out[:22]
 
 
+def _crate_dep_req(crate_dir: Path, dep: str) -> str | None:
+    """The version requirement `crate_dir`'s Cargo.toml puts on `dep`, if it depends on it
+    (registry-normalized `[dependencies.x]` tables, or inline `x = "..."` / `x = {...}`)."""
+    try:
+        toml = (crate_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for m in re.finditer(r"^\[dependencies\.([A-Za-z0-9_-]+)\]\s*$(.*?)(?=^\[|\Z)", toml,
+                         re.M | re.S):
+        if _crate_norm(m.group(1)) == _crate_norm(dep):
+            v = re.search(r'^\s*version\s*=\s*"([^"]+)"', m.group(2), re.M)
+            return v.group(1) if v else None
+    m = re.search(r"^\[dependencies\]\s*$(.*?)(?=^\[|\Z)", toml, re.M | re.S)
+    for k, v in re.findall(r"^([A-Za-z0-9_-]+)\s*=\s*(.+)$", m.group(1) if m else "", re.M):
+        if _crate_norm(k) == _crate_norm(dep):
+            if v.strip().startswith('"'):
+                return v.strip().strip('"')
+            vv = re.search(r'\bversion\s*=\s*"([^"]+)"', v)
+            return vv.group(1) if vv else None
+    return None
+
+
+def _cell_fails(cell: dict) -> bool:
+    return any(isinstance(o, dict) and o.get("output_type") == "error"
+               for o in cell.get("outputs") or [])
+
+
+def _ver_tuple(v: str) -> tuple[int, int, int]:
+    return tuple((list(map(int, re.findall(r"\d+", v)[:3])) + [0, 0, 0])[:3])
+
+
+def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
+                      resolved: dict[str, tuple[Path, str]], cells: list[dict],
+                      roots: list[Path] | None) -> tuple[list[str], list[str]]:
+    """Advice on LINKING, before any API lookup (2.3b, #27134). Three causes, each with its
+    own remedy:
+      - a crate declared in a `:dep` cell that itself fails: evcxr links none of that cell's
+        crates, so every later `unlinked crate` is a cascade — repair that cell first;
+      - a crate used but never declared: add its `:dep`, at the requirement the notebook's
+        other crates write in their Cargo.toml when they depend on it;
+      - a declared version their dependents do not accept (`:dep ndarray = "0.17"` next to
+        linfa 0.8.1, which requires "0.16"): two copies get linked and their types never
+        match — align it.
+    Returns (lines, names of the crates whose errors are cascades/advice, not API misses)."""
+    dep_norm = {_crate_norm(n): n for n in deps}
+    first_dep = min((s["idx"] for s in deps.values()), default=None)
+    unlinked: list[str] = []
+    for e in errs:
+        if e["kind"] in ("crate", "version") and e["item"] not in unlinked:
+            unlinked.append(e["item"])
+
+    def users_of(x: str) -> list[tuple[str, str, str]]:
+        return [(n, resolved[n][1], r) for n in resolved if _crate_norm(n) != _crate_norm(x)
+                and (r := _crate_dep_req(resolved[n][0], x))]
+
+    lines: list[str] = []
+    linked: list[str] = []
+    blocked: dict[int, list[str]] = {}
+    for x in unlinked:
+        declared = dep_norm.get(_crate_norm(x))
+        if declared and 0 <= deps[declared]["idx"] < len(cells) \
+                and _cell_fails(cells[deps[declared]["idx"]]):
+            blocked.setdefault(deps[declared]["idx"], []).append(x)
+            linked.append(x)
+        elif not declared:
+            users = users_of(x)
+            req = users[0][2] if users else None
+            local = registry_crate_dir(x, req, roots)
+            by = ("; " + ", ".join(f"{n} {v} en dépend en \"{r}\"" for n, v, r in users)) \
+                if users else ""
+            loc = f" (copie locale : {x} {local[1]})" if local else ""
+            where = f" dans la cellule {first_dep}" if first_dep is not None else ""
+            lines.append(f"- `{x}` n'est déclarée dans aucun `:dep` : ajoute "
+                         f"`:dep {x} = \"{req or (local[1] if local else '…')}\"`{where}"
+                         f"{loc}{by}.")
+            linked.append(x)
+    for idx, xs in sorted(blocked.items()):
+        lines.insert(0, f"- La cellule {idx} déclare les `:dep` mais elle ÉCHOUE : tant qu'elle "
+                        f"échoue, evcxr ne lie aucune de ses crates, d'où les « unlinked crate » "
+                        f"plus bas ({', '.join(f'`{x}`' for x in xs)}). Répare d'abord ses "
+                        f"propres erreurs ; ces erreurs-là disparaîtront avec elles.")
+    # Version coherence among the declared crates, checked on every Rust round: rustc only
+    # names the clash ("two different versions of crate") once a value crosses the boundary.
+    for x, spec in deps.items():
+        if x not in resolved:
+            continue
+        have = _ver_tuple(resolved[x][1])
+        bad = [(n, v, r) for n, v, r in users_of(x) if n in deps and not _req_matches(r, have)]
+        if not bad:
+            continue
+        req = bad[0][2]
+        local = registry_crate_dir(x, req, roots)
+        loc = f" (copie locale : {x} {local[1]})" if local else ""
+        lines.append(f"- `:dep {x} = \"{spec['req']}\"` (cellule {spec['idx']}) donne {x} "
+                     f"{resolved[x][1]}, mais " + ", ".join(f"{n} {v}" for n, v, _ in bad)
+                     + f" en dépend{'ent' if len(bad) > 1 else ''} en \"{req}\" : deux copies de "
+                     f"`{x}` seront liées, et une valeur de l'une n'est pas acceptée là où l'autre "
+                     f"est attendue — si le notebook passe des valeurs `{x}` à ces crates, écris "
+                     f"`:dep {x} = \"{req}\"`{loc}.")
+        if x not in linked:
+            linked.append(x)
+    return lines, linked
+
+
 def crate_api_block(cells: list[dict], errors: list[str],
                     roots: list[Path] | None = None) -> tuple[str, dict]:
     """The REAL API of the crates a Rust repair round's errors touch, quoted from the
@@ -2097,7 +2206,13 @@ def crate_api_block(cells: list[dict], errors: list[str],
         hit = registry_crate_dir(name, spec["req"], roots)
         if hit:
             resolved[name] = hit
-    if not resolved:
+    link_lines, linked = _crate_link_lines(errs, deps, resolved, cells, roots)
+    # A missing or doubled crate is advised once, never searched as a name inside another
+    # crate (`ndarray` would match any linfa line that spells `ndarray::Dimension`).
+    errs = [e for e in errs if e["kind"] not in ("crate", "version")
+            and not (e["kind"] == "import" and e["crate"] is None and e["item"] in linked)
+            and not (e["crate"] in linked and e["crate"] not in resolved)]
+    if not resolved and not link_lines:
         return "", {}
     files_of: dict[str, list] = {}
 
@@ -2129,9 +2244,9 @@ def crate_api_block(cells: list[dict], errors: list[str],
                                or binds(_text(c.get("source")), e["item"]))
                           for c in cells) and e["item"] not in unknown):
             unknown.append(e["item"])
-    if not per_crate and not unknown:
+    if not per_crate and not unknown and not link_lines:
         return "", {}
-    parts: list[str] = []
+    parts: list[str] = (["Crates à lier :\n" + "\n".join(link_lines)] if link_lines else [])
     gated: list[str] = []
     for name in list(per_crate)[:CRATE_API_MAX_CRATES]:
         crate_dir, version = resolved[name]
@@ -2178,9 +2293,14 @@ def crate_api_block(cells: list[dict], errors: list[str],
         block = block[:CRATE_API_CAP].rsplit("\n", 1)[0] + "\n[… extrait tronqué …]"
     used = list(per_crate)[:CRATE_API_MAX_CRATES]
     dep_cells = sorted({deps[n]["idx"] for n in used})
-    return block, {"crates": [f"{n} {resolved[n][1]}" for n in used],
-                   "dep_cell": dep_cells[0] if dep_cells else None,
-                   "gated": gated, "unknown": unknown}
+    if not dep_cells and link_lines and deps:
+        dep_cells = [min(s["idx"] for s in deps.values())]
+    info = {"crates": [f"{n} {resolved[n][1]}" for n in used],
+            "dep_cell": dep_cells[0] if dep_cells else None,
+            "gated": gated, "unknown": unknown}
+    if linked:
+        info["link"] = linked
+    return block, info
 
 
 def repair_prompt(failing: list[dict], conventions: str = "",
