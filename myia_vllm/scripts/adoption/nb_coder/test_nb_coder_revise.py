@@ -194,7 +194,7 @@ def _fake_engine(monkeypatch, responses: list[str], verdicts: list[tuple]):
     async def fake_sessions(out_dir):
         yield "SK", "PM"
 
-    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None):
+    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None, model=None):
         calls["sk"].append({"stage": stage, "conv": conv, "prompt": prompt})
         rec["calls"].append({"stage": stage})
         return {"response": responses[len(calls["sk"]) - 1], "conversation_id": "c-rev"}
