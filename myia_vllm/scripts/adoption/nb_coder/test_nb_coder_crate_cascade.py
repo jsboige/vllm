@@ -39,6 +39,11 @@ ERR_DISTR = ("use of unresolved module or unlinked crate `rand_distr`unresolved 
              "`rand_distr`\x1b[1mhelp\x1b[0m: if you wanted to use a crate named "
              "`rand_distr`, use `cargo add rand_distr` to add it to your `Cargo.toml`\n")
 ERR_OWN = "\x1b[31m[E0308] Error:\x1b[0m mismatched types\n"
+# The other E0433 wording, verbatim from the same run directory at 21/11 08:3xZ (cells 5,
+# 21, 27, 30, 35 of the next 2.3c attempt said only this): same failure, not read before.
+ERR_E0433 = ("\x1b[31m[E0433] Error:\x1b[0m cannot find module or crate `plotters` in this "
+             "scope\n\x1b[31m[E0433] Error:\x1b[0m cannot find module or crate `rand` in this "
+             "scope\n\x1b[31m[E0432] Error:\x1b[0m unresolved import `rand_distr`\n")
 
 DEPS = (':dep ndarray = "0.16"\n:dep rand = "0.8"\n:dep rand_distr = "0.4"\n'
         'use rand_distr::Normal;\nlet n = Normal::new(0.0, 1.0).unwrap();\n'
@@ -46,6 +51,7 @@ DEPS = (':dep ndarray = "0.16"\n:dep rand = "0.8"\n:dep rand_distr = "0.4"\n'
 
 REPLAY = (Path("D:/vllm/.tmp/nbcoder/conveyor-20261120/live/runs/issue-27134-5790c26b")
           / "nb_27134_built.ipynb")
+REPLAY_FAILING = 13      # the recorded case: the `:dep` cell 2 + its twelve crate cascades
 
 
 def _code(src: str, err: str | None = None) -> dict:
@@ -83,6 +89,24 @@ def test_unlinked_crates_reads_evcxr_messages_in_order_once_each():
     assert d.unlinked_crates(ERR_CASCADE) == ["ndarray", "rand"]
     assert d.unlinked_crates(ERR_DISTR) == ["rand_distr"]
     assert d.unlinked_crates(ERR_DEP_CELL) == [] and d.unlinked_crates("") == []
+
+
+def test_unlinked_crates_reads_the_cannot_find_module_or_crate_wording():
+    assert d.unlinked_crates(ERR_E0433) == ["plotters", "rand"]
+
+
+def test_the_cannot_find_wording_is_a_cascade_too():
+    """2.3c, 21/11 08:3xZ: five of the twelve cascaded cells said only this form, so
+    they were asked in the same round as the `:dep` cell they depend on."""
+    cells = _notebook()
+    cells[2] = _code(DEPS + '\n:dep plotters = "0.3"', ERR_DEP_CELL)
+    cells[4] = _code("use plotters::prelude::*;\nlet r: f64 = rand::random();", ERR_E0433)
+    assert d.cascade_roots(cells, _detail(cells)) == {3: [2], 4: [2], 5: [2]}
+
+
+def test_the_cannot_find_wording_is_digested_as_a_crate_link_miss():
+    kinds = {(e["kind"], e["item"]) for e in d.rust_api_errors(ERR_E0433)}
+    assert ("crate", "plotters") in kinds and ("crate", "rand") in kinds
 
 
 # ---- cascade_roots ---------------------------------------------------------------------
@@ -128,8 +152,10 @@ def _replay_cells() -> list[dict]:
         pytest.skip("live run artefact unreadable (rewritten by a later attempt?)")
     dep = cells[2] if len(cells) > 2 and isinstance(cells[2], dict) else {}
     failing = any(o.get("output_type") == "error" for o in dep.get("outputs", []))
+    n_failing = sum(1 for c in cells if isinstance(c, dict) and c.get("cell_type") == "code"
+                    and any(o.get("output_type") == "error" for o in c.get("outputs", [])))
     if not (dep.get("cell_type") == "code" and ":dep" in d._text(dep.get("source"))
-            and failing):
+            and failing and n_failing == REPLAY_FAILING):
         pytest.skip("live run artefact no longer shows the replayed case "
                     "(a later attempt rewrote it)")
     return cells
@@ -153,9 +179,19 @@ def test_the_replay_guard_skips_a_rewritten_artefact(tmp_path, monkeypatch):
 
 
 def test_the_replay_guard_keeps_the_recorded_case(tmp_path, monkeypatch):
-    cells = [_code("x"), _code("y"), _code(DEPS, ERR_DEP_CELL)]
+    cells = [_code("x"), _code("y"), _code(DEPS, ERR_DEP_CELL), _code("z", ERR_E0433)]
     monkeypatch.setattr(sys.modules[__name__], "REPLAY", _write_nb(tmp_path / "nb.ipynb", cells))
+    monkeypatch.setattr(sys.modules[__name__], "REPLAY_FAILING", 2)
     assert _replay_cells() == json.loads(json.dumps(cells))
+
+
+def test_the_replay_guard_skips_another_failure_count(tmp_path, monkeypatch):
+    """A later attempt can fail cell 2 again with a different set below it: the twelve
+    asserted cascades would then be a statement about another run."""
+    cells = [_code("x"), _code("y"), _code(DEPS, ERR_DEP_CELL), _code("z", ERR_E0433)]
+    monkeypatch.setattr(sys.modules[__name__], "REPLAY", _write_nb(tmp_path / "nb.ipynb", cells))
+    with pytest.raises(pytest.skip.Exception):
+        _replay_cells()
 
 
 @pytest.mark.skipif(not REPLAY.exists(), reason="live run artefact not on this machine")
