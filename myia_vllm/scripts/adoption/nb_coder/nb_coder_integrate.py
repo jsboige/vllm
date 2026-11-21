@@ -51,6 +51,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 # Display forms of the port languages the driver produces (`*-Rust.ipynb`,
@@ -102,6 +103,11 @@ GUARDS = (
 )
 
 TWIN_PAIRS_DIR = Path("scripts/notebook_tools/twin_pairs.d")
+
+# Differential conformance registry of the Rust ports (CoursIA Epic Origami
+# #26510, Pli 3): one YAML per triplet, read by the repo's own organ.
+RUST_CONFORMANCE_DIR = Path("scripts/notebook_tools/rust_conformance.d")
+CONFORMANCE_CHECKER = "scripts/notebook_tools/check_rust_conformance.py"
 
 # Translation tables (hot-subset ratchet, CoursIA#13551): a cell whose
 # translations CSV row carries a deposited `text_<lang>` must never be edited
@@ -817,14 +823,398 @@ def _rel(repo: Path, path: Path) -> str:
         return path.as_posix()
 
 
+# ------------------------------------------------------------------ rust conformance
+
+# A wall-clock duration inside an output line (`Resolu en 1.72 ms`, `Temps
+# total: 22.33 ms`): its VALUE is never compared (the specs say "présence
+# seule"), the line around it is an anchor that must exist on both sides.
+DURATION_RE = re.compile(
+    r"(?<![\w.,])\d+(?:[.,]\d+)?\s*(?:ms|µs|us|ns|s|sec|secondes?)(?![A-Za-zÀ-ÿ])")
+DURATION_NUM = r"\d+(?:[.,]\d+)?"
+# `label : value` / `label ? value` / `label = value` -- the label is the anchor
+# of a three-sided line measure, the value what is compared.
+LABEL_LINE_RE = re.compile(r"^(?P<label>\S[^\n]*?(?:\s:|:|\s\?|\s=))\s+(?P<value>\S[^\n]*?)\s*$")
+# A three-sided line measure compares a VALUE (a number, a boolean, a
+# collection) -- a prose tail (« Coûts contrastés : terrain non-dégénéré »)
+# is wording, not a result, and the C# twin rewords freely.
+VALUE_LITERAL_RE = re.compile(
+    r"^(?:True|False|None|true|false|OUI|NON|Oui|Non|\{.*\}|\[.*\]|\(.*\))$")
+RICH_MIMES = ("image/png", "image/jpeg", "image/svg+xml", "text/html",
+              "application/vnd.plotly.v1+json")
+NONDETERMINISTIC_RE = re.compile(r"\bat 0x[0-9a-fA-F]{6,}")
+# An environment banner (« Python 3.13.16, stdlib only », « Z3 version : 4.16.0 »)
+# reports the runtime, not a result of the notebook: the Rust port reports its
+# own toolchain (« Rust, std only ») and must never be asked to print Python's.
+# Short outputs only -- a long cell that mentions a version still carries results.
+ENV_BANNER_RE = re.compile(
+    r"(?im)\bPython\s+3\.\d+|\bversion\b\s*[:=]?\s*v?\d+\.\d+"
+    r"|^\s*[\w.-]+\s*[:=]\s*v?\d+\.\d+\.\d+\s*$")
+ENV_BANNER_MAX_LINES = 6
+
+
+def is_rust_port(nb_rel: str) -> bool:
+    return Path(nb_rel.replace("\\", "/")).name.endswith("-Rust.ipynb")
+
+
+def conformance_slug(nb_rel: str) -> str:
+    """`Sudoku-07-Norvig-Rust.ipynb` -> `sudoku-07-norvig` (registry file stem)."""
+    return _slug(split_port_name(nb_rel)[0])
+
+
+def conformance_file(nb_rel: str) -> Path:
+    return RUST_CONFORMANCE_DIR / f"{conformance_slug(nb_rel)}.yaml"
+
+
+def notebook_outputs(path: Path) -> dict[int, str]:
+    """{code-cell index: output text} -- MIRROR of the repo checker's
+    `read_notebook_outputs` (stream `text` + `text/plain` of execute_result /
+    display_data, concatenated). A different reading would generate patterns
+    the checker does not see."""
+    nb = json.loads(path.read_text(encoding="utf-8"))
+    out: dict[int, str] = {}
+    for i, cell in enumerate(nb.get("cells", [])):
+        if cell.get("cell_type") != "code":
+            continue
+        chunks: list[str] = []
+        for o in cell.get("outputs") or []:
+            if "text" in o:
+                t = o["text"]
+                chunks.append("".join(t) if isinstance(t, list) else str(t))
+            data = o.get("data") or {}
+            if "text/plain" in data:
+                t = data["text/plain"]
+                chunks.append("".join(t) if isinstance(t, list) else str(t))
+        out[i] = "".join(chunks)
+    return out
+
+
+def _duration_template(line: str) -> str:
+    """Regex for one output line whose duration values float: the text is
+    escaped verbatim, each duration number becomes `\\d+(?:[.,]\\d+)?`."""
+    parts, pos = [], 0
+    for m in DURATION_RE.finditer(line):
+        parts.append(re.escape(line[pos:m.start()]))
+        unit = re.sub(r"^" + DURATION_NUM, "", m.group(0))
+        parts.append(DURATION_NUM + re.escape(unit))
+        pos = m.end()
+    parts.append(re.escape(line[pos:]))
+    return "".join(parts)
+
+
+def _segments(text: str) -> list[dict]:
+    """Split a reference output on its duration lines. Each segment is the
+    text BETWEEN two anchors; its pattern captures it, the anchors (duration
+    lines with floating values) must match on the compared side too."""
+    lines = text.split("\n")
+    dur = [i for i, l in enumerate(lines) if DURATION_RE.search(l)]
+    if not dur:
+        return [{"pattern": r"\A\s*(.*?)\s*\Z", "text": text.strip(), "durations": 0}]
+    # `\r?$`: the C# kernel writes CRLF; a bare `$` would never anchor there.
+    anchor = {i: r"(?m:^" + _duration_template(lines[i].rstrip("\r")) + r"\r?$)" for i in dur}
+    bounds = [None, *dur, None]
+    segs = []
+    for k in range(len(bounds) - 1):
+        a, b = bounds[k], bounds[k + 1]
+        lo = 0 if a is None else a + 1
+        hi = len(lines) if b is None else b
+        body = "\n".join(lines[lo:hi]).strip()
+        if not body:
+            continue
+        # The left anchor walks EVERY earlier duration line in order: two
+        # `Temps moyen : … ms` lines share one template, and a lone anchor
+        # would match the first occurrence for the second segment.
+        left = r"\A" + "".join(r"(?:.*?)" + anchor[j] for j in dur if a is not None and j <= a)
+        right = r"\Z" if b is None else anchor[b]
+        segs.append({"pattern": left + r"\s*(.*?)\s*" + right, "text": body,
+                     "durations": len(dur)})
+    return segs
+
+
+def _extract(text: str, pattern: str) -> str | None:
+    """Same extraction as the checker (re.DOTALL, first group, strip)."""
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        return None
+    return (m.group(1) if m.groups() else m.group(0)).strip()
+
+
+def _first_diff(ref: str, other: str) -> str:
+    # CRLF is reported by `_csharp_gap` on its own; here it would hide the
+    # real first difference behind two lines that look identical.
+    a, b = ref.split("\n"), other.replace("\r\n", "\n").split("\n")
+    for i in range(max(len(a), len(b))):
+        la = a[i] if i < len(a) else "<fin>"
+        lb = b[i] if i < len(b) else "<fin>"
+        if la != lb:
+            if la.strip() == lb.strip():
+                la, lb = repr(la), repr(lb)
+            return f"ligne {i + 1} : « {lb[:60]} » contre « {la[:60]} » côté Python"
+    return "texte identique"
+
+
+def _label_lines(text: str) -> dict[str, str]:
+    """{label: value} for the lines of `text` shaped `label : value` whose label
+    occurs ONCE and whose line carries no duration -- a duplicated label (the
+    doubled `Step 5:` of a trace) would anchor on the wrong line."""
+    seen: dict[str, list[str]] = {}
+    for line in text.split("\n"):
+        if DURATION_RE.search(line):
+            continue
+        m = LABEL_LINE_RE.match(line.rstrip())
+        if m:
+            seen.setdefault(m.group("label"), []).append(m.group("value"))
+    return {k: v[0] for k, v in seen.items()
+            if len(v) == 1 and (re.search(r"\d", v[0]) or VALUE_LITERAL_RE.match(v[0]))}
+
+
+def _ascii_slug(text: str) -> str:
+    """Measure-id slug: ASCII only (`Stable ?` -> `stable`, `Coût` -> `cout`)."""
+    flat = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "_", flat.lower()).strip("_")
+
+
+def _csharp_gap(i: int, cs_txt: str | None, cs_got: str | None, ref: str,
+                cs_code: set[int]) -> str:
+    """Why the aligned C# cell is not comparable -- MEASURED at generation,
+    written into the `absent:` motif so a reviewer reads the gap, not a guess."""
+    if i not in cs_code:
+        return (f"Le carnet C# n'a pas de cellule de code à l'index {i} "
+                "(structure de cellules différente du jumeau Python)")
+    if not (cs_txt or "").strip():
+        return f"La cellule C# {i} ne porte pas de sortie"
+    if cs_got is None:
+        return (f"La cellule C# {i} n'imprime pas les lignes-ancres de durée "
+                "du segment Python")
+    if cs_got.replace("\r\n", "\n").replace("\r", "") == ref:
+        return (f"La cellule C# {i} ne diffère du Python que par ses fins de "
+                "ligne CRLF (noyau .NET)")
+    return f"La cellule C# {i} diffère du texte Python ({_first_diff(ref, cs_got)})"
+
+
+def rich_output_cells(path: Path) -> set[int]:
+    """Code cells with a rich display (figure, HTML table). Their `text/plain`
+    is a language-specific repr (`<Figure size 640x480 with 1 Axes>`, a pandas
+    frame) that a Rust port can never print verbatim: never measured here."""
+    nb = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {i for i, c in enumerate(nb.get("cells", []))
+            if c.get("cell_type") == "code"
+            and any(set((o.get("data") or {})) & set(RICH_MIMES) for o in c.get("outputs") or [])}
+
+
+def is_env_banner(text: str) -> bool:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return 0 < len(lines) <= ENV_BANNER_MAX_LINES and bool(ENV_BANNER_RE.search(text))
+
+
+def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dict:
+    """Measures + Rust divergences + generator skips, from three notebook paths
+    (the stage-3 gate calls it on the BUILT notebook, before any commit)."""
+    py_out = notebook_outputs(py_path)
+    rs_out = notebook_outputs(rs_path)
+    cs_out = notebook_outputs(cs_path) if cs_path is not None and Path(cs_path).is_file() else None
+    rich = rich_output_cells(py_path)
+    measures: list[dict] = []
+    divergences: list[dict] = []
+    skipped: list[str] = []
+    for i in sorted(py_out):
+        if not py_out[i].strip():
+            continue
+        if i in rich:
+            skipped.append(f"c{i}: sortie riche côté Python (figure/HTML), non mesurée")
+            continue
+        if NONDETERMINISTIC_RE.search(py_out[i]):
+            skipped.append(f"c{i}: adresse mémoire dans la sortie Python, non mesurée")
+            continue
+        if is_env_banner(py_out[i]):
+            skipped.append(f"c{i}: bannière d'environnement (versions) côté Python, non mesurée")
+            continue
+        segs = _segments(py_out[i])
+        rs_txt = rs_out.get(i)
+        for k, seg in enumerate(segs):
+            mid = f"c{i}_text" if len(segs) == 1 else f"c{i}_seg{k + 1}"
+            desc = (f"Sortie de la cellule {i}, texte identique au jumeau Python"
+                    + (f" (segment {k + 1}/{len(segs)} ; durées murales en présence "
+                       "seule, valeurs jamais comparées)" if seg["durations"] else ""))
+            if _extract(py_out[i], seg["pattern"]) != seg["text"]:
+                # The reference side cannot read its own pattern: a generator
+                # limit (an output shape it does not model), never a measure.
+                skipped.append(f"{mid}: motif non relu côté Python, mesure non écrite")
+                continue
+            sides: dict = {"python": {"cell": i, "pattern": seg["pattern"], "transform": "text"},
+                           "rust": {"cell": i, "pattern": seg["pattern"], "transform": "text"}}
+            got = _extract(rs_txt, seg["pattern"]) if rs_txt else None
+            if got != seg["text"]:
+                divergences.append({
+                    "id": mid, "cell": i,
+                    "text": ("la cellule Rust n'imprime rien" if not rs_txt
+                             else "les lignes-ancres de durée du segment Python manquent"
+                             if got is None else _first_diff(seg["text"], got))})
+            if cs_out is not None:
+                cs_txt = cs_out.get(i)
+                cs_got = _extract(cs_txt, seg["pattern"]) if cs_txt else None
+                if cs_got == seg["text"]:
+                    sides["csharp"] = {"cell": i, "pattern": seg["pattern"], "transform": "text"}
+                else:
+                    gap = _csharp_gap(i, cs_txt, cs_got, seg["text"], set(cs_out))
+                    sides["csharp"] = {"absent": (
+                        f"{gap} : côté déclaré absent, mesuré à la génération ; "
+                        "la comparaison stricte porte sur Python et Rust.")}
+            measures.append({"id": mid, "description": desc, "tolerance": 0,
+                             "reference": "python", "sides": sides})
+        if cs_out is not None and rs_txt and cs_out.get(i):
+            py_l, rs_l, cs_l = (_label_lines(py_out[i]), _label_lines(rs_txt),
+                                _label_lines(cs_out[i]))
+            for label, value in py_l.items():
+                if rs_l.get(label) != value or cs_l.get(label) != value:
+                    continue
+                # The whole pattern sits in the multiline group: a bare `$`
+                # outside it means end-of-cell under the checker's DOTALL
+                # search, so only a cell's LAST line would ever match.
+                pat = r"(?m:^" + re.escape(label) + r"[ \t]+([^\n]*?)[ \t]*\r?$)"
+                # Self-check with the checker's own extraction on all three
+                # sides: a measure the organ cannot read is never written.
+                if any(_extract(t, pat) != value for t in (py_out[i], rs_txt, cs_out[i])):
+                    continue
+                lid = f"c{i}_{_ascii_slug(label)[:40] or 'ligne'}"
+                if any(m["id"] == lid for m in measures):
+                    continue
+                measures.append({
+                    "id": lid,
+                    "description": f"« {label} » de la cellule {i}, même valeur sur les trois côtés",
+                    "tolerance": 0, "reference": "python",
+                    "sides": {s: {"cell": i, "pattern": pat, "transform": "text"}
+                              for s in ("python", "csharp", "rust")}})
+    return {"measures": measures, "divergences": divergences, "skipped": skipped,
+            "has_csharp": cs_out is not None}
+
+
+def conformance_divergences(py_path: Path, rs_path: Path) -> list[dict]:
+    """Rust cells whose output differs from the Python twin's same-index cell,
+    as the registry entry written at delivery would measure them. Stage-3 gate
+    input: a divergence found here is repaired BEFORE the PR, not by review."""
+    return _conformance_core(py_path, rs_path, None)["divergences"]
+
+
+def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+    """The `rust_conformance.d` entry of an nb_coder Rust port, from the
+    COMMITTED outputs of the port and its twins (CoursIA c0018, 21/11: the
+    lot-1 specs require it at delivery and every PR without it came back).
+
+    Correspondence by cell INDEX: an nb_coder port keeps its Python twin's
+    cell structure (the twin-parity seal checks it), and the lot specs compare
+    "sortie Python cellule N" to Rust cell N. One measure per code cell the
+    Python twin prints something in, strict text equality (tolerance 0);
+    duration lines split the cell into segments and are matched by presence
+    only. The entry is written whether or not the sides agree: a divergence is
+    the checker's finding, never smoothed here (fail-closed). The C# side is
+    compared where its aligned cell prints the same text, else DECLARED absent
+    with the measured gap; lines `label : value` identical on all three sides
+    add three-sided measures anchored on the label."""
+    worktree = Path(worktree)
+    nb_rel = nb_rel.replace("\\", "/")
+    source_rel = source_rel.replace("\\", "/")
+    base, _ = split_port_name(nb_rel)
+    cs_rel = (Path(nb_rel).parent / f"{base}-CSharp.ipynb").as_posix()
+    core = _conformance_core(worktree / source_rel, worktree / nb_rel,
+                             worktree / cs_rel if (worktree / cs_rel).is_file() else None)
+    measures = core["measures"]
+    entry = {"name": base,
+             "family": Path(nb_rel).parent.as_posix().replace("MyIA.AI.Notebooks/", "", 1),
+             "python": source_rel}
+    if core["has_csharp"]:
+        entry["csharp"] = cs_rel
+    entry["rust"] = nb_rel
+    entry["measures"] = measures
+    three = sum(1 for m in measures if "cell" in (m["sides"].get("csharp") or {}))
+    return {"file": conformance_file(nb_rel).as_posix(), "entry": entry,
+            "measures": len(measures), "three_sided": three,
+            "csharp": cs_rel if core["has_csharp"] else None,
+            "divergences": core["divergences"], "skipped": core["skipped"]}
+
+
+def _yq(s) -> str:
+    """YAML scalar: a JSON string is a valid YAML double-quoted scalar."""
+    return json.dumps(s, ensure_ascii=False) if isinstance(s, str) else json.dumps(s)
+
+
+def render_conformance_yaml(built: dict) -> str:
+    """Stdlib YAML of one registry entry (the module stays import-free; the
+    tests load it back with PyYAML)."""
+    e = built["entry"]
+    head = [
+        f"# Conformité différentielle de {e['name']} (portage Rust nb_coder).",
+        "#",
+        "# Écrite à la livraison par nb_coder_integrate depuis les sorties COMMITÉES",
+        "# des carnets : correspondance par index de cellule (le portage garde la",
+        "# structure de cellules du jumeau Python, scellée par twin-parity), une",
+        "# mesure par cellule qui imprime côté Python, égalité stricte du texte ;",
+        "# les lignes de durée murale sont des ancres en présence seule. Le côté",
+        "# C# est comparé où sa cellule alignée imprime le même texte, sinon",
+        "# déclaré absent avec l'écart mesuré. À corriger À LA MAIN si une",
+        "# divergence est un écart d'API documenté : le fichier n'est jamais",
+        "# réécrit par l'outil une fois présent.",
+    ]
+    lines = head + [f"- name: {_yq(e['name'])}", f"  family: {_yq(e['family'])}",
+                    f"  python: {e['python']}"]
+    if e.get("csharp"):
+        lines.append(f"  csharp: {e['csharp']}")
+    lines += [f"  rust: {e['rust']}", "  measures:"]
+    for m in e["measures"]:
+        lines += [f"    - id: {m['id']}", f"      description: {_yq(m['description'])}",
+                  f"      tolerance: {m['tolerance']}", f"      reference: {m['reference']}",
+                  "      sides:"]
+        for side in ("python", "rust", "csharp"):
+            spec = m["sides"].get(side)
+            if spec is None:
+                continue
+            lines.append(f"        {side}:")
+            if "absent" in spec:
+                lines.append(f"          absent: {_yq(spec['absent'])}")
+            else:
+                lines += [f"          cell: {spec['cell']}",
+                          f"          pattern: {_yq(spec['pattern'])}",
+                          f"          transform: {spec['transform']}"]
+    return "\n".join(lines) + "\n"
+
+
+def plan_conformance(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+    """Plan the registry entry of a Rust port: todo when the file is missing.
+    An existing file is NEVER rewritten -- a human correction (an API gap
+    declared by hand) must survive a re-run (idempotence + authorship)."""
+    if not is_rust_port(nb_rel):
+        return {"todo": False, "why": "not a Rust port"}
+    worktree = Path(worktree)
+    rel = conformance_file(nb_rel)
+    if (worktree / rel).is_file():
+        return {"todo": False, "file": rel.as_posix(), "why": "entry already present"}
+    if not (worktree / RUST_CONFORMANCE_DIR).is_dir():
+        return {"todo": False, "why": f"no {RUST_CONFORMANCE_DIR.as_posix()} in the repo"}
+    built = build_conformance_entry(worktree, nb_rel, source_rel)
+    return {"todo": True, "path": str(worktree / rel), "text": render_conformance_yaml(built),
+            **{k: v for k, v in built.items() if k != "entry"}}
+
+
+def apply_conformance(plan: dict) -> bool:
+    if not plan.get("todo"):
+        return False
+    Path(plan["path"]).write_text(plan["text"], encoding="utf-8", newline="\n")
+    return True
+
+
 # ------------------------------------------------------------------ guards
 
-def replay_guards(worktree: Path) -> list[dict]:
+def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
     """Replay the guards with the exact commands the lot-1 review
     comments published. Read-only against git; run AFTER the integration
-    commits so `--diff-base origin/main` sees them."""
+    commits so `--diff-base origin/main` sees them. A Rust port with a
+    registry entry also replays the differential conformance organ on it
+    (`--entry <slug>.yaml`: fail-closed when the entry does not exist)."""
+    guards = list(GUARDS)
+    if notebook and is_rust_port(notebook) and (Path(worktree) / conformance_file(notebook)).is_file():
+        guards.append(("rust-conformance",
+                       [CONFORMANCE_CHECKER, "--entry", conformance_file(notebook).name]))
     out = []
-    for name, cmd in GUARDS:
+    for name, cmd in guards:
         try:
             proc = subprocess.run([sys.executable, *cmd], cwd=str(worktree),
                                   capture_output=True, text=True,
@@ -855,13 +1245,21 @@ def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
     apply_nav_link(nav)
     readme = plan_readme_row(worktree, notebook, source_nb)
     apply_readme_row(readme)
+    conf = plan_conformance(worktree, notebook, source_nb)
+    apply_conformance(conf)
     touched = ([source_nb] if nav.get("todo") else []) + \
-              ([readme["file"]] if readme.get("todo") else [])
+              ([readme["file"]] if readme.get("todo") else []) + \
+              ([conf["file"]] if conf.get("todo") else [])
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items() if not k.startswith("_")},
             "readme": {k: v for k, v in readme.items() if k != "path"},
+            "conformance": _conformance_summary(conf),
             "pair": find_twin_pair(worktree, source_nb),
             "touched": touched}
+
+
+def _conformance_summary(plan: dict) -> dict:
+    return {k: v for k, v in plan.items() if k not in ("path", "text", "entry")}
 
 
 def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
@@ -874,12 +1272,14 @@ def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
         return {"error": f"source notebook not found: {source_nb}"}
     nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
     readme = plan_readme_row(worktree, notebook, source_nb)
+    conf = plan_conformance(worktree, notebook, source_nb)
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items()
                     if not k.startswith("_") and k != "file"},
             "readme": {k: v for k, v in readme.items() if k != "path"},
+            "conformance": _conformance_summary(conf),
             "pair": find_twin_pair(worktree, source_nb),
-            "todo": bool(nav.get("todo") or readme.get("todo"))}
+            "todo": bool(nav.get("todo") or readme.get("todo") or conf.get("todo"))}
 
 
 # ------------------------------------------------------------------ sync-main
@@ -895,6 +1295,8 @@ def owned_files(worktree: Path, notebook: str, source_nb: str) -> list[str]:
     owned = sorted(_rel(worktree, p) for p in folder.glob("README*.md"))
     owned.append(source_nb)
     owned.append(TWIN_PAIRS_DIR.as_posix())
+    if is_rust_port(notebook):  # created by this integration only
+        owned.append(conformance_file(notebook).as_posix())
     return owned
 
 
@@ -931,14 +1333,14 @@ def sync_main(worktree: Path, notebook: str, source_nb: str, lane: str,
     worktree = Path(worktree)
     merge = merge_owned_conflicts(worktree, owned_files(worktree, notebook, source_nb))
     if not merge.get("merged"):
-        return {"merge": merge, "guards": replay_guards(worktree)}
+        return {"merge": merge, "guards": replay_guards(worktree, notebook)}
     result = integrate(worktree, notebook, source_nb)
     for f in result.get("touched", []):
         _git(worktree, "add", "--", f)
     _git(worktree, *GIT_IDENTITY, "commit", "--no-edit")
     return {"merge": merge, "integration": result,
             "reseal": _reseal_after(worktree, notebook, source_nb, lane, facts),
-            "guards": replay_guards(worktree)}
+            "guards": replay_guards(worktree, notebook)}
 
 
 def _reseal_after(worktree: Path, notebook: str, source_nb: str, lane: str,
@@ -989,13 +1391,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_only:
         result = plan_only(wt, args.notebook, args.source_nb)
-        result["guards"] = replay_guards(wt)
+        result["guards"] = replay_guards(wt, args.notebook)
         print(json.dumps(result, ensure_ascii=False, indent=1))
         return 0 if not result.get("todo") else 1
 
     if args.sync_main:
         result = sync_main(wt, args.notebook, args.source_nb, args.by, facts)
-        result["guards"] = result.get("guards") or replay_guards(wt)
+        result["guards"] = result.get("guards") or replay_guards(wt, args.notebook)
         print(json.dumps(result, ensure_ascii=False, indent=1, default=str))
         return 0 if (result.get("merge", {}).get("merged")
                      and all(g["rc"] == 0 for g in result["guards"])) else 1
@@ -1017,7 +1419,7 @@ def main(argv: list[str] | None = None) -> int:
         _git(wt, *GIT_IDENTITY, "commit", "-m", msg)
     result["reseal"] = _reseal_after(wt, args.notebook, args.source_nb,
                                      args.by, facts)
-    result["guards"] = replay_guards(wt)
+    result["guards"] = replay_guards(wt, args.notebook)
     print(json.dumps(result, ensure_ascii=False, indent=1, default=str))
     return 0 if all(g["rc"] == 0 for g in result["guards"]) else 1
 
