@@ -716,3 +716,55 @@ def test_parse_args_keeps_worktrees_off_by_default(tmp_path):
             "--max-active", "1"]
     assert S.parse_args(base).keep_worktrees is False
     assert S.parse_args(base + ["--keep-worktrees"]).keep_worktrees is True
+
+
+# ---------------------------------------------------------------- same-issue claims (21/11)
+def _lot(n, name):
+    return {"issue": n, "notebook": f"Lot/{name}.ipynb"}
+
+
+def test_two_claiming_grains_of_one_lot_issue_never_fly_together(tmp_path):
+    """CoursIA#27133: the guard keeps ONE active [CLAIMED] per lane and issue, so two
+    grains of a lot issue in flight overwrite each other's claim."""
+    spawn = SpawnRecorder(done_after=99)
+    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B"), item(8)], spawn=spawn,
+                       max_active=3, claim=True)
+    r = sched.tick()
+    launched = [c[c.index("--notebook") + 1] for c in spawn.calls]
+    assert launched == ["Lot/A.ipynb", "Dir/N8.ipynb"]
+    assert r["launched"] == 2
+    held = _events(sched, "held")[-1]
+    assert held["same_issue_waiting"] == 1
+
+
+def test_same_issue_grain_starts_once_the_first_one_finished(tmp_path):
+    spawn = SpawnRecorder(done_after=1)
+    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B")], spawn=spawn,
+                       max_active=2, claim=True)
+    r = sched.tick()
+    assert r["launched"] == 1 and r["held"] == "same-issue-serialized"
+    sched.tick()                       # A still in flight (FakeProc: one poll pending)
+    assert len(spawn.calls) == 1
+    sched.tick()                       # reaps A, then launches B
+    assert [c[c.index("--notebook") + 1] for c in spawn.calls] == [
+        "Lot/A.ipynb", "Lot/B.ipynb"]
+
+
+def test_without_claims_same_issue_grains_still_run_together(tmp_path):
+    spawn = SpawnRecorder(done_after=99)
+    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B")], spawn=spawn,
+                       max_active=2, claim=False)
+    assert sched.tick()["launched"] == 2
+
+
+def test_implicit_occupation_deferral_is_retried_not_failed(tmp_path):
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(verdict="deferred-by-claim-implicit-occupation:#27691",
+                          rc=1, done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn)
+    sched.clock = lambda: clock["t"]
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "deferred" and g["not_before"] > clock["t"]
