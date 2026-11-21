@@ -1852,18 +1852,41 @@ def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]
     three rounds. A cell listed here fails because of its root: repairing it before the
     root can only work around a definition that is about to change. Values count too
     (#27314 attempt 1: cell 22 failed on `ARCHIVE` and `CERTIFICAT`, which cell 19 binds
-    with `var` and never ran)."""
+    with `var` and never ran).
+
+    Crates count too (2.3c, #27134, 21/11): cell 2 carried every `:dep` and failed on two
+    missing trait imports, so evcxr linked none of its crates and the twelve cells below
+    failed on `unlinked crate ndarray/rand/…` alone. The round asked all thirteen at once:
+    a 151K-token prompt, a 60K-character answer that did not parse, the grain lost."""
     failing = {d["idx"] for d in detail}
+    dep_cell = {_crate_norm(n): s["idx"] for n, s in cell_deps(cells).items()}
     out: dict[int, list[int]] = {}
     for d in detail:
         roots = set()
-        for name in undefined_names(d.get("_raw_errors") or d.get("errors") or ""):
+        errs = d.get("_raw_errors") or d.get("errors") or ""
+        for name in undefined_names(errs):
             j = source_cell(cells, name, before=d["idx"])
             if j is not None and j in failing:
+                roots.add(j)
+        for crate in unlinked_crates(errs):
+            j = dep_cell.get(_crate_norm(crate))
+            if j is not None and j < d["idx"] and j in failing:
                 roots.add(j)
         if roots:
             out[d["idx"]] = sorted(roots)
     return out
+
+
+_UNLINKED_CRATE_RE = re.compile(r"unlinked crate `(\w+)`")
+
+
+def unlinked_crates(errors: str) -> list[str]:
+    """Crates an evcxr error says are not linked, in order of first mention."""
+    seen: list[str] = []
+    for m in _UNLINKED_CRATE_RE.finditer(_ANSI_RE.sub("", errors or "")):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
 
 
 # What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
@@ -2597,14 +2620,21 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         lines = []
         for r in sorted(by_root):
             names = sorted({n for x in by_root[r] for n in x["names"]})
+            crates = sorted({c for x in by_root[r] for c in x.get("crates") or []})
             cells = ", ".join(str(x["idx"]) for x in sorted(by_root[r], key=lambda x: x["idx"]))
-            lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
-                         f"(utilisés par les cellules {cells})")
+            if names:
+                lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
+                             f"(utilisés par les cellules {cells})")
+            if crates:
+                lines.append(f"- cellule {r} : porte les `:dep` de {', '.join(crates)} ; tant "
+                             f"qu'elle échoue, evcxr ne lie aucune de ces crates (cellules "
+                             f"{cells}) — garde ces `:dep` et rends-la compilable")
         waiting = ", ".join(str(x["idx"]) for x in sorted(deferred, key=lambda x: x["idx"]))
         dfr_txt = (f"\n\nCELLULES EN ATTENTE ({waiting}) — elles échouent seulement parce que "
-                   "des noms définis dans une cellule ci-dessus n'existent pas tant qu'elle ne "
-                   "compile pas. Elles seront ré-exécutées après ta correction : ne les rends "
-                   "pas, et garde ces noms et leurs signatures dans la cellule qui les définit."
+                   "des noms ou des crates déclarés dans une cellule ci-dessus n'existent pas "
+                   "tant qu'elle ne compile pas. Elles seront ré-exécutées après ta correction : "
+                   "ne les rends pas, et garde ces noms, leurs signatures et ces `:dep` dans la "
+                   "cellule qui les déclare."
                    + ("\n" + "\n".join(lines) if lines else ""))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
@@ -4140,6 +4170,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         roots = cascade_roots(cells_now, detail)
         deferred: list[dict] = []
         if roots and len(roots) < len(detail):
+            deps_now = {_crate_norm(n): s["idx"] for n, s in cell_deps(cells_now).items()}
             for d in detail:
                 if d["idx"] in roots:
                     # Only roots asked this round are named; a cell waiting on another
@@ -4147,7 +4178,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                     kept = [r for r in roots[d["idx"]] if r not in roots]
                     names = [n for n in undefined_names(d["_raw_errors"])
                              if source_cell(cells_now, n, before=d["idx"]) in kept]
-                    deferred.append({"idx": d["idx"], "roots": kept, "names": names})
+                    crates = [c for c in unlinked_crates(d["_raw_errors"])
+                              if deps_now.get(_crate_norm(c)) in kept]
+                    deferred.append({"idx": d["idx"], "roots": kept, "names": names,
+                                     "crates": crates})
             detail = [d for d in detail if d["idx"] not in roots]
         # Rust: the real API of the crates the errors touch (MGS-25, 2.3b), from the
         # registry copy the kernel compiled.
