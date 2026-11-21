@@ -435,7 +435,6 @@ def test_resume_stops_before_the_pr_below_stage_5(monkeypatch, tmp_path):
     ({"stages": {"worktree": {"path": "x"}, "claim_reservation":
                  {"verdict": "refused-claim-post-failed"}}}, {},
      "refused-revise-no-reservation"),
-    ({"stages": {"worktree": {"path": "x"}}}, {}, "refused-revise-no-reservation"),
     ({"built_notebook": {"path": "Z:/absent.ipynb"}}, {}, "refused-revise-built-missing"),
     ({"kernel_cwd": "Z:/absent"}, {}, "refused-revise-kernel-cwd-missing"),
 ])
@@ -449,6 +448,28 @@ def test_resume_refuses_a_missing_trace(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch)
     got = _resume(_rev_args(tmp_path, tmp_path / "nope.json"))
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
+
+
+def test_resume_old_trace_livereads_the_reservation(monkeypatch, tmp_path):
+    # w1*-era traces (18-19/11) carry no claim_reservation stage: the resume re-reads
+    # the LIVE scoped claim instead of refusing on a missing attestation (20/11: 3
+    # grains were refused as no-reservation while our lane still held the claim).
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
+                                                  "ok": True}})
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1
+    assert got["stages"]["claim_reservation"] == {"verdict": None, "live_recheck": True}
+
+
+def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch, claim_rc=1)
+    trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
+                                                  "ok": True}})
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith(
+        "refused-revise-no-reservation:refused-claim-held-by-another-lane")
+    assert seen["loop"] == 0
 
 
 def test_resume_rereads_the_claim_and_the_capacity_gate(monkeypatch, tmp_path):
@@ -499,6 +520,93 @@ def test_verify_from_refuses_a_missing_trace(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch)
     got = _resume(_verify_args(tmp_path, tmp_path / "nope.json"))
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
+
+
+def test_revise_from_repairs_a_gates_failed_trace(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="gates-failed:machine-path",
+                   gates=[{"gate": "machine-path", "ok": False,
+                           "detail": {"cells": [15], "build_hits": [15]}}])
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+    assert got["gate_repair"]["resumed"] is True
+    assert got["gate_repair"]["from"] == "gates-failed:machine-path"
+    assert got["verify"]["source"] == "gates" and got["verify"]["findings"][0]["cell"] == 15
+
+
+def test_revise_from_refuses_an_unrepairable_gates_failure(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="gates-failed:language-info",
+                   gates=[{"gate": "language-info", "ok": False,
+                           "detail": {"canon": None, "built": None}}])
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith("refused-gate-repair-unrepairable:gates-failed")
+    assert seen["loop"] == 0
+
+
+# ---------------------------------------------------------------- gate repair
+def _gates_call(monkeypatch, tmp_path, gates, **args_kw):
+    built = _nb(tmp_path)
+    monkeypatch.setattr(D, "run_gates", lambda *a, **kw: gates)
+    rec = {"stages": {}, "calls": [], "verdict": "built-executed-ok"}
+    args = SimpleNamespace(max_stage=5, revise_rounds=2)
+    for k, v in args_kw.items():
+        setattr(args, k, v)
+    D.gates_then_verify(args, rec, tmp_path / "twin.ipynb", built, True, "python3",
+                        tmp_path, tmp_path)
+    return rec
+
+
+def test_a_gate_failure_seeds_the_constructive_loop(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path, [
+        {"gate": "machine-path", "ok": False,
+         "detail": {"cells": [15], "source_hits": [], "build_hits": [15]}},
+        {"gate": "language-info", "ok": False, "detail": {"canon": None, "built": None}}])
+    assert rec["verdict"] == "verify-reject"              # routed into the review loop
+    assert rec["verify"]["source"] == "gates" and rec["verify"]["verdict"] == "gate-reject"
+    f = rec["verify"]["findings"]
+    assert len(f) == 1                                    # language-info is NOT builder-fixable
+    assert f[0]["cell"] == 15 and f[0]["severity"] == "major"
+    assert "machine-path" in f[0]["detail"]
+    assert rec["gate_repair"]["from"].startswith("gates-failed:")
+
+
+def test_a_metadata_only_gate_failure_stays_terminal(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path, [
+        {"gate": "language-info", "ok": False, "detail": {"canon": None, "built": None}}])
+    assert rec["verdict"] == "gates-failed:language-info" and "verify" not in rec
+
+
+def test_gate_repair_respects_a_disabled_loop(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path,
+                      [{"gate": "machine-path", "ok": False, "detail": {"cells": [3]}}],
+                      revise_rounds=0)
+    assert rec["verdict"] == "gates-failed:machine-path" and "verify" not in rec
+
+
+def _gate_seeded_rec():
+    return {"verdict": "verify-reject", "calls": [], "stages": {},
+            "gate_repair": {"from": "gates-failed:machine-path", "findings": 1},
+            "verify": {"verdict": "gate-reject", "source": "gates",
+                       "findings": [{"cell": 15, "severity": "major",
+                                     "detail": "porte machine-path en échec"}]}}
+
+
+def test_gate_repair_exhaustion_restores_the_honest_verdict(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, ["pas du tout du json"], [("approve", [])])
+    rec = _gate_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "gates-failed:machine-path"   # never masked as verify-reject
+
+
+def test_gate_repair_success_keeps_the_real_verdict(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    rec = _gate_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved"
+    assert "source" not in rec["verify"]                   # the REAL verify overwrote it
 
 
 # ---------------------------------------------------------------- CLI + scheduler
