@@ -723,37 +723,12 @@ def _lot(n, name):
     return {"issue": n, "notebook": f"Lot/{name}.ipynb"}
 
 
-def test_two_claiming_grains_of_one_lot_issue_never_fly_together(tmp_path):
-    """CoursIA#27133: the guard keeps ONE active [CLAIMED] per lane and issue, so two
-    grains of a lot issue in flight overwrite each other's claim."""
+def test_same_issue_grains_are_not_serialized_by_the_scheduler(tmp_path):
+    """The claim race is the reservation window only; the driver locks that window.
+    A lot issue must keep several grains in flight (#27134: 2.3b + 2.3d together)."""
     spawn = SpawnRecorder(done_after=99)
-    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B"), item(8)], spawn=spawn,
-                       max_active=3, claim=True)
-    r = sched.tick()
-    launched = [c[c.index("--notebook") + 1] for c in spawn.calls]
-    assert launched == ["Lot/A.ipynb", "Dir/N8.ipynb"]
-    assert r["launched"] == 2
-    held = _events(sched, "held")[-1]
-    assert held["same_issue_waiting"] == 1
-
-
-def test_same_issue_grain_starts_once_the_first_one_finished(tmp_path):
-    spawn = SpawnRecorder(done_after=1)
     sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B")], spawn=spawn,
                        max_active=2, claim=True)
-    r = sched.tick()
-    assert r["launched"] == 1 and r["held"] == "same-issue-serialized"
-    sched.tick()                       # A still in flight (FakeProc: one poll pending)
-    assert len(spawn.calls) == 1
-    sched.tick()                       # reaps A, then launches B
-    assert [c[c.index("--notebook") + 1] for c in spawn.calls] == [
-        "Lot/A.ipynb", "Lot/B.ipynb"]
-
-
-def test_without_claims_same_issue_grains_still_run_together(tmp_path):
-    spawn = SpawnRecorder(done_after=99)
-    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B")], spawn=spawn,
-                       max_active=2, claim=False)
     assert sched.tick()["launched"] == 2
 
 
