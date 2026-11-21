@@ -2037,6 +2037,14 @@ _RUST_API_ERR_RES = (
     # name to look up INSIDE a crate; `_crate_link_lines` advises them.
     ("crate", re.compile(r"unlinked crate `(\w+)`")),
     ("version", re.compile(r"(?:two|multiple) different versions of crate `(\w+)`")),
+    # E0603 (2.3b, 21/11): `use rand::{Rng, SeedableRng, Distribution}` under rand 0.10 —
+    # `rand::Distribution` is a PRIVATE import of the crate root, and the compiler's
+    # "import `Distribution` directly" names `rand::distr::distribution::Distribution`,
+    # which crosses the private module `distribution`. The public paths are
+    # `rand::distr::Distribution` and `rand::prelude::Distribution`: only the sources say so.
+    # Methods and associated functions (E0624) are a different privacy and stay out.
+    ("private", re.compile(r"(?<!associated )\b(trait|struct|enum|union|function|module|"
+                           r"constant|static|type alias|macro) `(\w+)` is private")),
 )
 
 
@@ -2134,6 +2142,19 @@ def rust_api_errors(errors: str) -> list[dict]:
         for m in rx.finditer(text):
             g = [x for x in m.groups()]
             item, owner, path = g[0], None, None
+            if kind == "private":
+                # The defining path the compiler advises — a crate name, and the path the
+                # block must warn against when it crosses a private module.
+                item = g[1]
+                hint = re.search(rf"import `{re.escape(item)}` directly\s*\n(?:\s*\n)*\s*"
+                                 r"([A-Za-z_][\w:]*)", text[m.end():m.end() + 400])
+                path = hint.group(1) if hint else None
+                e = {"kind": kind, "item": item, "owner": None,
+                     "crate": path.split("::")[0] if path else None,
+                     "noun": g[0], "hint": path}
+                if e not in out:
+                    out.append(e)
+                continue
             if kind in ("method", "assoc"):
                 full = re.sub(r"<.*$", "", g[1]).lstrip("&").strip()
                 full = re.sub(r"^(?:mut|dyn|impl)\s+", "", full)
@@ -2392,6 +2413,87 @@ def _ver_tuple(v: str) -> tuple[int, int, int]:
     return tuple((list(map(int, re.findall(r"\d+", v)[:3])) + [0, 0, 0])[:3])
 
 
+def _mod_is_public(files, crate: str, path: str) -> bool:
+    """Every module on `crate::a::b` is declared plain `pub mod` in its parent. A re-export
+    reached through a private (or `pub(crate)`) module is not importable from a notebook."""
+    segs = path.split("::")[1:]
+    for k, seg in enumerate(segs):
+        parent = "::".join([_crate_norm(crate)] + segs[:k])
+        decl = next((ls[i] for rel, ls, i in
+                     _find(files, rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{re.escape(seg)}\b",
+                           limit=20)
+                     if _module_path(crate, rel, ls, i) == parent), None)
+        if decl is None or not re.match(r"^\s*pub\s+mod\b", _code_part(decl)):
+            return False
+    return True
+
+
+def _use_statement(lines: list[str], i: int) -> str:
+    """The `use` statement starting at line i, joined up to its `;` (12 lines at most)."""
+    buf = []
+    for line in lines[i:i + 12]:
+        buf.append(_code_part(line).strip())
+        if ";" in buf[-1]:
+            break
+    return re.sub(r"\s+", " ", " ".join(buf)).split(";", 1)[0]
+
+
+def _private_item_lines(files, crate: str, e: dict) -> list[str]:
+    """E0603: the importable paths of a name the notebook reached through a private path —
+    its plain `pub use` re-exports and its `pub` definition, each kept only when every
+    module on the way is `pub mod` — plus the private paths not to follow."""
+    item, n = e["item"], re.escape(e["item"])
+    noun = e.get("noun") or ""
+    public: list[tuple[str, str]] = []
+    private: list[str] = []
+    if noun == "module":
+        # A private module: what its items are re-exported as, and where.
+        lines = [f"- le module `{item}` est privé ; ses éléments sont réexportés par :"]
+        for rel, ls, i in _find(files, r"^\s*pub\s+use\b", limit=400):
+            stmt = _use_statement(ls, i)
+            if re.search(rf"\b{n}::", stmt):
+                mp = _module_path(crate, rel, ls, i)
+                if _mod_is_public(files, crate, mp):
+                    lines.append(f"  {stmt}   [{rel}:{i + 1}, dans {mp}]")
+        return lines if len(lines) > 1 else [lines[0] + " (aucune réexportation publique)"]
+    for rel, ls, i in _find(files, r"^\s*pub\s+use\b", limit=400):
+        stmt = _use_statement(ls, i)
+        # The name itself is re-exported (last segment, not renamed, not a path prefix).
+        if not re.search(rf"\b{n}\b(?!\s*::)(?!\s+as\b)", stmt):
+            continue
+        mp = _module_path(crate, rel, ls, i)
+        (public.append((f"{mp}::{item}", f"{rel}:{i + 1}"))
+         if _mod_is_public(files, crate, mp) else private.append(f"{mp}::{item}"))
+    defined = ""
+    for rel, ls, i in _find(files, rf"^\s*pub\s+(?:struct|enum|type|trait|union|fn|const|"
+                                   rf"static|mod)\s+{n}\b", limit=1):
+        mp = _module_path(crate, rel, ls, i)
+        open_ = _mod_is_public(files, crate, mp)
+        (public.append((f"{mp}::{item}", f"{rel}:{i + 1}"))
+         if open_ else private.append(f"{mp}::{item}"))
+        defined = (f"  défini ici : {_signature(ls, i)}   [{rel}:{i + 1}, module {mp}"
+                   + ("]" if open_ else ", privé]"))
+    # A private `use` at the crate root is the path the notebook most likely wrote
+    # (`rand::Distribution` is `use crate::distr::{Distribution, …}` in src/lib.rs). Deeper
+    # private imports are the crate's own plumbing (rand's `distr::uniform`), not advice.
+    roots = [f"{_crate_norm(crate)}::{item}"
+             for rel, ls, i in _find(files, rf"^\s*use\s+[^;]*\b{n}\b", limit=200)
+             if _module_path(crate, rel, ls, i) == _crate_norm(crate)][:1]
+    public = sorted(dict(public).items(), key=lambda kv: (kv[0].count("::"), kv[0]))[:4]
+    lines = [f"- `{item}` n'est pas importable par le chemin écrit"
+             + (" ; chemins publics :" if public else " ; aucun chemin public trouvé :")]
+    lines += [f"  use {p};   [{where}]" for p, where in public]
+    bad = [p for p in dict.fromkeys(([e["hint"]] if e.get("hint") else []) + private + roots)
+           if p not in dict(public)]
+    if bad:
+        lines.append("  NE PAS utiliser (import privé ou module privé, y compris le chemin "
+                     "que conseille le compilateur) : "
+                     + ", ".join(f"`{p}`" for p in bad[:4]))
+    if defined:
+        lines.append(defined)
+    return lines
+
+
 def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
                       resolved: dict[str, tuple[Path, str]], cells: list[dict],
                       roots: list[Path] | None) -> tuple[list[str], list[str]]:
@@ -2543,6 +2645,8 @@ def crate_api_block(cells: list[dict], errors: list[str],
                              re.I, limit=4)
                 lines += [f"  voisin : {_qualified_fn(ls, i)}   [{rel}:{i + 1}]"
                           for rel, ls, i in near]
+            elif e["kind"] == "private":
+                lines += _private_item_lines(fl, name, e)
             else:
                 hits = _find_name(fl, e["item"])
                 lines.append(f"- `{e['item']}` introuvable tel quel ; dans les sources :")
