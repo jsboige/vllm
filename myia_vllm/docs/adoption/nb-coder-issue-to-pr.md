@@ -159,6 +159,19 @@ python nb_coder_driver.py --issue 27099 `
   Python (la parité porte sur les verdicts, pas sur la langue).
 - **Kernel mort = échec** : `kernel-start-failed` — un kernel `.net-csharp` absent ne peut
   plus produire un `built-executed-ok` sans aucune cellule exécutée (le trou était réel).
+- **Intégration dépôt au stage 5 (21/11)** : les ports neufs échouaient TOUS les gardes
+  `readme-notebook-coverage` (pas de ligne README) et `check-nav-chain` `orphan_entry`
+  (pas d'arête entrante), puis cassaient le sceau de parité en corrigeant — un cycle de
+  review Hermes (~1 h) perdu par PR (mesuré #27829/#27835, remèdes #27803/04/05).
+  `nb_coder_integrate.py` (déterministe, zéro tour modèle) applique avant le commit :
+  ligne README sur la ligne du jumeau source (libellé miroir de la convention du dossier),
+  arête nav dans la cellule Navigation du jumeau (markdown-only, prouvé cellule à cellule),
+  enregistrement de la paire C# à la livraison (`native-both`), rescelage twin-parité **en
+  dernière opération** (po-2028 : ordre tenu sur 14 PRs ; `--update` peut refuser en no-op
+  blob-only → un retry `--force` borné), puis rejoue les 3 gardes sur la branche commitée —
+  une garde encore rouge n'avorte pas la PR, elle est dite dans le corps. CLI standalone
+  (`--check-only` planifie sans écrire ; `--sync-main` resout les conflits des fichiers
+  qu'il possède — README, jumeau, registre — en prenant origin/main et en ré-appliquant).
 - Tests offline : `test_nb_coder_create.py` (apply/skeleton, preuve structurelle, meta
   canonique, gate création, prompts, garde mcp, applicateur de réparation) — aucun moteur,
   aucun MCP, aucun GitHub. 18 verts avec les pins correction.

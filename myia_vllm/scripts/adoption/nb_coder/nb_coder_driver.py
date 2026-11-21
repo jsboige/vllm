@@ -16,8 +16,10 @@ Stage 3 GATES : harness-only checks on the built notebook — coordination refs 
                 the exact provenance-footer form, secrets, language_info drift vs source.
 Stage 4 VERIFY: independent verifier (nb_coder_verify.py, SEPARATE process and agent —
                 producer != verifier; its exit 2 is an instrument error, never a reject).
-Stage 5 PR    : harness-only GitHub gestures — fresh branch, single-notebook commit, REST PR
-                create, delivery comment. The MODEL never writes to git or GitHub.
+Stage 5 PR    : harness-only GitHub gestures — fresh branch, integration commit (notebook +
+                README row + inbound nav link + C# pair registration, nb_coder_integrate),
+                twin-parity reseal LAST, REST PR create, delivery comment. The MODEL never
+                writes to git or GitHub.
 
 Model per step (#4831): --coder-model serves every in-process turn (plan, build, segments,
 repairs, revisions), --verifier-model the stage-4 audit, --spec-model the spec pre-chew. Unset
@@ -4136,12 +4138,15 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
 
 
 def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> list[dict]:
-    """Stage-3 gates the repo's CI raises on a NEW notebook (21/11: the first three Swift
-    Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED on exactly
-    these). Creation mode only: a new file is 100 % delta, so a whole-file check equals
-    the CI's added-lines check; on an EDITED notebook it would charge the build with the
-    repo's pre-existing stock. The inbound link and the README row (nav-chain,
-    readme-notebook-coverage) live in OTHER files and stay out of this gate."""
+    """Stage-3 gates the repo's CI raises on the BUILT notebook itself (21/11: the first
+    three Swift Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED
+    on exactly these). Creation mode only: a new file is 100 % delta, so a whole-file
+    check equals the CI's added-lines check; on an EDITED notebook it would charge the
+    build with the repo's pre-existing stock. The guards that live in OTHER files —
+    readme-notebook-coverage (README row), check-nav-chain (inbound nav edge) and the
+    twin-parity seal that nav edge breaks — are applied deterministically at stage 5
+    (nb_coder_integrate.integrate, before the commit) and replayed there on the
+    committed branch."""
     hits = dead_link_hits(_cells(built_nb), repo, rel)
     gates = [{"gate": "dead-links", "ok": not hits,
               "detail": {"cells": sorted({h["cell"] for h in hits})[:10],
@@ -4704,11 +4709,58 @@ def issue_link_line(issue_n: int, issue: dict | None, target: str) -> str:
     return f"Closes #{issue_n}"
 
 
+def _load_integrate_module():
+    """nb_coder_integrate.py loaded BY PATH: stdlib-only sibling, so tests that
+    exec the driver via importlib (no driver dir on sys.path) can still reach
+    it, and the driver's own import graph stays mcp-free at this edge."""
+    import importlib.util
+    path = Path(__file__).with_name("nb_coder_integrate.py")
+    spec = importlib.util.spec_from_file_location("nb_coder_integrate", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def integration_pr_lines(integ: dict | None) -> str:
+    """PR-body section for the stage-5 repo integration (21/11): one line per
+    replayed guard with its exit code. A guard still red AFTER integration is
+    reported as such -- never hidden, never a reason to abort the PR."""
+    if not isinstance(integ, dict):
+        return ""
+    if integ.get("error"):
+        return (f"\n\n## Intégration dépôt\n\n- Échec de l'intégration : "
+                f"`{integ['error']}` -- les gardes README/nav/parité peuvent "
+                f"rester rouges.")
+    if integ.get("skipped"):
+        return f"\n\n## Intégration dépôt\n\n- {integ['skipped']}."
+    lines = ["## Intégration dépôt\n"]
+    if integ.get("readme"):
+        note = f" -- {integ['nav_note']}" if integ.get("nav_note") else ""
+        lines.append(f"- Ligne README (`{integ['readme']}`) et arête nav "
+                     f"(`{integ.get('nav')}`) ajoutées sur le jumeau Python{note}.")
+    reg = integ.get("registered") or {}
+    if reg.get("registered"):
+        lines.append(f"- Paire « {reg['pair']} » enregistrée à la livraison "
+                     f"(`{reg['file']}`).")
+    reseal = integ.get("reseal") or {}
+    if reseal.get("pair"):
+        tail = "" if reseal.get("ok") else f" -- ÉCHEC rc={reseal.get('rc')}"
+        lines.append(f"- Paire « {reseal['pair']} » rescellée, attestation en "
+                     f"dernière opération{tail}.")
+    for g in integ.get("guards") or []:
+        mark = "OK" if g.get("rc") == 0 else f"ÉCHEC"
+        lines.append(f"- Garde `{g['guard']}` : exit {g.get('rc')} ({mark}).")
+    if integ.get("guards_error"):
+        lines.append(f"- Gardes non rejouées : `{integ['guards_error']}`.")
+    return "\n\n" + "\n".join(lines)
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
-    Fresh branch off the detached worktree, single-notebook commit, REST PR create,
-    delivery comment on the issue."""
+    Fresh branch off the detached worktree, integration commit (notebook + README
+    row + inbound nav link + C# pair registration), twin-parity reseal LAST, REST
+    PR create, delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
     branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
@@ -4726,6 +4778,43 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["error"] = f"add: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
+
+    # Repo integration (21/11, coordinator + po-2028 measurements): a NEW port
+    # notebook trips readme-notebook-coverage (no README row) and check-nav-chain
+    # (orphan_entry: no inbound nav edge); fixing the latter edits the Python
+    # twin's markdown, which breaks the twin-parity seal -> reseal LAST. All
+    # deterministic (nb_coder_integrate, no model turn), applied BEFORE the
+    # commit so the PR carries it on first push; a failure never aborts the PR,
+    # it is recorded and said in the body.
+    cm = rec.get("create_mode") or {}
+    src_twin = cm.get("source") if isinstance(cm, dict) else None
+    if src_twin:
+        try:
+            nbci = _load_integrate_module()
+            integ = nbci.integrate(wt_path, nb_rel, str(src_twin))
+            if integ.get("error"):
+                entry["integration"] = integ
+            else:
+                for f in integ.get("touched", []):
+                    _git(wt_path, "add", "--", f)
+                facts = {"kernel": (rec.get("kernel") or {}).get("kernel_name"),
+                         "executed_cells": len(rec.get("execution") or []),
+                         "verdict": (rec.get("verify") or {}).get("verdict")}
+                reg = nbci.register_pair(wt_path, str(src_twin), nb_rel,
+                                         args.lane, facts=facts)
+                if reg.get("registered"):
+                    _git(wt_path, "add", "--", reg["file"])
+                entry["integration"] = {"files": integ["touched"],
+                                        "nav": (integ["nav"] or {}).get("how"),
+                                        "nav_note": (integ["nav"] or {}).get("note"),
+                                        "readme": (integ["readme"] or {}).get("label"),
+                                        "registered": reg,
+                                        "pair": integ.get("pair")}
+        except Exception as e:  # integration is an optimisation, never a blocker
+            entry["integration"] = {"error": f"{type(e).__name__}: {e}"[:300]}
+    else:
+        entry["integration"] = {"skipped": "no source twin in the repo "
+                                           "(edit mode or spec twin)"}
 
     commit_body = (
         f"{desc}\n\n"
@@ -4760,6 +4849,37 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
     entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+
+    # Twin-parity reseal, AFTER the integration commit (the tool records the
+    # git blob SHAs at HEAD: notebook, README row and inbound link must be in
+    # already -- po-2028 measured the attestation written LAST on 14 PRs, else
+    # the re-read of the source twin rejects it), then the three repo guards
+    # replayed on the committed branch before the push.
+    integ = entry.get("integration") or {}
+    if src_twin and isinstance(integ, dict) and not integ.get("error"):
+        try:
+            nbci = _load_integrate_module()
+            pair = nbci.find_twin_pair(wt_path, str(src_twin))
+            if pair:
+                reseal = nbci.reseal_pair(wt_path, pair, args.lane)
+                if reseal.get("audit_files"):
+                    _git(wt_path, "add", "--",
+                         "scripts/notebook_tools/twin_pairs.d")
+                    _git(wt_path, *_GIT_IDENTITY, "commit", "-m",
+                         f"Chore(twin-parity,#{args.issue}): rescelle « {pair} » "
+                         "après l'ajout du lien jumeau\n\n"
+                         "Le jumeau Python ne change qu'en markdown (navigation). "
+                         "Attestation écrite en DERNIÈRE opération, après carnet, "
+                         "ligne README et arête nav.\n\n"
+                         f"Lane: {args.lane}\n"
+                         "Co-Authored-By: Claude Sonnet 5.5 "
+                         "<noreply@anthropic.com>\n")
+                integ["reseal"] = reseal
+            else:
+                integ["reseal"] = {"why": "source twin not in a registered pair"}
+            integ["guards"] = nbci.replay_guards(wt_path)
+        except Exception as e:
+            integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
 
     rc, out = _git(wt_path, "push", "-u", "origin", branch)
     if rc != 0:
@@ -4810,8 +4930,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
            f"réexécuté en noyau neuf et re-vérifié.\n" if rec.get("revisions") else "")
         + f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
-        f"run record complet dans le out-dir du harnais.\n\n"
-        f"{issue_link_line(args.issue, issue, args.notebook)}\n\n"
+        f"run record complet dans le out-dir du harnais.\n"
+        + integration_pr_lines(entry)
+        + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
