@@ -577,9 +577,19 @@ def _parse_utc(ts) -> datetime | None:
     return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
 
 
+# An amend is a claim too (check_lane_claim.py `_OPEN`, #13022): the coordinator asked on
+# 21/11 that a lot reservation be re-posted as `[CLAIMED-AMEND] ... -- paths: <full list>`,
+# and the guard reports that comment with marker "CLAIMED-AMEND". Read as "no live
+# claim", every grain after the amend would re-post its notebook alone and narrow the
+# lot again, the very defect lane_claim_scope exists to prevent.
+LIVE_CLAIM_MARKERS = frozenset({"CLAIMED", "CLAIMED-AMEND"})
+
+
 def _live_lane_claim(my_claim) -> bool:
-    """A [CLAIMED] of our lane that still reserves: not delivered, not locked to a PR."""
-    return (isinstance(my_claim, dict) and my_claim.get("marker") == "CLAIMED"
+    """A [CLAIMED] or [CLAIMED-AMEND] of our lane that still reserves: not delivered, not
+    locked to a PR."""
+    return (isinstance(my_claim, dict)
+            and str(my_claim.get("marker") or "").upper() in LIVE_CLAIM_MARKERS
             and not my_claim.get("locked") and not my_claim.get("pr_ref"))
 
 

@@ -570,6 +570,17 @@ def test_a_stale_delivered_or_locked_claim_does_not_cover():
     assert nbcd.lane_claim_scope(_claim([MGS25], marker="DELIVERED"), MGS28) is None
 
 
+def test_an_amended_lot_claim_covers_and_scopes_like_a_claim():
+    """CoursIA asked (21/11 04:19Z) for the lot to be re-posted as [CLAIMED-AMEND]; the
+    guard reports that marker verbatim. It must cover and keep its paths, or the next
+    grain re-posts its notebook alone and narrows the lot again."""
+    amend = _claim([MGS25, MGS28], marker="CLAIMED-AMEND")
+    assert nbcd.lane_claim_covers(amend, MGS28)
+    assert nbcd.lane_claim_scope(amend, SUDOKU05) == [MGS25, MGS28, SUDOKU05]
+    assert nbcd.lane_claim_covers(_claim([MGS28], marker="claimed-amend"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([MGS28], marker="RELEASED"), MGS28)
+
+
 def test_union_scope_keeps_the_lane_paths_and_adds_ours_once():
     assert nbcd.lane_claim_scope(_claim([MGS25]), MGS28) == [MGS25, MGS28]
     assert nbcd.lane_claim_scope(_claim([MGS25, MGS28]), MGS28) == [MGS25, MGS28]
