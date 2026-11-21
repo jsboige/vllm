@@ -5849,7 +5849,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "post the [CLAIMED] only once the verifier approved, right before "
                          "stage 5 (CoursIA auto-pick rule 21/11: a failed launch locks "
                          "nothing). Requires --max-stage 5")
-    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn",
+                    help="capacity gate only (gate_call -> swift_capacity_gate.py): warn = probe "
+                         "and record, never refuse; block = refuse the launch on a "
+                         "non-zero verdict (deferred-by-capacity-gate); off = no "
+                         "probe. Does NOT disarm the structural stage-3 gates "
+                         "(execution, conformance, verifier), which have no switch")
     ap.add_argument("--gate", type=Path, default=None,
                     help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
                          "bundled swift_capacity_gate.py). The scheduler forwards its own "
