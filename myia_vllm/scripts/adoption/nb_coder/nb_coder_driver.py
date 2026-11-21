@@ -3408,9 +3408,24 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
     return (obj2, env2) if obj2 is not None or gate_refusal(env2) else (None, env)
 
 
+PM_READ_TIMEOUT_S = 300
+
+
+def pm_read_timeout_s(payload: dict) -> int:
+    """The client waits past the server's own budget: for one cell, the MCP's transport
+    limit is the kernel timeout + 30 s (kernel_tools.py `_transport_hard_timeout`). A client
+    cap at the old flat 300 s would cut a 1,800 s dependency cell at 300 s."""
+    try:
+        asked = int(payload.get("timeout") or 0)
+    except (TypeError, ValueError):
+        asked = 0
+    return max(PM_READ_TIMEOUT_S, asked + 60)
+
+
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
     try:
-        res = await session.call_tool(tool, payload, read_timeout_seconds=timedelta(seconds=300))
+        res = await session.call_tool(tool, payload,
+                                      read_timeout_seconds=timedelta(seconds=pm_read_timeout_s(payload)))
         raw = "\n".join(getattr(c, "text", "") for c in res.content)
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -3442,6 +3457,32 @@ def _error_head(o: dict) -> str:
     return f"{ename}: {evalue}" if ename and evalue else (ename or evalue)
 
 
+# A cell that declares dependencies compiles or restores them, once per kernel. Measured
+# 21/11 on CoursIA#27134 (4.1 Rust twin): its `:dep` cell (ndarray, rand, rand_distr,
+# plotters, burn, image) hit the flat 300 s limit at 04:51Z while cargo was still compiling
+# the crates cold. The 10 cells after it then failed on names that cell never got to
+# define, and two repair rounds (~240K prompt tokens of engine time) could not fix a cell
+# that was never wrong. Such cells get the long budget; every other cell keeps the short one
+# so a cell that really hangs still fails fast. Both stay under the MCP's 3,600 s cap
+# (config.py `transport_max_timeout`).
+CELL_TIMEOUT_S = 300
+DEP_CELL_TIMEOUT_S = 1800
+_DEP_DECL_RE = re.compile(r'^\s*(?::dep\s+[A-Za-z0-9_-]+\s*=|#r\s+"nuget:)', re.M)
+
+
+def dependency_cells(nb_path: Path) -> set[int]:
+    """Indexes of the code cells that declare an evcxr `:dep` or a .NET `#r "nuget:`.
+    Read from the notebook being executed; an unreadable file declares none."""
+    try:
+        nb = json.loads(Path(nb_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    cells = nb.get("cells") if isinstance(nb, dict) else None
+    return {i for i, c in enumerate(cells or [])
+            if isinstance(c, dict) and c.get("cell_type") == "code"
+            and _DEP_DECL_RE.search(_text(c.get("source")))}
+
+
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
     """The harness owns execution and the verdict: real outputs, never the model's word.
@@ -3452,13 +3493,18 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
     read that artifact back from disk after the process is gone. Without the opt-in, a
     compiler error lives only in the in-memory response and the evidence dies with it
     (the exact hole ms#1799 closed for committed sources; the scratch contract is the
-    mirror image, which is why the flag exists at all)."""
+    mirror image, which is why the flag exists at all).
+
+    A cell that declares dependencies gets DEP_CELL_TIMEOUT_S instead of CELL_TIMEOUT_S
+    (see dependency_cells)."""
+    dep_cells = dependency_cells(nb_path)
     results = []
     for idx in indexes:
+        timeout = DEP_CELL_TIMEOUT_S if idx in dep_cells else CELL_TIMEOUT_S
         r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kernel_id, "mode": "notebook_cell",
                                                     "path": str(nb_path), "cell_index": idx,
                                                     "persist_error_outputs": True,
-                                                    "timeout": 300})
+                                                    "timeout": timeout})
         status = r.get("status") or r.get("error") or "?"
         outs = [wire_output(o) for o in r.get("outputs") or []]
         err_txt = " ".join(str(o.get("text") or _error_head(o)) for o in outs
