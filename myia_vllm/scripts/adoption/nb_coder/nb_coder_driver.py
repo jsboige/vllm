@@ -1824,6 +1824,26 @@ def repair_round_extends(rounds_done: int, budget: int, cap: int, before: int,
     round just run strictly reduced the failing cells without clearing them."""
     return rounds_done >= budget and budget < cap and 0 < after < before
 
+
+# Rounds the constructive-review loop may add past --revise-rounds while it is still
+# converging (21/11 conveyor, CoursIA#27747 Sudoku-07): majors 6 -> 4 -> 1 over the two
+# budgeted rounds, then the loop stopped on its budget with ONE major left, a one-line
+# hint fix the verifier had spelled out. A round that does not strictly reduce the
+# majors ends the loop as before ([2, 1, 1] and [4, 4, 4] on the same day stay as they are).
+REVISE_EXTEND_DEFAULT = 2
+
+
+def revise_round_extends(rounds_done: int, budget: int, cap: int, source_in, source_out,
+                         majors_in, majors_out) -> bool:
+    """One more revision round when the budget is spent, the cap is not reached, and the
+    round just run strictly reduced the major findings — measured on findings of the SAME
+    source (verifier vs verifier, execution vs execution, gates vs gates): a synthesized
+    execution finding and a verifier major are not on one scale."""
+    if not (isinstance(majors_in, int) and isinstance(majors_out, int)):
+        return False
+    return (rounds_done >= budget and budget < cap and source_in == source_out
+            and majors_out < majors_in)
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
 # IPython `Cell In[5], line 3, in decouper(` / classic `File "x.py", line 3, in decouper`.
@@ -5087,11 +5107,17 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         return
     revisions = rec.setdefault("revisions", [])
     first = len(revisions)
-    for rnd in range(first, first + args.revise_rounds):
+    budget = args.revise_rounds
+    extend = max(0, int(getattr(args, "revise_extend", REVISE_EXTEND_DEFAULT) or 0))
+    cap = budget + extend
+    done = 0
+    while done < budget:
+        rnd = first + done
         if rec.get("verdict") != "verify-reject":
             break
         findings = [f for f in (rec.get("verify") or {}).get("findings") or []
                     if isinstance(f, dict)]
+        source_in = (rec.get("verify") or {}).get("source")
         entry: dict = {"round": rnd, "started": utcnow(), "findings_in": len(findings),
                        "majors_in": sum(1 for f in findings if f.get("severity") == "major")}
         revisions.append(entry)
@@ -5156,8 +5182,18 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                           prior=prior)
         entry["result"] = rec["verdict"]
         if str(rec["verdict"]).startswith("verify-"):
-            entry["findings_out"] = len((rec.get("verify") or {}).get("findings") or [])
+            out = [f for f in (rec.get("verify") or {}).get("findings") or []
+                   if isinstance(f, dict)]
+            entry["findings_out"] = len(out)
+            entry["majors_out"] = sum(1 for f in out if f.get("severity") == "major")
         entry["elapsed_s"] = round(time.time() - t0, 1)
+        done += 1
+        if (rec.get("verdict") == "verify-reject"
+                and revise_round_extends(done, budget, cap, source_in,
+                                         (rec.get("verify") or {}).get("source"),
+                                         entry["majors_in"], entry.get("majors_out"))):
+            budget += 1
+            entry["extended"] = {"budget": budget, "cap": cap}
     # Gate-repair exhaustion: the seeded verdict must not survive as a verify-reject — a
     # gate failure that survived its repair rounds is reported as what it is (and a
     # later --revise-from refuses it for the right reason). A REAL verify that ran after
@@ -5894,6 +5930,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "the builder rewrites cells from the findings, the harness "
                          "re-executes, re-gates and re-verifies (0 disables; needs "
                          "--max-stage >= 4)")
+    ap.add_argument("--revise-extend", type=int, default=REVISE_EXTEND_DEFAULT,
+                    help="extra review rounds granted one at a time while the last round "
+                         "strictly reduced the major findings of the same source "
+                         "(0 = fixed budget)")
     ap.add_argument("--revise-from", default=None,
                     help="resume a REJECTED grain from its issue-<N>.json trace: no new "
                          "plan/build, no new [CLAIMED] comment (the reservation in the "
