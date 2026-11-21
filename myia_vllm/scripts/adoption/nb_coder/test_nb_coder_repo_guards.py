@@ -235,3 +235,88 @@ def test_gate_repair_findings_one_per_entry():
     out = nbcd.gate_repair_findings(rec)
     assert [f["cell"] for f in out] == [0, 2, 4]
     assert "translittère" in out[0]["detail"] and "a-Rust.ipynb" in out[0]["detail"]
+
+
+# ------------------------------------------------------------------ prose anchored on outputs
+
+# Fake claims organ: one finding per « NUM ms » in a markdown cell, carrying the cell's
+# text as context (the real organ excerpts the sentence) — enough to pin the delta rule.
+_ANCHOR_FAKE = r'''import json, re, sys
+nb = json.load(open(sys.argv[-1], encoding="utf-8"))
+out = []
+for i, c in enumerate(nb["cells"]):
+    if c["cell_type"] != "markdown":
+        continue
+    for m in re.finditer(r"(\d+,\d+) ms", c["source"]):
+        out.append({"markdown_cell": i, "code_cell": i - 1, "raw": m.group(0),
+                    "normalized": m.group(1).replace(",", "."), "context": c["source"]})
+print(json.dumps([{"notebook": sys.argv[-1], "findings": out}]))
+sys.exit(1 if out else 0)
+'''
+
+
+def _anchor_repo(tmp_path: Path, body: str = _ANCHOR_FAKE) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "check_markdown_claims_output.py").write_text(body, encoding="utf-8")
+    return repo
+
+
+def test_prose_anchor_flags_a_number_new_to_the_port(tmp_path):
+    # CoursIA#27864: the Rust port kept the Python run's timing in its prose
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("De 1,5 ms à 77,1 ms.")])
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("De 42,7 ms à 77,1 ms.")])
+    g = nbcd.prose_anchor_gate(repo, src, built)
+    assert g["gate"] == "prose-anchor" and g["ok"] is False
+    assert g["detail"]["measured"] is True and g["detail"]["cells"] == [1]
+    texts = [f["text"] for f in g["detail"]["findings"]]
+    # 77,1 ms sits unanchored in the twin's same cell: stock, only the changed number fails
+    assert len(texts) == 1 and "42,7 ms" in texts[0]
+
+
+def test_prose_anchor_excuses_the_twins_own_stock(tmp_path):
+    # same unanchored number in the same markdown cell of the twin: the repo's stock
+    repo = _anchor_repo(tmp_path)
+    cells = [_code("t()"), _md("Environ 3,0 ms par appel.")]
+    src = _nb(tmp_path / "src.ipynb", cells)
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("Environ 3,0 ms par appel.")])
+    g = nbcd.prose_anchor_gate(repo, src, built)
+    assert g["ok"] is True and g["detail"]["flagged"] == 0
+    assert g["detail"]["source_flagged"] == 1
+
+
+def test_prose_anchor_excuses_the_same_sentence_moved(tmp_path):
+    # the port inserted a cell: same sentence, other index — still inherited stock
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("Environ 3,0 ms par appel.")])
+    built = _nb(tmp_path / "built.ipynb", [_md("# Note"), _code("t();"),
+                                           _md("Environ 3,0 ms par appel.")])
+    assert nbcd.prose_anchor_gate(repo, src, built)["ok"] is True
+
+
+def test_prose_anchor_absent_tool_is_declared_not_failed(tmp_path):
+    src = _nb(tmp_path / "src.ipynb", [_md("1,0 ms")])
+    g = nbcd.prose_anchor_gate(tmp_path / "norepo", src, src)
+    assert g["ok"] is True and g["detail"]["measured"] is False
+
+
+def test_prose_anchor_tool_crash_is_declared(tmp_path):
+    repo = _anchor_repo(tmp_path, "import sys\nsys.exit(2)\n")
+    src = _nb(tmp_path / "src.ipynb", [_md("1,0 ms")])
+    g = nbcd.prose_anchor_gate(repo, src, src)
+    assert g["ok"] is True and g["detail"]["measured"] is False
+
+
+def test_run_gates_adds_prose_anchor_in_create_mode_only(tmp_path):
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("1,5 ms")])
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("42,7 ms")])
+    on = {g["gate"]: g for g in nbcd.run_gates(src, built, create_mode=True, repo=repo,
+                                               rel="d/n-Rust.ipynb")}
+    assert on["prose-anchor"]["ok"] is False
+    off = {g["gate"] for g in nbcd.run_gates(src, built, create_mode=False, repo=repo,
+                                             rel="d/n-Rust.ipynb")}
+    assert "prose-anchor" not in off
+    rep = nbcd.gate_repair_findings({"gates": [on["prose-anchor"]]})
+    assert rep and "recopié du jumeau" in rep[0]["detail"] and "42,7 ms" in rep[0]["detail"]
