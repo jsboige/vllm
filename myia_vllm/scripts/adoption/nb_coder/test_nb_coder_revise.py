@@ -609,6 +609,175 @@ def test_gate_repair_success_keeps_the_real_verdict(monkeypatch, tmp_path):
     assert "source" not in rec["verify"]                   # the REAL verify overwrote it
 
 
+# ---------------------------------------------------------------- execution repair
+# 21/11 (po-2028 report, Swift conveyor 18/46 launches): a build whose cells still failed
+# after the kernel-repair rounds ended `built-execution-failed` with `revisions: []`.
+
+def _err(ename: str, evalue: str) -> dict:
+    return {"output_type": "error", "ename": ename, "evalue": evalue,
+            "traceback": [f"{ename}: {evalue}"]}
+
+
+def _failing_nb(tmp_path: Path, name: str = "built.ipynb") -> Path:
+    """Cell 1 fails on its own; cell 3 fails only because cell 1 never bound `y`."""
+    return _write(tmp_path / name, {"nbformat": 4, "nbformat_minor": 5, "metadata": {
+        "kernelspec": {"name": "python3"}}, "cells": [
+        {"cell_type": "markdown", "metadata": {}, "source": ["# Titre"]},
+        {"cell_type": "code", "metadata": {}, "execution_count": 1,
+         "source": ["y = 1 / 0"], "outputs": [_err("ZeroDivisionError", "division by zero")]},
+        {"cell_type": "markdown", "metadata": {}, "source": ["Synthèse."]},
+        {"cell_type": "code", "metadata": {}, "execution_count": 2,
+         "source": ["print(y)"], "outputs": [_err("NameError", "name 'y' is not defined")]},
+    ]})
+
+
+FAILED_EXEC = [{"cell": 1, "status": "ok", "ok": False, "error": "ZeroDivisionError"},
+               {"cell": 3, "status": "ok", "ok": False, "error": "NameError"}]
+
+
+def _exec_call(tmp_path, **args_kw):
+    built = _failing_nb(tmp_path)
+    rec = {"stages": {}, "calls": [], "verdict": "built-execution-failed",
+           "execution": [dict(e) for e in FAILED_EXEC]}
+    args = SimpleNamespace(max_stage=5, revise_rounds=2)
+    for k, v in args_kw.items():
+        setattr(args, k, v)
+    D.gates_then_verify(args, rec, tmp_path / "twin.ipynb", built, True, "python3",
+                        tmp_path, tmp_path)
+    return rec
+
+
+def test_an_execution_failure_seeds_the_constructive_loop(tmp_path):
+    rec = _exec_call(tmp_path)
+    assert rec["verdict"] == "verify-reject"
+    assert rec["verify"]["source"] == "execution" and rec["verify"]["verdict"] == "exec-reject"
+    root, cascade = rec["verify"]["findings"]
+    assert root["cell"] == 1 and root["severity"] == "major"
+    assert "EXÉCUTION" in root["detail"] and "division by zero" in root["detail"]
+    # the dependent cell points at its root instead of asking a workaround
+    assert cascade["cell"] == 3 and "CASCADE de la cellule 1" in cascade["detail"]
+    assert rec["exec_repair"] == {"from": "built-execution-failed", "seeded": 1, "findings": 2}
+
+
+@pytest.mark.parametrize("kw", [{"revise_rounds": 0}, {"max_stage": 3}])
+def test_execution_repair_respects_a_disabled_loop(tmp_path, kw):
+    rec = _exec_call(tmp_path, **kw)
+    assert rec["verdict"] == "built-execution-failed" and "verify" not in rec
+
+
+def test_execution_findings_cap_is_declared(tmp_path):
+    cells = [{"cell_type": "code", "metadata": {}, "execution_count": i + 1,
+              "source": [f"v{i} = 1 / 0"], "outputs": [_err("ZeroDivisionError", f"cell {i}")]}
+             for i in range(D.EXEC_FINDINGS_MAX + 2)]
+    built = _write(tmp_path / "many.ipynb", {"nbformat": 4, "nbformat_minor": 5,
+                                             "metadata": {}, "cells": cells})
+    rec = {"execution": [{"cell": i, "ok": False} for i in range(len(cells))]}
+    f = D.exec_repair_findings(rec, built)
+    assert len(f) == D.EXEC_FINDINGS_MAX + 1
+    assert f[-1]["cell"] is None and "2 autres cellules" in f[-1]["detail"]
+    assert f[-1]["detail"].endswith(f"{[D.EXEC_FINDINGS_MAX, D.EXEC_FINDINGS_MAX + 1]}")
+
+
+def test_execution_findings_fall_back_on_the_recorded_error(tmp_path):
+    built = _nb(tmp_path)                       # no error output persisted on disk
+    f = D.exec_repair_findings({"execution": [{"cell": 3, "ok": False, "status": "timeout",
+                                               "error": "délai dépassé"}]}, built)
+    assert f[0]["cell"] == 3 and "(statut timeout)" in f[0]["detail"]
+    assert "délai dépassé" in f[0]["detail"]
+    assert D.exec_repair_findings({"execution": [{"cell": 1, "ok": True}]}, built) == []
+
+
+def _exec_seeded_rec():
+    return {"verdict": "verify-reject", "calls": [], "stages": {},
+            "execution": [dict(e) for e in FAILED_EXEC],
+            "exec_repair": {"from": "built-execution-failed", "seeded": 1, "findings": 1},
+            "verify": {"verdict": "exec-reject", "source": "execution",
+                       "findings": [{"cell": 1, "severity": "major",
+                                     "detail": "échec d'EXÉCUTION réel du noyau"}]}}
+
+
+def test_execution_repair_exhaustion_restores_the_honest_verdict(monkeypatch, tmp_path):
+    built = _failing_nb(tmp_path)
+    _fake_engine(monkeypatch, ["pas du tout du json"], [])
+    rec = _exec_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "built-execution-failed"      # never masked as verify-reject
+
+
+def test_execution_repair_success_reaches_the_real_verifier(monkeypatch, tmp_path):
+    built = _failing_nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    rec = _exec_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved" and len(calls["verify"]) == 1
+    assert "source" not in rec["verify"]                   # the REAL verify overwrote it
+    assert rec["revisions"][0]["exec_verdict"] == "built-executed-ok"
+    # the reviser saw the real kernel error, not only the finding
+    assert "ZeroDivisionError" in calls["sk"][0]["prompt"]
+
+
+def test_a_draft_that_fails_again_is_reseeded_from_its_own_errors(monkeypatch, tmp_path):
+    built = _failing_nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION, REVISION], [("approve", [])])
+    real_exec = D.execute_cells
+    runs = {"n": 0}
+
+    async def flaky_exec(pm, nb_path, kid, idx):
+        runs["n"] += 1
+        if runs["n"] > 1:
+            return await real_exec(pm, nb_path, kid, idx)
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        for n, i in enumerate(idx, 1):
+            nb["cells"][i]["execution_count"] = n
+            nb["cells"][i]["outputs"] = ([_err("TypeError", "second failure")] if i == 1
+                                         else [])
+        nb_path.write_text(json.dumps(nb), encoding="utf-8")
+        return [{"cell": i, "ok": i != 1} for i in idx]
+
+    monkeypatch.setattr(D, "execute_cells", flaky_exec)
+    rec = _exec_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert [r["result"] for r in rec["revisions"]] == ["verify-reject", "verify-approved"]
+    assert rec["exec_repair"]["seeded"] == 2
+    # round 1 answers the CURRENT failure, not the first one
+    assert "second failure" in calls["sk"][1]["prompt"]
+    assert rec["verdict"] == "verify-approved"
+
+
+def test_a_dead_kernel_during_execution_repair_keeps_its_verdict(monkeypatch, tmp_path):
+    built = _failing_nb(tmp_path)
+    _fake_engine(monkeypatch, [REVISION], [])
+
+    async def no_kernel(pm, kname, cwd):
+        return None
+
+    monkeypatch.setattr(D, "start_kernel", no_kernel)
+    rec = _exec_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "kernel-start-failed"
+
+
+def test_revise_from_repairs_a_built_execution_failed_trace(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="built-execution-failed",
+                   execution=[dict(e) for e in FAILED_EXEC])
+    _failing_nb(tmp_path, "nb_8_built.ipynb")              # the build the trace points at
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1
+    assert got["exec_repair"]["resumed"] is True
+    assert got["verify"]["source"] == "execution"
+    assert [f["cell"] for f in got["verify"]["findings"]] == [1, 3]
+
+
+def test_revise_from_refuses_an_execution_trace_with_nothing_failing(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="built-execution-failed",
+                   execution=[{"cell": 1, "ok": True}])
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "refused-exec-repair-unrepairable:built-execution-failed"
+    assert seen["loop"] == 0
+
+
 # ---------------------------------------------------------------- CLI + scheduler
 @pytest.mark.parametrize("extra, needle", [
     (["--revise-from", "t.json", "--from-spec", "--meta-from", "S/M.ipynb"], "do not pass"),
