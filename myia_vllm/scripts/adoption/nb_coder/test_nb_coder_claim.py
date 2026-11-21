@@ -484,3 +484,35 @@ def test_verify_seeing_an_older_disjoint_pr_defers():
         "deferred-by-claim-implicit-occupation:#27691")
     verify = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
     assert nbcd.claim_reservation_verdict({"rc": 0}, verify) == "refused-claim-not-verified"
+
+
+# ---- per-issue reservation lock (CoursIA#27133, MGS-25 vs MGS-28, 21/11 02:08Z) ------
+def test_reservation_lock_is_exclusive_and_released(tmp_path):
+    with nbcd.issue_claim_lock(tmp_path, 27133) as a:
+        assert a["held"] is True
+        t = {"now": 0.0}
+        with nbcd.issue_claim_lock(tmp_path, 27133, wait_s=30, poll_s=10,
+                                   clock=lambda: t["now"],
+                                   sleep=lambda s: t.__setitem__("now", t["now"] + s)) as b:
+            # the sibling waits, then gives up without reserving
+            assert b["held"] is False and b["waited_s"] >= 30
+        with nbcd.issue_claim_lock(tmp_path, 27134) as other:
+            assert other["held"] is True          # another issue is not blocked
+    assert not (tmp_path / "issue-27133.lock").exists()
+    with nbcd.issue_claim_lock(tmp_path, 27133) as again:
+        assert again["held"] is True
+
+
+def test_a_stale_lock_from_a_dead_holder_is_taken_over(tmp_path):
+    import os as _os
+    lock = tmp_path / "issue-27133.lock"
+    lock.write_text("{}", encoding="utf-8")
+    old = lock.stat().st_mtime - 10_000
+    _os.utime(lock, (old, old))
+    with nbcd.issue_claim_lock(tmp_path, 27133, wait_s=60) as got:
+        assert got["held"] is True and got["took_over_stale_s"] > 60
+
+
+def test_a_lock_timeout_defers_the_grain():
+    assert nbcd.claim_verdict({"timed_out": True}).startswith("deferred-by-claim-timeout")
+    assert f"{nbcd.CLAIM_TIMEOUT_VERDICT}:lock".startswith("deferred-by-claim-timeout")

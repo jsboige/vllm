@@ -461,6 +461,61 @@ def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
     return None
 
 
+# The guard keeps ONE active [CLAIMED] per lane and issue. Two grains of a lot issue
+# that reserve at the same time overwrite each other's claim between post and re-read:
+# CoursIA#27133, 21/11 02:08Z, MGS-25 posted, MGS-28 posted, and MGS-25's re-read saw
+# MGS-28's paths -> refused-claim-not-verified. Only that window races, so only that
+# window is serialized: a local lock per issue around reserve_claim. Grains of the same
+# lot still run side by side once admitted (the conveyor's lots carry 5-9 notebooks).
+CLAIM_LOCK_DIRNAME = ".claim-locks"
+# A reservation is three guard calls of at most CLAIM_GUARD_TIMEOUT_S each.
+CLAIM_LOCK_WAIT_S = 3 * CLAIM_GUARD_TIMEOUT_S + 120
+CLAIM_LOCK_POLL_S = 5.0
+
+
+@contextlib.contextmanager
+def issue_claim_lock(lock_dir: Path, n: int, wait_s: float = CLAIM_LOCK_WAIT_S,
+                     poll_s: float = CLAIM_LOCK_POLL_S, clock=time.time,
+                     sleep=time.sleep):
+    """Exclusive local lock on issue `n`'s reservation window; yields {"held": bool}.
+
+    A lock file older than `wait_s` is stale (its holder died mid-reservation: a live
+    one finishes within three guard timeouts) and is taken over. Not held after
+    `wait_s` -> the caller defers; it never reserves unlocked."""
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_dir / f"issue-{n}.lock"
+    start = clock()
+    info = {"held": False, "path": str(path), "waited_s": 0.0}
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = clock() - path.stat().st_mtime
+            except OSError:
+                continue                      # released between the two calls
+            if age > wait_s:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                info["took_over_stale_s"] = round(age, 1)
+                continue
+            if clock() - start >= wait_s:
+                info["waited_s"] = round(clock() - start, 1)
+                break
+            sleep(poll_s)
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid(), "ts": utcnow()}))
+        info.update(held=True, waited_s=round(clock() - start, 1))
+        break
+    try:
+        yield info
+    finally:
+        if info["held"]:
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+
 def reserve_claim(repo: Path, n: int, lane: str, intention: str,
                   notebook: str) -> dict:
     """Admission gate for a model run: scoped check -> authoritative post -> fresh re-read.
@@ -4388,8 +4443,14 @@ async def run(args, rec: dict) -> dict:
             rec["verdict"] = "refused-spec-plan-unusable"
             return rec
     if args.claim:
-        rec["stages"]["claim_reservation"] = reserve_claim(
-            repo, args.issue, args.lane, args.intention, claim_nb)
+        with issue_claim_lock(Path(args.out_dir).parent / CLAIM_LOCK_DIRNAME,
+                              args.issue) as lock:
+            rec["stages"]["claim_lock"] = lock
+            rec["stages"]["claim_reservation"] = (
+                reserve_claim(repo, args.issue, args.lane, args.intention, claim_nb)
+                if lock["held"] else
+                {"verdict": f"{CLAIM_TIMEOUT_VERDICT}:lock",
+                 "note": "a sibling grain of this issue held its reservation too long"})
         if rec["stages"]["claim_reservation"]["verdict"]:
             rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
             return rec

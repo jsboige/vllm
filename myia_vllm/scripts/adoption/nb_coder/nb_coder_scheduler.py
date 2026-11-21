@@ -647,10 +647,6 @@ class Scheduler:
         create_time = ident[0] if ident is not None else 0.0
         return AdoptedDriver(pid, create_time, str(log), offset, self.process_probe)
 
-    def _claims(self, item: dict) -> bool:
-        """Same rule as driver_command: the grain's own flag, else the scheduler's."""
-        return bool(item.get("claim", self.args.claim))
-
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
         from_spec = bool(item.get("from_spec", False))
@@ -986,22 +982,15 @@ class Scheduler:
                 floor = max(len(self.active), int(gate.get("running") or 0))
                 budget = self.state["ramp"]["max_active"] - floor
                 gap = float(getattr(self.args, "launch_gap_s", 0) or 0)
-                # One claiming grain per issue at a time. The guard keeps ONE active
-                # [CLAIMED] per lane and issue: two grains of a lot issue in flight
-                # overwrite each other's claim, and the first one's re-read then sees
-                # the second's paths (CoursIA#27133, 21/11 02:08Z: MGS-25 posted, its
-                # verify read MGS-28's claim -> refused-claim-not-verified).
-                busy_issues = {e["item"].get("issue") for e in self.active.values()
-                               if self._claims(e["item"])}
-                same_issue = 0
+                # Same-issue grains are NOT serialized here: only their claim
+                # reservation races, and the driver serializes that window itself
+                # (issue_claim_lock). Holding a whole lot to one grain in flight would
+                # starve the conveyor -- its remaining lots carry 3-9 notebooks each.
                 for key in pending:
                     if budget <= 0:
                         held = held or "capacity-target"
                         break
                     item = self.items_by_key[key]
-                    if self._claims(item) and item["issue"] in busy_issues:
-                        same_issue += 1
-                        continue
                     # #506 palier 1 — launch in canon, not in cohorts. Every launch
                     # in one tick makes a homogeneous cohort whose conversations all
                     # grow together (the funnel). With a gap, at most one grain starts
@@ -1016,8 +1005,6 @@ class Scheduler:
                             break
                     cmd = self.driver_command(item)
                     self.state["last_launch_ts"] = self.clock()
-                    if self._claims(item):
-                        busy_issues.add(item["issue"])
                     if self.args.dry_run:
                         self._event("dry-launch", key=key, cmd=cmd)
                         budget -= 1
@@ -1025,9 +1012,6 @@ class Scheduler:
                     self._launch(key, item, cmd, self.clock())
                     launched += 1
                     budget -= 1
-                if same_issue:
-                    held_extra["same_issue_waiting"] = same_issue
-                    held = held or "same-issue-serialized"
         if held:
             self._event("held", reason=held, pending=len(pending),
                         active=len(self.active), gate=gate.get("verdict"), **held_extra)
