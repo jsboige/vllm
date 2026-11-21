@@ -4130,6 +4130,18 @@ def _unmeasured(gate: str, **why) -> dict:
     return {"gate": gate, "ok": True, "detail": {"measured": False, **why}}
 
 
+def split_gates(gates: list) -> tuple[list[str], list[str]]:
+    """(passed-and-measured, passed-but-unmeasured) gate names. An _unmeasured() guard keeps
+    ok: True so an instrument failure never blocks delivery, but the PR body must not list it
+    as "OK" -- that would claim a check nobody ran (21/11, claudish-bc review)."""
+    def measured(g: dict) -> bool:
+        d = g.get("detail")
+        return d.get("measured", True) is not False if isinstance(d, dict) else True
+    passed = [g for g in gates if isinstance(g, dict) and g.get("ok")]
+    return ([g["gate"] for g in passed if measured(g)],
+            [g["gate"] for g in passed if not measured(g)])
+
+
 def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
     """The repo's own `Uncommented code` guard (#26690, check_uncommented_code.py --file):
     a code cell of 8 lines or more with no comment."""
@@ -4957,7 +4969,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         return
 
     n_exec = len(rec.get("execution") or [])
-    gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
+    gates_ok, gates_unmeasured = split_gates(rec.get("gates") or [])
     findings = (rec.get("verify") or {}).get("findings") or []
     # #433 review: resolve the PR target from the worktree's own origin (or an explicit
     # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
@@ -4988,7 +5000,10 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
         f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
         f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
-        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK.\n"
+        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK"
+        + (f" ; **non mesurés** (outil indisponible, la CI de la PR tranche) : "
+           f"{', '.join(gates_unmeasured)}" if gates_unmeasured else "")
+        + ".\n"
         f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
         f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
         f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
