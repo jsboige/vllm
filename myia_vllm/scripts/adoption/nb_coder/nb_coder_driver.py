@@ -1765,6 +1765,19 @@ REPAIR_SOURCE_CAP = 12000
 # exception was raised in `Decouper`, defined 8 cells above the cell that displayed it).
 REPAIR_UPSTREAM_MAX = 3
 
+# Rounds a repair loop may add past --repair-rounds while it is still converging (21/11
+# conveyor): the 7 built-execution-failed traces of 20-21/11 all ran out of rounds, and 3
+# of them were still shrinking on the last one (2.3d 8 -> 7, Frontieres-01 8 -> 3,
+# Compression-07 4 -> 3). A round that fixes nothing ends the loop as before.
+REPAIR_EXTEND_DEFAULT = 2
+
+
+def repair_round_extends(rounds_done: int, budget: int, cap: int, before: int,
+                         after: int) -> bool:
+    """One more repair round when the budget is spent, the cap is not reached, and the
+    round just run strictly reduced the failing cells without clearing them."""
+    return rounds_done >= budget and budget < cap and 0 < after < before
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
 # IPython `Cell In[5], line 3, in decouper(` / classic `File "x.py", line 3, in decouper`.
@@ -4626,8 +4639,16 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     conversation). A repaired definition can change downstream semantics -> FRESH kernel per
     round, then re-run the same targets (repair replaces sources only, indices stay valid).
     Measured on #27099 attempt 3: content-level API errors (MkNe inexistent, Expr vs
-    ArithExpr) are exactly what the compiler messages teach back. Returns (kid, conv)."""
-    for rnd in range(args.repair_rounds):
+    ArithExpr) are exactly what the compiler messages teach back. Returns (kid, conv).
+
+    The budget is --repair-rounds, extended one round at a time (up to --repair-extend
+    more) while the last round strictly reduced the failing cells: see
+    repair_round_extends."""
+    budget = args.repair_rounds
+    extend = max(0, int(getattr(args, "repair_extend", REPAIR_EXTEND_DEFAULT) or 0))
+    cap = budget + extend if budget > 0 else 0
+    rnd = 0
+    while rnd < budget:
         failing = [e for e in (rec.get("execution") or []) if not e.get("ok")]
         if not failing:
             break
@@ -4780,6 +4801,13 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             rec["verdict"] = "kernel-start-failed"
             break
         rec["execution"] = await execute_cells(pm, scratch, kid, exec_targets)
+        rnd += 1
+        after = sum(1 for e in rec["execution"] if not e.get("ok"))
+        if repair_round_extends(rnd, budget, cap, len(failing), after):
+            budget += 1
+            rec.setdefault("repair_extensions", []).append(
+                {"stage": stage, "after_round": rnd - 1, "failing_before": len(failing),
+                 "failing_after": after, "budget": budget})
     return kid, conv
 
 
@@ -5665,6 +5693,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (0 disables)")
+    ap.add_argument("--repair-extend", type=int, default=REPAIR_EXTEND_DEFAULT,
+                    help="extra repair rounds granted one at a time while the last round "
+                         "strictly reduced the failing cells (0 = fixed budget)")
     ap.add_argument("--ctx-window", type=int, default=CTX_WINDOW,
                     help="tokens a repair turn may need on its conversation (history + "
                          "prompt + answer) before it starts a fresh one (default: the "
