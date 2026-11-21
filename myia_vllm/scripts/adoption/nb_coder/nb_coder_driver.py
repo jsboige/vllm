@@ -688,6 +688,52 @@ def reserve_claim(repo: Path, n: int, lane: str, intention: str,
             "verdict": claim_reservation_verdict(posted, verified)}
 
 
+# --claim-late (CoursIA coordinator, 21/11, auto-pick rule Q-A): "pas de [CLAIMED] avant
+# que le run ait une PR ouvrable (stage 4 vert) : un lancement qui echoue ne verrouille
+# rien". Stage 0 records this deferral instead of reserving; late_reservation() takes the
+# reservation, through the same lock + reserve_claim admission, right before stage 5.
+LATE_CLAIM_DEFERRED = {"verdict": None, "deferred": "late",
+                       "note": "no [CLAIMED] before an openable PR (CoursIA rule 21/11); "
+                               "reserved by late_reservation() before stage 5"}
+LATE_CLAIM_TAKEN = "late-taken"
+LATE_CLAIM_REFUSED = "late-claim-refused"
+# A guard timeout at this point would throw away a verified build: retry it once.
+LATE_CLAIM_ATTEMPTS = 2
+
+
+def late_reservation(args, rec: dict) -> bool:
+    """True when stage 5 may run. A no-op (True) unless stage 0 deferred the claim.
+
+    Deferred: reserve now, under the per-issue lock, with the same fail-closed admission
+    as stage 0 (scoped pre-check -> authoritative post -> re-read). A refusal means another
+    lane took the notebook while we built it: the verdict becomes late-claim-refused:<v>
+    and nothing is posted -- the built notebook and its worktree stay on disk. A guard
+    timeout is retried once before it counts as a refusal."""
+    cr = rec["stages"].get("claim_reservation") or {}
+    if cr.get("deferred") != "late":
+        return True
+    attempts = []
+    for _ in range(LATE_CLAIM_ATTEMPTS):
+        with issue_claim_lock(Path(args.out_dir).parent / CLAIM_LOCK_DIRNAME,
+                              args.issue) as lock:
+            late = (reserve_claim(Path(args.repo), args.issue, args.lane, args.intention,
+                                  _norm_rel(args.notebook))
+                    if lock["held"] else
+                    {"verdict": f"{CLAIM_TIMEOUT_VERDICT}:lock",
+                     "note": "a sibling grain of this issue held its reservation too long"})
+        late["lock"] = lock
+        attempts.append(late)
+        if not str(late.get("verdict") or "").startswith(CLAIM_TIMEOUT_VERDICT):
+            break
+    rec["stages"]["claim_reservation_late"] = {"at": utcnow(), "attempts": attempts}
+    verdict = attempts[-1].get("verdict")
+    if verdict:
+        rec["verdict"] = f"{LATE_CLAIM_REFUSED}:{verdict}"
+        return False
+    rec["stages"]["claim_reservation"] = {**cr, "deferred": LATE_CLAIM_TAKEN}
+    return True
+
+
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     """Detached worktree of origin/main: the dirty checkout is never read or touched.
 
@@ -5091,7 +5137,18 @@ async def run_revision(args, rec: dict) -> dict:
             return rec
     prior_cr = (prior.get("stages") or {}).get("claim_reservation")
     live_cr = None
-    if prior_cr and prior_cr.get("verdict") is None:
+    if prior_cr and prior_cr.get("verdict") is None and prior_cr.get("deferred") == "late":
+        # --claim-late trace: that run reserved NOTHING, so the trace attests no claim.
+        # Re-read the LIVE scoped claim before any spend (another lane may have taken
+        # the notebook since); the reservation itself stays deferred -- the carried
+        # stage below makes late_reservation() take it right before stage 5.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = {**prior_cr, "live_recheck": live_v}
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
+    elif prior_cr and prior_cr.get("verdict") is None:
         pass  # attested in the trace: an admitted reservation, re-read at its time
     elif prior_cr:
         rec["verdict"] = "refused-revise-no-reservation"
@@ -5172,7 +5229,8 @@ async def run_revision(args, rec: dict) -> dict:
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
-    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+    if (args.max_stage >= 5 and rec.get("verdict") == "verify-approved"
+            and late_reservation(args, rec)):
         stage5_pr(args, rec, wt_path, built, issue, token)
     rec["finished"] = utcnow()
     return rec
@@ -5228,7 +5286,13 @@ async def run(args, rec: dict) -> dict:
         if spec_errors:
             rec["verdict"] = "refused-spec-plan-unusable"
             return rec
-    if args.claim:
+    if args.claim and getattr(args, "claim_late", False):
+        # CoursIA rule (coordinator 21/11, auto-pick Q-A): no [CLAIMED] before the run
+        # holds an openable PR. The CLEAR pre-check above already refused a notebook
+        # someone else holds; the reservation itself is taken by late_reservation()
+        # right before stage 5, so a failed launch locks nothing.
+        rec["stages"]["claim_reservation"] = dict(LATE_CLAIM_DEFERRED)
+    elif args.claim:
         with issue_claim_lock(Path(args.out_dir).parent / CLAIM_LOCK_DIRNAME,
                               args.issue) as lock:
             rec["stages"]["claim_lock"] = lock
@@ -5544,7 +5608,8 @@ async def run(args, rec: dict) -> dict:
         await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built_path,
                           kname=kname_used, exec_dir=exec_dir, conventions=conventions,
                           create_mode=create_mode, wt_path=Path(wt["path"]), out_dir=out_dir)
-    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+    if (args.max_stage >= 5 and rec.get("verdict") == "verify-approved"
+            and late_reservation(args, rec)):
         stage5_pr(args, rec, Path(wt["path"]), built_path, issue, token)
     rec["finished"] = utcnow()
     return rec
@@ -5624,6 +5689,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="house rules injected into the prompts ('' disables)")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
+    ap.add_argument("--claim-late", action="store_true",
+                    help="with --claim: run stages 1-4 on the CLEAR pre-check alone and "
+                         "post the [CLAIMED] only once the verifier approved, right before "
+                         "stage 5 (CoursIA auto-pick rule 21/11: a failed launch locks "
+                         "nothing). Requires --max-stage 5")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
     ap.add_argument("--gate", type=Path, default=None,
                     help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
@@ -5730,6 +5800,11 @@ def main() -> int:
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a "
                  "default identity would let two seats share one claim lane (F1, vllm#438)")
+    if args.claim_late and not args.claim:
+        ap.error("--claim-late defers the reservation of --claim: pass both")
+    if args.claim_late and args.max_stage < 5:
+        ap.error("--claim-late reserves right before stage 5: a run stopping earlier would "
+                 "spend model turns under no reservation and never take one")
     if args.source_nb and args.write_mode == "mcp":
         ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
                  "assembles the whole notebook in one write, MCP cell tools would race "
