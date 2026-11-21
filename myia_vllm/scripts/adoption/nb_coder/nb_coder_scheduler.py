@@ -331,11 +331,23 @@ def _reset_step_counters(ramp: dict, now: float) -> None:
                  "preempt_max": 0.0})
 
 
-class Scheduler:
-    """Pure orchestration. spawn/gate/sleep/clock are injectable for offline tests."""
+def git_run(argv: list[str], timeout: float = 300) -> tuple[int, str]:
+    """(returncode, stdout+stderr) of a git command; -1 when it could not run."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    except Exception as exc:
+        return -1, str(exc)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
 
-    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None):
+
+class Scheduler:
+    """Pure orchestration. spawn/gate/sleep/clock/git are injectable for offline tests."""
+
+    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None,
+                 git=None):
         self.args = args
+        self.git = git or git_run
         self.process_probe = probe or process_identity
         self.state_dir = Path(args.state_dir)
         self.state_path = self.state_dir / "state.json"
@@ -827,7 +839,54 @@ class Scheduler:
                 ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed, failure_class=cls)
+            if g["status"] in ("done", "failed"):
+                self._release_worktree(key, entry.get("item"))
             del self.active[key]
+
+    def _release_worktree(self, key: str, item: dict | None) -> None:
+        """Remove a terminal grain's worktree once nothing in it is unique.
+
+        Each grain checks out the whole target repo (CoursIA: 1.6 GB, 17,700 files),
+        and nothing removed it: on 20-21/11 the conveyor's worktrees grew D: by
+        ~5 GB/h, and the disk had already filled once. Keeping the tree buys nothing.
+        The run's artifacts live in its out-dir. A relaunch reuses a tree only when
+        its HEAD is exactly origin/main, which no longer holds once main has moved,
+        so prepare_worktree rebuilds it anyway.
+
+        Removed only when the tree is clean AND its HEAD is on a remote-tracking ref
+        (a pushed PR branch, or the origin/main it was cut from). Dirty files and
+        unpushed commits stay, and a `worktree-kept` event names the reason.
+        `git worktree remove` is never forced: git also refuses locked trees and
+        untracked files on its own."""
+        if getattr(self.args, "keep_worktrees", False) or not item:
+            return
+        try:
+            wt = Path(self.args.worktree_root) / f"wt-{grain_slug(item)}"
+        except Exception:
+            return
+        if not wt.exists():
+            return
+
+        def kept(reason: str, detail: str = "") -> None:
+            self._event("worktree-kept", key=key, worktree=str(wt), reason=reason,
+                        detail=detail.strip()[:300])
+
+        rc, out = self.git(["git", "-C", str(wt), "status", "--porcelain"])
+        if rc != 0:
+            return kept("status-failed", out)
+        if out.strip():
+            return kept("dirty", out)
+        rc, out = self.git(["git", "-C", str(wt), "for-each-ref", "--contains", "HEAD",
+                            "--format=%(refname)", "refs/remotes"])
+        if rc != 0:
+            return kept("ref-check-failed", out)
+        if not out.strip():
+            return kept("head-on-no-remote-ref",
+                        "HEAD is on no remote-tracking ref: an unpushed commit?")
+        rc, out = self.git(["git", "-C", str(self.args.repo), "worktree", "remove", str(wt)])
+        if rc != 0:
+            return kept("remove-failed", out)
+        self._event("worktree-released", key=key, worktree=str(wt))
 
     def _eligible(self, now: float) -> list[str]:
         out = []
@@ -1079,6 +1138,10 @@ def parse_args(argv=None):
     ap.add_argument("--worktree-root", default=None,
                     help="driver worktrees (default <state-dir>/worktrees)")
     ap.add_argument("--fresh-worktree", action="store_true")
+    ap.add_argument("--keep-worktrees", action="store_true",
+                    help="keep a grain's worktree after it ends. By default a clean tree "
+                         "whose HEAD is on a remote ref is removed (a checkout of the "
+                         "target repo per grain, 1.6 GB for CoursIA)")
     ap.add_argument("--detach-drivers", action=argparse.BooleanOptionalAction, default=True,
                     help="start each driver through nb_coder_detach.py so that stopping "
                          "the scheduler (TaskStop walks the process tree) does not kill "
