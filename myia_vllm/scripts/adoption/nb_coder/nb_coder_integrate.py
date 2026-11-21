@@ -1274,6 +1274,32 @@ def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
             "touched": touched}
 
 
+def integration_commit_message(result: dict, lane: str) -> str:
+    """Name only what `integrate` actually wrote. A retrofit that adds just the
+    conformance entry to an already-integrated PR must not claim a README row
+    and a nav edge: a reviewer reads the commit list to know what moved."""
+    stem = Path(result["notebook"]).stem
+    touched = set(result.get("touched") or [])
+    parts, why = [], []
+    if result.get("readme", {}).get("todo") and result["readme"].get("file") in touched:
+        parts.append("ligne README")
+        why.append("ligne README exigée par readme-notebook-coverage")
+    if result.get("source_nb") in touched:
+        parts.append("arête nav")
+        why.append("arête entrante exigée par check-nav-chain (le jumeau Python ne "
+                   "change qu'en markdown : barre/section Navigation)")
+    conf = result.get("conformance") or {}
+    if conf.get("file") in touched:
+        parts.append("entrée rust_conformance")
+        why.append(f"entrée `{Path(conf['file']).name}` ({conf.get('measures', '?')} "
+                   "mesure(s)) lue par check_rust_conformance.py")
+    title = " + ".join(parts) or "intégration"
+    return (f"Chore(integration): {title} pour {stem}\n\n"
+            + "".join(f"- {w}\n" for w in why) + "\n"
+            f"Lane: {lane}\n"
+            "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n")
+
+
 def _conformance_summary(plan: dict) -> dict:
     return {k: v for k, v in plan.items() if k not in ("path", "text", "entry")}
 
@@ -1424,15 +1450,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     for f in result["touched"]:
         _git(wt, "add", "--", f)
-    msg = (f"Chore(integration): ligne README + arête nav pour "
-           f"{Path(args.notebook).stem}\n\n"
-           "Le jumeau Python ne change qu'en markdown (barre/section Navigation) : "
-           "arête entrante exigée par check-nav-chain ; ligne README exigée par "
-           "readme-notebook-coverage.\n\n"
-           f"Lane: {args.by}\n"
-           "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n")
     if result["touched"]:
-        _git(wt, *GIT_IDENTITY, "commit", "-m", msg)
+        _git(wt, *GIT_IDENTITY, "commit", "-m", integration_commit_message(result, args.by))
     result["reseal"] = _reseal_after(wt, args.notebook, args.source_nb,
                                      args.by, facts)
     result["guards"] = replay_guards(wt, args.notebook)
