@@ -4138,6 +4138,49 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- shared build/revise steps
+def repair_bisect_cause(env: dict) -> str:
+    """'truncated', 'timeout' or '' — the two repair failures a smaller request can cure.
+    A refusal, an auth error or a well-formed but wrong answer is not one of them."""
+    if gate_refusal(env):
+        return ""
+    if looks_truncated(env):
+        return "truncated"
+    return "timeout" if call_timed_out(env) else ""
+
+
+async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
+                         conventions: str, upstream: list[dict], deferred: list[dict],
+                         crate_api: str, conv: str | None
+                         ) -> tuple[dict | None, str | None, dict]:
+    """Ask the failing cells in two halves (once, as the build does). Every half that
+    parses contributes its cells; a half that fails is named, the other still counts.
+    Returns (merged part or None, conversation, bisect record)."""
+    mid = max(1, len(detail) // 2)
+    merged: list[dict] = []
+    halves: list[dict] = []
+    for hi, half in enumerate(h for h in (detail[:mid], detail[mid:]) if h):
+        hidx = {x["idx"] for x in half}
+        hup = [u for u in upstream if u["for"] in hidx]
+        hdef = [x for x in deferred if set(x["roots"]) & hidx]
+        henv = await sk_call_retry(sk, args, rec, f"{stage}+h{hi}",
+                                   repair_prompt(half, conventions, hup, hdef, crate_api),
+                                   conv, max_tokens=BUILD_MAX_TOKENS)
+        conv = henv.get("conversation_id") or conv
+        hpart, henv = await parse_or_repair(sk, args, rec, f"{stage}+h{hi}", henv, conv,
+                                            max_tokens=BUILD_MAX_TOKENS)
+        hcells = (hpart or {}).get("cells") or []
+        verdict = ""
+        if not hcells:
+            verdict = (gate_refusal(henv) or call_failure(henv)
+                       or repair_bisect_cause(henv) or "unparsed")
+        halves.append({"asked": sorted(hidx), "got": len(hcells),
+                       "upstream": [u["idx"] for u in hup],
+                       "deferred": [x["idx"] for x in hdef],
+                       **({"verdict": verdict} if verdict else {})})
+        merged += hcells
+    return ({"cells": merged} if merged else None), conv, {"halves": halves}
+
+
 async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: str,
                                exec_dir: Path, kid: str | None, exec_targets: list[int],
                                conv: str | None, conventions: str,
@@ -4247,10 +4290,25 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
+        bisect = None
+        cause = "" if (part and part.get("cells")) else repair_bisect_cause(env)
+        if cause and len(detail) > 1:
+            # 21/11 conveyor (#27134 2.3d): six cells asked at once, the answer stopped
+            # mid-source after 644.7 s with no error raised, and the grain was lost. The
+            # build already halves a tranche on exactly these two failures (#517); a
+            # repair round is the same request shape: half the cells, half the output.
+            # Each half carries the upstream cells and held cells that concern it.
+            part, conv, bisect = await _repair_halves(
+                sk, args, rec, f"{stage}+{rnd}", detail, conventions, upstream, deferred,
+                crate_api, conv)
+            bisect["cause"] = cause
         if not part or not part.get("cells"):
             rec.setdefault("repairs", []).append(
-                {"stage": stage, "round": rnd, "verdict": call_failure(env) or "unparsed",
-                 "raw_tail": (env.get("response") or "")[-1500:]})
+                {"stage": stage, "round": rnd,
+                 "verdict": (call_failure(env) or (f"bisect-{cause}" if bisect else "")
+                             or "unparsed"),
+                 "raw_tail": (env.get("response") or "")[-1500:],
+                 **({"bisect": bisect} if bisect else {})})
             break
         # Scope = what the round showed: the failing cells + the upstream ones offered.
         rep = apply_repairs(scratch, part,
@@ -4261,7 +4319,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
              "deferred": [x["idx"] for x in deferred],
              "crate_api": api_info or None,
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
-             "out_of_scope": rep["out_of_scope"]})
+             "out_of_scope": rep["out_of_scope"],
+             **({"bisect": bisect} if bisect else {})})
         if not rep["replaced"]:
             break
         await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": kid})
