@@ -331,3 +331,21 @@ def test_pr_body_says_the_entry_and_its_divergences():
     present = nbcd.integration_pr_lines({"conformance": {
         "todo": False, "file": "f.yaml", "why": "entry already present"}})
     assert "`f.yaml` : entry already present" in present
+
+
+def test_integration_commit_message_names_only_what_was_written():
+    """A retrofit on an already-integrated PR writes only the conformance entry;
+    its commit must not claim a README row and a nav edge (CoursIA#27858)."""
+    nb = "D/X-Rust.ipynb"
+    conf = {"todo": True, "file": "scripts/notebook_tools/rust_conformance.d/x.yaml", "measures": 22}
+    only_conf = {"notebook": nb, "source_nb": "D/X-Python.ipynb",
+                 "readme": {"todo": False}, "conformance": conf, "touched": [conf["file"]]}
+    msg = nbci.integration_commit_message(only_conf, "lane:x")
+    title = msg.splitlines()[0]
+    assert title == "Chore(integration): entrée rust_conformance pour X-Rust"
+    assert "README" not in msg and "check-nav-chain" not in msg and "22 mesure(s)" in msg
+    full = dict(only_conf, readme={"todo": True, "file": "D/README.md"},
+                touched=["D/X-Python.ipynb", "D/README.md", conf["file"]])
+    title = nbci.integration_commit_message(full, "lane:x").splitlines()[0]
+    assert title == "Chore(integration): ligne README + arête nav + entrée rust_conformance pour X-Rust"
+    assert "Lane: lane:x" in nbci.integration_commit_message(full, "lane:x")
