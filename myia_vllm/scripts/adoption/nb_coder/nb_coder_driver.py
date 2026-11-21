@@ -939,7 +939,8 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     code cells keep deriving from the plan, only prose is pinned to the twin)."""
     prose = ""
     if src_cells:
-        parts = []
+        parts, stripped = [], 0
+        footer = last_md_index(src_cells)
         for c in segment_cells:
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
@@ -948,7 +949,12 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
             except (TypeError, ValueError):
                 continue
             if 0 <= i < len(src_cells):
-                t = _text(src_cells[i].get("source"))
+                # the pin must never carry what the coord-refs gate refuses (MGS-29);
+                # the footer cell keeps its links — the gate exempts it with its note
+                t, n = _text(src_cells[i].get("source")), 0
+                if i != footer:
+                    t, n = strip_coord_refs(t)
+                stripped += n
                 if t.strip():
                     parts.append(f"<cellule {i} — prose à recopier>\n{t[:2500]}")
         if parts:
@@ -958,6 +964,11 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                      "N'invente, ne traduis et ne reformule AUCUNE phrase — la prose "
                      "réinventée arrive corrompue (mesuré 17/11) :\n"
                      + "\n\n".join(parts)[:16000] + "\n")
+            if stripped:
+                prose += (f"({stripped} ligne(s) du jumeau portant une référence de "
+                          "coordination — Epic, lane, « voir #N » — ont été retirées de cette "
+                          "prose : ne les rétablis pas. La provenance ne vit qu'en note de pied "
+                          "de la dernière cellule, sous la forme `> Carnet issu de l'EPIC #N.`)\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -2239,17 +2250,33 @@ def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
     """One PROSE repair round for markdown cells carrying foreign-script corruption
     (17/11 #27104: Cyrillic/CJK hallucinated inside regenerated French prose — the
     gate catches the script class; the twin's own prose is the authority, so the
-    model COPIES it instead of re-deriving)."""
-    blocks = [f"### Cellule {f['idx']} (markdown)\n"
-              f"TEXTE ACTUEL (corrompu, extrait autour des caractères étrangers) :\n"
-              f"…{f['excerpt']}…\n\n"
-              f"PROSE DU JUMEAU PYTHON (autorité — recopie-la) :\n{f.get('twin_source') or '(absente du jumeau — réécris la cellule en français propre, sans caractère étranger)'}"
-              for f in failing]
+    model COPIES it instead of re-deriving).
+    An entry carrying `coord_excerpt` also (or only) has a coordination reference to drop
+    (20/11 MGS-29 #27133: « [EPIC #12373] » copied from the twin failed coord-refs after
+    44 min of work — the round now repairs it while the session is still open)."""
+    blocks = []
+    for f in failing:
+        b = [f"### Cellule {f['idx']} (markdown)"]
+        if f.get("excerpt"):
+            b.append(f"TEXTE ACTUEL (corrompu, extrait autour des caractères étrangers) :\n"
+                     f"…{f['excerpt']}…\n\n"
+                     f"PROSE DU JUMEAU PYTHON (autorité — recopie-la) :\n"
+                     f"{f.get('twin_source') or '(absente du jumeau — réécris la cellule en français propre, sans caractère étranger)'}")
+        elif f.get("coord_excerpt"):
+            b.append(f"TEXTE ACTUEL (complet) :\n{f.get('current_source') or ''}")
+        if f.get("coord_excerpt"):
+            b.append(f"RÉFÉRENCE DE COORDINATION à retirer : « …{f['coord_excerpt']}… ». "
+                     "Supprime-la sans la reformuler ni la déplacer ailleurs dans la cellule ; "
+                     "garde tout le reste à l'identique.")
+        blocks.append("\n".join(b))
     return (
-        "TOUR RÉPARATION PROSE — les cellules markdown ci-dessous contiennent des caractères "
-        "d'alphabets étrangers insérés dans la prose française. Réécris chaque cellule en "
-        "recopiant la prose du jumeau Python fournie, en n'adaptant QUE les termes propres "
-        "au code .NET. Ne change aucune autre cellule, ne reformule rien.\n\n"
+        "TOUR RÉPARATION PROSE — les cellules markdown ci-dessous portent un défaut relevé "
+        "par les portes du harnais : des caractères d'alphabets étrangers insérés dans la "
+        "prose française (réécris la cellule en recopiant la prose du jumeau Python fournie, "
+        "en n'adaptant QUE les termes propres au code), et/ou une référence de coordination "
+        "(Epic, lane, « voir #N ») qu'un carnet livré ne porte pas — seule exception, la note "
+        "de pied de la DERNIÈRE cellule sous la forme exacte `> Carnet issu de l'EPIC #N.`. "
+        "Ne change aucune autre cellule, ne reformule rien d'autre.\n\n"
         + "\n\n".join(blocks)
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
@@ -2257,6 +2284,82 @@ def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
         '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
         "TOUTES les cellules listées, index inchangés, aucune autre cellule."
     )
+
+
+MD_REPAIR_MAX_CELLS = 8
+
+
+def md_defects(built_cells: list, src_cells: list, create_mode: bool,
+               from_spec: bool) -> list[dict]:
+    """The markdown cells the prose round can repair, one entry per cell (both defects
+    merged): foreign-script corruption (creation only — the twin is the authority) and
+    coordination references (both modes — the fix is a deletion, no authority needed).
+    Code cells are left to the gates: the prose round cannot touch them (apply_repairs)."""
+    def is_md(i):
+        return 0 <= i < len(built_cells) and built_cells[i].get("cell_type") == "markdown"
+    by_idx: dict[int, dict] = {}
+    footer = last_md_index(src_cells)
+    if create_mode:
+        for h in foreign_script_hits(built_cells, src_cells):
+            ci = h.get("cell")
+            if not isinstance(ci, int) or not is_md(ci):
+                continue
+            twin = ""
+            if not from_spec and 0 <= ci < len(src_cells):
+                # a [SPEC] placeholder is no prose authority: an empty twin_source asks
+                # for a clean French rewrite; the twin itself is shown WITHOUT its
+                # coordination lines, or the repair would re-inject them
+                twin = _text(src_cells[ci].get("source"))
+                if ci != footer:
+                    twin = strip_coord_refs(twin)[0]
+                twin = twin[:3000]
+            by_idx[ci] = {"idx": ci, "excerpt": h.get("excerpt") or "", "twin_source": twin}
+    for h in coord_ref_hits(built_cells, src_cells):
+        ci = h["cell"]
+        if not is_md(ci):
+            continue
+        e = by_idx.setdefault(ci, {"idx": ci})
+        e["coord_excerpt"] = h["excerpt"]
+        e["current_source"] = _text(built_cells[ci].get("source"))[:6000]
+    return [by_idx[i] for i in sorted(by_idx)][:MD_REPAIR_MAX_CELLS]
+
+
+async def repair_markdown_defects(sk, args, rec: dict, scratch: Path, src_cells: list,
+                                  conv, conventions: str, create_mode: bool,
+                                  from_spec: bool):
+    """One in-session prose round on md_defects (17/11 #27104 foreign script; 20/11
+    MGS-29 coordination references), while the sk session is still open — stage-3 gates
+    run after it closes. Markdown has no outputs: apply_repairs(allow_markdown=True)
+    replaces the source only, no kernel cycle. The stage-3 gates re-measure and stay the
+    judges of what remains. Returns the conversation id."""
+    if args.repair_rounds <= 0:
+        return conv
+    detail_md = md_defects(_cells(scratch), src_cells, create_mode, from_spec)
+    if not detail_md:
+        return conv
+    env = await sk_call_retry(sk, args, rec, "2.6-mdrepair",
+                              md_repair_prompt(detail_md, conventions), conv)
+    conv = env.get("conversation_id") or conv
+    part, env = await parse_or_repair(sk, args, rec, "2.6-mdrepair", env, conv)
+    entry = {"asked": len(detail_md),
+             "defects": {"foreign-script": sum(1 for d in detail_md if d.get("excerpt")),
+                         "coord-refs": sum(1 for d in detail_md if d.get("coord_excerpt"))}}
+    if part and part.get("cells"):
+        # Scope the round to the cells it asked for (finding 1): a response editing any
+        # other cell is refused, not applied.
+        rep = apply_repairs(scratch, part, allow_markdown=True,
+                            only_idx={d["idx"] for d in detail_md})
+        entry.update({"replaced": rep["replaced"], "unknown_idx": rep["unknown_idx"],
+                      "bad": rep["bad"], "out_of_scope": rep["out_of_scope"]})
+    else:
+        entry.update({"verdict": call_failure(env) or "unparsed",
+                      "raw_tail": (env.get("response") or "")[-1500:]})
+    rec.setdefault("md_repairs", []).append(entry)
+    after = _cells(scratch)
+    if create_mode:
+        rec["md_hits_after"] = len(foreign_script_hits(after, src_cells))
+    rec["coord_hits_after"] = len(coord_ref_hits(after, src_cells))
+    return conv
 
 
 # ---------------------------------------------------------------- constructive-review loop
@@ -2698,6 +2801,44 @@ _kernel_retry_sleep = asyncio.sleep
 # registry's own markers live on issue comments, never inside notebooks.
 COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
 PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+
+
+def strip_coord_refs(text: str) -> tuple[str, int]:
+    """The text without its lines carrying a coordination reference (the footer note
+    excepted), and how many were dropped. MGS-29 (#27133, 20/11): the Python twin's
+    « Place dans l'Epic … [EPIC #12373] » was pinned as prose « à recopier TELLE QUELLE »;
+    the model obeyed and the coord-refs gate failed the grain after 44 min of work."""
+    kept, dropped = [], 0
+    for line in (text or "").split("\n"):
+        if COORD_REF_RE.search(line) and not PROVENANCE_RE.search(line):
+            dropped += 1
+        else:
+            kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n"), dropped
+
+
+def last_md_index(cells: list) -> int:
+    """Index of the last markdown cell (-1 if none) — the footer cell, where the
+    provenance note and the « pour aller plus loin » issue links are legit."""
+    return max((i for i, c in enumerate(cells) if c.get("cell_type") == "markdown"),
+               default=-1)
+
+
+def coord_ref_hits(built_cells: list, src_cells: list) -> list[dict]:
+    """Coordination references on BUILD-CHANGED cells — the coord-refs gate's own rule
+    (delta-judged; the footer note in the last markdown cell is legit). Shared by
+    run_gates and the in-session prose round, which can still repair them."""
+    last_md = last_md_index(built_cells)
+    hits: list[dict] = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        m = COORD_REF_RE.search(txt)
+        if m and not (i == last_md and PROVENANCE_RE.search(txt)):
+            hits.append({"cell": i, "cell_type": c.get("cell_type"),
+                         "excerpt": txt[max(0, m.start() - 60):m.end() + 60]})
+    return hits
 SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                        r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
 # CoursIA acceptance contract, trigger 2 (2026-11-16): a machine path surfaced in an OUTPUT
@@ -2793,15 +2934,7 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     canonical .NET twin (canon_version), never the Python twin."""
     src_cells, built_cells = _cells(src_nb), _cells(built_nb)
     gates: list[dict] = []
-    last_md = max((i for i, c in enumerate(built_cells) if c.get("cell_type") == "markdown"),
-                  default=-1)
-    offenders = []
-    for i, c in enumerate(built_cells):
-        txt = _text(c.get("source"))
-        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
-            continue                      # untouched by the build
-        if COORD_REF_RE.search(txt) and not (i == last_md and PROVENANCE_RE.search(txt)):
-            offenders.append(i)
+    offenders = [h["cell"] for h in coord_ref_hits(built_cells, src_cells)]
     gates.append({"gate": "coord-refs", "ok": not offenders,
                   "detail": {"cells": offenders[:10]}})
     # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
@@ -4142,55 +4275,12 @@ async def run(args, rec: dict) -> dict:
                                 sk, pm, args, rec, scratch,
                                 args.kernel_override or kernel["kernel_name"], exec_dir,
                                 kid, exec_targets, conv, conventions)
-                        # ---- markdown prose repair: the foreign-script class caught by
-                        # the gate is REPAIRABLE in-session (17/11 #27104 blank pass 2:
-                        # Cyrillic/CJK hallucinated inside regenerated French prose —
-                        # verify rejected 5 majors). One round, while the sk session is
-                        # still open (stage-3 gates run after it closes). Markdown has
-                        # no outputs: apply_repairs(allow_markdown=True) replaces the
-                        # source only, no kernel cycle. The stage-3 gate re-measures
-                        # and stays the judge of what remains.
-                        if create_mode and args.repair_rounds > 0:
-                            fs_hits = foreign_script_hits(_cells(scratch), src_cells)
-                            if fs_hits:
-                                detail_md = []
-                                for h in fs_hits[:8]:
-                                    twin_src = ""
-                                    ci = h.get("cell")
-                                    if (not from_spec and isinstance(ci, int)
-                                            and 0 <= ci < len(src_cells)):
-                                        # a [SPEC] placeholder is no prose authority: an
-                                        # empty twin_source asks for a clean French rewrite
-                                        twin_src = _text(src_cells[ci].get("source"))[:3000]
-                                    detail_md.append({"idx": ci,
-                                                      "excerpt": h.get("excerpt") or "",
-                                                      "twin_source": twin_src})
-                                env = await sk_call_retry(
-                                    sk, args, rec, "2.6-mdrepair",
-                                    md_repair_prompt(detail_md, conventions), conv)
-                                conv = env.get("conversation_id") or conv
-                                part, env = await parse_or_repair(sk, args, rec,
-                                                                  "2.6-mdrepair", env, conv)
-                                if part and part.get("cells"):
-                                    # Scope the prose round to the cells it asked for
-                                    # (finding 1): a response editing any other cell is
-                                    # refused, not applied.
-                                    _md_idx = {d["idx"] for d in detail_md
-                                               if isinstance(d.get("idx"), int)}
-                                    rep_md = apply_repairs(scratch, part,
-                                                           allow_markdown=True,
-                                                           only_idx=_md_idx)
-                                    rec.setdefault("md_repairs", []).append(
-                                        {"asked": len(detail_md),
-                                         "replaced": rep_md["replaced"],
-                                         "unknown_idx": rep_md["unknown_idx"],
-                                         "bad": rep_md["bad"]})
-                                else:
-                                    rec.setdefault("md_repairs", []).append(
-                                        {"verdict": call_failure(env) or "unparsed",
-                                         "raw_tail": (env.get("response") or "")[-1500:]})
-                                rec["md_hits_after"] = len(
-                                    foreign_script_hits(_cells(scratch), src_cells))
+                        # ---- markdown prose repair (repair_markdown_defects): foreign-script
+                        # corruption (creation) and coordination references (both modes) are
+                        # REPAIRABLE in-session; the stage-3 gates stay the judges.
+                        conv = await repair_markdown_defects(sk, args, rec, scratch, src_cells,
+                                                             conv, conventions, create_mode,
+                                                             from_spec)
                     # kernel hygiene: an hourly cadence must not leak one kernel per run
                     if rec.get("kernel_id"):
                         rec["kernel_stop"] = await pm_call(
