@@ -948,8 +948,24 @@ def _first_diff(ref: str, other: str) -> str:
         if la != lb:
             if la.strip() == lb.strip():
                 la, lb = repr(la), repr(lb)
-            return f"ligne {i + 1} : « {lb[:60]} » contre « {la[:60]} » côté Python"
+            # Excerpt around the first differing column: a fixed `[:60]` showed
+            # two identical-looking prefixes when the lines part after column 60
+            # (ChoixSocial-02 c2, « (Gale-Shapley) » vs « (Gale-Shapley, twin C# »).
+            col = next((j for j, (x, y) in enumerate(zip(la, lb)) if x != y),
+                       min(len(la), len(lb)))
+            start = max(0, col - DIFF_CONTEXT_BEFORE)
+            return (f"ligne {i + 1} : « {_window(lb, start)} » contre "
+                    f"« {_window(la, start)} » côté Python")
     return "texte identique"
+
+
+DIFF_CONTEXT_BEFORE = 20
+DIFF_WINDOW = 60
+
+
+def _window(line: str, start: int) -> str:
+    cut = line[start:start + DIFF_WINDOW]
+    return ("…" if start else "") + cut + ("…" if start + DIFF_WINDOW < len(line) else "")
 
 
 def _label_lines(text: str) -> dict[str, str]:

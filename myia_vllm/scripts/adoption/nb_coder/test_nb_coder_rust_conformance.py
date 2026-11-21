@@ -145,6 +145,19 @@ def test_csharp_other_structure_and_text_gaps(tmp_path):
     assert "diffère du texte Python" in gap["absent"] and "true" in gap["absent"]
 
 
+def test_first_diff_excerpt_shows_the_differing_columns():
+    """ChoixSocial-02 c2: the lines part after column 60, so a `[:60]` excerpt
+    showed two identical prefixes and the absent motif read as nonsense."""
+    py = "Configuration OK : SocialChoice 02 - Mariage Stable (Gale-Shapley)"
+    cs = "Configuration OK : SocialChoice 02 - Mariage Stable (Gale-Shapley, twin C# .NET 9)"
+    d = nbci._first_diff(py, cs)
+    assert ", twin C#" in d and "Shapley)" in d
+    a, b = re.findall(r"« (.*?) »", d)
+    assert a != b and a.startswith("…") and b.startswith("…")
+    assert nbci._first_diff("x = 1", "x = 2") == "ligne 1 : « x = 2 » contre « x = 1 » côté Python"
+    assert nbci._first_diff("a\nb", "a") == "ligne 2 : « <fin> » contre « b » côté Python"
+
+
 def test_label_lines_identical_on_three_sides_become_three_sided(tmp_path):
     """#27804: `Couplage … : {…}` lines agree on all sides while the cell's full
     text does not (C# drops accents elsewhere)."""
