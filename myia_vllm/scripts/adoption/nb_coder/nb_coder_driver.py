@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -357,8 +358,17 @@ def _guard_result(p, notebook: str) -> dict:
     res: dict = {"rc": p.returncode, "out": out}
     if p.stdout and p.stderr:
         res["warnings"] = p.stderr.strip()[-600:]
+    doc = _guard_report(p.stdout) or {}
+    mine = (doc.get("active_claims") or {}).get(doc.get("my_lane") or "")
+    if isinstance(mine, dict):
+        res["my_claim"] = {
+            "marker": mine.get("marker"), "claimed_at": mine.get("claimed_at"),
+            "url": mine.get("url"), "pr_ref": mine.get("pr_ref"),
+            "locked": mine.get("locked"),
+            "paths": [_norm_rel(g) for g in (mine.get("paths") or [])
+                      if isinstance(g, str)][:_PR_FILES_PREVIEW_CAP],
+        }
     if p.returncode == 3:
-        doc = _guard_report(p.stdout) or {}
         target = _norm_rel(notebook)
         implicit = []
         for pr in doc.get("implicit_occupation") or []:
@@ -415,18 +425,22 @@ def claim_verdict(cc: dict) -> str | None:
 
 
 def post_claim(repo: Path, n: int, lane: str, intention: str,
-               notebook: str, from_json: str | None = None) -> dict:
+               notebook: str, from_json: str | None = None,
+               scope: list[str] | None = None) -> dict:
     """Acquire this notebook's claim through the authoritative guard, not a bare comment.
 
     The guard rechecks collisions and verifies its write before returning 0. The caller
     must gate the worktree/model stages on this result, then re-read the claim below.
     ``from_json`` is only for offline two-client admission tests, never production.
+    ``scope`` replaces the written paths (it must contain ``notebook``): the guard keeps
+    ONE active claim per lane and issue, so a write scoped to this notebook alone would
+    drop the lane's other paths on the issue (see lane_claim_scope).
     """
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"rc": None, "out": "check_lane_claim.py absent"}
     p = _run_claim_guard([sys.executable, str(script), str(n), "--lane", lane,
-                          "--paths", notebook, "--claim", intention,
+                          "--paths", *(scope or [notebook]), "--claim", intention,
                           *(["--from-json", from_json] if from_json else [])], repo)
     if p is None:
         return {"rc": None, "timed_out": True,
@@ -516,9 +530,72 @@ def issue_claim_lock(lock_dir: Path, n: int, wait_s: float = CLAIM_LOCK_WAIT_S,
                 path.unlink()
 
 
+# The guard keeps ONE active [CLAIMED] per lane and issue (the latest wins) and writes
+# exactly the --paths it is given. Measured on CoursIA#27133, 21/11: the coordinator had
+# claimed the whole lot for this lane at 20/11 18:22Z; every grain's reservation then
+# re-posted a claim scoped to its own notebook, so (1) the lane's claim shrank to one
+# notebook and the siblings in flight lost their cover, and (2) the claim was re-dated.
+# The IMPLICIT leg counts another lane's open PR only when it is OLDER than the caller's
+# claim (check_lane_claim.py, #26751): po-2024's PR #27691 (21/11 02:26Z) was newer than
+# the coordinator's claim and older than ours (03:14Z), so every sibling was refused.
+# Now a notebook the lane's live claim already names is admitted on the pre-check alone
+# (nothing re-posted, nothing re-dated), and a write never carries fewer paths than the
+# lane's claim had.
+# Past this age the claim is re-posted anyway: other lanes read a claim older than 48 h
+# (the guard's default threshold) as stale.
+LANE_CLAIM_REFRESH_S = 24 * 3600
+
+
+def _parse_utc(ts) -> datetime | None:
+    try:
+        at = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def _live_lane_claim(my_claim) -> bool:
+    """A [CLAIMED] of our lane that still reserves: not delivered, not locked to a PR."""
+    return (isinstance(my_claim, dict) and my_claim.get("marker") == "CLAIMED"
+            and not my_claim.get("locked") and not my_claim.get("pr_ref"))
+
+
+def lane_claim_covers(my_claim, notebook: str, now: datetime | None = None) -> bool:
+    """True when our lane's live, fresh claim already names this notebook (fnmatch, as
+    the guard reads `paths:`). An issue-wide claim (no paths) does not count: the guard
+    filters those by scope, so it is no proof of cover."""
+    if not _live_lane_claim(my_claim):
+        return False
+    at = _parse_utc(my_claim.get("claimed_at"))
+    if at is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if (now - at).total_seconds() > LANE_CLAIM_REFRESH_S:
+        return False
+    target = _norm_rel(notebook)
+    return any(fnmatch.fnmatchcase(target, g) for g in my_claim.get("paths") or [])
+
+
+def lane_claim_scope(my_claim, notebook: str) -> list[str] | None:
+    """Paths for a write that keeps the lane's live claim: its paths plus this notebook.
+    None when the lane holds no scoped live claim (the write is the notebook alone)."""
+    if not _live_lane_claim(my_claim) or not my_claim.get("paths"):
+        return None
+    paths = list(my_claim["paths"])
+    target = _norm_rel(notebook)
+    if target not in paths:
+        paths.append(target)
+    return paths
+
+
 def reserve_claim(repo: Path, n: int, lane: str, intention: str,
                   notebook: str) -> dict:
     """Admission gate for a model run: scoped check -> authoritative post -> fresh re-read.
+
+    Short path: when the CLEAR pre-check shows a live, fresh claim of our lane that
+    already names this notebook (a coordinator's lot claim), the run is admitted
+    without writing -- see lane_claim_covers. Otherwise the write carries the lane's
+    existing paths plus this notebook (lane_claim_scope), never this notebook alone.
 
     Three refusals, each before any worktree or model spend:
     - the pre-check is not CLEAR (claim held, guard broken, check not scoped);
@@ -549,11 +626,32 @@ def reserve_claim(repo: Path, n: int, lane: str, intention: str,
     if refused:
         return {"before": before, "posted": None, "verified": None,
                 "verdict": refused}
-    posted = post_claim(repo, n, lane, intention, notebook)
+    mine = before.get("my_claim")
+    if lane_claim_covers(mine, notebook):
+        # The pre-check IS the fresh read: CLEAR on this notebook, under a live claim
+        # of our lane that already names it. A later post by another lane would see
+        # that claim and be refused, so there is no window for a re-read to close.
+        return {"before": before, "posted": None, "verified": None,
+                "covered_by": {k: mine.get(k) for k in ("url", "claimed_at", "paths")},
+                "verdict": None}
+    scope = lane_claim_scope(mine, notebook)
+    if scope:
+        posted = post_claim(repo, n, lane, intention, notebook, scope=scope)
+        if posted.get("rc") == 1:
+            # The guard refused the union BEFORE writing (one of the lane's other
+            # paths is now held elsewhere): nothing landed. Fall back to this
+            # notebook alone -- the narrow write, which the pre-check just cleared.
+            union = posted
+            posted = post_claim(repo, n, lane, intention, notebook)
+            posted["union_refused"] = {"rc": union.get("rc"),
+                                       "out": (union.get("out") or "")[-400:]}
+    else:
+        posted = post_claim(repo, n, lane, intention, notebook)
     verified = (check_claim(repo, n, lane, notebook)
                 if posted.get("rc") == 0
                 else {"rc": None, "skipped": "claim acquisition failed"})
     return {"before": before, "posted": posted, "verified": verified,
+            **({"scope": scope} if scope else {}),
             "verdict": claim_reservation_verdict(posted, verified)}
 
 

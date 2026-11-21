@@ -516,3 +516,122 @@ def test_a_stale_lock_from_a_dead_holder_is_taken_over(tmp_path):
 def test_a_lock_timeout_defers_the_grain():
     assert nbcd.claim_verdict({"timed_out": True}).startswith("deferred-by-claim-timeout")
     assert f"{nbcd.CLAIM_TIMEOUT_VERDICT}:lock".startswith("deferred-by-claim-timeout")
+
+
+# ---- the lane's lot claim is kept, not narrowed (CoursIA#27133, 21/11 03:14Z) ----------
+# The guard keeps ONE active [CLAIMED] per lane and issue and writes exactly --paths:
+# a grain re-posting its own notebook shrank the coordinator's lot claim to one path and
+# re-dated it past po-2024's PR #27691, which the IMPLICIT leg then counted.
+MGS25 = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/MGS-25-DE-vs-Mealpy-Rust.ipynb"
+LOT_GLOB = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/*-Rust.ipynb"
+
+
+def _ago(hours):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _claim(paths, hours=1.0, **kw):
+    return {"marker": "CLAIMED", "claimed_at": _ago(hours), "url": "u#1",
+            "pr_ref": None, "locked": False, "paths": paths, **kw}
+
+
+def test_guard_result_extracts_our_lane_claim():
+    import json as _json
+    doc = {"issue": 27133, "my_lane": "myia-ai-01:vllm",
+           "active_claims": {"myia-ai-01:vllm": {
+               "marker": "CLAIMED", "claimed_at": "2026-11-21T03:14:07Z",
+               "url": "u#7056461759", "pr_ref": None, "locked": False,
+               "paths": ["./" + MGS25]},
+               "myia-po-2024:CoursIA": {"marker": "CLAIMED", "paths": [SUDOKU05]}}}
+
+    class P:
+        returncode = 0
+        stdout = _json.dumps(doc) + "\nCLEAR"
+        stderr = ""
+    mine = nbcd._guard_result(P(), MGS28)["my_claim"]
+    assert mine["claimed_at"] == "2026-11-21T03:14:07Z"
+    assert mine["paths"] == [MGS25]           # normalised, and only OUR lane's
+
+
+def test_a_fresh_lot_claim_covers_its_notebooks_by_glob():
+    assert nbcd.lane_claim_covers(_claim([LOT_GLOB]), MGS28)
+    assert nbcd.lane_claim_covers(_claim([MGS28]), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([MGS25]), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([]), MGS28)        # issue-wide: no proof
+
+
+def test_a_stale_delivered_or_locked_claim_does_not_cover():
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], hours=30), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], marker="DELIVERED"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], pr_ref="#27700"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], locked=True), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], claimed_at="?"), MGS28)
+    assert nbcd.lane_claim_scope(_claim([MGS25], marker="DELIVERED"), MGS28) is None
+
+
+def test_union_scope_keeps_the_lane_paths_and_adds_ours_once():
+    assert nbcd.lane_claim_scope(_claim([MGS25]), MGS28) == [MGS25, MGS28]
+    assert nbcd.lane_claim_scope(_claim([MGS25, MGS28]), MGS28) == [MGS25, MGS28]
+    assert nbcd.lane_claim_scope(_claim([]), MGS28) is None
+    assert nbcd.lane_claim_scope(None, MGS28) is None
+
+
+def test_covered_notebook_is_admitted_without_any_write(monkeypatch, tmp_path):
+    reads = {"n": 0}
+
+    def check(*a):
+        reads["n"] += 1
+        return {"rc": 0, "ok": True, "my_claim": _claim([LOT_GLOB])}
+    monkeypatch.setattr(nbcd, "check_claim", check)
+    monkeypatch.setattr(nbcd, "post_claim", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("a covered notebook must not re-post (it re-dates the claim)")))
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert res["verdict"] is None and res["posted"] is None
+    assert res["covered_by"]["paths"] == [LOT_GLOB]
+    assert reads["n"] == 1
+
+
+def test_covered_but_implicit_disjoint_still_defers(monkeypatch, tmp_path):
+    """Cover does not bypass the pre-check verdict: rc=3 is read first."""
+    pre = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    pre["my_claim"] = _claim([LOT_GLOB])
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: pre)
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert res["verdict"] == "deferred-by-claim-implicit-occupation:#27691"
+
+
+def test_uncovered_notebook_writes_the_union_of_the_lane_paths(monkeypatch, tmp_path):
+    seen = _post_claim_argv_seen(monkeypatch, tmp_path, 0, "posted")
+    monkeypatch.setattr(nbcd, "check_claim",
+                        lambda *a: {"rc": 0, "ok": True, "my_claim": _claim([MGS25])})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    argv = seen["argv"]
+    i, j = argv.index("--paths"), argv.index("--claim")
+    assert argv[i + 1:j] == [MGS25, MGS28]
+    assert res["scope"] == [MGS25, MGS28] and res["verdict"] is None
+
+
+def test_refused_union_falls_back_to_the_notebook_alone(monkeypatch, tmp_path):
+    writes = []
+
+    def post(repo, n, lane, intention, notebook, from_json=None, scope=None):
+        writes.append(scope)
+        return {"rc": 1, "out": "BLOCKED: MGS-25 held"} if scope else {"rc": 0}
+    monkeypatch.setattr(nbcd, "post_claim", post)
+    monkeypatch.setattr(nbcd, "check_claim",
+                        lambda *a: {"rc": 0, "ok": True, "my_claim": _claim([MGS25])})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert writes == [[MGS25, MGS28], None]
+    assert res["posted"]["union_refused"]["rc"] == 1
+    assert res["verdict"] is None
+
+
+def test_no_live_lane_claim_keeps_the_narrow_write(monkeypatch, tmp_path):
+    seen = _post_claim_argv_seen(monkeypatch, tmp_path, 0, "posted")
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: {
+        "rc": 0, "ok": True, "my_claim": _claim([MGS25], pr_ref="#27700")})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    argv = seen["argv"]
+    assert argv[argv.index("--paths") + 1:argv.index("--claim")] == [MGS28]
+    assert "scope" not in res and res["verdict"] is None
