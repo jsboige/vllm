@@ -77,7 +77,7 @@ def test_no_json_at_all_says_so():
 def _fake(monkeypatch, responses):
     calls = []
 
-    async def fake_sk(session, args, rec, stage, prompt, conv, max_tokens=None):
+    async def fake_sk(session, args, rec, stage, prompt, conv, max_tokens=None, model=None):
         calls.append({"stage": stage, "prompt": prompt, "conv": conv, "max_tokens": max_tokens})
         return responses[len(calls) - 1]
 

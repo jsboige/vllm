@@ -210,6 +210,74 @@ python nb_coder_driver.py --issue <N> --from-spec `
   par défaut du scheduler. Tests : 10 dans `test_nb_coder_scheduler.py`, 6 mutations
   toutes tuées.
 
+### 3.2quater Modèle par étape : spec / coder / vérificateur (#4831, 21/11)
+
+Le modèle de chaque étape se choisit par paramètre, jamais en modifiant la source.
+Ce port vient de la tranche `81ec3536` (roo-extensions#4831, jsboige-mcp-servers#1810)
+et ajoute deux gardes propres à ce dépôt.
+
+| Étape | Drapeau du driver | Défaut (env) | Ce qu'elle sert |
+|---|---|---|---|
+| spec (pré-mâchage, optionnel) | `--spec-model` + `--spec-mode run\|skip` | `NBCODER_SPEC_MODEL` / `NBCODER_SPEC_MODE` | le tour qui réécrit une issue grossière en issue détaillée |
+| coder (plan, build, segments, réparations) | `--coder-model` | `NBCODER_CODER_MODEL` | chaque tour producteur |
+| vérificateur (audit de l'étape 4) | `--verifier-model` (relayé à `nb_coder_verify.py --model`) | `NBCODER_VERIFIER_MODEL` | l'audit indépendant |
+
+Sans valeur, chaque étape garde le modèle du préréglage `--agent` / `--verifier-agent`,
+comme avant #4831. sk-agent valide la référence contre sa configuration (modèles activés
+seulement). Le modèle déclaré est tracé dans `rec["models"]`, le modèle qui a réellement
+servi le tour dans `calls[].model_used` et `verify.model_used`.
+
+**Étape ½ SPEC.** `--spec-mode skip` (le défaut) est un choix **déclaré** par la lane
+appelante, jamais une heuristique du harnais. Il est tracé sur le run :
+`"spec": {"mode": "skip", "skipped": true, "declared": "--spec-mode skip", "issue_body_chars": N}`.
+`--spec-mode run` exige `--spec-model` : sinon le driver refuse, avec le code de sortie 2
+et le message `--spec-mode run requires --spec-model`. Le tour de spec réécrit l'issue
+brute, avec son fil, les conventions et la vue du carnet, et le résultat devient le corps
+d'issue de l'étape 1. Il est plafonné à 30 000 caractères et écrit dans
+`<out-dir>/spec-<issue>.md`. La ligne du ledger porte `"spec": "run" | "skip"`. Un tour de
+spec mort échoue bruyamment (`spec-<cause>`) au lieu de retomber sur l'issue brute :
+sinon le coder brûlerait sa passe sur exactement l'échec que l'étape spec doit éviter.
+
+**Gardes propres à ce dépôt** (refusées avant tout jeton, code de sortie 2) :
+- `--spec-mode run` avec `--from-spec` : le plan de cellules gaté est lu dans le corps
+  **brut** de l'issue, alors qu'un corps pré-mâché ferait diverger ce plan du prompt ;
+- `--spec-mode run` avec `--revise-from` : une révision ne re-planifie rien, donc le tour
+  de spec ne tournerait jamais (il faut déclarer `skip`).
+
+`--source-nb` (portage) accepte `--spec-mode run` : son plan de création voit la spec.
+
+**Correspondance difficulté → modèle** : c'est une consigne pour la lane appelante, qui
+décide par passe ou par grain. Elle n'est jamais codée dans le harnais. Les identifiants
+réels sont ceux de la configuration sk-agent du siège (ai-01 : `nb-minimax`, `glm-5.3`,
+`swift-1.5-27b`).
+
+| Difficulté | coder | vérificateur | spec |
+|---|---|---|---|
+| simple (corrections, prose) | swift | tier flash | skip |
+| standard | MiniMax | GLM | skip, ou GLM si l'issue est vague |
+| difficile (parité C# SMT/Z3…) | GLM, ou rôle Sonnet | GLM ou au-dessus | GLM ou Sonnet |
+| très difficile | rôle Opus | au-dessus du coder | Sonnet/Opus |
+
+Terrain mesuré (18/11) : les grains de parité C# SMT/Z3 sont au moins difficiles. Swift y
+fait 0/7 (5× `built-execution-failed`, avec la même erreur régénérée trois tours de suite),
+MiniMax 2/2 au vert sur la même classe.
+
+**Scheduler.** Dans la file, les clés `coder_model` / `verifier_model` / `spec_model` /
+`spec_mode` remplacent par grain les défauts du scheduler (drapeaux du même nom).
+`--spec-mode` est toujours relayé, pour que le skip soit déclaré sur chaque ligne de
+commande du driver.
+
+```bash
+# grain standard, issue assez détaillée : spec skip (déclaré, tracé)
+python nb_coder_driver.py --issue 27106 --notebook Ser/Z3-10-CSharp.ipynb --repo D:/CoursIA \
+    --lane myia-ai-01:vllm --coder-model nb-minimax --verifier-model glm-5.3 --spec-mode skip
+# issue grossière : pré-mâchage GLM, puis code MiniMax
+    ... --spec-mode run --spec-model glm-5.3 --coder-model nb-minimax
+```
+
+Tests : `test_nb_coder_step_models.py` (37). 26 mutations, toutes tuées, dont la garde de
+Hermes remplacée par `if False:` et chaque branche de `run()` relue sur l'issue brute.
+
 ### 3.4 Agentic trace
 
 - sk-agent `conversation_id` persists per notebook build → the PR body carries it;
