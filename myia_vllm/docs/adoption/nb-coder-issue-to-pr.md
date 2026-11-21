@@ -429,10 +429,26 @@ en vol continuent). Tout palier franchi est archivé dans `ramp_history` (state.
 ses compteurs — la montée se **prouve**, elle ne se déclare pas.
 
 **Persistance** : `state.json` (statuts `pending/running/done/failed/deferred/withdrawn/
-orphaned` + état de ramp) et `scheduler.jsonl` (un événement JSON par décision). Un grain
-`running` d'une instance morte devient **orphaned**, jamais relancé automatiquement (le
-processus enfant peut vivre encore ; un doublon entrerait en collision sur worktree, claim
-et PR) — la reprise est un geste opérateur explicite.
+orphaned` + état de ramp) et `scheduler.jsonl` (un événement JSON par décision). Au
+redémarrage, un grain `running` dont le driver est encore le processus lancé (même pid,
+même create time, ligne de commande du driver) est **adopté** : suivi par pid, verdict lu
+dans son `driver.log` à l'offset de la tentative. Tout autre grain `running` devient
+**orphaned**, jamais relancé automatiquement (un doublon entrerait en collision sur
+worktree, claim et PR) — la reprise est un geste opérateur explicite.
+
+**Drivers détachés (`--detach-drivers`, défaut)** : mesure du 21/11 00:45Z, l'arrêt de la
+tâche du planificateur (TaskStop) a tué les deux drivers en vol (MGS-25 à 1 464 s, MGS-28
+à 283 s) — l'arrêt parcourt l'arbre de processus. Un enfant direct meurt quels que soient
+ses drapeaux (plain, `CREATE_NEW_PROCESS_GROUP`, `CREATE_BREAKAWAY_FROM_JOB`) ; seul
+l'enfant d'un intermédiaire déjà sorti survit. Chaque driver passe donc par
+`nb_coder_detach.py`, qui le lance et sort aussitôt ; le planificateur le suit comme un
+driver adopté et enregistre son create time (`driver_create_time`, identité plus forte que
+la fenêtre de lancement). Conséquences : redémarrer le planificateur ne coûte plus les
+grains en vol ; **arrêter le planificateur n'arrête plus les drivers** — pour en arrêter
+un, tuer le pid de `state.json`. Sans psutil, ou si le lanceur échoue avant tout
+lancement (`detach-failed`), le lancement attaché d'avant est utilisé ; un lanceur muet
+60 s (`detach-timeout`) n'est jamais relancé et compte comme échec d'exécution.
+`--no-detach-drivers` rétablit le lancement attaché.
 
 **Commande** :
 

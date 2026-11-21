@@ -209,6 +209,7 @@ def test_spawn_driver_records_the_offset_before_appending(tmp_path, monkeypatch)
 
     monkeypatch.setattr(S.subprocess, "Popen", Popen)
     sched = _sched(tmp_path, {"issue": 27133, "notebook": NB, "status": "pending"}, Probe({}))
+    sched.args.detach_drivers = False          # the attached path; detached: test_nb_coder_detach
     proc = S.Scheduler._spawn_driver(sched, ["python", "--out-dir", str(out)])
     assert proc._nb_log_offset == len(b"previous attempt\n")
 
