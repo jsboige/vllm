@@ -387,6 +387,7 @@ def test_spawn_driver_writes_log_file_and_reap_reads_it(tmp_path):
     import subprocess as sp
     sched = make_sched(tmp_path, [item(1)], spawn=SpawnRecorder())
     sched.args.out_root = str(tmp_path / "runs")
+    sched.args.detach_drivers = False          # pins the attached path (Popen.wait below)
     out_dir = tmp_path / "runs" / "issue-1"
     cmd = [sys.executable, "-c",
            "import json; print(json.dumps({'verdict': 'built-executed-ok'}))",

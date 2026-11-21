@@ -159,9 +159,10 @@ ADOPTED_RC = -1
 
 
 class AdoptedDriver:
-    """A driver launched by a previous scheduler instance and still running.
+    """A driver that is not our child: launched DETACHED by this instance (see
+    _spawn_detached), or by a previous scheduler instance and still running.
 
-    It is not our child, so there is no Popen to poll. Its identity is the pid plus
+    There is no Popen to poll. Its identity is the pid plus
     the process create time read at adoption; poll() reports it finished as soon as
     that pair no longer names a live process. Its output is the driver.log the
     previous instance redirected it to, read from the offset recorded at launch.
@@ -180,6 +181,33 @@ class AdoptedDriver:
         if ident is not None and abs(ident[0] - self._create_time) < 1.0:
             return None
         return ADOPTED_RC
+
+
+class LostLaunch:
+    """A detached launch whose launcher never reported a pid (it timed out).
+
+    The driver may or may not have started, so it is NOT relaunched: a duplicate on
+    the same grain would collide on worktree, claim and PR. It reaps at once as a run
+    failure, read from the log offset of this attempt, so the ramp stops and the
+    operator sees it.
+    """
+
+    pid = None
+
+    def __init__(self, log: str, log_offset: int):
+        self._nb_driver_log = log
+        self._nb_log_offset = log_offset
+
+    def poll(self):
+        return ADOPTED_RC
+
+
+DETACH_LAUNCHER = Path(__file__).resolve().with_name("nb_coder_detach.py")
+
+
+def psutil_available() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("psutil") is not None
 
 
 def grain_key(item: dict) -> str:
@@ -451,9 +479,13 @@ class Scheduler:
             create_time, cmdline = ident
             if "nb_coder_driver" not in cmdline:
                 return "pid reused by another program"
-            if started is None or not (started - ADOPT_START_SLACK_BEFORE_S
-                                       <= create_time
-                                       <= started + ADOPT_START_SLACK_AFTER_S):
+            recorded = g.get("driver_create_time")
+            if recorded:
+                if abs(create_time - recorded) >= 1.0:
+                    return "pid reused: create time differs from the one recorded at launch"
+            elif started is None or not (started - ADOPT_START_SLACK_BEFORE_S
+                                         <= create_time
+                                         <= started + ADOPT_START_SLACK_AFTER_S):
                 return "pid reused by a process started outside the launch window"
         proc = AdoptedDriver(pid, create_time, log, g.get("driver_log_offset"),
                              self.process_probe)
@@ -469,11 +501,20 @@ class Scheduler:
     def _reconcile_previous_runs(self) -> None:
         """A scheduler that died left 'running' entries it can no longer wait on.
 
-        A driver that is still the process we launched (same pid, a create time inside
-        the launch window, a driver command line) is ADOPTED: it is watched by pid and
+        A driver that is still the process we launched (same pid, the create time
+        recorded at launch or else one inside the launch window, a driver command
+        line) is ADOPTED: it is watched by pid and
         its verdict read from its driver.log, so the scheduler can be restarted on new
-        code without waiting for the grains in flight. Measured 20/11: a driver
-        survives the death of the scheduler that launched it.
+        code without waiting for the grains in flight.
+
+        Surviving the scheduler is not automatic. On 20/11 a driver outlived the
+        scheduler that launched it, but on 21/11 00:45Z stopping the scheduler's
+        background task killed both drivers in flight (MGS-25, MGS-28): the stop walks
+        the process tree. Probe the same night: a direct child died with plain flags,
+        CREATE_NEW_PROCESS_GROUP and CREATE_BREAKAWAY_FROM_JOB alike; only a child of
+        an intermediate process that had already exited survived. Hence
+        --detach-drivers (default on): every driver is started through that
+        intermediate, nb_coder_detach.py.
 
         Anything else is marked orphaned, never silently relaunched: a duplicate
         driver on the same grain would collide on worktree, claim and PR. Recovery
@@ -531,6 +572,10 @@ class Scheduler:
             # relaunch that died without a verdict inherit the previous attempt's
             # last JSON line (a deferral read as a deferral again, for instance).
             offset = log.stat().st_size if log.is_file() else 0
+            if getattr(self.args, "detach_drivers", False) and psutil_available():
+                detached = self._spawn_detached(cmd, log, offset)
+                if detached is not None:
+                    return detached
             fh = open(log, "ab")
             try:
                 proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
@@ -541,6 +586,42 @@ class Scheduler:
             return proc
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
+
+    def _spawn_detached(self, cmd: list[str], log: Path, offset: int):
+        """Start the driver outside our process tree; None = not started, fall back.
+
+        The launcher starts the driver and exits, so the driver's parent is gone and
+        a stop of the scheduler's task no longer reaches it. It is then tracked like
+        an adopted driver: by pid and create time, its verdict read from driver.log.
+        Without psutil it could not be tracked at all, so the caller only comes here
+        when psutil imports.
+        """
+        try:
+            p = subprocess.run([sys.executable, str(DETACH_LAUNCHER), str(log), "--", *cmd],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60)
+        except subprocess.TimeoutExpired:
+            self._event("detach-timeout", log=str(log),
+                        note="launcher gave no pid in 60 s; the driver may be running "
+                             "untracked, so the grain is NOT relaunched")
+            return LostLaunch(str(log), offset)
+        lines = (p.stdout or "").strip().splitlines()
+        try:
+            reply = json.loads(lines[-1]) if lines else {}
+        except Exception:
+            reply = {}
+        pid = reply.get("pid") if isinstance(reply, dict) else None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            # Every launcher error path is a Popen that raised: nothing was started,
+            # so the attached launch the caller falls back to is not a duplicate.
+            self._event("detach-failed", rc=p.returncode,
+                        error=(reply.get("error") if isinstance(reply, dict) else None)
+                        or (p.stdout or p.stderr or "")[:300])
+            return None
+        ident = self.process_probe(pid)
+        # None: the driver already exited (an early crash); it reaps on the next tick.
+        create_time = ident[0] if ident is not None else 0.0
+        return AdoptedDriver(pid, create_time, str(log), offset, self.process_probe)
 
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
@@ -768,7 +849,11 @@ class Scheduler:
                   "not_before": None,
                   # what a restarted scheduler needs to adopt this driver
                   "driver_log": getattr(proc, "_nb_driver_log", None),
-                  "driver_log_offset": getattr(proc, "_nb_log_offset", None)})
+                  "driver_log_offset": getattr(proc, "_nb_log_offset", None),
+                  # detached drivers only: their exact create time, a stronger
+                  # identity than the launch window when a restarted scheduler adopts
+                  "driver_create_time": getattr(proc, "_create_time", None) or None,
+                  "detached": isinstance(proc, (AdoptedDriver, LostLaunch))})
         g.pop("adopted", None)
         self.active[key] = {"proc": proc, "item": item,
                             "pid": getattr(proc, "pid", None), "started": now}
@@ -994,6 +1079,12 @@ def parse_args(argv=None):
     ap.add_argument("--worktree-root", default=None,
                     help="driver worktrees (default <state-dir>/worktrees)")
     ap.add_argument("--fresh-worktree", action="store_true")
+    ap.add_argument("--detach-drivers", action=argparse.BooleanOptionalAction, default=True,
+                    help="start each driver through nb_coder_detach.py so that stopping "
+                         "the scheduler (TaskStop walks the process tree) does not kill "
+                         "the grains in flight; a restarted scheduler adopts them. Needs "
+                         "psutil, else the attached launch is used. To stop a detached "
+                         "driver, kill the pid recorded in state.json")
     ap.add_argument("--stop-file", default=None,
                     help="freeze new launches when this file exists (default <state-dir>/STOP)")
     ap.add_argument("--watch", action="store_true",
