@@ -5,7 +5,11 @@ The repair of 2.3d asked six cells at once. The call ran 644.7 s, past the model
 request budget, and the answer stopped in the middle of a cell source (31,654 chars, no
 error raised): nothing parsed, the loop broke and the grain was lost. The build stage
 already halves a tranche on exactly these two failures (#517); a repair round now does
-the same, once, and keeps whatever half parses."""
+the same and keeps whatever half parses.
+
+2.3c (same day) showed one halving is not enough: both 3-cell halves were cut too, at
+15.7K-25.7K chars with 9-12K of 32 768 completion tokens. A cut half is now halved again,
+down to REPAIR_SPLIT_DEPTH levels; a half that parses, or fails another way, is not."""
 
 import asyncio
 import importlib.util
@@ -53,13 +57,16 @@ def _run_round(tmp_path, monkeypatch, cells, answers):
     def key(stage):
         return stage.split("+0", 1)[1]
 
+    def answer(stage):
+        return answers[key(stage)] if key(stage) in answers else answers["*"]
+
     async def fake_retry(sk, args, rec, stage, prompt, conv, max_tokens=None):
         calls.append((key(stage), prompt))
-        resp, _ = answers[key(stage)]
+        resp, _ = answer(stage)
         return {"conversation_id": "c1", "response": resp, "error": None}
 
     async def fake_parse(sk, args, rec, stage, env, conv, max_tokens=None):
-        _, parsed = answers[key(stage)]
+        _, parsed = answer(stage)
         return ({"cells": parsed} if parsed else None), env
 
     async def fake_pm(pm, name, payload):
@@ -114,21 +121,65 @@ def test_a_cut_answer_is_asked_again_in_two_halves_and_both_apply(tmp_path, monk
 
 
 def test_a_half_that_fails_does_not_lose_the_other(tmp_path, monkeypatch):
-    answers = {"": ("", None), "+h0": (CUT, None), "+h1": ("ok}", [_fix(3), _fix(4)])}
+    answers = {"": ("", None), "+h1": ("ok}", [_fix(3), _fix(4)]), "*": (CUT, None)}
     monkeypatch.setattr(d, "call_timed_out", lambda env: not env.get("response"))
     calls, r, executed, _ = _run_round(tmp_path, monkeypatch, _notebook(), answers)
     assert r["bisect"]["cause"] == "timeout"
     assert r["replaced"] == [3, 4]
     assert r["bisect"]["halves"][0]["verdict"] == "truncated"
+    assert r["bisect"]["halves"][0]["got"] == 0
     assert executed == [[1, 2, 3, 4, 5]]
 
 
 def test_both_halves_failing_ends_the_loop_named(tmp_path, monkeypatch):
-    answers = {"": (CUT, None), "+h0": (CUT, None), "+h1": (CUT, None)}
+    answers = {"*": (CUT, None)}
     calls, r, executed, _ = _run_round(tmp_path, monkeypatch, _notebook(), answers)
     assert r["verdict"] == "bisect-truncated"
     assert [h["verdict"] for h in r["bisect"]["halves"]] == ["truncated", "truncated"]
+    # each two-cell half was itself halved down to single cells, all cut too
+    assert ([[s["asked"] for s in h["split"]["halves"]] for h in r["bisect"]["halves"]]
+            == [[[1], [2]], [[3], [4]]])
     assert executed == []
+
+
+# ---- a cut half is halved again (#27134 2.3c, 21/11) ------------------------------------
+def test_a_cut_half_is_halved_again_and_its_cells_apply(tmp_path, monkeypatch):
+    answers = {"": (CUT, None), "+h0": (CUT, None),
+               "+h0+h0": ("ok}", [_fix(1)]), "+h0+h1": ("ok}", [_fix(2)]),
+               "+h1": ("ok}", [_fix(3), _fix(4)])}
+    calls, r, executed, nb = _run_round(tmp_path, monkeypatch, _notebook(), answers)
+    assert [c[0] for c in calls] == ["", "+h0", "+h0+h0", "+h0+h1", "+h1"]
+    assert "### Cellule 1 (code)" in calls[2][1] and "### Cellule 2 (code)" not in calls[2][1]
+    assert r["replaced"] == [1, 2, 3, 4]
+    h0, h1 = r["bisect"]["halves"]
+    assert h0["verdict"] == "truncated" and h0["got"] == 2
+    assert [s["asked"] for s in h0["split"]["halves"]] == [[1], [2]]
+    assert "split" not in h1 and "verdict" not in h1
+    assert executed == [[1, 2, 3, 4, 5]]
+
+
+def test_halving_stops_at_the_depth_cap(tmp_path, monkeypatch):
+    """16 cells, every answer cut: halves of 8, 4, then 2 — the 2-cell requests at the
+    third level are named, not split again."""
+    calls, r, executed, _ = _run_round(tmp_path, monkeypatch, _notebook(16),
+                                       {"*": (CUT, None)})
+    assert len(calls) == 1 + 2 + 4 + 8
+    assert max(c[0].count("+h") for c in calls) == d.REPAIR_SPLIT_DEPTH
+    deepest = [s3 for h1 in r["bisect"]["halves"] for s2 in h1["split"]["halves"]
+               for s3 in s2["split"]["halves"]]
+    assert len(deepest) == 8 and all(len(s["asked"]) == 2 for s in deepest)
+    assert all(s["verdict"] == "truncated" and "split" not in s for s in deepest)
+    assert r["verdict"] == "bisect-truncated" and executed == []
+
+
+def test_a_half_wrong_but_complete_is_not_split(tmp_path, monkeypatch):
+    answers = {"": (CUT, None), "+h0": ("```json\n{nope}\n```", None),
+               "+h1": ("ok}", [_fix(3), _fix(4)])}
+    calls, r, _, _ = _run_round(tmp_path, monkeypatch, _notebook(), answers)
+    assert [c[0] for c in calls] == ["", "+h0", "+h1"]
+    h0 = r["bisect"]["halves"][0]
+    assert h0["verdict"] == "unparsed" and "split" not in h0
+    assert r["replaced"] == [3, 4]
 
 
 def test_a_single_cell_is_never_halved(tmp_path, monkeypatch):
