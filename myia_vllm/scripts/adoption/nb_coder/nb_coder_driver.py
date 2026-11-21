@@ -295,13 +295,32 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--paths", notebook,
-                        *(["--from-json", from_json] if from_json else [])],
-                       cwd=repo, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=120)
+    p = _run_claim_guard([sys.executable, str(script), str(n), "--lane", lane,
+                          "--paths", notebook,
+                          *(["--from-json", from_json] if from_json else [])], repo)
+    if p is None:
+        return {"ok": None, "rc": None, "timed_out": True,
+                "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": (p.stdout or p.stderr).strip()[:2000]}
+
+
+# The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
+# on a calm bucket (measured 21/11 02:5xZ), and a reservation makes three calls. Under
+# load one call passed 120 s and the TimeoutExpired escaped as `crashed:` (21/11 02:35Z,
+# MGS-28, #27133) -- a terminal failure for a grain that had done nothing wrong.
+CLAIM_GUARD_TIMEOUT_S = 300
+CLAIM_TIMEOUT_VERDICT = "deferred-by-claim-timeout"
+
+
+def _run_claim_guard(argv: list[str], repo: Path):
+    """CompletedProcess of one guard call, or None when it outlived its budget."""
+    try:
+        return subprocess.run(argv, cwd=repo, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=CLAIM_GUARD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def claim_verdict(cc: dict) -> str | None:
@@ -314,6 +333,10 @@ def claim_verdict(cc: dict) -> str | None:
     no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
     rc=0  -> clear, proceed.
     """
+    if cc.get("timed_out"):
+        # Not a verdict on the claim: the guard never answered. Deferred, so the
+        # scheduler retries with backoff instead of burning the grain.
+        return f"{CLAIM_TIMEOUT_VERDICT}:check"
     rc = cc.get("rc")
     if rc == 1:
         return "refused-claim-held-by-another-lane"
@@ -335,18 +358,28 @@ def post_claim(repo: Path, n: int, lane: str, intention: str,
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"rc": None, "out": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--paths", notebook, "--claim", intention,
-                        *(["--from-json", from_json] if from_json else [])],
-                       cwd=repo, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=120)
+    p = _run_claim_guard([sys.executable, str(script), str(n), "--lane", lane,
+                          "--paths", notebook, "--claim", intention,
+                          *(["--from-json", from_json] if from_json else [])], repo)
+    if p is None:
+        return {"rc": None, "timed_out": True,
+                "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
     return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:2000]}
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
-    """A model run starts only after an admitted, freshly re-read scoped claim."""
+    """A model run starts only after an admitted, freshly re-read scoped claim.
+
+    A guard that timed out is deferred, never admitted: after a post timeout the
+    comment state is UNKNOWN (same residue as refused-claim-post-failed), and the
+    retry's first act is the scoped pre-check -- the re-read of the thread that
+    residue requires. The guard resumes our own claim instead of colliding with it."""
+    if post.get("timed_out"):
+        return f"{CLAIM_TIMEOUT_VERDICT}:post"
     if post.get("rc") != 0:
         return "refused-claim-post-failed"
+    if verify.get("timed_out"):
+        return f"{CLAIM_TIMEOUT_VERDICT}:verify"
     if claim_verdict(verify) is not None:
         return "refused-claim-not-verified"
     return None
@@ -2556,25 +2589,56 @@ def verify_structure_create(src_path: Path, built_path: Path) -> dict:
 BUILD_MAX_TOKENS = 32768
 
 
-def agent_spec_for(agent: str, model: str | None, max_tokens: int, temperature: float) -> dict:
+def agent_spec_for(agent: str, model: str | None, max_tokens: int, temperature: float,
+                   tools: bool = True) -> dict:
     """call_agent composition spec (#4831: model per step). The `model` key is present
     ONLY when a per-step model is declared — absent, the extends preset's own model
     serves the call (the seat default). The server validates the ref against its
     config (enabled models only); what actually served the turn is read from the
-    envelope (served_fields), never from this declaration."""
+    envelope (served_fields), never from this declaration.
+
+    tools=False strips every MCP and the GitHub read tools from THIS turn only (the
+    preset, its model and its capacity gate are kept). See TOOLLESS_STAGE_RE."""
     spec: dict = {"extends": agent,
                   "sampling": {"max_tokens": max_tokens, "temperature": temperature}}
     if model:
         spec["model"] = model
+    if not tools:
+        spec["mcps"] = {"replace": []}
+        spec["parameters"] = {"github_tools": False}
     return spec
 
 
+# Repair, revision and format tours carry everything they need in their prompt (the cells,
+# the real kernel errors, the critic's findings) and answer with a JSON the harness applies.
+# Tools there are pure cost. Measured 21/11 on MGS-29 (#27133): the revision tour walked
+# read_cells / glob_search / list_files / list_kernels / manage_kernel on the agent's own
+# cwd (d:\dev\CoursIA — not the grain's worktree), first attempt empty after 10 293
+# completion tokens, retry killed by the 1 530 s call budget. And the schemas alone weigh:
+# the same 1-line prompt costs 32 167 prompt tokens with the coder's tools, 707 without
+# (live probes on qwen3.6-35b-a3b-nbcoder; 1 505 with the MCPs stripped but GitHub kept).
+# Plan, build and spec tours keep their tools.
+TOOLLESS_STAGE_RE = re.compile(r"repair|-format$|^6-revise")
+
+
+def stage_uses_tools(stage: str) -> bool:
+    return not TOOLLESS_STAGE_RE.search(stage)
+
+
+# The preset's system prompt still tells the coder to write cells with add_cell /
+# update_cell: on a tool-less tour it must hear, in the turn itself, that the answer is the
+# JSON and nothing else (otherwise it may narrate a tool call it cannot make).
+TOOLLESS_NOTE = ("\n\nCe tour n'a AUCUN outil : tout ce qu'il te faut est dans ce message. "
+                 "Rends directement le bloc ```json demandé, sans appeler ni annoncer d'outil.")
+
+
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
-                  max_tokens: int | None = None, model: str | None = None) -> tuple[dict, float]:
+                  max_tokens: int | None = None, model: str | None = None,
+                  tools: bool = True) -> tuple[dict, float]:
     # model: explicit per-turn override (the spec turn passes --spec-model); every other
     # call site is a coder turn and falls back to --coder-model (#4831).
     spec = agent_spec_for(args.agent, model or getattr(args, "coder_model", None),
-                          max_tokens or args.max_tokens, 0.4)
+                          max_tokens or args.max_tokens, 0.4, tools=tools)
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -2599,15 +2663,36 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
               "Réfléchis plus court (quelques centaines de mots), puis rends directement ta sortie.")
 
 
+# A capacity-gate refusal in the MIDDLE of a grain used to defer the whole grain: the
+# scheduler re-ran it from stage 0, re-paying the claim (~250 s), the plan and every build
+# tour. Measured 20-21/11 on MGS-28 (#27133): three deferrals after 1 112, 2 977 and 413 s
+# of build, never past stage 2. sk-agent commits nothing on a refused turn (its own seam,
+# sk_agent.py: "A refused fresh turn committed nothing … it is RETRY-ONLY — repeat the
+# same call"), its verdict is cached 10 s, and the gate's non-green spells are short (39
+# spells over 9 h of scheduler ticks, median one tick, longest past the start 20 min). So
+# the grain waits IN PLACE and repeats the same call; only a refusal that outlasts the
+# whole budget still defers it.
+GATE_WAIT_POLL_S = 60
+GATE_WAIT_MAX_S = 1800
+_gate_sleep = asyncio.sleep     # seam for tests
+
+
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
                         conv: str | None, max_tokens: int | None = None,
                         model: str | None = None) -> dict:
-    for attempt in range(2):
+    tools = stage_uses_tools(stage)
+    attempt = 0
+    waited = 0
+    while True:
         tob = engine_tokens()
-        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv,
-                                max_tokens, model=model)
+        env, dt = await sk_call(session, args,
+                                prompt + ("" if tools else TOOLLESS_NOTE)
+                                + (RETRY_NOTE if attempt else ""), conv,
+                                max_tokens, model=model, tools=tools)
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
+                             "tools": tools,
+                             **({"gate_waited_s": waited} if waited else {}),
                              "elapsed_s": dt, "error": env.get("error"),
                              # model_used/agent_used: the sk-agent ENTRY that routed the call,
                              # not proof of the model that answered (20/11: a hub reroute left
@@ -2620,9 +2705,14 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
-        if not (env.get("error") or "").startswith("empty model response"):
-            break
-    return env
+        if gate_refusal(env) and waited < GATE_WAIT_MAX_S:
+            await _gate_sleep(GATE_WAIT_POLL_S)
+            waited += GATE_WAIT_POLL_S
+            continue        # same prompt, same attempt: the refused turn committed nothing
+        if attempt == 0 and (env.get("error") or "").startswith("empty model response"):
+            attempt = 1
+            continue
+        return env
 
 
 async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, view: str,

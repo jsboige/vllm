@@ -83,6 +83,14 @@ ITEM_FIELDS = {
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
 # sync so a rc!=0 wrapper around a successful verdict is still classified done).
+# Verdicts a driver emits when the grain itself did nothing wrong and the same launch
+# should simply happen later: the capacity gate refused, or the claim guard never
+# answered (deferred-by-claim-timeout, 21/11: it used to surface as `crashed:`).
+DEFERRED_VERDICT_PREFIXES = (
+    "deferred-by-capacity-gate",
+    "deferred-by-claim-timeout",
+)
+
 DONE_VERDICT_SUFFIXES = (
     "built-executed-ok",
     "gates-ok",
@@ -817,7 +825,7 @@ class Scheduler:
             g.update({"finished": utcnow(), "returncode": rc,
                       "last_verdict": verdict, "elapsed_s": elapsed})
             ramp = self.state["ramp"]
-            if verdict.startswith("deferred-by-capacity-gate"):
+            if verdict.startswith(DEFERRED_VERDICT_PREFIXES):
                 g["status"] = "deferred"
                 # attempts counts LAUNCHES; the backoff grows with each refusal.
                 wait = min(self.args.backoff_s * max(1, g["attempts"]),

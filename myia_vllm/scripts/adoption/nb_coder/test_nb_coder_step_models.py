@@ -102,7 +102,7 @@ def test_sk_call_without_models_keeps_preset():
 def test_sk_call_retry_forwards_model_on_both_attempts(monkeypatch):
     seen = []
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         seen.append(model)
         return {"error": "empty model response"}, 0.1
 
