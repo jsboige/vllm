@@ -292,6 +292,85 @@ def test_rounds_are_bounded(monkeypatch, tmp_path):
     assert rec["verdict"] == "verify-reject"
 
 
+def _majors(n: int, minors: int = 1) -> list[dict]:
+    return ([{"cell": 1, "severity": "major", "detail": f"majeur {i}"} for i in range(n)]
+            + [{"cell": 2, "severity": "minor", "detail": "mineur"}] * minors)
+
+
+def _reject_with(n_majors: int) -> dict:
+    rec = _rejected_rec()
+    rec["verify"]["findings"] = _majors(n_majors)
+    return rec
+
+
+def test_a_converging_loop_earns_a_round_past_its_budget(monkeypatch, tmp_path):
+    # CoursIA#27747 (21/11): majors 6 -> 4 -> 1, the budget ran out with one major left
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 3,
+                         [("reject", _majors(2)), ("reject", _majors(1)), ("approve", [])])
+    rec = _reject_with(3)
+    _loop(_loop_args(revise_rounds=2), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved" and len(calls["sk"]) == 3
+    r = rec["revisions"]
+    assert [x["majors_in"] for x in r] == [3, 2, 1]
+    assert [x.get("majors_out") for x in r] == [2, 1, 0]
+    assert "extended" not in r[0]                 # inside the budget: nothing to extend
+    assert r[1]["extended"] == {"budget": 3, "cap": 4}
+
+
+def test_the_extension_is_capped(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 6,
+                         [("reject", _majors(n)) for n in (4, 3, 2, 1, 0)])
+    rec = _reject_with(5)
+    _loop(_loop_args(revise_rounds=2, revise_extend=2), rec, built, tmp_path)
+    assert len(rec["revisions"]) == 4 and len(calls["sk"]) == 4       # 2 + 2, never more
+    assert rec["verdict"] == "verify-reject"
+    assert "extended" not in rec["revisions"][-1]
+
+
+def test_a_stalled_loop_is_not_extended(monkeypatch, tmp_path):
+    # same day: [2, 1, 1] — the last round fixed no major
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 3,
+                         [("reject", _majors(1)), ("reject", _majors(1)), ("approve", [])])
+    rec = _reject_with(2)
+    _loop(_loop_args(revise_rounds=2), rec, built, tmp_path)
+    assert len(calls["sk"]) == 2 and rec["verdict"] == "verify-reject"
+
+
+def test_revise_extend_zero_keeps_the_fixed_budget(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 3,
+                         [("reject", _majors(2)), ("reject", _majors(1)), ("approve", [])])
+    rec = _reject_with(3)
+    _loop(_loop_args(revise_rounds=2, revise_extend=0), rec, built, tmp_path)
+    assert len(calls["sk"]) == 2 and rec["verdict"] == "verify-reject"
+
+
+def test_majors_of_another_source_do_not_extend(monkeypatch, tmp_path):
+    # a synthesized execution major then a verifier reject with none: not one scale
+    built = _failing_nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 2, [("reject", _majors(0)), ("approve", [])])
+    rec = _exec_seeded_rec()
+    _loop(_loop_args(revise_rounds=1), rec, built, tmp_path)
+    assert len(calls["sk"]) == 1 and rec["verdict"] == "verify-reject"
+    assert "extended" not in rec["revisions"][0]
+
+
+@pytest.mark.parametrize("done, budget, cap, s_in, s_out, m_in, m_out, want", [
+    (2, 2, 4, None, None, 4, 1, True),
+    (1, 2, 4, None, None, 4, 1, False),          # budget not spent yet
+    (4, 4, 4, None, None, 2, 1, False),          # cap reached
+    (2, 2, 4, None, None, 1, 1, False),          # no strict progress
+    (2, 2, 4, "execution", None, 3, 1, False),   # different sources
+    (2, 2, 4, "execution", "execution", 3, 1, True),
+    (2, 2, 4, None, None, 3, None, False),       # no verifier count after the round
+])
+def test_revise_round_extends(done, budget, cap, s_in, s_out, m_in, m_out, want):
+    assert D.revise_round_extends(done, budget, cap, s_in, s_out, m_in, m_out) is want
+
+
 def test_an_unparsed_revision_keeps_the_reject_and_the_draft(monkeypatch, tmp_path):
     built = _nb(tmp_path)
     before = built.read_bytes()
