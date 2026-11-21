@@ -4968,6 +4968,64 @@ def gate_repair_findings(rec: dict) -> list[dict]:
     return out
 
 
+# Execution-repair findings (21/11, po-2028 report): a cut per finding and a cap on how
+# many root failures are detailed; the reviser also sees every real output in the view.
+EXEC_FINDING_CAP = 1200
+EXEC_CASCADE_EXCERPT = 300
+EXEC_FINDINGS_MAX = 12
+
+
+def exec_repair_findings(rec: dict, built_path: Path) -> list[dict]:
+    """Verifier-shaped findings from the cells that STILL fail after the kernel-repair
+    rounds, so a built-execution-failed grain gets the constructive loop instead of dying.
+
+    Measured 21/11 (Swift conveyor, 46 launches): built-execution-failed was the dominant
+    class (18) and terminal (`revisions: []`) — the repair rounds work inside the build
+    conversation, the constructive loop (fresh conversation, whole notebook with real
+    outputs) never ran on it. A cell that fails only because an earlier failing cell
+    defines what it uses is named as a cascade of that root, with a short excerpt, so the
+    round fixes the root first. Roots beyond EXEC_FINDINGS_MAX are listed, never dropped
+    silently."""
+    failing = [e for e in rec.get("execution") or [] if isinstance(e, dict) and not e.get("ok")]
+    if not failing:
+        return []
+    try:
+        cells = _cells(built_path)
+    except (OSError, ValueError):
+        cells = []
+    detail = []
+    for e in failing:
+        i = e.get("cell")
+        cell = cells[i] if isinstance(i, int) and 0 <= i < len(cells) else {}
+        raw = _outputs_text(cell) if cell else ""
+        digest = error_digest(cell, raw, cap=EXEC_FINDING_CAP) if raw.strip() else ""
+        detail.append({"idx": i, "status": e.get("status"), "_raw_errors": raw,
+                       "errors": digest or str(e.get("error") or "")})
+    roots = cascade_roots(cells, [d for d in detail if isinstance(d["idx"], int)]) if cells else {}
+    out: list[dict] = []
+    skipped: list = []
+    for d in detail:
+        r = roots.get(d["idx"])
+        if r:
+            text = (f"échoue par CASCADE de la cellule {', '.join(map(str, r))} (un nom ou une "
+                    f"crate qu'elle devait définir) : corrige d'abord la racine ; extrait : "
+                    f"{d['errors'][:EXEC_CASCADE_EXCERPT]}")
+        elif sum(1 for f in out if "CASCADE" not in f["detail"]) >= EXEC_FINDINGS_MAX:
+            skipped.append(d["idx"])
+            continue
+        else:
+            status = (f"(statut {d['status']}) "
+                      if d["status"] not in (None, "ok", "error") else "")
+            text = (f"échec d'EXÉCUTION réel du noyau {status}après les tours de réparation — "
+                    f"{d['errors'] or 'aucune sortie d erreur persistée'}")
+        out.append({"cell": d["idx"], "severity": "major", "detail": text})
+    if skipped:
+        out.append({"cell": None, "severity": "major",
+                    "detail": f"{len(skipped)} autres cellules en échec non détaillées ici "
+                              f"(voir leurs sorties réelles dans le carnet) : {skipped}"})
+    return out
+
+
 def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
                       kname: str, wt_path: Path, out_dir: Path,
                       prior: dict | None = None) -> None:
@@ -4997,6 +5055,21 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         if findings:
             rec["gate_repair"] = {"from": rec["verdict"], "findings": len(findings)}
             rec["verify"] = {"verdict": "gate-reject", "findings": findings, "source": "gates"}
+            rec["verdict"] = "verify-reject"
+    # Same route for an execution that still fails after the kernel-repair rounds (21/11,
+    # po-2028 report: built-execution-failed was terminal, `revisions: []`). Inside the
+    # loop a revised draft that fails again is re-seeded from ITS errors, so each round
+    # answers the current failures, not the first ones.
+    if (rec.get("verdict") == "built-execution-failed"
+            and getattr(args, "revise_rounds", 0) > 0 and args.max_stage >= 4
+            and built_path.is_file()):
+        findings = exec_repair_findings(rec, built_path)
+        if findings:
+            er = rec.setdefault("exec_repair", {"from": "built-execution-failed", "seeded": 0})
+            er["seeded"] = er.get("seeded", 0) + 1
+            er["findings"] = len(findings)
+            rec["verify"] = {"verdict": "exec-reject", "findings": findings,
+                             "source": "execution"}
             rec["verdict"] = "verify-reject"
 
 
@@ -5089,10 +5162,14 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     # gate failure that survived its repair rounds is reported as what it is (and a
     # later --revise-from refuses it for the right reason). A REAL verify that ran after
     # the gates were fixed overwrote verify.source, so this only touches the never-fixed
-    # case.
-    if ((rec.get("verify") or {}).get("source") == "gates"
-            and not str(rec.get("verdict") or "").startswith("verify-approved")):
-        rec["verdict"] = (rec.get("gate_repair") or {}).get("from") or rec["verdict"]
+    # case. Execution repair follows the same rule (verify.source "execution"); a kernel
+    # that died during a round keeps its own verdict instead of being masked.
+    src = (rec.get("verify") or {}).get("source")
+    if (src in ("gates", "execution")
+            and not str(rec.get("verdict") or "").startswith("verify-approved")
+            and rec.get("verdict") != "kernel-start-failed"):
+        origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
+        rec["verdict"] = origin.get("from") or rec["verdict"]
 
 
 def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
@@ -5127,6 +5204,7 @@ async def run_revision(args, rec: dict) -> dict:
     #                   re-gated and re-verified instead of being thrown away.
     resume_from = getattr(args, "verify_from", None)
     gate_resume = None              # set when the trace is a repairable gates failure
+    exec_resume = None              # set when the trace is a repairable execution failure
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     trace_p = Path(resume_from or args.revise_from)
@@ -5156,6 +5234,17 @@ async def run_revision(args, rec: dict) -> dict:
             if not gate_resume:
                 rec["verdict"] = f"refused-gate-repair-unrepairable:{prior.get('verdict')}"
                 return rec
+        elif prior.get("verdict") == "built-execution-failed":
+            # the build on disk carries its persisted error outputs: findings come from
+            # them, the paid build is repaired instead of rebuilt (a missing build is
+            # refused below by the on-disk checks, before any spend)
+            built_p = Path((prior.get("built_notebook") or {}).get("path") or "")
+            if built_p.is_file():
+                exec_resume = exec_repair_findings({"execution": prior.get("execution") or []},
+                                                   built_p)
+                if not exec_resume:
+                    rec["verdict"] = "refused-exec-repair-unrepairable:built-execution-failed"
+                    return rec
         else:
             rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
             return rec
@@ -5199,6 +5288,11 @@ async def run_revision(args, rec: dict) -> dict:
                               "resumed": True}
         rec["verify"] = {"verdict": "gate-reject", "findings": gate_resume,
                          "source": "gates"}
+    if exec_resume:
+        rec["exec_repair"] = {"from": "built-execution-failed", "findings": len(exec_resume),
+                              "seeded": 1, "resumed": True}
+        rec["verify"] = {"verdict": "exec-reject", "findings": exec_resume,
+                         "source": "execution"}
     rec["stages"]["worktree"] = (prior.get("stages") or {}).get("worktree")
     rec["stages"]["claim_reservation"] = live_cr or (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
@@ -5248,8 +5342,9 @@ async def run_revision(args, rec: dict) -> dict:
         # a seeded gate repair enters the loop as a reject; the exhaustion-restore
         # inside revise_loop brings the honest gates-failed verdict back if the
         # repair never succeeds
-        rec["verdict"] = "verify-reject" if (rec.get("gate_repair") or {}).get("resumed") \
-            else prior["verdict"]
+        resumed = ((rec.get("gate_repair") or {}).get("resumed")
+                   or (rec.get("exec_repair") or {}).get("resumed"))
+        rec["verdict"] = "verify-reject" if resumed else prior["verdict"]
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
