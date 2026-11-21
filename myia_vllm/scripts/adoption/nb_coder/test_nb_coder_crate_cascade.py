@@ -12,6 +12,7 @@ that cell, exactly as a cell failing on a name that cell declares (#27302)."""
 import asyncio
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,9 +118,49 @@ def test_crate_names_match_across_dash_and_underscore():
     assert d.cascade_roots(cells, _detail(cells))[5] == [2]
 
 
+def _replay_cells() -> list[dict]:
+    """The artefact is LIVE: a later 2.3c attempt rewrites the same run directory (21/11
+    05:2xZ it held 0 cells mid-run, and the suite failed on main). Replay only while it
+    still shows the recorded case -- the `:dep` cell 2 failing -- and skip otherwise."""
+    try:
+        cells = json.loads(REPLAY.read_text(encoding="utf-8"))["cells"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pytest.skip("live run artefact unreadable (rewritten by a later attempt?)")
+    dep = cells[2] if len(cells) > 2 and isinstance(cells[2], dict) else {}
+    failing = any(o.get("output_type") == "error" for o in dep.get("outputs", []))
+    if not (dep.get("cell_type") == "code" and ":dep" in d._text(dep.get("source"))
+            and failing):
+        pytest.skip("live run artefact no longer shows the replayed case "
+                    "(a later attempt rewrote it)")
+    return cells
+
+
+def _write_nb(path: Path, cells: list[dict]) -> Path:
+    path.write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    return path
+
+
+def test_the_replay_guard_skips_a_rewritten_artefact(tmp_path, monkeypatch):
+    for cells in ([], [_code("x"), _code("y"), _code(DEPS)],          # empty / dep cell ran
+                  [_code("x"), _code("y"), _code("let z = 1;", ERR_DEP_CELL)]):  # no :dep
+        monkeypatch.setattr(sys.modules[__name__], "REPLAY",
+                            _write_nb(tmp_path / "nb.ipynb", cells))
+        with pytest.raises(pytest.skip.Exception):
+            _replay_cells()
+    monkeypatch.setattr(sys.modules[__name__], "REPLAY", tmp_path / "missing.ipynb")
+    with pytest.raises(pytest.skip.Exception):
+        _replay_cells()
+
+
+def test_the_replay_guard_keeps_the_recorded_case(tmp_path, monkeypatch):
+    cells = [_code("x"), _code("y"), _code(DEPS, ERR_DEP_CELL)]
+    monkeypatch.setattr(sys.modules[__name__], "REPLAY", _write_nb(tmp_path / "nb.ipynb", cells))
+    assert _replay_cells() == json.loads(json.dumps(cells))
+
+
 @pytest.mark.skipif(not REPLAY.exists(), reason="live run artefact not on this machine")
 def test_replay_2_3c_asks_the_dep_cell_alone():
-    cells = json.loads(REPLAY.read_text(encoding="utf-8"))["cells"]
+    cells = _replay_cells()
     detail = [{"idx": i, "_raw_errors": d._outputs_text(c)} for i, c in enumerate(cells)
               if c.get("cell_type") == "code"
               and any(o.get("output_type") == "error" for o in c.get("outputs", []))]
