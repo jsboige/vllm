@@ -92,6 +92,31 @@ DONE_VERDICT_SUFFIXES = (
     "pr-created",
 )
 
+# Failures where the engine served the whole conversation and the harness reached a
+# CONTENT judgement: the notebook did not pass, the capacity did not fail. They prove a
+# served run for the ramp and never block its promotion. Measured 20/11 -> 21/11: one
+# built-execution-failed on CoursIA#27302 (a C# parity grain, the hard class) froze the
+# ramp at its floor for 7 h ("failures 1>0"), with the gate green 791/858 samples. Every
+# other failure (call-failed, timeouts, no-answer, crash, kernel, verify-error, an
+# unknown verdict) stays a run failure and blocks, as before: unknown is never content.
+CONTENT_FAILURE_PREFIXES = (
+    "built-execution-failed",
+    "built-structure-mismatch",
+    "built-executed-counts-broken",
+    "gates-failed",
+    "verify-reject",
+    "stage1-unaddressable-creation-plan",
+    "refused-spec-plan-unusable",
+    "stage2-short-segment",
+)
+
+
+def failure_class(verdict: str | None) -> str:
+    """'content' for a judged notebook that did not pass, 'run' for everything else."""
+    v = (verdict or "").strip()
+    return "content" if any(v.startswith(p) for p in CONTENT_FAILURE_PREFIXES) else "run"
+
+
 
 class QueueError(ValueError):
     pass
@@ -248,6 +273,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
         "step_started": now,
         "done": 0,
         "failed": 0,
+        "content_failed": 0,
         "deferred": 0,
         "first_green_ts": None,
         "dirty": False,          # red or unknown seen since the step started (evidence)
@@ -262,6 +288,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
 def _step_report(ramp: dict, now: float) -> dict:
     return {k: ramp.get(k) for k in (
         "steps", "step_index", "max_active", "step_started", "done", "failed",
+        "content_failed",
         "deferred", "dirty", "samples", "green_samples", "running_max",
         "waiting_max", "preempt_max")} | {"step_ended": now,
                                           "duration_s": round(now - ramp["step_started"], 1)}
@@ -269,7 +296,8 @@ def _step_report(ramp: dict, now: float) -> dict:
 
 def _reset_step_counters(ramp: dict, now: float) -> None:
     """Keep the ramp position, reset the promotion evidence."""
-    ramp.update({"step_started": now, "done": 0, "failed": 0, "deferred": 0,
+    ramp.update({"step_started": now, "done": 0, "failed": 0, "content_failed": 0,
+                 "deferred": 0,
                  "first_green_ts": None, "dirty": False, "samples": 0,
                  "green_samples": 0, "running_max": 0.0, "waiting_max": 0.0,
                  "preempt_max": 0.0})
@@ -603,7 +631,7 @@ class Scheduler:
                 self._event("ramp-demoted", reason="red-gate",
                             max_active=ramp["max_active"], previous=old)
 
-    def _step_failures(self, ramp: dict) -> int:
+    def _step_failures(self, ramp: dict, cls: str = "run") -> int:
         """Grains that failed during this step and are still failed.
 
         A counter incremented at each failure kept a grain's failure as evidence after
@@ -612,12 +640,17 @@ class Scheduler:
         promotion of step 0. The latest outcome of a grain is what counts; a retried
         grain that fails again counts again. A failure recorded before this rule
         carries no `ramp_failed_ts` and is not counted.
+
+        cls splits them by failure_class: "run" failures block the promotion, "content"
+        ones count as served runs. The class is read from the grain's latest verdict, so
+        a failure recorded before the split classifies the same way.
         """
         since = ramp.get("step_started") or 0
         return sum(1 for g in self.state["grains"].values()
                    if g.get("status") == "failed"
                    and g.get("ramp_failed_ts") is not None
-                   and g["ramp_failed_ts"] >= since)
+                   and g["ramp_failed_ts"] >= since
+                   and failure_class(g.get("last_verdict")) == cls)
 
     def _maybe_promote(self, pending_count: int, now: float) -> None:
         ramp = self.state["ramp"]
@@ -626,9 +659,12 @@ class Scheduler:
         first_green = ramp.get("first_green_ts")
         green_s = (now - first_green) if first_green is not None else -1
         reasons = []
-        if ramp["done"] < self.args.ramp_min_done:
-            reasons.append(f"done {ramp['done']}/{self.args.ramp_min_done}")
-        ramp["failed"] = self._step_failures(ramp)
+        ramp["content_failed"] = self._step_failures(ramp, "content")
+        served = ramp["done"] + ramp["content_failed"]
+        if served < self.args.ramp_min_done:
+            reasons.append(f"served {served}/{self.args.ramp_min_done} "
+                           f"(done {ramp['done']} + content-failed {ramp['content_failed']})")
+        ramp["failed"] = self._step_failures(ramp, "run")
         if ramp["failed"] > self.args.ramp_max_failures:
             reasons.append(f"failures {ramp['failed']}>{self.args.ramp_max_failures}")
         if green_s < self.args.ramp_green_s:
@@ -705,9 +741,11 @@ class Scheduler:
             else:
                 g["status"] = "failed"
                 g["ramp_failed_ts"] = now
-                ramp["failed"] += 1
+                cls = failure_class(verdict)
+                counter = "content_failed" if cls == "content" else "failed"
+                ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
-                            elapsed_s=elapsed)
+                            elapsed_s=elapsed, failure_class=cls)
             del self.active[key]
 
     def _eligible(self, now: float) -> list[str]:
@@ -930,7 +968,8 @@ def parse_args(argv=None):
     ap.add_argument("--ramp", type=lambda s: [int(x) for x in s.split(",")],
                     help="measured ramp, e.g. 2,3,4")
     ap.add_argument("--ramp-min-done", type=int, default=3,
-                    help="clean completions required before promotion")
+                    help="served runs required before promotion: clean completions + "
+                         "content failures (a judged notebook that did not pass)")
     ap.add_argument("--ramp-green-s", type=float, default=600,
                     help="cumulative green time required before promotion")
     ap.add_argument("--ramp-max-failures", type=int, default=0)

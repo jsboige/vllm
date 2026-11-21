@@ -410,8 +410,20 @@ SMT/Z3-API #27099-#27103 + GameTheory #27109-#27113, tous `source_nb` + `kernel_
 - `--max-attempts` épuisé sur du déféré → **failed** terminal (jamais de boucle infinie).
 
 **Ramp mesurée** (`--ramp 2,3,4`) : la promotion d'un palier exige `--ramp-min-done`
-achèvements propres (3), zéro échec au-delà de `--ramp-max-failures`, **aucun red/unknown
-depuis le début du palier** (`dirty`), et `--ramp-green-s` de green cumulé (600 s).
+**runs servis** (3), zéro échec de run au-delà de `--ramp-max-failures`, et `--ramp-green-s`
+de green **continu** (600 s ; un échantillon red/unknown relance la fenêtre, `dirty` le
+garde comme preuve dans le rapport du palier). Un run servi est un achèvement propre **ou
+un échec de contenu** : le moteur a servi toute la conversation et le harnais a jugé un
+carnet qui n'a pas passé (`built-execution-failed`, `built-structure-mismatch`,
+`built-executed-counts-broken`, `gates-failed:*`, `verify-reject`,
+`stage1-unaddressable-creation-plan`, `refused-spec-plan-unusable`,
+`stage2-short-segment:*` — `CONTENT_FAILURE_PREFIXES`, préfixe strict). Tout autre échec
+(appel, timeout, sans réponse, crash, kernel, `verify-error`, verdict inconnu) reste un
+**échec de run** et bloque. Les échecs comptés sont les grains échoués pendant le palier
+et **encore** échoués (un grain relancé sur correctif sort de la preuve). Mesure fondatrice
+(21/11) : un seul `built-execution-failed` sur CoursIA#27302 (parité C#) avait gelé le
+tapis à son palier plancher 7 h, gate green sur 791/858 échantillons. L'événement
+`failed` porte `failure_class` ; `ramp_history` porte `done`, `content_failed`, `failed`.
 `--ramp-demote` redescend d'un palier sur red (les preuves repartent de zéro, les grains
 en vol continuent). Tout palier franchi est archivé dans `ramp_history` (state.json) avec
 ses compteurs — la montée se **prouve**, elle ne se déclare pas.
