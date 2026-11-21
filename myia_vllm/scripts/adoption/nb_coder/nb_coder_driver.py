@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import fnmatch
 import hashlib
+import html
 import io
 import json
 import os
@@ -4228,6 +4229,59 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     return gates
 
 
+# The kernel's own extension-loading notice, one line per loaded package:
+#   Loading extensions from `C:\Users\<user>\.nuget\packages\skiasharp\2.88.9\interactive-extensions\dotnet\…dll`
+# 21/11 (po-2028, batch w3e2): 5 of 6 C# failures were gates-failed:machine-path on THIS
+# line alone — source_hits empty, the same cell flagged in every built notebook, 5 repair
+# rounds unable to remove it (a cell edit cannot remove a kernel output). Every ScottPlot
+# grain was structurally blocked. The canonical environment prints it too (`/root/.nuget`,
+# measured in ChoixSocial-01-…-CSharp.ipynb on CoursIA main), so the line is never content.
+EXT_BANNER_LINE_RE = re.compile(r"^\s*Loading extensions from\s+`?[^`\n]+`?\s*\.?\s*$")
+_TEXT_MIMES = ("text/plain", "text/html", "text/markdown")
+
+
+def _is_ext_banner_text(t: str) -> bool:
+    lines = [ln for ln in html.unescape(re.sub(r"<[^>]+>", "", t)).splitlines() if ln.strip()]
+    return bool(lines) and all(EXT_BANNER_LINE_RE.match(ln) for ln in lines)
+
+
+def _is_ext_banner_output(o: dict) -> bool:
+    """A DISPLAY output (display_data / execute_result) whose only content is the
+    kernel's extension notice. Streams are never touched: a line the MODEL prints to
+    stdout stays judged by the machine-path gate."""
+    if not isinstance(o, dict) or o.get("output_type") not in ("display_data", "execute_result"):
+        return False
+    data = o.get("data") or {}
+    if not data or any(k not in _TEXT_MIMES for k in data):
+        return False
+    texts = [_text(data[k]) for k in data]
+    return any(t.strip() for t in texts) and all(_is_ext_banner_text(t) for t in texts if t.strip())
+
+
+def strip_kernel_extension_banner(nb_path: Path) -> dict:
+    """Drop the kernel's `Loading extensions from <path>` display outputs from the built
+    notebook BEFORE the gates read it and before delivery: the line names a user profile
+    (`C:/Users/<user>/…`), so a merged notebook carrying it is a real machine-path leak,
+    and the build cannot repair it. Model-written text keeps facing the gate."""
+    try:
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    removed = []
+    for i, c in enumerate(nb.get("cells") or []):
+        outs = c.get("outputs")
+        if c.get("cell_type") != "code" or not outs:
+            continue
+        kept = [o for o in outs if not _is_ext_banner_output(o)]
+        if len(kept) != len(outs):
+            removed.append({"cell": i, "outputs": len(outs) - len(kept)})
+            c["outputs"] = kept
+    if removed:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                           encoding="utf-8")
+    return {"ok": True, "removed": removed}
+
+
 def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     """Post-execution hygiene the CoursIA issues mandate verbatim: any .NET Interactive
     re-execution injects a probeAddresses JS banner into cell outputs, and
@@ -5293,6 +5347,7 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         if kname.startswith(".net"):
             rec["banner_strip"] = strip_dotnet_banner(
                 wt_path / "scripts" / "notebook_tools" / "strip_probe_banner.py", built_path)
+        rec["ext_banner_strip"] = strip_kernel_extension_banner(built_path)
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
