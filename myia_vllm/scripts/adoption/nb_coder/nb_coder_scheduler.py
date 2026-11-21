@@ -89,11 +89,34 @@ ITEM_FIELDS = {
 # deferred-by-claim-implicit-occupation (21/11): another lane's open PR on the same LOT
 # issue, disjoint from this notebook, made the guard answer IMPLICIT; it clears when
 # that PR merges.
+# deferred-by-github-rate-limit (21/11): the shared per-user REST bucket ran dry
+# (0/5000) and CoursIA#27134's 2.3c died at its issue fetch, 30 s after launch, as a
+# `crashed:` run failure that consumed its retry and blocked the ramp. Nothing in the
+# grain was wrong; it waits until the bucket refills (`:reset=<epoch>`, read by the driver
+# from the free rate_limit endpoint) and launches again.
 DEFERRED_VERDICT_PREFIXES = (
     "deferred-by-capacity-gate",
     "deferred-by-claim-timeout",
     "deferred-by-claim-implicit-occupation",
+    "deferred-by-github-rate-limit",
 )
+# A reset further than this is not believed: the core bucket refills every hour.
+GITHUB_RESET_MAX_S = 3700.0
+GITHUB_RESET_MARGIN_S = 30.0
+
+
+def github_reset_wait(verdict: str, now: float) -> float | None:
+    """Seconds until the GitHub bucket named by a rate-limit deferral refills, or None."""
+    if not verdict.startswith("deferred-by-github-rate-limit"):
+        return None
+    for part in verdict.split(":")[1:]:
+        if part.startswith("reset="):
+            try:
+                reset = float(part[len("reset="):])
+            except ValueError:
+                return None
+            return min(max(reset - now, 0.0) + GITHUB_RESET_MARGIN_S, GITHUB_RESET_MAX_S)
+    return None
 
 DONE_VERDICT_SUFFIXES = (
     "built-executed-ok",
@@ -834,6 +857,9 @@ class Scheduler:
                 # attempts counts LAUNCHES; the backoff grows with each refusal.
                 wait = min(self.args.backoff_s * max(1, g["attempts"]),
                            self.args.backoff_max_s)
+                reset_wait = github_reset_wait(verdict, self.clock())
+                if reset_wait is not None:
+                    wait = max(wait, reset_wait)
                 g["not_before"] = self.clock() + wait
                 ramp["deferred"] += 1
                 self._event("deferred", key=key, rc=rc, verdict=verdict,

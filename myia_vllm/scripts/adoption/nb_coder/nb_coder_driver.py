@@ -158,6 +158,29 @@ def gh(args: list[str], token: str | None = None, timeout: int = 60) -> tuple[in
     return p.returncode, (p.stdout or p.stderr).strip()
 
 
+# GitHub's two refusals for a drained bucket: "API rate limit exceeded for user ID …" (core)
+# and "You have exceeded a secondary rate limit" (abuse). Neither says anything about the
+# grain, so a run that dies on one is deferred, not failed (21/11, CoursIA#27134 2.3c).
+_GH_RATE_LIMIT_RE = re.compile(r"API rate limit exceeded|secondary rate limit", re.I)
+
+
+def github_rate_limited(text: str) -> bool:
+    return bool(_GH_RATE_LIMIT_RE.search(text or ""))
+
+
+def github_core_reset(token: str | None = None) -> int | None:
+    """Epoch at which the core bucket refills. /rate_limit does not count against it."""
+    try:
+        rc, out = gh(["api", "rate_limit", "--jq", ".resources.core.reset"], token, timeout=20)
+        return int(out) if rc == 0 else None
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def rate_limit_verdict(reset: int | None) -> str:
+    return "deferred-by-github-rate-limit" + (f":reset={reset}" if reset else "")
+
+
 def app_token(repo_dir: Path) -> str | None:
     """Requirement #5: 1-hour installation token, never persisted, never in the model context."""
     app_id = os.environ.get("NBCODER_GH_APP_ID")
@@ -5175,6 +5198,8 @@ def main() -> int:
         rec["crash"] = {"type": type(exc).__name__, "message": str(exc)[:500],
                         "traceback_tail": traceback.format_exc()[-2000:]}
         rec["verdict"] = f"crashed:{type(exc).__name__}: {str(exc)[:300]}"
+        if github_rate_limited(str(exc)):
+            rec["verdict"] = rate_limit_verdict(github_core_reset())
         # `dry` is NOT forced here: it says "the run stopped before stage 5", which a crash on
         # --max-stage 5 does not mean (co-review of #442, F4-1). rec already carries the true
         # value from main() — a crash is a crash, not a dry run.
