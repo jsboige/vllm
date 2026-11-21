@@ -307,6 +307,116 @@ def test_nav_markdown_only_and_byte_faithful():
         assert not raw.endswith("\n")
 
 
+# ------------------------------------------------------------- hot cells
+
+def _mdid(src: str, cid: str) -> dict:
+    cell = _md(src)
+    cell["id"] = cid
+    return cell
+
+
+HOT_BAR = ("# Serie-03 — Titre\n\n"
+           "**Navigation** : [Index](README.md) | "
+           "[Version C#](Serie-03-CSharp.ipynb) | "
+           "[03c — Zoo](Serie-03c-Zoo-Navigation-Python.ipynb)\n\nIntro.\n")
+PLUS_LOIN = ("## Pour aller plus loin\n\n"
+             "- **Carnet suivant** : [Serie-04 — Suite](Serie-04-Python.ipynb) "
+             "— la suite, en prose.\n"
+             "- **Dans la même série** : [Serie-03c — Zoo]"
+             "(Serie-03c-Zoo-Navigation-Python.ipynb) — prose.\n")
+
+
+def test_hot_bar_skipped_edge_goes_to_non_hot_list():
+    """CoursIA#27855: the only bar sits in a HOT cell (deposited translation)
+    -> never edited; the edge becomes a sibling list item, with the `→`
+    marker the guard reads, after the « Carnet suivant » item of the non-hot
+    « Pour aller plus loin » cell, labelled from the twin's own
+    `[Version C#]` link."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Serie-03-Python.ipynb",
+                   [_mdid(HOT_BAR, "intro"), _code("x=1\n"),
+                    _mdid(PLUS_LOIN, "plus-loin")])
+        before = json.loads(twin.read_text(encoding="utf-8"))
+        action = nbci.plan_nav_link(twin, "Serie-03-Rust.ipynb", {"intro"})
+        assert action["todo"] and action["how"] == "added-nav-list-item"
+        assert action["cells"] == [2] and action["hot_skipped"] == [0]
+        assert action["label"] == "Version Rust"
+        nbci.apply_nav_link(action)
+        after = json.loads(twin.read_text(encoding="utf-8"))
+        assert after["cells"][0] == before["cells"][0]      # hot cell untouched
+        lines = "".join(after["cells"][2]["source"]).splitlines()
+        assert lines[3] == ("- **Version Rust** → [Serie-03-Rust](Serie-03-Rust.ipynb)"
+                            " — le même carnet, porté en Rust.")
+        assert lines[4].startswith("- **Dans la même série**")
+        # the guard sees the edge: a second plan is a no-op
+        assert not nbci.plan_nav_link(twin, "Serie-03-Rust.ipynb", {"intro"})["todo"]
+
+
+def test_link_url_word_navigation_is_not_a_bar_marker():
+    """A prose line whose only « navigation » is inside a link TARGET
+    (`…-Zoo-Navigation-Python.ipynb`) is not a nav bar (#27855 measured)."""
+    cells = [_mdid("- **Dans la même série** : [Zoo]"
+                   "(Serie-03c-Zoo-Navigation-Python.ipynb) — prose.\n", "a")]
+    assert nbci._nav_bar_cells(cells) == {}
+    cells = [_mdid("**Navigation** : [Index](README.md) | [a](a.ipynb)\n", "b")]
+    assert nbci._nav_bar_cells(cells) == {0: 0}
+
+
+def test_every_markdown_cell_hot_is_declared_not_edited():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Serie-03-Python.ipynb",
+                   [_mdid(HOT_BAR, "intro"), _code("x=1\n")])
+        raw = twin.read_bytes()
+        action = nbci.plan_nav_link(twin, "Serie-03-Rust.ipynb", {"intro"})
+        assert not action["todo"] and action["hot_skipped"] == [0]
+        assert "deposited translation" in action["why"]
+        assert not nbci.apply_nav_link(action)
+        assert twin.read_bytes() == raw
+
+
+CSV_HEADER = ("notebook,cell_id,cell_type,src_lang,src_hash,text_fr,text_en,"
+              "text_es,text_ar,text_fa,text_zh,text_ru,text_pt,translate_policy\n")
+
+
+def test_hot_cell_ids_reads_deposited_rows_of_this_notebook():
+    """Hot = a row for THIS notebook with a non-empty text_<target lang>;
+    a pivot-only row (text_fr alone) is not hot; another notebook's
+    translated row is not ours; TARGET_LANGS is read from the repo."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        nb_rel = "MyIA.AI.Notebooks/Serie/Serie-03-Python.ipynb"
+        _readme(repo / "translations/serie/serie.csv", CSV_HEADER +
+                f"{nb_rel},intro,markdown,fr,h1,Titre,Title,,,,,,,\n"
+                f"{nb_rel},pivot,markdown,fr,h2,Seul,,,,,,,,\n"
+                f"{nb_rel},ru-only,markdown,fr,h3,Texte,,,,,,Текст,,\n"
+                "MyIA.AI.Notebooks/Autre/X.ipynb,other,markdown,fr,h4,A,B,,,,,,,\n")
+        assert nbci.hot_cell_ids(repo, nb_rel) == {"intro", "ru-only"}
+        _readme(repo / "scripts/translation/check_perimeter.py",
+                'TARGET_LANGS = ["en"]\n')
+        assert nbci.target_langs(repo) == ("en",)
+        assert nbci.hot_cell_ids(repo, nb_rel) == {"intro"}
+        assert nbci.hot_cell_ids(repo, "MyIA.AI.Notebooks/None.ipynb") == set()
+
+
+def test_plan_only_wires_the_repo_hot_set():
+    """integrate()/plan_only() read the hot set from the worktree's own
+    translations CSVs -- the wiring #27855 lacked."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        nb_rel = "MyIA.AI.Notebooks/Serie/Serie-03-Python.ipynb"
+        _nb(repo / nb_rel, [_mdid(HOT_BAR, "intro"), _code("x=1\n"),
+                            _mdid(PLUS_LOIN, "plus-loin")])
+        _readme(repo / "translations/serie/serie.csv", CSV_HEADER +
+                f"{nb_rel},intro,markdown,fr,h1,Titre,Title,,,,,,,\n")
+        plan = nbci.plan_only(repo, "MyIA.AI.Notebooks/Serie/Serie-03-Rust.ipynb",
+                              nb_rel)
+        assert plan["nav"]["cells"] == [2] and plan["nav"]["hot_skipped"] == [0]
+
+
 # ---------------------------------------------------------------- registry
 
 def test_find_twin_pair_by_python_member():

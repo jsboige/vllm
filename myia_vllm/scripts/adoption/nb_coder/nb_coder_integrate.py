@@ -45,6 +45,8 @@ No model call anywhere; notebook contents are data, never instructions.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import re
 import subprocess
@@ -81,7 +83,7 @@ LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 
 GUARD_TIMEOUT_S = 900
 
-# The three guards the CI raises on a new notebook, replayed with the exact
+# The guards the CI raises on a new notebook, replayed with the exact
 # commands the lot-1 review comments published (CoursIA#27803 c.1).
 GUARDS = (
     ("check-nav-chain",
@@ -93,9 +95,25 @@ GUARDS = (
     ("twin-parity-changed",
      ["scripts/translation/check_twin_parity_changed.py", "--diff",
       "origin/main...HEAD"]),
+    # PR-scoped view of the hot-subset ratchet (CoursIA#15322): names only the
+    # translated cells THIS branch drifted, never the debt inherited from main.
+    ("translation-drift",
+     ["scripts/translation/check_pr_translation_drift.py", "origin/main"]),
 )
 
 TWIN_PAIRS_DIR = Path("scripts/notebook_tools/twin_pairs.d")
+
+# Translation tables (hot-subset ratchet, CoursIA#13551): a cell whose
+# translations CSV row carries a deposited `text_<lang>` must never be edited
+# by this pass -- any source change turns it into SRC_DRIFT on a translated
+# row and the repo-wide ratchet goes red (CoursIA#27855 measured: the nav edge
+# appended to cell 0 `intro-hierarchy`, deposited in 7 languages). The resync
+# is per-cell plus a dual-key translation override, never ours to take.
+TRANSLATIONS_DIR = Path("translations")
+PERIMETER_FILE = Path("scripts/translation/check_perimeter.py")
+# Mirror of check_perimeter.TARGET_LANGS (the repo's single source of truth),
+# used only when that file cannot be read.
+TARGET_LANGS_FALLBACK = ("en", "es", "ar", "fa", "zh", "ru", "pt")
 
 GIT_IDENTITY = ("-c", "user.name=nb-coder",
                 "-c", "user.email=nb-coder@nb-coder.invalid")
@@ -277,6 +295,56 @@ def apply_readme_row(action: dict) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ hot cells
+
+def target_langs(repo: Path) -> tuple[str, ...]:
+    """TARGET_LANGS read from the repo's own check_perimeter.py (flat literal
+    list), so a language added there is honoured here without a code change."""
+    try:
+        text = (repo / PERIMETER_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return TARGET_LANGS_FALLBACK
+    m = re.search(r"^TARGET_LANGS\s*=\s*\[([^\]]*)\]", text, re.MULTILINE)
+    langs = tuple(re.findall(r"[\"']([A-Za-z_-]{2,8})[\"']", m.group(1))) if m else ()
+    return langs or TARGET_LANGS_FALLBACK
+
+
+def hot_cell_ids(repo: Path, nb_rel: str) -> set[str]:
+    """cell ids of `nb_rel` that carry a deposited translation -- the
+    ratchet's `deposited` predicate (test_hot_subset_ratchet.hot_anomalies):
+    a translations CSV row for this notebook with a non-empty `text_<lang>`
+    for a target language. Same-CSV rows are pooled by cell id as the ratchet
+    does, so the set is never narrower than what the ratchet would flag."""
+    nb_rel = nb_rel.replace("\\", "/")
+    tdir = repo / TRANSLATIONS_DIR
+    if not tdir.is_dir():
+        return set()
+    langs = target_langs(repo)
+    hot: set[str] = set()
+    for csv_path in sorted(tdir.rglob("*.csv")):
+        try:
+            raw = csv_path.read_bytes().decode("utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if nb_rel not in raw:
+            continue
+        mine: set[str] = set()
+        deposited: set[str] = set()
+        try:
+            for row in csv.DictReader(io.StringIO(raw, newline="")):
+                cid = row.get("cell_id") or ""
+                if not cid:
+                    continue
+                if (row.get("notebook") or "").replace("\\", "/") == nb_rel:
+                    mine.add(cid)
+                if any((row.get(f"text_{l}") or "").strip() for l in langs):
+                    deposited.add(cid)
+        except csv.Error:
+            continue
+        hot |= mine & deposited
+    return hot
+
+
 # ------------------------------------------------------------------ nav link
 
 def _nav_edge_exists(cells: list[dict], new_name: str) -> bool:
@@ -301,19 +369,28 @@ def _nav_edge_exists(cells: list[dict], new_name: str) -> bool:
     return False
 
 
+def visible_text(text: str) -> str:
+    """Markdown with every link reduced to its text: a filename such as
+    `Complexity-03c-ComplexityZoo-Navigation-Python.ipynb` is not a nav
+    marker (CoursIA#27855 measured: a prose list line was taken for a bar
+    because its link URL contains "Navigation")."""
+    return LINK_RE.sub(lambda m: m.group(1), text)
+
+
 def _nav_bar_cells(cells: list[dict]) -> dict[int, int]:
     """{cell index: line index} of the LAST nav-bar line of every markdown cell
     that carries one — a bar is a line with a .ipynb link and a nav marker
-    (`**Navigation** :`, `<<`, `>>`, arrows...). Series that duplicate the bar
-    at the end of the notebook (ChoixSocial cells 0 and 27) get every copy
-    extended, matching the lot-1 hand fix."""
+    (`**Navigation** :`, `<<`, `>>`, arrows...) in its VISIBLE text, link
+    targets excluded. Series that duplicate the bar at the end of the notebook
+    (ChoixSocial cells 0 and 27) get every copy extended, matching the lot-1
+    hand fix."""
     out: dict[int, int] = {}
     for i, cell in enumerate(cells):
         if cell.get("cell_type") != "markdown":
             continue
         last = None
         for j, line in enumerate(cell_text(cell).splitlines()):
-            if not any(m in line.lower() for m in NAV_LINE_MARKERS):
+            if not any(m in visible_text(line).lower() for m in NAV_LINE_MARKERS):
                 continue
             if not any(m.group(2).lower().endswith(".ipynb")
                        for m in LINK_RE.finditer(line)):
@@ -406,7 +483,52 @@ def _nav_label(bar_line: str, cell_text_: str, lang: str) -> str:
     return f"jumeau {lang}"
 
 
-def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
+def _family_label(cells: list[dict], base_stem: str, lang: str) -> str | None:
+    """Label mirrored from the first twin-family link anywhere in the twin's
+    markdown (cell 0's `[Version C#](…-CSharp.ipynb)` -> `Version Rust`), for a
+    host line that carries no twin link of its own."""
+    family = twin_family_names(base_stem)
+    for cell in cells:
+        if cell.get("cell_type") != "markdown":
+            continue
+        for m in LINK_RE.finditer(cell_text(cell)):
+            if m.group(2).rsplit("/", 1)[-1] in family:
+                return mirror_label(m.group(1), lang, False)
+    return None
+
+
+LIST_ITEM_RE = re.compile(r"^(?P<indent>\s*)(?P<bullet>[-*+])\s+")
+
+
+def _list_item_end(lines: list[str], j: int) -> int:
+    """Index of the last line of the list item starting at line j (its
+    indented continuation lines included)."""
+    end = j
+    while end + 1 < len(lines):
+        nxt = lines[end + 1]
+        if not nxt.strip() or LIST_ITEM_RE.match(nxt) or not nxt[:1].isspace():
+            break
+        end += 1
+    return end
+
+
+def _insert_list_item(lines: list[str], j: int, label: str, stem: str,
+                      new_name: str, lang: str) -> None:
+    """Sibling list item after the list item at line j, same bullet and
+    indent, with the `→` marker the repo guard reads on the line."""
+    m = LIST_ITEM_RE.match(lines[j])
+    end = _list_item_end(lines, j)
+    cap = label[:1].upper() + label[1:]
+    item = (f"{m.group('indent')}{m.group('bullet')} **{cap}** → "
+            f"[{stem}]({new_name}) — le même carnet, porté en {lang}.\n")
+    if not lines[end].endswith("\n"):
+        lines[end] += "\n"
+        item = item.rstrip("\n")
+    lines.insert(end + 1, item)
+
+
+def plan_nav_link(twin_path: Path, nb_rel: str,
+                  hot: set[str] | None = None) -> dict:
     """Plan the inbound nav edge in the Python twin.
 
     Shapes, all measured on the lot-1 fixes: extend every existing nav bar with
@@ -420,15 +542,34 @@ def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
     a minimal `**Navigation** : [jumeau <Lang>](new.ipynb)` bar to its first
     markdown cell and REPORT it — the smallest change the guard accepts, less
     than the series' full prev|index|next bar a reviewer may want.
+
+    HOT cells (`hot`: ids carrying a deposited translation, `hot_cell_ids`)
+    are never hosts (CoursIA#27855): their bars are skipped and reported, and
+    the edge falls back, in order, to a non-hot Navigation cell, a sibling
+    list item `- **<Label>** → [stem](new)` after the last .ipynb list link of
+    a non-hot cell (the « Pour aller plus loin » list), a minimal bar on the
+    first non-hot markdown cell -- or is DECLARED not placed when every
+    markdown cell is hot. A bar line that is a prose list item
+    (`- **Carnet suivant** : [..](..) — ...`) gets a sibling list item, never a
+    ` | [..]` tail.
     """
     nb_rel = nb_rel.replace("\\", "/")
     new_name = nb_rel.rsplit("/", 1)[-1]
-    _, lang = split_port_name(nb_rel)
+    base_stem, lang = split_port_name(nb_rel)
+    stem = Path(nb_rel).stem
+    hot = hot or set()
     nb, fmt, raw = load_nb(twin_path)
     cells = nb["cells"]
     if _nav_edge_exists(cells, new_name):
         return {"todo": False, "why": "nav edge already present"}
-    bars = _nav_bar_cells(cells)
+
+    def is_hot(i: int) -> bool:
+        return bool(cells[i].get("id")) and cells[i]["id"] in hot
+
+    all_bars = _nav_bar_cells(cells)
+    hot_skipped = sorted(i for i in all_bars if is_hot(i))
+    extra = {"hot_skipped": hot_skipped} if hot_skipped else {}
+    bars = {i: j for i, j in all_bars.items() if not is_hot(i)}
     if bars:
         changed, labels, hows = [], [], set()
         for i, j in bars.items():
@@ -436,9 +577,16 @@ def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
             lines = text.splitlines(keepends=True)
             bar = lines[j]
             label = _nav_label(bar, text, lang)
+            if label == f"jumeau {lang}":
+                label = _family_label(cells, base_stem, lang) or label
             labels.append(label)
             block = _table_block(lines, j)
-            if block is not None:
+            if LIST_ITEM_RE.match(bar) and block is None:
+                # A prose list item (`- **Carnet suivant** : [..](..) — ..`):
+                # a ` | [..]` tail would glue the twin onto another sentence.
+                _insert_list_item(lines, j, label, stem, new_name, lang)
+                hows.add("added-nav-list-item")
+            elif block is not None:
                 # A body row of a real Markdown table (Search-03c's « Ponts »
                 # table, CoursIA#27829): appending ` | [label](…)` would add a
                 # cell the header does not have. Add a whole row instead, after
@@ -460,29 +608,48 @@ def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
         how = hows.pop() if len(hows) == 1 else "+".join(sorted(hows))
         return _finish_plan(twin_path, nb, fmt, raw,
                             {"todo": True, "how": how,
-                             "cells": changed, "label": labels[0]})
-    for i, cell in enumerate(cells):
-        if cell.get("cell_type") != "markdown":
+                             "cells": changed, "label": labels[0], **extra})
+    md = [i for i, c in enumerate(cells)
+          if c.get("cell_type") == "markdown" and not is_hot(i)]
+    for i in md:
+        text = cell_text(cells[i])
+        if "navigation" not in visible_text(text).lower():
             continue
-        text = cell_text(cell)
-        if "navigation" not in text.lower():
-            continue
-        addition = f"**Jumeau {lang}** : [{Path(nb_rel).stem}]({new_name})"
-        set_cell_text(cell, text.rstrip("\n") + "\n\n" + addition + "\n")
+        addition = f"**Jumeau {lang}** : [{stem}]({new_name})"
+        set_cell_text(cells[i], text.rstrip("\n") + "\n\n" + addition + "\n")
         return _finish_plan(twin_path, nb, fmt, raw,
                             {"todo": True, "how": "appended-under-navigation-cell",
-                             "cells": [i], "label": f"Jumeau {lang}"})
-    first_md = next((i for i, c in enumerate(cells)
-                     if c.get("cell_type") == "markdown"), None)
-    if first_md is None:
+                             "cells": [i], "label": f"Jumeau {lang}", **extra})
+    label = _family_label(cells, base_stem, lang) or f"jumeau {lang}"
+    for i in reversed(md):
+        lines = cell_text(cells[i]).splitlines(keepends=True)
+        items = [j for j, line in enumerate(lines)
+                 if LIST_ITEM_RE.match(line) and any(
+                     m.group(2).lower().endswith(".ipynb")
+                     for m in LINK_RE.finditer(line))]
+        if not items:
+            continue
+        _insert_list_item(lines, items[-1], label, stem, new_name, lang)
+        set_cell_text(cells[i], "".join(lines))
+        return _finish_plan(twin_path, nb, fmt, raw,
+                            {"todo": True, "how": "added-nav-list-item",
+                             "cells": [i], "label": label, **extra})
+    if not md:
+        if any(c.get("cell_type") == "markdown" for c in cells):
+            return {"todo": False, "hot_skipped": hot_skipped,
+                    "why": "every markdown cell carries a deposited translation "
+                           "(hot-subset ratchet, CoursIA#13551): no host the "
+                           "pass may edit -- inbound edge NOT placed, reported"}
         return {"todo": False, "why": "twin has no markdown cell to host a nav bar"}
+    first_md = md[0]
     bar = f"**Navigation** : [jumeau {lang}]({new_name})\n\n"
     set_cell_text(cells[first_md], bar + cell_text(cells[first_md]))
     return _finish_plan(twin_path, nb, fmt, raw,
                         {"todo": True, "how": "added-minimal-nav-bar",
                          "cells": [first_md], "label": f"jumeau {lang}",
                          "note": "twin had no Navigation cell -- minimal bar "
-                                 "added, series may want prev|index|next"})
+                                 "added, series may want prev|index|next",
+                         **extra})
 
 
 def _finish_plan(path: Path, nb: dict, fmt: dict, raw: str, plan: dict) -> dict:
@@ -653,7 +820,7 @@ def _rel(repo: Path, path: Path) -> str:
 # ------------------------------------------------------------------ guards
 
 def replay_guards(worktree: Path) -> list[dict]:
-    """Replay the three guards with the exact commands the lot-1 review
+    """Replay the guards with the exact commands the lot-1 review
     comments published. Read-only against git; run AFTER the integration
     commits so `--diff-base origin/main` sees them."""
     out = []
@@ -684,7 +851,7 @@ def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
     twin = worktree / source_nb
     if not twin.is_file():
         return {"error": f"source notebook not found: {source_nb}"}
-    nav = plan_nav_link(twin, notebook)
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
     apply_nav_link(nav)
     readme = plan_readme_row(worktree, notebook, source_nb)
     apply_readme_row(readme)
@@ -705,7 +872,7 @@ def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
     twin = worktree / source_nb
     if not twin.is_file():
         return {"error": f"source notebook not found: {source_nb}"}
-    nav = plan_nav_link(twin, notebook)
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
     readme = plan_readme_row(worktree, notebook, source_nb)
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items()
