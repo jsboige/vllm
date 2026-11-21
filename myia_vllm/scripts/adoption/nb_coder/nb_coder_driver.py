@@ -1969,7 +1969,12 @@ def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]
     return out
 
 
-_UNLINKED_CRATE_RE = re.compile(r"unlinked crate `(\w+)`")
+# rustc names the same linking failure two ways: E0433 "use of unresolved module or
+# unlinked crate `X`" and E0433 "cannot find module or crate `X` in this scope". 2.3c
+# (#27134, 21/11 08:3xZ): cell 2's `:dep rand`/`plotters` failed and five of the 12
+# cells below said the second form only -- not read as cascades, they were asked in
+# the same round as their root.
+_UNLINKED_CRATE_RE = re.compile(r"(?:unlinked crate|cannot find module or crate) `(\w+)`")
 
 
 def unlinked_crates(errors: str) -> list[str]:
@@ -2248,7 +2253,7 @@ _RUST_API_ERR_RES = (
     # Linking, not API (2.3b, #27134): a crate the kernel did not link (its `:dep` cell
     # failed, or no `:dep` declares it) and a crate linked at two versions. Neither is a
     # name to look up INSIDE a crate; `_crate_link_lines` advises them.
-    ("crate", re.compile(r"unlinked crate `(\w+)`")),
+    ("crate", _UNLINKED_CRATE_RE),
     ("version", re.compile(r"(?:two|multiple) different versions of crate `(\w+)`")),
     # E0603 (2.3b, 21/11): `use rand::{Rng, SeedableRng, Distribution}` under rand 0.10 —
     # `rand::Distribution` is a PRIVATE import of the crate root, and the compiler's
