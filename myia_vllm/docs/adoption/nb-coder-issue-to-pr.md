@@ -459,6 +459,17 @@ python myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py `
   --ramp 2,3,4 --gate-mode block
 ```
 
+**Claim tardif (`--claim-late`, règle du coordinateur CoursIA du 21/11 pour l'auto-pick)** :
+« pas de [CLAIMED] avant que le run ait une PR ouvrable (stage 4 vert) : un lancement qui
+echoue ne verrouille rien ». Avec `--claim --claim-late --max-stage 5` (ou `"claim_late": true`
+sur la ligne de file), le stage 0 garde la pré-vérification CLEAR (un carnet tenu par une autre
+lane est refusé avant tout worktree), mais ne poste rien. La réservation (même verrou par
+issue, même `reserve_claim`) n'est prise qu'après l'approbation du vérificateur, juste avant
+le stage 5. Un refus à ce moment donne `late-claim-refused:<verdict>` : aucune PR, le carnet
+construit reste sur disque, et le planificateur le classe comme run servi (il ne bloque pas
+la rampe). Un timeout du garde est retenté une fois. Une reprise `--revise-from` d'une trace
+différée relit le claim en direct avant toute dépense, puis réserve aussi tardivement.
+
 `--dry-run` journalise les commandes exactes sans rien spawner ; `--once` = une passe ;
 `--watch` = reste vivant après drain ; `--max-launch N` borne les lancements de la session.
 Tests offline : `test_nb_coder_scheduler.py` (fausse gate + faux driver, 14 cas — zéro

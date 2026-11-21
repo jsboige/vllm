@@ -60,6 +60,8 @@ ITEM_FIELDS = {
                                # inherits; required with from_spec, optional with source_nb
     "max_stage": int,
     "claim": bool,
+    "claim_late": bool,        # --claim-late: no [CLAIMED] before an openable PR (CoursIA
+                               # auto-pick rule 21/11); needs claim and max_stage 5
     "fresh_worktree": bool,
     "agent": str,
     "intention": str,
@@ -143,6 +145,10 @@ CONTENT_FAILURE_PREFIXES = (
     "stage1-unaddressable-creation-plan",
     "refused-spec-plan-unusable",
     "stage2-short-segment",
+    # --claim-late: the verifier APPROVED, then the late reservation was refused (another
+    # lane took the notebook while we built it). The engine served the whole run, so it
+    # proves a served run and never blocks the ramp; the grain itself is not done.
+    "late-claim-refused",
 )
 
 
@@ -329,6 +335,15 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
                              "(from_spec or source_nb)")
         if "meta_from" in item:
             _check_repo_rel_nb(lineno, "meta_from", item["meta_from"])
+        if item.get("claim_late"):
+            # The driver's own refusals, when the line itself contradicts them (a
+            # contradiction through the scheduler defaults is refused by the driver).
+            if item.get("claim") is False:
+                raise QueueError(f"queue line {lineno}: claim_late defers claim: "
+                                 "claim false contradicts it")
+            if "max_stage" in item and item["max_stage"] < 5:
+                raise QueueError(f"queue line {lineno}: claim_late reserves before stage 5: "
+                                 "max_stage must be 5")
         key = grain_key(item)
         if key in seen:
             raise QueueError(f"queue line {lineno}: duplicate grain {key}")
@@ -738,6 +753,8 @@ class Scheduler:
             cmd.append("--from-spec")
         if item.get("claim", a.claim):
             cmd.append("--claim")
+            if item.get("claim_late", getattr(a, "claim_late", False)):
+                cmd.append("--claim-late")
         if item.get("fresh_worktree", a.fresh_worktree):
             cmd.append("--fresh-worktree")
         if item.get("allow_foreign_origin", False):
@@ -1146,6 +1163,10 @@ def parse_args(argv=None):
     ap.add_argument("--lane", default=os.environ.get("NBCODER_LANE", ""),
                     help="claim lane id, e.g. myia-ai-01:nb-coder")
     ap.add_argument("--claim", action="store_true")
+    ap.add_argument("--claim-late", action="store_true",
+                    help="default claim_late for every grain: the driver posts [CLAIMED] "
+                         "only once the verifier approved, right before stage 5 (CoursIA "
+                         "auto-pick rule 21/11). Needs --claim and --max-stage 5")
     ap.add_argument("--agent", default="notebook-coder")
     ap.add_argument("--conventions", default="")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe planifiee)")
@@ -1236,6 +1257,8 @@ def parse_args(argv=None):
         ap.error("--launch-gap-s must be >= 0")
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE (same refusal as the driver, F1)")
+    if args.claim_late and (not args.claim or args.max_stage < 5):
+        ap.error("--claim-late needs --claim and --max-stage 5 (same refusal as the driver)")
     if not args.out_root:
         args.out_root = str(Path(args.state_dir) / "runs")
     if not args.worktree_root:
