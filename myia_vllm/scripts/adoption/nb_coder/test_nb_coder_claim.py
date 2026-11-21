@@ -415,3 +415,72 @@ def test_stage0_only_without_claim_stays_the_sanctioned_exception(monkeypatch, t
     assert seen.get("wt") is True
     assert got["verdict"] == "stage0-only"
     assert got["calls"] == []
+
+
+# ---- rc=3 IMPLICIT on a lot issue (CoursIA#27133, 21/11 03:14Z) ------------------
+MGS28 = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/MGS-28-BareBonesPSO-vs-Mealpy-Rust.ipynb"
+SUDOKU05 = "MyIA.AI.Notebooks/Sudoku/Sudoku-05-PSO-Rust.ipynb"
+
+
+def _guard_proc(rc, implicit, filler=0):
+    import json as _json
+    doc = {"issue": 27133, "my_lane": "myia-ai-01:vllm", "blocking_lanes": [],
+           "delivered_claims": [{"paths": ["x" * 40] * filler}],
+           "implicit_occupation": implicit}
+    tail = "\nIMPLICIT: lane myia-po-2024:CoursIA a une PR ouverte (#27691) sans [CLAIMED] pose."
+
+    class P:
+        returncode = rc
+        stdout = _json.dumps(doc, indent=2) + tail
+        stderr = "WARN: enumeration incomplete"
+    return P()
+
+
+def _po2024(files):
+    return [{"number": 27691, "lane": "myia-po-2024:CoursIA", "files": files,
+             "created_at": "2026-11-21T02:26:34Z"}]
+
+
+def test_disjoint_implicit_occupation_defers_instead_of_burning_the_grain():
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05, "README.md"])), MGS28)
+    assert cc["implicit"][0]["touches_notebook"] is False
+    assert nbcd.claim_verdict(cc) == "deferred-by-claim-implicit-occupation:#27691"
+
+
+def test_implicit_occupation_on_our_own_file_still_refuses():
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+
+
+def test_unreadable_or_truncated_implicit_report_fails_closed():
+    assert nbcd.claim_verdict({"rc": 3}) == "refused-claim-implicit-occupation"
+    many = [f"f{i}.py" for i in range(100)]
+    cc = nbcd._guard_result(_guard_proc(3, _po2024(many)), MGS28)
+    assert cc["implicit"][0]["touches_notebook"] is True
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+
+
+def test_recorded_output_keeps_the_verdict_line_past_2000_chars():
+    """The old `[:2000]` cut the guard's verdict off: the refusal recorded no reason."""
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05]), filler=80), MGS28)
+    assert len(cc["out"]) <= 2100
+    assert "IMPLICIT: lane myia-po-2024:CoursIA" in cc["out"]
+    assert cc["warnings"].startswith("WARN")
+
+
+def test_post_refused_by_implicit_leg_defers_without_unknown_residue():
+    post = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    assert nbcd.claim_reservation_verdict(post, {"rc": None}) == (
+        "deferred-by-claim-implicit-occupation:#27691")
+    # a real collision at write time still refuses
+    post = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_reservation_verdict(post, {"rc": None}) == (
+        "refused-claim-implicit-occupation")
+
+
+def test_verify_seeing_an_older_disjoint_pr_defers():
+    verify = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    assert nbcd.claim_reservation_verdict({"rc": 0}, verify) == (
+        "deferred-by-claim-implicit-occupation:#27691")
+    verify = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_reservation_verdict({"rc": 0}, verify) == "refused-claim-not-verified"

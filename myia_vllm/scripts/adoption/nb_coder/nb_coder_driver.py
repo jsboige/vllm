@@ -301,8 +301,7 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     if p is None:
         return {"ok": None, "rc": None, "timed_out": True,
                 "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return {"ok": p.returncode == 0, "rc": p.returncode,
-            "out": (p.stdout or p.stderr).strip()[:2000]}
+    return {"ok": p.returncode == 0, **_guard_result(p, notebook)}
 
 
 # The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
@@ -323,6 +322,70 @@ def _run_claim_guard(argv: list[str], repo: Path):
         return None
 
 
+# rc=3 is the guard's IMPLICIT verdict (#14300): no [CLAIMED] marker blocks, but an OPEN
+# PR of another lane references the issue. On a LOT issue the guard does not intersect
+# that PR's files with --paths: CoursIA#27133 carries five Rust ports, and po-2024's open
+# PR #27691 (Sudoku-05 only) made the guard answer 3 for MGS-28, MGS-29 and Search-11,
+# whose files it never touches (21/11 03:14Z). The driver read every rc outside {0,1} as
+# "not scoped" and burned the three grains. Now: an occupying PR that touches THIS
+# notebook (or whose file list cannot be trusted) still refuses; a disjoint one defers,
+# because the occupation ends when that PR merges -- the scheduler retries with backoff.
+CLAIM_IMPLICIT_VERDICT = "deferred-by-claim-implicit-occupation"
+# GitHub's PR payload previews at most 100 files: a list that long may hide ours.
+_PR_FILES_PREVIEW_CAP = 100
+
+
+def _guard_report(stdout: str) -> dict | None:
+    """The guard prints ONE JSON summary first, then its verdict lines."""
+    text = (stdout or "").lstrip()
+    if not text.startswith("{"):
+        return None
+    try:
+        doc, _ = json.JSONDecoder().raw_decode(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _guard_result(p, notebook: str) -> dict:
+    """rc + a bounded copy of the guard's output that keeps its VERDICT.
+
+    The verdict lines follow the JSON summary: the old `[:2000]` kept the head of the
+    JSON and cut the verdict off, so a refusal recorded no reason (#27133, rc=3)."""
+    text = (p.stdout or p.stderr or "").strip()
+    out = text if len(text) <= 2000 else text[:1200] + "\n[...]\n" + text[-800:]
+    res: dict = {"rc": p.returncode, "out": out}
+    if p.stdout and p.stderr:
+        res["warnings"] = p.stderr.strip()[-600:]
+    if p.returncode == 3:
+        doc = _guard_report(p.stdout) or {}
+        target = _norm_rel(notebook)
+        implicit = []
+        for pr in doc.get("implicit_occupation") or []:
+            if not isinstance(pr, dict):
+                continue
+            files = [_norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)]
+            implicit.append({
+                "number": pr.get("number"), "lane": pr.get("lane"),
+                "files": files[:5], "file_count": len(files),
+                "touches_notebook": (target in files
+                                     or not files
+                                     or len(files) >= _PR_FILES_PREVIEW_CAP),
+            })
+        res["implicit"] = implicit
+    return res
+
+
+def implicit_verdict(cc: dict) -> str:
+    """rc=3: refuse when the occupying PR may touch this notebook, defer when disjoint."""
+    implicit = cc.get("implicit") or []
+    if not implicit or any(i.get("touches_notebook") for i in implicit):
+        # unreadable report, or a real collision on our file: fail closed
+        return "refused-claim-implicit-occupation"
+    return CLAIM_IMPLICIT_VERDICT + ":" + ",".join(
+        f"#{i.get('number')}" for i in implicit)
+
+
 def claim_verdict(cc: dict) -> str | None:
     """Fail-closed reading of a SCOPED claim check (#466).
 
@@ -330,6 +393,8 @@ def claim_verdict(cc: dict) -> str | None:
     rc=2  -> the scoped check still cannot decide (old script without --paths, path
              absent from every open diff): refuse rather than run unprotected -- the
              pre-#466 driver treated this as pass-through.
+    rc=3  -> IMPLICIT: an open PR of another lane references the issue. Refused if it
+             may touch this notebook, deferred if its files are disjoint (#27133).
     no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
     rc=0  -> clear, proceed.
     """
@@ -342,6 +407,8 @@ def claim_verdict(cc: dict) -> str | None:
         return "refused-claim-held-by-another-lane"
     if rc is None:
         return "refused-claim-check-broken"
+    if rc == 3:
+        return implicit_verdict(cc)
     if rc != 0:
         return "refused-claim-check-not-scoped"
     return None
@@ -364,7 +431,7 @@ def post_claim(repo: Path, n: int, lane: str, intention: str,
     if p is None:
         return {"rc": None, "timed_out": True,
                 "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:2000]}
+    return _guard_result(p, notebook)
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
@@ -376,10 +443,19 @@ def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
     residue requires. The guard resumes our own claim instead of colliding with it."""
     if post.get("timed_out"):
         return f"{CLAIM_TIMEOUT_VERDICT}:post"
+    if post.get("rc") == 3:
+        # The guard runs the IMPLICIT leg BEFORE writing and refuses the post on rc=3
+        # (#26751): nothing landed, so this is not the UNKNOWN residue of a failed post.
+        return implicit_verdict(post)
     if post.get("rc") != 0:
         return "refused-claim-post-failed"
     if verify.get("timed_out"):
         return f"{CLAIM_TIMEOUT_VERDICT}:verify"
+    if verify.get("rc") == 3:
+        # Our post is now the lane's latest claim, so every older open PR of another
+        # lane on the issue reads as IMPLICIT. Residue: one claim comment, no admission.
+        v = implicit_verdict(verify)
+        return v if v.startswith(CLAIM_IMPLICIT_VERDICT) else "refused-claim-not-verified"
     if claim_verdict(verify) is not None:
         return "refused-claim-not-verified"
     return None
