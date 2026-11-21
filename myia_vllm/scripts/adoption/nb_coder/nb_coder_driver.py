@@ -4240,6 +4240,31 @@ def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> lis
     return gates
 
 
+def _shows_unit_result(cell: dict) -> bool:
+    """True when the cell's only displayed value is the unit `()` — an execute_result whose
+    data is text/plain `()` and nothing else. evcxr emits it whenever a cell ENDS with a
+    block (`for`/`while`/`if`/`{…}`) without a trailing `;` (measured 21/11)."""
+    if cell.get("cell_type") != "code":
+        return False
+    for o in cell.get("outputs") or []:
+        if not isinstance(o, dict) or o.get("output_type") != "execute_result":
+            continue
+        data = o.get("data") or {}
+        if set(data) <= {"text/plain"} and _text(data.get("text/plain")).strip() == "()":
+            return True
+    return False
+
+
+def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
+    """Built code cells displaying a bare `()` that the twin cell at the same index does
+    not display. 21/11: 11 of 34 verifier traces rejected a port for exactly this stray
+    `()` — a cosmetic defect the verifier pays a whole turn to find, and a deterministic
+    check finds for free before it."""
+    return [i for i, c in enumerate(built_cells)
+            if _shows_unit_result(c)
+            and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
+
+
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
               rel: str | None = None, scratch: Path | None = None) -> list[dict]:
@@ -4309,6 +4334,13 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     gates.append({"gate": "svg-display", "ok": not svg_new,
                   "detail": {"cells": svg_new[:10], "source_hits": svg_src[:10],
                              "build_hits": svg_built[:10]}})
+    unit_hits = unit_result_hits(built_cells, src_cells)
+    gates.append({"gate": "unit-result", "ok": not unit_hits,
+                  "detail": {"cells": unit_hits[:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : affiche « () », que le "
+                                                   f"jumeau n'affiche pas"}
+                                          for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
@@ -5455,6 +5487,10 @@ _GATE_FIX_TEXT = {
     "prose-counts": "compteur quantitatif en prose (lignes, durée) : retire la mesure et garde "
                     "le prédicat — « une solution compacte (~80 lignes) » devient « une "
                     "solution compacte » (garde du dépôt #17636)",
+    "unit-result": "la cellule affiche la valeur unité `()` parce qu'elle se termine par un "
+                   "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
+                   "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
+                   "avertissement ; ne touche pas au reste de la cellule",
 }
 
 
