@@ -4365,7 +4365,40 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
+    if create_mode and rel and _norm_rel(rel).endswith("-Rust.ipynb"):
+        conf = rust_conformance_gate(src_nb, built_nb)
+        if conf is not None:
+            gates.append(conf)
     return gates
+
+
+def _kernel_language(nb_path: Path) -> str | None:
+    meta = (json.loads(nb_path.read_text(encoding="utf-8")).get("metadata") or {})
+    return ((meta.get("kernelspec") or {}).get("language")
+            or (meta.get("language_info") or {}).get("name"))
+
+
+def rust_conformance_gate(src_nb: Path, built_nb: Path) -> dict | None:
+    """Stage-3 gate for a Rust port of a Python twin (CoursIA c0018, 21/11): the
+    `rust_conformance.d` entry written at delivery compares each Rust cell's output to
+    the twin's same-index cell, strict text equality, durations by presence only. The
+    three lot-1 PRs came back from review on exactly that (a stray `()`, a count the
+    outputs did not show). Measured here BEFORE the PR, so the constructive loop
+    repairs it instead of a review round. None when there is no Python twin to compare
+    to (a spec twin carries no outputs; a C# source is not the registry's reference)."""
+    if (_kernel_language(src_nb) or "").lower() != "python":
+        return None
+    try:
+        divs = _load_integrate_module().conformance_divergences(src_nb, built_nb)
+    except Exception as e:  # the gate measures, it never crashes a build
+        return {"gate": "rust-conformance", "ok": True,
+                "detail": {"measured": False, "error": f"{type(e).__name__}: {e}"[:300]}}
+    return {"gate": "rust-conformance", "ok": not divs,
+            "detail": {"measured": True,
+                       "cells": sorted({d["cell"] for d in divs})[:10],
+                       "findings": [{"cell": d["cell"],
+                                     "text": f"cellule {d['cell']} ({d['id']}) : {d['text']}"}
+                                    for d in divs][:REPO_GUARD_FINDINGS_MAX]}}
 
 
 # The kernel's own extension-loading notice, one line per loaded package:
@@ -4872,6 +4905,18 @@ def integration_pr_lines(integ: dict | None) -> str:
         note = f" -- {integ['nav_note']}" if integ.get("nav_note") else ""
         lines.append(f"- Ligne README (`{integ['readme']}`) et arête nav "
                      f"(`{integ.get('nav')}`) ajoutées sur le jumeau Python{note}.")
+    conf = integ.get("conformance") or {}
+    if conf.get("todo") and conf.get("file"):
+        cs = (f", côté C# `{conf['csharp']}` comparé où il imprime le même texte, "
+              "sinon déclaré absent avec l'écart mesuré") if conf.get("csharp") \
+            else ", pas de jumeau C#"
+        lines.append(f"- Entrée de conformité Rust `{conf['file']}` écrite : "
+                     f"{conf.get('measures', 0)} mesures, dont "
+                     f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
+        for d in (conf.get("divergences") or [])[:5]:
+            lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
+    elif conf.get("file") and conf.get("why"):
+        lines.append(f"- Entrée de conformité Rust `{conf['file']}` : {conf['why']}.")
     reg = integ.get("registered") or {}
     if reg.get("registered"):
         lines.append(f"- Paire « {reg['pair']} » enregistrée à la livraison "
@@ -4942,6 +4987,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
                                         "nav": (integ["nav"] or {}).get("how"),
                                         "nav_note": (integ["nav"] or {}).get("note"),
                                         "readme": (integ["readme"] or {}).get("label"),
+                                        "conformance": integ.get("conformance"),
                                         "registered": reg,
                                         "pair": integ.get("pair")}
         except Exception as e:  # integration is an optimisation, never a blocker
@@ -5011,7 +5057,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
                 integ["reseal"] = reseal
             else:
                 integ["reseal"] = {"why": "source twin not in a registered pair"}
-            integ["guards"] = nbci.replay_guards(wt_path)
+            integ["guards"] = nbci.replay_guards(wt_path, nb_rel)
         except Exception as e:
             integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
 
@@ -5512,6 +5558,12 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    "rust-conformance": "la sortie de cette cellule Rust doit être le texte EXACT de la "
+                        "sortie de la même cellule du jumeau Python (registre "
+                        "rust_conformance.d, égalité stricte ; seules les valeurs de durée "
+                        "peuvent varier) : aligne les `println!` (libellés, ordre, "
+                        "formatage des nombres et des booléens) sur le jumeau, sans rien "
+                        "imprimer de plus",
 }
 
 
