@@ -598,7 +598,7 @@ def test_other_kernels_are_never_grounded(tmp_path, monkeypatch):
 def test_grounding_failure_never_fails_the_round(tmp_path, monkeypatch):
     _registry(tmp_path, monkeypatch)
 
-    def boom(cells, errors, roots=None):
+    def boom(cells, errors, roots=None, absent=()):
         raise OSError("registry unreadable")
 
     monkeypatch.setattr(d, "crate_api_block", boom)

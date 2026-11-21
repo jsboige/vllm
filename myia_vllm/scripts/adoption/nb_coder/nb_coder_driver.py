@@ -1922,6 +1922,52 @@ def unlinked_crates(errors: str) -> list[str]:
     return seen
 
 
+# 2.3b, #27134 (21/11): the model declared `:dep linfa-core = "0.8"`, a crate that does not
+# exist (linfa's traits live in `linfa`). Cargo answered "no matching package named
+# `linfa-core` found"; round 1 dropped the line and the `:dep` cell passed, then round 2's
+# link advice read cell 4's "unlinked crate `linfa_core`" as an undeclared crate and told
+# the model to ADD `:dep linfa_core` -- the grain looped until its rounds ran out. A name
+# cargo refused is remembered for the whole run: never advised, named in every later
+# round, and a `:dep` line that brings it back is struck (that line can only fail).
+_NO_PACKAGE_RE = re.compile(r"no matching package named `([A-Za-z0-9_-]+)` found")
+
+
+def absent_packages(errors: str) -> list[str]:
+    """Package names cargo could not find in the registry index, in order, once each."""
+    seen: list[str] = []
+    for m in _NO_PACKAGE_RE.finditer(_ANSI_RE.sub("", errors or "")):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def strike_absent_deps(nb_path: Path, absent: list[str], only_idx) -> list[dict]:
+    """Remove `:dep <name>` lines naming a crate cargo already refused, in the given code
+    cells only (the ones a repair just rewrote). Returns [{idx, line}] of what was struck."""
+    gone = {_crate_norm(a) for a in absent}
+    if not gone:
+        return []
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    struck: list[dict] = []
+    for i in sorted(only_idx or []):
+        if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
+            continue
+        lines = _text(nb["cells"][i].get("source")).split("\n")
+        kept = []
+        for ln in lines:
+            m = re.match(r"^\s*:dep\s+([A-Za-z0-9_-]+)\s*=", ln)
+            if m and _crate_norm(m.group(1)) in gone:
+                struck.append({"idx": i, "line": ln.strip()})
+            else:
+                kept.append(ln)
+        if len(kept) != len(lines):
+            nb["cells"][i]["source"] = _lines("\n".join(kept))
+    if struck:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                           encoding="utf-8")
+    return struck
+
+
 # What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
 # comments. Only names some upstream cell declares or binds ever matter (`using_cells`),
 # so the free names of the cell are filtered by the notebook itself; keywords are skipped
@@ -2504,9 +2550,23 @@ def _private_item_lines(files, crate: str, e: dict) -> list[str]:
     return lines
 
 
+def _absent_line(name: str, deps: dict[str, dict]) -> str:
+    """The fact cargo established, and the declared crate whose name it extends, if any."""
+    norm = _crate_norm(name)
+    near = sorted((n for n in deps if _crate_norm(n) != norm
+                   and norm.startswith(_crate_norm(n) + "_")), key=len, reverse=True)
+    hint = (f" ; la crate déclarée la plus proche est `{near[0]}` (cellule "
+            f"{deps[near[0]]['idx']}) : cherche ces items dans ses sources") if near else ""
+    return (f"- `{name}` N'EXISTE PAS sur crates.io (cargo : « no matching package named "
+            f"`{name}` found ») : n'écris jamais `:dep {name}`, ni `use {norm}::…` ; les "
+            f"cellules qui l'importent doivent prendre ces items dans une crate qui "
+            f"existe{hint}.")
+
+
 def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
                       resolved: dict[str, tuple[Path, str]], cells: list[dict],
-                      roots: list[Path] | None) -> tuple[list[str], list[str]]:
+                      roots: list[Path] | None,
+                      absent: list[str] | tuple = ()) -> tuple[list[str], list[str]]:
     """Advice on LINKING, before any API lookup (2.3b, #27134). Three causes, each with its
     own remedy:
       - a crate declared in a `:dep` cell that itself fails: evcxr links none of that cell's
@@ -2516,8 +2576,11 @@ def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
       - a declared version their dependents do not accept (`:dep ndarray = "0.17"` next to
         linfa 0.8.1, which requires "0.16"): two copies get linked and their types never
         match — align it.
+    A crate in ``absent`` (cargo: "no matching package named … found", earlier in the run)
+    is never advised as missing: its line says it does not exist, every round.
     Returns (lines, names of the crates whose errors are cascades/advice, not API misses)."""
     dep_norm = {_crate_norm(n): n for n in deps}
+    gone = {_crate_norm(a) for a in absent}
     first_dep = min((s["idx"] for s in deps.values()), default=None)
     unlinked: list[str] = []
     for e in errs:
@@ -2532,6 +2595,9 @@ def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
     linked: list[str] = []
     blocked: dict[int, list[str]] = {}
     for x in unlinked:
+        if _crate_norm(x) in gone:
+            linked.append(x)                  # advised by its absent line, never "add it"
+            continue
         declared = dep_norm.get(_crate_norm(x))
         if declared and 0 <= deps[declared]["idx"] < len(cells) \
                 and _cell_fails(cells[deps[declared]["idx"]]):
@@ -2554,6 +2620,8 @@ def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
                         f"échoue, evcxr ne lie aucune de ses crates, d'où les « unlinked crate » "
                         f"plus bas ({', '.join(f'`{x}`' for x in xs)}). Répare d'abord ses "
                         f"propres erreurs ; ces erreurs-là disparaîtront avec elles.")
+    for a in reversed(list(absent)):
+        lines.insert(0, _absent_line(a, deps))
     # Version coherence among the declared crates, checked on every Rust round: rustc only
     # names the clash ("two different versions of crate") once a value crosses the boundary.
     for x, spec in deps.items():
@@ -2578,7 +2646,8 @@ def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
 
 
 def crate_api_block(cells: list[dict], errors: list[str],
-                    roots: list[Path] | None = None) -> tuple[str, dict]:
+                    roots: list[Path] | None = None,
+                    absent: list[str] | tuple = ()) -> tuple[str, dict]:
     """The REAL API of the crates a Rust repair round's errors touch, quoted from the
     registry copy the kernel compiled. Returns (block, info) — info = {crates, dep_cell,
     gated, unknown} for the round record; ("", {}) when nothing applies."""
@@ -2586,14 +2655,14 @@ def crate_api_block(cells: list[dict], errors: list[str],
     errs: list[dict] = []
     for t in errors:
         errs += [e for e in rust_api_errors(t) if e not in errs]
-    if not deps or not errs:
+    if (not deps or not errs) and not absent:
         return "", {}
     resolved: dict[str, tuple[Path, str]] = {}
     for name, spec in deps.items():
         hit = registry_crate_dir(name, spec["req"], roots)
         if hit:
             resolved[name] = hit
-    link_lines, linked = _crate_link_lines(errs, deps, resolved, cells, roots)
+    link_lines, linked = _crate_link_lines(errs, deps, resolved, cells, roots, absent)
     # A missing or doubled crate is advised once, never searched as a name inside another
     # crate (`ndarray` would match any linfa line that spells `ndarray::Dimension`).
     errs = [e for e in errs if e["kind"] not in ("crate", "version")
@@ -2689,6 +2758,8 @@ def crate_api_block(cells: list[dict], errors: list[str],
             "gated": gated, "unknown": unknown}
     if linked:
         info["link"] = linked
+    if absent:
+        info["absent"] = list(absent)
     return block, info
 
 
@@ -4390,6 +4461,12 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                            "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
+        # Crates cargo refused ("no matching package named … found", #27134 2.3b): kept for
+        # the whole run. Once the `:dep` line is gone, cargo no longer names the crate; only
+        # `unlinked crate` remains below, and the link advice would ask to add it back.
+        absent: list[str] = rec.setdefault("absent_crates", []) if kname == "rust" else []
+        for d in detail if kname == "rust" else ():
+            absent += [a for a in absent_packages(d["_raw_errors"]) if a not in absent]
         # Root cause first (#27302 attempt 2): a cell failing on a name an EARLIER failing
         # cell declares waits for that cell's repair; it is re-executed after the round.
         all_failing = {d["idx"] for d in detail}
@@ -4415,7 +4492,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         if kname == "rust":
             try:
                 crate_api, api_info = crate_api_block(cells_now,
-                                                      [d["_raw_errors"] for d in detail])
+                                                      [d["_raw_errors"] for d in detail],
+                                                      absent=absent)
             except Exception as ex:  # grounding is an aid: never fail the round on it
                 api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
@@ -4496,6 +4574,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         # Scope = what the round showed: the failing cells + the upstream ones offered.
         rep = apply_repairs(scratch, part,
                             only_idx=failing_idx | {u["idx"] for u in upstream})
+        # A `:dep` to a crate that does not exist fails its cell every time, whatever else
+        # the repair fixed: struck mechanically from the cells this round rewrote.
+        struck = (strike_absent_deps(scratch, absent, rep["replaced"])
+                  if kname == "rust" and absent and rep["replaced"] else [])
         rec.setdefault("repairs", []).append(
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
              "upstream": [u["idx"] for u in upstream],
@@ -4503,6 +4585,7 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
              "crate_api": api_info or None,
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
              "out_of_scope": rep["out_of_scope"],
+             **({"struck_deps": struck} if struck else {}),
              **({"bisect": bisect} if bisect else {})})
         if not rep["replaced"]:
             break

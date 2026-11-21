@@ -193,7 +193,7 @@ def _run_round(tmp_path, monkeypatch, cells, answer):
         executed.append(list(targets))
         return [{"cell": i, "ok": True} for i in targets]
 
-    def fake_api(cells_now, errors, roots=None):
+    def fake_api(cells_now, errors, roots=None, absent=()):
         api_errors.append(list(errors))
         return "", {}
 
