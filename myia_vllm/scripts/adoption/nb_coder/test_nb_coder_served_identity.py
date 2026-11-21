@@ -98,7 +98,7 @@ def test_calls_record_the_variant_fields(monkeypatch):
              "served_model_variants": ["glm-5.3", "swift-1.5-27b"],
              "failover_notice": "b", "failover_notice_variants": ["a", "b"]}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)
@@ -144,7 +144,7 @@ def test_calls_record_the_served_fields_only_when_the_envelope_has_them(monkeypa
              "failover_notice": "role=nb"},
             {"response": "ok", "model_used": "nb-minimax"}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)
