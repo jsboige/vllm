@@ -850,6 +850,27 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
 
 
+def restore_worktree(repo: Path, dest: Path, head: str | None) -> dict:
+    """Re-create a resumed grain's detached worktree at the head its trace recorded.
+
+    The scheduler releases the worktree of a failed grain (`worktree-released`), so
+    a resume of that grain found it missing and refused (21/11: #27851, approved and
+    built, refused by the late-claim guard, then [RELEASED] by the holder 13 min
+    later). Same head as the run: the source twin and kernel cwd are byte-identical
+    to what was built and verified; stage 5 branches off it exactly as a first run.
+    A missing head refuses (never a silent re-base on today's origin/main)."""
+    if not head:
+        return {"ok": False, "err": "no worktree head in the trace"}
+    subprocess.run(["git", "-C", str(repo), "worktree", "prune"],
+                   capture_output=True, text=True, timeout=120)
+    p = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(dest), head],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600)
+    rc = getattr(p, "returncode", 1)
+    return {"ok": rc == 0 and dest.exists(), "head": head, "path": str(dest),
+            "err": (getattr(p, "stderr", "") or "").strip()[-300:]}
+
+
 def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
@@ -5793,8 +5814,14 @@ async def run_revision(args, rec: dict) -> dict:
             or _norm_rel(prior.get("notebook") or "") != _norm_rel(args.notebook)):
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
+    late_refused = False
     if resume_from:
-        if prior.get("verdict") != "verify-error":
+        # a late-claim refusal is resumable once the holder RELEASED the notebook: the
+        # build was approved and only the reservation failed (21/11, #27851). The live
+        # scoped claim re-read below refuses again while another lane still holds it.
+        late_refused = (str(prior.get("verdict") or "").startswith(LATE_CLAIM_REFUSED)
+                        and (prior.get("verify") or {}).get("verdict") == "approve")
+        if prior.get("verdict") != "verify-error" and not late_refused:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
     elif prior.get("verdict") != "verify-reject":
@@ -5871,6 +5898,10 @@ async def run_revision(args, rec: dict) -> dict:
     rec["stages"]["claim_reservation"] = live_cr or (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
     built = Path((prior.get("built_notebook") or {}).get("path") or "")
+    if str(wt_path) and wt_path != Path("") and not wt_path.exists() and built.is_file():
+        rec["stages"]["worktree_restored"] = restore_worktree(
+            Path(args.repo), wt_path,
+            ((prior.get("stages") or {}).get("worktree") or {}).get("head"))
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
     exec_dir = Path(prior.get("kernel_cwd") or "")
     for label, p in (("worktree", wt_path), ("built", built), ("source", src_nb),
@@ -6484,9 +6515,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "loop, then stage 5 if approved and --max-stage 5")
     ap.add_argument("--verify-from", default=None,
                     help="recover a grain whose VERIFIER CRASHED (trace verdict "
-                         "verify-error, e.g. the GitHub REST bucket ran out mid-run): the "
-                         "build already paid for is re-gated and re-verified with zero "
-                         "model turn, then the review loop and stage 5 as usual")
+                         "verify-error, e.g. the GitHub REST bucket ran out mid-run), or an "
+                         "APPROVED grain refused by the late-claim guard once the holder "
+                         "released the notebook: the build already paid for is re-gated and "
+                         "re-verified with zero coder turn, then the review loop and stage 5 "
+                         "as usual (a released worktree is re-created at the trace's head)")
     return ap
 
 

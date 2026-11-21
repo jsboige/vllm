@@ -601,6 +601,112 @@ def test_verify_from_refuses_a_missing_trace(monkeypatch, tmp_path):
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
 
 
+LATE_REFUSED = "late-claim-refused:refused-claim-held-by-another-lane"
+
+
+def _late_trace(tmp_path, **over):
+    """A claim-late grain approved and built, refused at late_reservation; the
+    scheduler then released its worktree (21/11: CoursIA#27851)."""
+    import shutil
+    base = dict(verdict=LATE_REFUSED, verify={"verdict": "approve"},
+                stages={"worktree": {"path": str(tmp_path / "wt"), "ok": True,
+                                     "head": "0df1b6ad8c7c"},
+                        "claim_reservation": dict(D.LATE_CLAIM_DEFERRED)})
+    base.update(over)
+    trace = _trace(tmp_path, **base)
+    shutil.rmtree(tmp_path / "wt")
+    return trace
+
+
+def _stub_restore(monkeypatch, ok=True):
+    seen = {"restore": [], "late": 0}
+
+    def fake_restore(repo, dest, head):
+        seen["restore"].append((dest, head))
+        if ok:
+            (dest / "Series").mkdir(parents=True, exist_ok=True)
+        return {"ok": ok, "head": head, "path": str(dest)}
+
+    def fake_late(args, rec):
+        seen["late"] += 1
+        return True
+
+    monkeypatch.setattr(D, "restore_worktree", fake_restore)
+    monkeypatch.setattr(D, "late_reservation", fake_late)
+    return seen
+
+
+def test_verify_from_publishes_an_approved_late_claim_refusal(monkeypatch, tmp_path):
+    """#27851: approved + built, refused by the late-claim guard, then [RELEASED]
+    by the holder. --verify-from re-creates the released worktree at the trace's
+    head, re-reads the live claim, re-gates the SAME build and opens the PR, with
+    the reservation still taken by late_reservation() right before stage 5."""
+    seen = _stub_resume(monkeypatch)
+    rs = _stub_restore(monkeypatch)
+    gates = {}
+
+    def fake_gates(args, rec, src_nb, built, create_mode, kname, wt, out_dir, prior=None):
+        gates["built"] = built
+        rec["verdict"] = "gates-ok"
+        rec["verify"] = {"verdict": "approve"}
+
+    monkeypatch.setattr(D, "gates_then_verify", fake_gates)
+    got = _resume(_verify_args(tmp_path, _late_trace(tmp_path)))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+    assert rs["restore"] == [(tmp_path / "wt", "0df1b6ad8c7c")]
+    assert got["stages"]["worktree_restored"]["ok"] is True
+    assert gates["built"] == tmp_path / "nb_8_built.ipynb"
+    assert got["calls"] == []                     # no coder turn re-paid
+    assert rs["late"] == 1                        # the deferred claim is still taken
+    assert got["stages"]["claim_reservation"]["deferred"] == "late"
+    assert got["revised_from"]["verdict"] == LATE_REFUSED
+
+
+def test_verify_from_late_refusal_still_held_refuses_before_any_spend(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch, claim_rc=1)
+    rs = _stub_restore(monkeypatch)
+    got = _resume(_verify_args(tmp_path, _late_trace(tmp_path)))
+    assert got["verdict"] == ("refused-revise-no-reservation:"
+                              "refused-claim-held-by-another-lane")
+    assert rs["restore"] == [] and seen["loop"] == 0 and seen["pr"] == 0
+
+
+def test_verify_from_refuses_an_unapproved_late_claim_refusal(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    _stub_restore(monkeypatch)
+    trace = _late_trace(tmp_path, verify={"verdict": "reject", "findings": FINDINGS})
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == f"refused-verify-not-crashed:{LATE_REFUSED}"
+    assert seen["loop"] == 0
+
+
+def test_resume_refuses_when_the_worktree_cannot_be_restored(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    rs = _stub_restore(monkeypatch, ok=False)
+    got = _resume(_verify_args(tmp_path, _late_trace(tmp_path)))
+    assert got["verdict"].startswith("refused-revise-worktree-missing")
+    assert len(rs["restore"]) == 1 and seen["loop"] == 0
+
+
+def test_restore_worktree_adds_a_detached_tree_at_the_trace_head(monkeypatch, tmp_path):
+    cmds = []
+    dest = tmp_path / "wt"
+
+    def fake_run(cmd, **kw):
+        cmds.append(cmd)
+        if "add" in cmd:
+            dest.mkdir()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(D.subprocess, "run", fake_run)
+    got = D.restore_worktree(tmp_path / "repo", dest, "0df1b6ad8c7c")
+    assert got["ok"] is True and got["head"] == "0df1b6ad8c7c"
+    assert cmds[0][-2:] == ["worktree", "prune"]
+    assert cmds[1][-4:] == ["add", "--detach", str(dest), "0df1b6ad8c7c"]
+    assert "--force" not in cmds[1]
+    assert D.restore_worktree(tmp_path / "repo", tmp_path / "x", None)["ok"] is False
+
+
 def test_revise_from_repairs_a_gates_failed_trace(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch)
     trace = _trace(tmp_path, verdict="gates-failed:machine-path",
