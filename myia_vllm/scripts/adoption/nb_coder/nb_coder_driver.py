@@ -4649,13 +4649,24 @@ def repair_bisect_cause(env: dict) -> str:
     return "timeout" if call_timed_out(env) else ""
 
 
+# Levels of halving a repair round may go down (halves, quarters, eighths). 21/11 conveyor
+# (#27134 2.3c): six root cells asked at once, then both halves of three, were each cut
+# mid-source at 15.7K / 25.7K / 23.6K chars with 9.0K / 11.8K / 10.2K completion tokens of
+# a 32 768 budget — the answer stops near the same length whatever is asked, so halving
+# once left 3-cell requests still above it and the grain was lost on a missing `use`.
+# Three levels take six cells down to one; a half that parses is never split further.
+REPAIR_SPLIT_DEPTH = 3
+
+
 async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
                          conventions: str, upstream: list[dict], deferred: list[dict],
-                         crate_api: str, conv: str | None, head: str = ""
-                         ) -> tuple[dict | None, str | None, dict]:
-    """Ask the failing cells in two halves (once, as the build does). Every half that
-    parses contributes its cells; a half that fails is named, the other still counts.
-    Returns (merged part or None, conversation, bisect record)."""
+                         crate_api: str, conv: str | None, head: str = "",
+                         depth: int = 1) -> tuple[dict | None, str | None, dict]:
+    """Ask the failing cells in two halves, as the build does. Every half that parses
+    contributes its cells; a half that fails is named, the other still counts. A half
+    cut again on the same two failures (truncated, timeout) is itself halved, down to
+    REPAIR_SPLIT_DEPTH levels or one cell. Returns (merged part or None, conversation,
+    bisect record)."""
     mid = max(1, len(detail) // 2)
     merged: list[dict] = []
     halves: list[dict] = []
@@ -4663,21 +4674,29 @@ async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
         hidx = {x["idx"] for x in half}
         hup = [u for u in upstream if u["for"] in hidx]
         hdef = [x for x in deferred if set(x["roots"]) & hidx]
-        henv = await repair_call(sk, args, rec, f"{stage}+h{hi}",
+        hstage = f"{stage}+h{hi}"
+        henv = await repair_call(sk, args, rec, hstage,
                                  repair_prompt(half, conventions, hup, hdef, crate_api),
                                  conv, head=head)
         conv = henv.get("conversation_id") or conv
-        hpart, henv = await parse_or_repair(sk, args, rec, f"{stage}+h{hi}", henv, conv,
+        hpart, henv = await parse_or_repair(sk, args, rec, hstage, henv, conv,
                                             max_tokens=BUILD_MAX_TOKENS)
         hcells = (hpart or {}).get("cells") or []
-        verdict = ""
+        verdict, split = "", None
         if not hcells:
             verdict = (gate_refusal(henv) or call_failure(henv)
                        or repair_bisect_cause(henv) or "unparsed")
+            if (verdict in ("truncated", "timeout") and len(half) > 1
+                    and depth < REPAIR_SPLIT_DEPTH):
+                spart, conv, split = await _repair_halves(
+                    sk, args, rec, hstage, half, conventions, hup, hdef, crate_api, conv,
+                    head=head, depth=depth + 1)
+                hcells = (spart or {}).get("cells") or []
         halves.append({"asked": sorted(hidx), "got": len(hcells),
                        "upstream": [u["idx"] for u in hup],
                        "deferred": [x["idx"] for x in hdef],
-                       **({"verdict": verdict} if verdict else {})})
+                       **({"verdict": verdict} if verdict else {}),
+                       **({"split": split} if split else {})})
         merged += hcells
     return ({"cells": merged} if merged else None), conv, {"halves": halves}
 
