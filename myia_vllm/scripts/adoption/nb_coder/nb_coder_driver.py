@@ -2046,6 +2046,104 @@ def cap_source(src: str, cap: int = REPAIR_SOURCE_CAP) -> str:
             + src[-half:])
 
 
+# evcxr reports every rustc diagnostic as its own `error` output, lints included. Measured
+# 21/11 on CoursIA#27134 (2.3c Rust twin, three repair rounds lost): cell 24 carried 31 of
+# them, 11,538 characters with 156 ANSI codes, for about ten distinct causes. The round
+# showed `errs[-2000:]`, which started mid-diagnostic and held three of them (two
+# `mismatched types`, one `outer`), the same three every round. Above the cut stayed
+# `v_t` being an `Option`, the missing `SliceRandom` / `Distribution` imports, and two
+# methods that do not exist.
+REPAIR_ERRORS_CAP = 2000
+REPAIR_DIAG_BODY_CAP = 600
+_DIAG_WARNING_RE = re.compile(r"\bwarning:")
+
+
+def _diag_lines(o: dict) -> list[str]:
+    """One diagnostic's lines, ANSI stripped, consecutive repeats dropped (evcxr prints
+    the offending code line twice)."""
+    out: list[str] = []
+    for part in o.get("traceback") or []:
+        for line in _ANSI_RE.sub("", part if isinstance(part, str) else _text(part)).split("\n"):
+            if line.strip() and (not out or out[-1] != line):
+                out.append(line.rstrip())
+    return out
+
+
+def error_digest(cell: dict, raw: str, cap: int = REPAIR_ERRORS_CAP) -> str:
+    """The cell's errors for a repair round, each distinct cause once.
+
+    With several `error` outputs (evcxr, one per rustc diagnostic), the outputs are grouped
+    by message and errors come before warnings. Each group shows its first diagnostic in
+    full, the code lines of its other sites, and a count. Groups that do not fit are named
+    on a closing line, never cut silently. A single error output (an IPython or .NET
+    traceback) keeps the tail of `raw`, because there the decisive line comes last."""
+    outs = [o for o in cell.get("outputs") or []
+            if isinstance(o, dict) and o.get("output_type") == "error"]
+    if len(outs) < 2:
+        return (raw or "")[-cap:]
+    groups: dict[str, dict] = {}
+    for k, o in enumerate(outs):
+        msg = _ANSI_RE.sub("", str(o.get("evalue") or o.get("ename") or "")).strip()
+        lines = _diag_lines(o)
+        g = groups.setdefault(msg, {"msg": msg, "first": k, "n": 0, "lines": lines,
+                                    "sites": [], "warning": False, "sited": False})
+        g["n"] += 1
+        g["warning"] |= any(_DIAG_WARNING_RE.search(x) for x in lines)
+        site = _first_site(lines, msg)
+        g["sited"] |= site is not None
+        if (site and g["n"] > 1 and site not in g["sites"]
+                and site != _first_site(g["lines"], msg)):
+            g["sites"].append(site)
+    order = sorted(groups.values(), key=lambda g: (g["warning"], not g["sited"], g["first"]))
+    head = f"{len(outs)} diagnostics, {len(order)} causes distinctes (chacune une fois) :"
+    blocks: list[str] = []
+    omitted: list[dict] = []
+    room = cap - len(head) - 300  # the closing line naming what did not fit
+    for g in order:
+        tag = " [avertissement]" if g["warning"] else ""
+        count = f" ×{g['n']}" if g["n"] > 1 else ""
+        # The caret line repeats the message after `error:`; the carets alone point the column.
+        body = "\n".join("  " + x.replace(f"error: {g['msg']}", "")
+                         .replace(f"warning: {g['msg']}", "").rstrip()
+                         for x in g["lines"] if x.strip() != g["msg"])
+        if len(body) > REPAIR_DIAG_BODY_CAP:
+            body = body[:REPAIR_DIAG_BODY_CAP] + " …"
+        others = ("\n  autres sites : " + " ; ".join(f"`{s}`" for s in g["sites"][:4])
+                  if g["sites"] else "")
+        full = f"- {g['msg']}{count}{tag}" + (f"\n{body}" if body else "") + others
+        if len(full) + 1 <= room:
+            blocks.append(full)
+            room -= len(full) + 1
+            continue
+        first = _first_site(g["lines"], g["msg"])
+        short = f"- {g['msg']}{count}{tag}" + (f"\n  `{first}`" if first else "")
+        if len(short) + 1 <= room:
+            blocks.append(short)
+            room -= len(short) + 1
+        else:
+            omitted.append(g)
+    tail = ""
+    if omitted:
+        names, used = [], 0
+        for g in omitted:
+            n = g["msg"][:90]
+            if used + len(n) > 240:
+                break
+            names.append(n)
+            used += len(n) + 3
+        rest = len(omitted) - len(names)
+        tail = (f"\n[… {len(omitted)} autre(s) cause(s) non détaillée(s) faute de place : "
+                + " ; ".join(names) + (f" ; et {rest} de plus" if rest else "") + "]")
+    return head + "\n" + "\n".join(blocks) + tail
+
+
+def _first_site(lines: list[str], msg: str) -> str | None:
+    """The offending code line of a diagnostic: neither its message, nor a caret line,
+    nor a `help:` hint."""
+    return next((x.strip() for x in lines if x.strip() != msg and "^" not in x
+                 and not x.lstrip().startswith("help:")), None)
+
+
 def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str]]:
     """The source lines the compiler/interpreter cites, quoted from the CURRENT source so
     the model does not have to count lines."""
@@ -4542,7 +4640,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             src = _text(cells_now[i].get("source"))
             errs = _outputs_text(cells_now[i])
             detail.append({"idx": i, "source": cap_source(src),
-                           "errors": errs[-2000:], "cited": cited_lines(src, errs),
+                           "errors": error_digest(cells_now[i], errs),
+                           "cited": cited_lines(src, errs),
                            "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
