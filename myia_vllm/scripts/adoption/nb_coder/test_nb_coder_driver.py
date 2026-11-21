@@ -540,11 +540,12 @@ def test_stage5_commit_carries_its_own_identity(tmp_path, monkeypatch):
     assert author.strip() == "nb-coder <nb-coder@nb-coder.invalid>"
     # <login>@users.noreply.github.com is attributed by GitHub to the REAL account
     # NB-Coder (id 54853046) — .invalid (RFC 2606) can never collide (vllm-a9).
-    # Both commit attempts (primary + the pre-commit auto-fix retry) carry it:
-    # a source pin, because the retry path only runs when a hook rewrites.
+    # All three commit attempts (primary + the pre-commit auto-fix retry + the
+    # twin-parity reseal commit of the 21/11 repo integration) carry it: a
+    # source pin, because the retry path only runs when a hook rewrites.
     src = Path(d.__file__).read_text(encoding="utf-8")
     fn = src.split("def stage5_pr", 1)[1].split("\ndef ", 1)[0]
-    assert fn.count("*_GIT_IDENTITY") == 2, "a commit site lost its identity"
+    assert fn.count("*_GIT_IDENTITY") == 3, "a commit site lost its identity"
 
 
 # ---- stage5 commit retry after a pre-commit auto-fixer (CoursIA #27113 + #27102) ----

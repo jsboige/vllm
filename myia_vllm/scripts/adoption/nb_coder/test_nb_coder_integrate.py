@@ -1,0 +1,475 @@
+"""Regression pins for the stage-5 repo integration (21/11).
+
+The integration reproduces, deterministically, the remedies the Hermes reviewer
+asked for on every port PR (measured: CoursIA#27829/#27835 failing exactly
+readme-notebook-coverage + check-nav-chain orphan_entry, lot-1 #27803/04/05
+fixed by hand, po-2028's 14 C# port PRs for the reseal order): README row on
+the twin's own line mirroring the folder's label convention, inbound nav edge
+in the twin's Navigation cell, twin-parity reseal last. These tests pin the
+convention shapes measured in the repo, the markdown-only guarantee, the
+idempotence, and the --sync-main conflict resolution.
+"""
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location(
+    "nb_coder_integrate",
+    Path(__file__).resolve().parent / "nb_coder_integrate.py")
+nbci = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(nbci)
+
+
+def _nb(path: Path, cells: list) -> Path:
+    """Repo-format notebook: indent=1, ensure_ascii=False, LF lines, no
+    trailing newline, source fields as line lists (measured on CoursIA
+    origin/main). `newline=""` keeps Windows from translating to CRLF."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                                "nbformat_minor": 5}, ensure_ascii=False,
+                               indent=1), encoding="utf-8", newline="")
+    return path
+
+
+def _md(src: str) -> dict:
+    return {"cell_type": "markdown", "source": src.splitlines(keepends=True),
+            "metadata": {}, "id": "md"}
+
+
+def _code(src: str) -> dict:
+    return {"cell_type": "code", "source": src.splitlines(keepends=True),
+            "outputs": [], "metadata": {}, "execution_count": 1, "id": "code"}
+
+
+def _readme(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="")
+    return path
+
+
+NAV_BAR = ("**Navigation** : [<< Sudoku-06](Sudoku-06.ipynb) | "
+           "[Index](README.md) | [Sudoku-08 >>](Sudoku-08.ipynb) | "
+           "[twin C#](Serie-07-Norvig-CSharp.ipynb)\n")
+
+
+# ------------------------------------------------------------- README shapes
+
+def test_readme_row_bare_language_table_cell():
+    """Sudoku shape (lot 1, #27805): `[C#](…) · [Python](…)` -> `· [Rust](…)`
+    appended right after the LAST twin link, before the next table cell."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "| 07 | Norvig — [C#](Serie-07-Norvig-CSharp.ipynb) · "
+                "[Python](Serie-07-Norvig-Python.ipynb) | description |\n")
+        action = nbci.plan_readme_row(
+            repo, "MyIA.AI.Notebooks/Serie/Serie-07-Norvig-Rust.ipynb",
+            "MyIA.AI.Notebooks/Serie/Serie-07-Norvig-Python.ipynb")
+        assert action["todo"] and action["label"] == "Rust"
+        nbci.apply_readme_row(action)
+        line = (repo / "MyIA.AI.Notebooks/Serie/README.md").read_text(
+            encoding="utf-8").splitlines()[0]
+        assert line == ("| 07 | Norvig — [C#](Serie-07-Norvig-CSharp.ipynb) · "
+                        "[Python](Serie-07-Norvig-Python.ipynb) · "
+                        "[Rust](Serie-07-Norvig-Rust.ipynb) | description |")
+
+
+def test_readme_row_jumeau_label_table_cell():
+    """SocialChoice shape (lot 1, #27804): `· [jumeau C#](…)` -> `jumeau Rust`."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "| 02 | [Titre](Serie-02-Python.ipynb) · "
+                "[jumeau C#](Serie-02-CSharp.ipynb) | desc |\n")
+        action = nbci.plan_readme_row(
+            repo, "MyIA.AI.Notebooks/Serie/Serie-02-Rust.ipynb",
+            "MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb")
+        assert action["label"] == "jumeau Rust"
+        assert action["insert"] == " · [jumeau Rust](Serie-02-Rust.ipynb)"
+
+
+def test_readme_row_plus_group_takes_bare_label():
+    """Part1-Foundations shape (lot 1, #27803): inside a `(+ …)` group the
+    label is the bare language even next to a `[jumeau C#]` sibling."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "- **[3d Weighted A\\*](Serie-03d.ipynb)** "
+                "(+ [jumeau C#](Serie-03d-CSharp.ipynb)) — description\n")
+        action = nbci.plan_readme_row(
+            repo, "MyIA.AI.Notebooks/Serie/Serie-03d-Rust.ipynb",
+            "MyIA.AI.Notebooks/Serie/Serie-03d.ipynb")
+        assert action["label"] == "Rust"
+        nbci.apply_readme_row(action)
+        line = (repo / "MyIA.AI.Notebooks/Serie/README.md").read_text(
+            encoding="utf-8").splitlines()[0]
+        assert "(+ [jumeau C#](Serie-03d-CSharp.ipynb) · [Rust](Serie-03d-Rust.ipynb))" in line
+
+
+def test_mirror_label_version_and_titled_shapes():
+    """po-2028 folders: `[Version C#]` -> `Version Rust`; Complexity-style
+    `[X C#]` -> `X Rust`."""
+    assert nbci.mirror_label("Version C#", "Rust", False) == "Version Rust"
+    assert nbci.mirror_label("Complexity-06 C#", "Rust", False) == "Complexity-06 Rust"
+    assert nbci.mirror_label("jumeau C#", "C#", False) == "jumeau C#"
+    assert nbci.mirror_label("Python", "Rust", False) == "Rust"
+    assert nbci.mirror_label("whatever", "Rust", False) == "jumeau Rust"
+    assert nbci.mirror_label("jumeau C#", "Rust", True) == "Rust"  # (+ ...) group
+
+
+def test_readme_row_idempotent_when_name_present():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "| 07 | [C#](a-CSharp.ipynb) · [Rust](Serie-07-Rust.ipynb) |\n")
+        action = nbci.plan_readme_row(
+            repo, "MyIA.AI.Notebooks/Serie/Serie-07-Rust.ipynb",
+            "MyIA.AI.Notebooks/Serie/Serie-07-Python.ipynb")
+        assert not action["todo"]
+
+
+def test_readme_row_no_twin_line_reported_not_forced():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "| 01 | unrelated |\n")
+        action = nbci.plan_readme_row(
+            repo, "MyIA.AI.Notebooks/Serie/Serie-07-Rust.ipynb",
+            "MyIA.AI.Notebooks/Serie/Serie-07-Python.ipynb")
+        assert not action["todo"] and "no README line" in action["why"]
+
+
+# ---------------------------------------------------------------- nav shapes
+
+def test_nav_bar_extended_with_mirrored_twin_label():
+    """ChoixSocial shape (lot 1, #27804): `| [twin C#](…)` -> `| [twin Rust](…)`
+    appended at the end of the bar."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Serie-02-Python.ipynb",
+                   [_md(NAV_BAR.replace("Serie-07", "Serie-02")
+                        .replace("Sudoku", "ChoixSocial")),
+                    _code("x = 1\n")])
+        action = nbci.plan_nav_link(twin, "Serie-02-Rust.ipynb")
+        assert action["todo"] and action["how"] == "extended-nav-bar"
+        assert action["label"] == "twin Rust"
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        assert nb["cells"][0]["source"][0].endswith(
+            " | [twin C#](Serie-02-Norvig-CSharp.ipynb) | [twin Rust](Serie-02-Rust.ipynb)\n")
+
+
+def test_nav_bar_duplicated_in_two_cells_both_extended():
+    """The bar duplicated at the end of the notebook (cells 0 and 27 on
+    #27804): every copy is extended."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bar = NAV_BAR.replace("Serie-07", "Serie-02").replace("Sudoku", "ChoixSocial")
+        twin = _nb(Path(td) / "Serie-02-Python.ipynb", [_md(bar), _code("x=1\n"), _md(bar)])
+        action = nbci.plan_nav_link(twin, "Serie-02-Rust.ipynb")
+        assert action["cells"] == [0, 2]
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        for i in (0, 2):
+            assert nb["cells"][i]["source"][0].endswith(
+                " | [twin Rust](Serie-02-Rust.ipynb)\n")
+
+
+def test_nav_appended_under_navigation_cell():
+    """Sudoku-07 shape (lot 1, #27805): no bar, but a `## Navigation` cell ->
+    `**Jumeau Rust** : [stem](name)` appended at its end."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cell0 = ("## Navigation\n\n"
+                 "| [Sudoku-05-PSO](Sudoku-05-PSO.ipynb) | [Sudoku-07](Sudoku-07.ipynb) |\n")
+        twin = _nb(Path(td) / "Serie-07-Python.ipynb", [_md(cell0), _code("x=1\n")])
+        action = nbci.plan_nav_link(twin, "Serie-07-Rust.ipynb")
+        assert action["todo"] and action["how"] == "appended-under-navigation-cell"
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        text = "".join(nb["cells"][0]["source"])
+        assert text.endswith("\n**Jumeau Rust** : [Serie-07-Rust](Serie-07-Rust.ipynb)\n")
+
+
+def test_nav_minimal_bar_when_no_navigation():
+    """Search-03d shape (lot 1, #27803): twin had no navigation at all -> a
+    minimal `**Navigation** :` bar is prepended to the first markdown cell and
+    REPORTED (the series may want the full prev|index|next bar)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Serie-03d.ipynb",
+                   [_md("# Titre\n\nIntro.\n"), _code("x=1\n")])
+        action = nbci.plan_nav_link(twin, "Serie-03d-Rust.ipynb")
+        assert action["todo"] and action["how"] == "added-minimal-nav-bar"
+        assert action["note"]
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        assert "".join(nb["cells"][0]["source"]).startswith(
+            "**Navigation** : [jumeau Rust](Serie-03d-Rust.ipynb)\n\n# Titre")
+
+
+PONTS_CELL = (
+    "## 5. Ponts avec le reste de la série\n\n"
+    "| Direction | Lien | Relation |\n"
+    "|-----------|------|----------|\n"
+    "| ← Fondations | [Search-3 — Informed](../P1/Search-03-Informed.ipynb) | A\\\\*, heuristiques |\n"
+    "| ↔ Search-03b | [Search-03b — PDB](Search-03b-PatternDatabases.ipynb) | Autre voie |\n"
+    "| → Partie 4 | [Métaheuristiques](../P4/README.md) | abandon de l'optimalité |\n"
+    "\n**Référence fondatrice** : Harvey & Ginsberg (1995).\n")
+
+
+def test_nav_table_row_gets_a_new_row_not_an_extra_cell():
+    """Search-03c shape (CoursIA#27829): the only nav-marked .ipynb line is a
+    body row of a 3-column Markdown table. Widening it (` | [jumeau Rust](…)`)
+    gave the row 5 cells under a 3-cell header; the edge must be a whole new
+    row, after the table's last row, with the header's column count."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Search-03c-LDS.ipynb", [_md(PONTS_CELL), _code("x=1\n")])
+        action = nbci.plan_nav_link(twin, "Search-03c-LDS-Rust.ipynb")
+        assert action["todo"] and action["how"] == "added-nav-table-row"
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        lines = "".join(nb["cells"][0]["source"]).splitlines()
+        new = "| → Jumeau Rust | [Search-03c-LDS-Rust](Search-03c-LDS-Rust.ipynb) | même carnet, porté en Rust |"
+        assert lines[lines.index("| → Partie 4 | [Métaheuristiques](../P4/README.md) | abandon de l'optimalité |") + 1] == new
+        # every original row untouched, and every table row keeps 3 cells
+        for row in PONTS_CELL.splitlines():
+            assert row in lines
+        assert all(len(nbci._split_row(l)) == 3 for l in lines if l.startswith("|"))
+        # the repo guard reads it as an edge, so a second run is a no-op
+        assert not nbci.plan_nav_link(twin, "Search-03c-LDS-Rust.ipynb")["todo"]
+
+
+def test_nav_table_row_at_cell_end_keeps_the_no_trailing_newline():
+    """A table that closes the cell (no trailing newline) gets its row on a
+    new line and the cell still ends without one."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cell = ("| Direction | Lien |\n|---|---|\n"
+                "| ← Avant | [Serie-02](Serie-02.ipynb) |")
+        twin = _nb(Path(td) / "Serie-03.ipynb", [_md(cell)])
+        action = nbci.plan_nav_link(twin, "Serie-03-Rust.ipynb")
+        nbci.apply_nav_link(action)
+        text = "".join(json.loads(twin.read_text(encoding="utf-8"))["cells"][0]["source"])
+        assert text == cell + "\n| → Jumeau Rust | [Serie-03-Rust](Serie-03-Rust.ipynb) |"
+
+
+def test_lone_pipe_nav_bar_is_still_extended():
+    """A pipe-delimited bar with no separator row is not a table: it keeps the
+    lot-1 extend-the-bar shape."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bar = "| [<< Serie-06](Serie-06.ipynb) | [Serie-08 >>](Serie-08.ipynb) |\n"
+        twin = _nb(Path(td) / "Serie-07-Python.ipynb", [_md(bar)])
+        action = nbci.plan_nav_link(twin, "Serie-07-Rust.ipynb")
+        assert action["how"] == "extended-nav-bar"
+
+
+def test_nav_idempotent_when_edge_exists():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bar = NAV_BAR + " | [jumeau Rust](Serie-07-Rust.ipynb)\n"
+        twin = _nb(Path(td) / "Serie-07-Python.ipynb", [_md(bar), _code("x=1\n")])
+        action = nbci.plan_nav_link(twin, "Serie-07-Rust.ipynb")
+        assert not action["todo"]
+
+
+def test_nav_markdown_only_and_byte_faithful():
+    """The twin edit never touches code cells, outputs or cell metadata, and
+    preserves the repo's byte formatting (indent=1, list sources, no trailing
+    newline) for every unchanged byte."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "Serie-02-Python.ipynb"
+        cells = [_md(NAV_BAR.replace("Serie-07", "Serie-02")),
+                 _code("# terrain pondéré\nx = [1, 2]\n"),
+                 _md("## Navigation\n\n| [a](a.ipynb) |\n")]
+        _nb(path, cells)
+        before_raw = path.read_bytes()
+        action = nbci.plan_nav_link(path, "Serie-02-Rust.ipynb")
+        nbci.apply_nav_link(action)
+        after = json.loads(path.read_text(encoding="utf-8"))
+        nbci.assert_markdown_only(json.loads(before_raw)["cells"],
+                                  after["cells"], path.name)
+        # code cell strictly untouched
+        assert after["cells"][1] == json.loads(before_raw)["cells"][1]
+        # byte-faithful format: same indent, no trailing newline
+        raw = path.read_bytes().decode("utf-8")
+        assert raw == json.dumps(after, ensure_ascii=False, indent=1)
+        assert not raw.endswith("\n")
+
+
+# ---------------------------------------------------------------- registry
+
+def test_find_twin_pair_by_python_member():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "scripts" / "notebook_tools" / "twin_pairs.d"
+        d.mkdir(parents=True)
+        (d / "serie-07-norvig.yaml").write_text(
+            "- name: \"Sudoku-07 Norvig\"\n"
+            "  family: Sudoku\n"
+            "  python: MyIA.AI.Notebooks/Sudoku/Serie-07-Norvig-Python.ipynb\n"
+            "  csharp: MyIA.AI.Notebooks/Sudoku/Serie-07-Norvig-CSharp.ipynb\n"
+            "  parity_level: semantic\n", encoding="utf-8")
+        pair = nbci.find_twin_pair(Path(td),
+                                   "MyIA.AI.Notebooks/Sudoku/Serie-07-Norvig-Python.ipynb")
+        assert pair == "Sudoku-07 Norvig"
+        assert nbci.find_twin_pair(Path(td), "MyIA.AI.Notebooks/Sudoku/other.ipynb") is None
+
+
+def test_register_pair_csharp_only_and_honest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = Path(td)
+        d = wt / "scripts" / "notebook_tools" / "twin_pairs.d"
+        d.mkdir(parents=True)
+        # Rust is not a schema member: registration refused (lot-1 measured)
+        rust = nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-Rust.ipynb", "lane")
+        assert not rust["registered"]
+        cs = nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb", "lane",
+                                facts={"kernel": ".net-csharp",
+                                       "executed_cells": 12, "verdict": "approve"})
+        assert cs["registered"] and cs["pair"] == "S C#"
+        text = (wt / cs["file"]).read_text(encoding="utf-8")
+        assert "parity_level: native-both" in text
+        assert "bridge_verdict" not in text  # no fabricated SOTA judgment
+        assert "firsthand" not in text
+        assert ".net-csharp" in text and "approve" in text
+        # second registration is refused (idempotent)
+        assert not nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb",
+                                      "lane")["registered"]
+
+
+# ---------------------------------------------------------------- sync-main
+
+def _git_repo(td: Path) -> Path:
+    def g(*args):
+        subprocess.run(["git", "-C", str(td), *args], check=True,
+                       capture_output=True, text=True, encoding="utf-8")
+    g("init", "-q", "-b", "main")
+    g("config", "user.name", "t")
+    g("config", "user.email", "t@t.invalid")
+    return td
+
+
+def _commit_all(td: Path):
+    subprocess.run(["git", "-C", str(td), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(td), "-c", "user.name=t",
+                    "-c", "user.email=t@t.invalid", "commit", "-q", "-m", "c"],
+                   check=True, capture_output=True)
+
+
+def test_sync_main_resolves_owned_conflicts_from_main():
+    """Two grains edit adjacent README lines: the second PR to merge conflicts.
+    --sync-main takes origin/main's side of the OWNED files (README, twin,
+    registry) and leaves the merge ready for the caller to re-integrate."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = _git_repo(Path(td))
+        readme = wt / "MyIA.AI.Notebooks" / "Serie" / "README.md"
+        readme.parent.mkdir(parents=True)
+        base = "| 01 | A — [C#](A-CSharp.ipynb) · [Python](A-Python.ipynb) |\n" \
+               "| 02 | B — [C#](B-CSharp.ipynb) · [Python](B-Python.ipynb) |\n"
+        readme.write_text(base, encoding="utf-8")
+        _commit_all(wt)
+        # origin/main moves ahead: another grain's Rust row landed on line 02
+        readme.write_text(base.replace(
+            "[Python](B-Python.ipynb) |",
+            "[Python](B-Python.ipynb) · [Rust](B-Rust.ipynb) |"), encoding="utf-8")
+        _commit_all(wt)
+        subprocess.run(["git", "-C", str(wt), "update-ref",
+                        "refs/remotes/origin/main", "main"], check=True,
+                       capture_output=True)
+        # our branch started BEFORE that merge and edited the same region
+        subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "pr",
+                        "HEAD~1"], check=True, capture_output=True)
+        readme.write_text(base.replace(
+            "[Python](A-Python.ipynb) |",
+            "[Python](A-Python.ipynb) · [Rust](A-Rust.ipynb) |"), encoding="utf-8")
+        _commit_all(wt)
+        owned = ["MyIA.AI.Notebooks/Serie/README.md"]
+        result = nbci.merge_owned_conflicts(wt, owned)
+        assert result["merged"] and result.get("resolved_theirs") == owned
+        # origin/main's line won; ours is gone until the (idempotent) re-run
+        text = readme.read_text(encoding="utf-8")
+        assert "[Rust](B-Rust.ipynb)" in text and "[Rust](A-Rust.ipynb)" not in text
+
+
+def test_sync_main_aborts_on_foreign_conflict():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = _git_repo(Path(td))
+        f = wt / "code.py"
+        f.write_text("base\n", encoding="utf-8")
+        _commit_all(wt)
+        f.write_text("main side\n", encoding="utf-8")
+        _commit_all(wt)
+        subprocess.run(["git", "-C", str(wt), "update-ref",
+                        "refs/remotes/origin/main", "main"], check=True,
+                       capture_output=True)
+        subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "pr",
+                        "HEAD~1"], check=True, capture_output=True)
+        f.write_text("pr side\n", encoding="utf-8")
+        _commit_all(wt)
+        result = nbci.merge_owned_conflicts(wt, ["MyIA.AI.Notebooks/Serie/README.md"])
+        assert not result["merged"] and result["aborted"]
+        assert result["conflicts"] == ["code.py"]
+        # abort left no merge in progress and our side intact
+        p = subprocess.run(["git", "-C", str(wt), "rev-parse", "-q",
+                            "--verify", "MERGE_HEAD"],
+                           capture_output=True, text=True)
+        assert p.returncode != 0
+        assert f.read_text(encoding="utf-8") == "pr side\n"
+
+
+def test_sync_main_clean_merge():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = _git_repo(Path(td))
+        (wt / "a.txt").write_text("base\n", encoding="utf-8")
+        _commit_all(wt)
+        (wt / "b.txt").write_text("main\n", encoding="utf-8")
+        _commit_all(wt)
+        subprocess.run(["git", "-C", str(wt), "update-ref",
+                        "refs/remotes/origin/main", "main"], check=True,
+                       capture_output=True)
+        subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "pr",
+                        "HEAD~1"], check=True, capture_output=True)
+        (wt / "a.txt").write_text("pr\n", encoding="utf-8")
+        _commit_all(wt)
+        result = nbci.merge_owned_conflicts(wt, ["MyIA.AI.Notebooks/Serie/README.md"])
+        assert result["merged"] and not result.get("resolved_theirs")
+        assert (wt / "a.txt").read_text(encoding="utf-8") == "pr\n"
+        assert (wt / "b.txt").read_text(encoding="utf-8") == "main\n"
+
+
+# ---------------------------------------------------------------- integrate
+
+def test_integrate_idempotent_second_run_writes_nothing():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _readme(repo / "MyIA.AI.Notebooks/Serie/README.md",
+                "| 02 | [Titre](Serie-02-Python.ipynb) · "
+                "[jumeau C#](Serie-02-CSharp.ipynb) | desc |\n")
+        _nb(repo / "MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb",
+            [_md(NAV_BAR.replace("Serie-07", "Serie-02")), _code("x=1\n")])
+        first = nbci.integrate(repo, "MyIA.AI.Notebooks/Serie/Serie-02-Rust.ipynb",
+                               "MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb")
+        assert first["touched"] == ["MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb",
+                                    "MyIA.AI.Notebooks/Serie/README.md"]
+        snapshot = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+        second = nbci.integrate(repo, "MyIA.AI.Notebooks/Serie/Serie-02-Rust.ipynb",
+                                "MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb")
+        assert second["touched"] == []
+        assert {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()} == snapshot
