@@ -146,10 +146,30 @@ CONTENT_FAILURE_PREFIXES = (
 )
 
 
+# Refusals at admission: the driver's claim step declined the grain before any model
+# call (the notebook is held by another lane, our claim is not scoped or not verified,
+# an IMPLICIT occupation, the guard or the post failed). They cost the engine nothing
+# and say nothing about its capacity, so they neither prove a served run nor block the
+# promotion. Measured 21/11 04:50Z: step 0 of the live conveyor stood at "failures 5>0",
+# and all five were refused-claim-* (MGS-25 not-verified, MGS-28/MGS-29/Search-11
+# check-not-scoped, Sudoku-05 held by po-2024). Sudoku-05 would block for as long as
+# po-2024 holds it.
+ADMISSION_FAILURE_PREFIXES = (
+    "refused-claim",
+)
+
+
 def failure_class(verdict: str | None) -> str:
-    """'content' for a judged notebook that did not pass, 'run' for everything else."""
+    """'content' for a judged notebook that did not pass, 'admission' for a grain
+    refused before any model call, 'run' for everything else."""
     v = (verdict or "").strip()
+    if any(v.startswith(p) for p in ADMISSION_FAILURE_PREFIXES):
+        return "admission"
     return "content" if any(v.startswith(p) for p in CONTENT_FAILURE_PREFIXES) else "run"
+
+
+FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed",
+                    "run": "failed"}
 
 
 
@@ -337,6 +357,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
         "done": 0,
         "failed": 0,
         "content_failed": 0,
+        "admission_failed": 0,
         "deferred": 0,
         "first_green_ts": None,
         "dirty": False,          # red or unknown seen since the step started (evidence)
@@ -351,7 +372,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
 def _step_report(ramp: dict, now: float) -> dict:
     return {k: ramp.get(k) for k in (
         "steps", "step_index", "max_active", "step_started", "done", "failed",
-        "content_failed",
+        "content_failed", "admission_failed",
         "deferred", "dirty", "samples", "green_samples", "running_max",
         "waiting_max", "preempt_max")} | {"step_ended": now,
                                           "duration_s": round(now - ramp["step_started"], 1)}
@@ -360,7 +381,7 @@ def _step_report(ramp: dict, now: float) -> dict:
 def _reset_step_counters(ramp: dict, now: float) -> None:
     """Keep the ramp position, reset the promotion evidence."""
     ramp.update({"step_started": now, "done": 0, "failed": 0, "content_failed": 0,
-                 "deferred": 0,
+                 "admission_failed": 0, "deferred": 0,
                  "first_green_ts": None, "dirty": False, "samples": 0,
                  "green_samples": 0, "running_max": 0.0, "waiting_max": 0.0,
                  "preempt_max": 0.0})
@@ -770,8 +791,9 @@ class Scheduler:
         carries no `ramp_failed_ts` and is not counted.
 
         cls splits them by failure_class: "run" failures block the promotion, "content"
-        ones count as served runs. The class is read from the grain's latest verdict, so
-        a failure recorded before the split classifies the same way.
+        ones count as served runs, "admission" ones (refused before any model call) do
+        neither. The class is read from the grain's latest verdict, so a failure
+        recorded before the split classifies the same way.
         """
         since = ramp.get("step_started") or 0
         return sum(1 for g in self.state["grains"].values()
@@ -792,6 +814,7 @@ class Scheduler:
         if served < self.args.ramp_min_done:
             reasons.append(f"served {served}/{self.args.ramp_min_done} "
                            f"(done {ramp['done']} + content-failed {ramp['content_failed']})")
+        ramp["admission_failed"] = self._step_failures(ramp, "admission")
         ramp["failed"] = self._step_failures(ramp, "run")
         if ramp["failed"] > self.args.ramp_max_failures:
             reasons.append(f"failures {ramp['failed']}>{self.args.ramp_max_failures}")
@@ -873,7 +896,7 @@ class Scheduler:
                 g["status"] = "failed"
                 g["ramp_failed_ts"] = now
                 cls = failure_class(verdict)
-                counter = "content_failed" if cls == "content" else "failed"
+                counter = FAILURE_COUNTERS[cls]
                 ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed, failure_class=cls)
