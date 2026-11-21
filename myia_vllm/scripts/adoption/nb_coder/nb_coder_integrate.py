@@ -324,6 +324,71 @@ def _nav_bar_cells(cells: list[dict]) -> dict[int, int]:
     return out
 
 
+TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
+
+
+def _is_pipe_row(line: str) -> bool:
+    return line.lstrip().startswith("|")
+
+
+def _split_row(line: str) -> list[str]:
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith("\\|"):
+        body = body[:-1]
+    return [c.strip() for c in UNESCAPED_PIPE_RE.split(body)]
+
+
+def _table_block(lines: list[str], j: int) -> tuple[int, int] | None:
+    """(last row index, column count) of the Markdown TABLE holding line j, or
+    None when line j is not a row of a real table. A real table is a block of
+    contiguous pipe rows that contains a separator row (`|---|---|`); a lone
+    pipe-delimited nav bar (`| [<< prev](…) | [next >>](…) |`) has none, is not
+    rendered as a table, and keeps the extend-the-bar shape."""
+    if not _is_pipe_row(lines[j]):
+        return None
+    start = j
+    while start > 0 and _is_pipe_row(lines[start - 1]):
+        start -= 1
+    end = j
+    while end + 1 < len(lines) and _is_pipe_row(lines[end + 1]):
+        end += 1
+    seps = [k for k in range(start, end + 1)
+            if TABLE_SEP_RE.match(lines[k].rstrip("\r\n"))]
+    if not seps:
+        return None
+    return end, len(_split_row(lines[seps[0]]))
+
+
+def _table_nav_row(bar_row: str, n_cols: int, label: str, stem: str,
+                   new_name: str, lang: str) -> str:
+    """New table row mirroring the bar row's layout: the link goes in the
+    column where the bar row has its .ipynb link, the nav marker `→` (one the
+    repo guard reads on the line) in the column where the bar row has its own
+    marker outside any link, a short relation in the last free column."""
+    cells = _split_row(bar_row)
+    link_col = next((k for k, c in enumerate(cells)
+                     if any(m.group(2).lower().endswith(".ipynb")
+                            for m in LINK_RE.finditer(c))), 0)
+    marker_col = next((k for k, c in enumerate(cells)
+                       if k != link_col and any(
+                           mk in LINK_RE.sub("", c).lower()
+                           for mk in NAV_LINE_MARKERS)), None)
+    out = [""] * max(n_cols, link_col + 1)
+    cap = label[:1].upper() + label[1:]
+    if marker_col is not None and marker_col < len(out):
+        out[link_col] = f"[{stem}]({new_name})"
+        out[marker_col] = f"→ {cap}"
+    else:
+        out[link_col] = f"[→ {stem}]({new_name})"
+    free = [k for k in range(len(out)) if not out[k]]
+    if free:
+        out[free[-1]] = f"même carnet, porté en {lang}"
+    return "| " + " | ".join(out) + " |\n"
+
+
 def _nav_label(bar_line: str, cell_text_: str, lang: str) -> str:
     """Twin segment of the nav bar, mirroring the bar's own twin link
     (`| [twin C#](...)` -> `twin Rust`, `[jumeau C#]` -> `jumeau Rust`);
@@ -345,7 +410,10 @@ def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
     """Plan the inbound nav edge in the Python twin.
 
     Shapes, all measured on the lot-1 fixes: extend every existing nav bar with
-    ` | [label](new.ipynb)` (Search-03d cell 0, ChoixSocial cells 0+27); when
+    ` | [label](new.ipynb)` (Search-03d cell 0, ChoixSocial cells 0+27) -- or,
+    when the bar is a row of a real Markdown table (Search-03c's « Ponts »
+    table, #27829), add a whole `| → Jumeau <Lang> | [stem](new) | … |` row at
+    the table's end instead of widening that row; when
     no bar exists but a cell is a Navigation cell, append a
     `**Jumeau <Lang>** : [stem](new.ipynb)` line to it (Sudoku-07 cell 0 under
     its `## Navigation` table); when the twin has no navigation at all, prepend
@@ -362,19 +430,36 @@ def plan_nav_link(twin_path: Path, nb_rel: str) -> dict:
         return {"todo": False, "why": "nav edge already present"}
     bars = _nav_bar_cells(cells)
     if bars:
-        changed, labels = [], []
+        changed, labels, hows = [], [], set()
         for i, j in bars.items():
             text = cell_text(cells[i])
             lines = text.splitlines(keepends=True)
             bar = lines[j]
             label = _nav_label(bar, text, lang)
             labels.append(label)
-            body, tail = bar.rstrip("\r\n"), bar[len(bar.rstrip("\r\n")):]
-            lines[j] = f"{body} | [{label}]({new_name}){tail}"
+            block = _table_block(lines, j)
+            if block is not None:
+                # A body row of a real Markdown table (Search-03c's « Ponts »
+                # table, CoursIA#27829): appending ` | [label](…)` would add a
+                # cell the header does not have. Add a whole row instead, after
+                # the table's last row, with the header's column count.
+                end, n_cols = block
+                row = _table_nav_row(bar, n_cols, label, Path(nb_rel).stem,
+                                     new_name, lang)
+                if not lines[end].endswith("\n"):
+                    lines[end] += "\n"
+                    row = row.rstrip("\n")
+                lines.insert(end + 1, row)
+                hows.add("added-nav-table-row")
+            else:
+                body, tail = bar.rstrip("\r\n"), bar[len(bar.rstrip("\r\n")):]
+                lines[j] = f"{body} | [{label}]({new_name}){tail}"
+                hows.add("extended-nav-bar")
             set_cell_text(cells[i], "".join(lines))
             changed.append(i)
+        how = hows.pop() if len(hows) == 1 else "+".join(sorted(hows))
         return _finish_plan(twin_path, nb, fmt, raw,
-                            {"todo": True, "how": "extended-nav-bar",
+                            {"todo": True, "how": how,
                              "cells": changed, "label": labels[0]})
     for i, cell in enumerate(cells):
         if cell.get("cell_type") != "markdown":

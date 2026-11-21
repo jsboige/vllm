@@ -215,6 +215,64 @@ def test_nav_minimal_bar_when_no_navigation():
             "**Navigation** : [jumeau Rust](Serie-03d-Rust.ipynb)\n\n# Titre")
 
 
+PONTS_CELL = (
+    "## 5. Ponts avec le reste de la série\n\n"
+    "| Direction | Lien | Relation |\n"
+    "|-----------|------|----------|\n"
+    "| ← Fondations | [Search-3 — Informed](../P1/Search-03-Informed.ipynb) | A\\\\*, heuristiques |\n"
+    "| ↔ Search-03b | [Search-03b — PDB](Search-03b-PatternDatabases.ipynb) | Autre voie |\n"
+    "| → Partie 4 | [Métaheuristiques](../P4/README.md) | abandon de l'optimalité |\n"
+    "\n**Référence fondatrice** : Harvey & Ginsberg (1995).\n")
+
+
+def test_nav_table_row_gets_a_new_row_not_an_extra_cell():
+    """Search-03c shape (CoursIA#27829): the only nav-marked .ipynb line is a
+    body row of a 3-column Markdown table. Widening it (` | [jumeau Rust](…)`)
+    gave the row 5 cells under a 3-cell header; the edge must be a whole new
+    row, after the table's last row, with the header's column count."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        twin = _nb(Path(td) / "Search-03c-LDS.ipynb", [_md(PONTS_CELL), _code("x=1\n")])
+        action = nbci.plan_nav_link(twin, "Search-03c-LDS-Rust.ipynb")
+        assert action["todo"] and action["how"] == "added-nav-table-row"
+        nbci.apply_nav_link(action)
+        nb = json.loads(twin.read_text(encoding="utf-8"))
+        lines = "".join(nb["cells"][0]["source"]).splitlines()
+        new = "| → Jumeau Rust | [Search-03c-LDS-Rust](Search-03c-LDS-Rust.ipynb) | même carnet, porté en Rust |"
+        assert lines[lines.index("| → Partie 4 | [Métaheuristiques](../P4/README.md) | abandon de l'optimalité |") + 1] == new
+        # every original row untouched, and every table row keeps 3 cells
+        for row in PONTS_CELL.splitlines():
+            assert row in lines
+        assert all(len(nbci._split_row(l)) == 3 for l in lines if l.startswith("|"))
+        # the repo guard reads it as an edge, so a second run is a no-op
+        assert not nbci.plan_nav_link(twin, "Search-03c-LDS-Rust.ipynb")["todo"]
+
+
+def test_nav_table_row_at_cell_end_keeps_the_no_trailing_newline():
+    """A table that closes the cell (no trailing newline) gets its row on a
+    new line and the cell still ends without one."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cell = ("| Direction | Lien |\n|---|---|\n"
+                "| ← Avant | [Serie-02](Serie-02.ipynb) |")
+        twin = _nb(Path(td) / "Serie-03.ipynb", [_md(cell)])
+        action = nbci.plan_nav_link(twin, "Serie-03-Rust.ipynb")
+        nbci.apply_nav_link(action)
+        text = "".join(json.loads(twin.read_text(encoding="utf-8"))["cells"][0]["source"])
+        assert text == cell + "\n| → Jumeau Rust | [Serie-03-Rust](Serie-03-Rust.ipynb) |"
+
+
+def test_lone_pipe_nav_bar_is_still_extended():
+    """A pipe-delimited bar with no separator row is not a table: it keeps the
+    lot-1 extend-the-bar shape."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bar = "| [<< Serie-06](Serie-06.ipynb) | [Serie-08 >>](Serie-08.ipynb) |\n"
+        twin = _nb(Path(td) / "Serie-07-Python.ipynb", [_md(bar)])
+        action = nbci.plan_nav_link(twin, "Serie-07-Rust.ipynb")
+        assert action["how"] == "extended-nav-bar"
+
+
 def test_nav_idempotent_when_edge_exists():
     import tempfile
     with tempfile.TemporaryDirectory() as td:
