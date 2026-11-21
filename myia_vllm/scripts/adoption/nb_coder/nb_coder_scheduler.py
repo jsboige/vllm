@@ -66,6 +66,7 @@ ITEM_FIELDS = {
     "timeout": int,
     "max_tokens": int,
     "repair_rounds": int,
+    "review_rounds": int,
     "allow_foreign_origin": bool,
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
@@ -121,6 +122,9 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
         for k, ty in ITEM_FIELDS.items():
             if k in item and not isinstance(item[k], ty):
                 raise QueueError(f"queue line {lineno}: field {k} must be {ty.__name__}")
+        rounds = item.get("review_rounds", 0)
+        if type(rounds) is not int or not 0 <= rounds <= 3:
+            raise QueueError(f"queue line {lineno}: review_rounds must be an integer from 0 to 3")
         key = grain_key(item)
         if key in seen:
             raise QueueError(f"queue line {lineno}: duplicate grain {key}")
@@ -328,6 +332,7 @@ class Scheduler:
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
             ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
+            ("--review-rounds", item.get("review_rounds", getattr(a, "review_rounds", None))),
         ]
         for flag, val in opt:
             if val not in (None, ""):
@@ -642,6 +647,8 @@ def parse_args(argv=None):
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (driver flag, 0=off)")
+    ap.add_argument("--review-rounds", type=int, choices=range(4), default=0,
+                    help="targeted prose revisions after review (driver flag, 0=off)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")

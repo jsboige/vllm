@@ -232,6 +232,19 @@ python nb_coder_driver.py --issue 27099 `
    d'un `reject` comme un « zéro »** (attention : dans une commande pipée, le code de sortie lu
    est celui du tube, pas celui du script).
 
+   **Révision après rejet (option pilote)** : `--review-rounds 1` (0 par défaut, maximum 3 ;
+   également `review_rounds` par entrée de file) autorise une correction du même brouillon
+   si tous les constats majeurs concernent des sources Markdown précises. En correction, seules
+   les cellules Markdown déjà modifiées sont éligibles. Le producteur reçoit les constats dans
+   une nouvelle conversation sans outils ; Papermill applique la proposition à une copie. Si le
+   code, les sorties, les métadonnées ou toute cellule hors cible changent, la copie est refusée.
+   Les contrôles mécaniques sont rejoués avant une nouvelle revue indépendante. Le dossier
+   `out-dir` conserve les versions, les traces distinctes et leurs SHA-256 ; la publication
+   exige l'empreinte exacte de la dernière version approuvée. Un rejet non adressable, un patch
+   inchangé ou une erreur du vérificateur n'autorise aucune publication. Les corrections de code
+   après revue, qui imposent une réexécution, et la reprise après arrêt du processus ne sont pas
+   encore automatisées.
+
    **Garde d'origine du `--repo` (15/11, après un faux diagnostic rétracté)** : `check_lane_claim.py`
    infère le slug du dépôt depuis le remote `origin` de **son cwd** — un appel manuel depuis
    `d:/vllm` a rendu un verdict sur `jsboige/vllm#20250` (bon numéro, mauvais dépôt) ; le driver,

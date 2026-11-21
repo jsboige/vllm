@@ -277,13 +277,14 @@ def test_driver_command_passes_creation_fields(tmp_path):
     sched = make_sched(tmp_path, [{
         "issue": 27099, "notebook": "Ser/Z3-10-CSharp.ipynb",
         "source_nb": "Ser/Z3-10-Python.ipynb", "kernel_override": ".net-csharp",
-        "max_stage": 3, "repair_rounds": 2}],
+        "max_stage": 4, "repair_rounds": 2, "review_rounds": 1}],
         lane="myia-ai-01:nb-coder")
     cmd = sched.driver_command(sched.items_by_key["#27099:Ser/Z3-10-CSharp.ipynb"])
     joined = " ".join(cmd)
     assert "--source-nb Ser/Z3-10-Python.ipynb" in joined
     assert "--kernel-override .net-csharp" in joined
-    assert "--max-stage 3" in joined and "--repair-rounds 2" in joined
+    assert "--max-stage 4" in joined and "--repair-rounds 2" in joined
+    assert cmd[cmd.index("--review-rounds") + 1] == "1"
     # no item value -> the scheduler default applies; None default means the flag
     # is OMITTED (a correction grain must not inherit a creation source_nb)
     sched2 = make_sched(tmp_path, [{

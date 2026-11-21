@@ -222,7 +222,9 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "seule présence ne suffit ni à approuver ni à rejeter.\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
-        '"detail":"..."}],"checked":["..."]}\n'
+        '"kind":"prose|code|output|structure|other","detail":"..."}],"checked":["..."]}\n'
+        'Utilise "prose" uniquement si changer la source Markdown de cette cellule suffit ; '
+        'un constat global a cell:null et kind:other. Liste chaque cause bloquante en major. '
         'Réponds "reject" si un contenu du LIVRABLE a été perdu ou inventé hors du geste demandé, '
         'ou si un critère d\'acceptation n\'est pas satisfait PAR LE LIVRABLE ; "approve" sinon. '
         'Base chaque constat sur les deux vues.'
@@ -317,7 +319,10 @@ def main() -> int:
         rec["response_chars"] = len(env.get("response") or "")
         ans = nbcd.parse_json_block(env.get("response") or "")
         rec["answer"] = ans
-        if not ans or ans.get("verdict") not in ("approve", "reject"):
+        if env.get("error") or env.get("paused") or env.get("status") == "error":
+            rec["verdict"] = "error:agent-call"
+            rc = 2
+        elif not ans or ans.get("verdict") not in ("approve", "reject"):
             rec["verdict"] = "error:unparsable"
             rc = 2
         else:
