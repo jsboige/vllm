@@ -19,7 +19,9 @@ mesure hors-ligne — cf. docs/voltron-harness-adoption.md) :
                                                rédige le rapport (pivot-outil v2.1)
 
 Tâches longues : POST /v1/jobs {"tasks":[...]} → job_id (exécution en fond,
-persistée sur disque) ; GET /v1/jobs/<id> pour suivre.
+persistée sur disque) ; GET /v1/jobs/<id> pour suivre. Reprise : au boot, un
+job 'running' dont le thread est mort voit ses tâches restantes RELANCÉES
+(la charge est persistée) ; les jobs pré-reprise deviennent 'orphaned'.
 
 Auto-guérison : si l'engine :5028 est muet, `docker start voltron-harness`
 puis attente santé ≤240 s. Bind 127.0.0.1:5029 — usage local machine,
@@ -462,36 +464,116 @@ def run_task(t):
             "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
 
-def run_job(job_id):
+def _run_tasks(job_id, idx_tasks):
+    """Exécute un SOUS-ENSEMBLE (index, tâche) d'un job — plein ou reprise.
+    Concurrence : le moteur tient N=64 (3 673 t/s mesurés) alors qu'un job
+    séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11)."""
     job = _jobs[job_id]
-    # concurrence : le moteur tient N=64 (3 673 t/s mesurés) alors qu'un job
-    # séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11)
+
     def one(i_t):
         i, t = i_t
         try:
+            if not isinstance(t, dict):
+                raise ValueError(
+                    f"objet JSON attendu, reçu {type(t).__name__} — contrat §2")
             res = run_task(t)
-        except Exception as exc:  # une tâche ne tue jamais le job
+            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
+        except Exception as exc:  # une tâche ne tue JAMAIS le job — même
+            # malformée : elle devient un résultat d'erreur consultable, les
+            # autres avancent (mesuré 21/11 : un str dans le lot gelait le
+            # pool entier via ex.map, job 'running' à vie)
             res = {"ok": False, "stage": "error", "answer": "",
                    "detail": f"exécution tâche {i}: {exc!r}", "turns": 0, "dt_s": 0.0}
         res["task"] = i
-        _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
         with _jobs_lock:
             job["results"].append(res)
             job["done"] += 1
         _persist(job_id)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
-        list(ex.map(one, enumerate(job["tasks"])))
+        list(ex.map(one, idx_tasks))
+    # finalisation dans le CHEMIN PARTAGÉ : vrai pour un job complet (run_job)
+    # comme pour une reprise (le sous-ensemble restant achève le job).
     with _jobs_lock:
-        job["status"] = "done"
+        if job["done"] >= job["total"]:
+            job["status"] = "done"
     _persist(job_id)
 
 
+def run_job(job_id):
+    _run_tasks(job_id, list(enumerate(_jobs[job_id]["tasks"])))
+
+
 def _persist(job_id):
+    # La CHARGE est persistée aussi (depuis la reprise 21/11) : c'est elle qui
+    # rend un job interrompu relançable. Écriture atomique tmp+replace — un
+    # serveur tué mi-écriture ne laisse pas de JSON tronqué.
     os.makedirs(JOBS_DIR, exist_ok=True)
     job = dict(_jobs[job_id])
-    job.pop("tasks", None)  # la charge n'est pas re-persistée, les résultats oui
-    with open(os.path.join(JOBS_DIR, f"{job_id}.json"), "w", encoding="utf-8") as f:
+    tmp = os.path.join(JOBS_DIR, f"{job_id}.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(job, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, os.path.join(JOBS_DIR, f"{job_id}.json"))
+
+
+def _wait_engine(timeout_s=300):
+    """Reprise : l'engine partage souvent la fenêtre de redémarrage (reboot
+    hôte) — boot mesuré 115-150 s, on attend 300 s avant de brûler les tâches."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            with urllib.request.urlopen(f"{ENGINE_URL}/health", timeout=5) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            time.sleep(5)
+    return False
+
+
+def _recover_orphans():
+    """Reprise après restart serveur (mandat « tâches longues en background ») :
+    un job 'running' SUR DISQUE est un job dont le thread est mort — le statut
+    ment. Les résultats déjà faits sont gardés, les tâches restantes sont
+    RELANCÉES. Les fichiers d'avant la reprise (sans 'tasks') deviennent
+    'orphaned' : terminal honnête, le consommateur re-POST."""
+    if not os.path.isdir(JOBS_DIR):
+        return
+    for fn in sorted(os.listdir(JOBS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        jid = fn[:-5]
+        try:
+            with open(os.path.join(JOBS_DIR, fn), encoding="utf-8") as f:
+                job = json.load(f)
+        except Exception as exc:
+            print(f"[reprise] {fn} illisible ({exc!r}) — ignoré, pas supprimé",
+                  flush=True)
+            continue
+        if job.get("status") != "running":
+            continue
+        with _jobs_lock:
+            _jobs[jid] = job
+        if "tasks" not in job:  # pré-reprise : charge jamais persistée
+            job["status"] = "orphaned"
+            job["orphaned_at"] = datetime.now(timezone.utc).isoformat()
+            _persist(jid)
+            print(f"[reprise] {jid}: sans charge -> orphaned (re-POST conseillé)",
+                  flush=True)
+            continue
+        done_idx = {r.get("task") for r in job.get("results", [])}
+        pending = [(i, t) for i, t in enumerate(job["tasks"]) if i not in done_idx]
+        if not pending:  # tué entre dernière tâche et finalisation
+            job["status"] = "done"
+            _persist(jid)
+            print(f"[reprise] {jid}: déjà complet -> finalisé", flush=True)
+            continue
+        _wait_engine()
+        job["recovered"] = job.get("recovered", 0) + 1
+        _persist(jid)
+        threading.Thread(target=_run_tasks, args=(jid, pending),
+                         daemon=True).start()
+        print(f"[reprise] {jid}: {len(pending)}/{job.get('total', '?')} tâches "
+              f"relancées (recovery #{job['recovered']})", flush=True)
 
 
 # ------------------------------------------------- compteur d'usage durable
@@ -543,7 +625,8 @@ CAPABILITIES = {
     "endpoints": {
         "POST /v1/task": {"type": "extract|classify|numbers|diff", "...": "voir types"},
         "POST /v1/jobs": {"tasks": ["<task>..."], "name": "optionnel"},
-        "GET /v1/jobs/<id>": "statut + résultats (persistés sur disque)",
+        "GET /v1/jobs/<id>": "statut + résultats (persistés, REPRIS au restart serveur — "
+                             "les tâches restantes d'un job interrompu sont relancées au boot)",
         "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument d'adoption",
         "GET /health": "engine + hub + serveur",
         "GET /v1/capabilities": "ce document"},
@@ -631,6 +714,8 @@ class Handler(BaseHTTPRequestHandler):
                               "total": len(tasks), "done": 0, "results": [],
                               "tasks": tasks,
                               "created": datetime.now(timezone.utc).isoformat()}
+            _persist(jid)  # la charge est sur disque AVANT le premier tour —
+            # un kill immédiat reste reprisable (reprise au boot, 21/11)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             self._send(200, {"job_id": jid, "total": len(tasks)})
         else:
@@ -641,6 +726,7 @@ def main():
     print(f"harnais serveur sur 127.0.0.1:{PORT} — engine {ENGINE_URL}, "
           f"hub {HUB_URL} ({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'})",
           flush=True)
+    _recover_orphans()  # avant serve_forever : reprendre, puis servir
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 
 

@@ -21,7 +21,7 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | --- | --- |
 | URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
 | Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, tier RAM 4 Gio, ~6,2/8 Gio VRAM) |
-| Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) |
+| Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) |
 | Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Rollback | `docker stop voltron-harness` + kill du process python :5029 — aucune donnée perdue |
@@ -129,8 +129,14 @@ disque après chaque tâche** (un redémarrage du serveur ne perd rien ; le `GET
 relit le disque). Cas d'usage : balayer 30 fenêtres de logs, trier une inbox, rapporter
 une série de diffs — l'agent appelant lance en début de session et relit en
 fin de session (contrat BG FrogNano : ~0 token pendant, livrable forme fixe).
-⚠ Un redémarrage serveur en cours de job **gèle** le job (pas de reprise — la
-charge n'est pas persistée) : relancer le POST.
+**Reprise après restart serveur (21/11)** : la charge est persistée dès le POST
+; au boot, un job `running` dont le thread est mort voit ses tâches restantes
+**relancées** (les résultats déjà faits sont gardés, jamais re-exécutés — validé
+live : kill à 6/12 → reprise 5/12 → 12/12, index 0-11 sans doublon). Une tâche
+malformée (p.ex. un str dans la liste) devient un résultat d'erreur consultable
+— elle ne gèle plus le lot (défaut mesuré 21/11 : le pool entier mourait via
+`ex.map`). Les jobs antérieurs au 21/11 (charge non persistée) passent
+`orphaned` — terminal honnête, re-POST conseillé.
 
 ## 4. Mesures
 
@@ -272,3 +278,11 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    Verbatim
    consommateur : « à 0,3-0,6 s c'est un non-choix ». Compteur au 01:46Z :
    5 666 tâches / 4 jobs depuis la baseline 0 (19/11 05:50Z).
+7. ✅ **Reprise des jobs au restart serveur (21/11)** — ferme le point faible
+   « tâches longues en background » du mandat : la charge est persistée dès le
+   POST, le boot relance les tâches restantes d'un job interrompu (résultats
+   faits gardés, jamais re-exécutés) et attend l'engine ≤300 s si le restart
+   partage la fenêtre (reboot hôte). Défect corrigé au passage : une tâche
+   malformée gelait TOUT le lot (`ex.map` tué, job `running` à vie) — elle
+   devient un résultat d'erreur consultable. Validé live kill/relance (12/12,
+   index sans doublon) + test isolé 5 branches.
