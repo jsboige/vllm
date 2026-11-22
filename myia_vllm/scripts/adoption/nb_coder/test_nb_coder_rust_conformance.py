@@ -200,6 +200,34 @@ def test_environment_banners_are_not_measured(tmp_path):
     assert sum("bannière d'environnement" in s for s in b["skipped"]) == 3
 
 
+def test_unmeasured_cells_are_written_with_their_motive(tmp_path):
+    """CoursIA#27818 review (22/11): the entry must SAY why c1/c13 carry no
+    measure -- the generator knew (`skipped`) and wrote nothing. The motives
+    go in header comments, and the YAML still loads to the same measures."""
+    yaml = pytest.importorskip("yaml")
+    wt = _repo(tmp_path,
+               [_code([_stream("Dépendances prêtes.\nZ3 version : 4.16.0\n")]),
+                _code([_stream("n = 3\n"), {"output_type": "display_data", "metadata": {},
+                                           "data": {"text/plain": "<Figure size 640x480>",
+                                                    "image/png": "iVBOR"}}]),
+                _code([_stream("Grille résolue en 3 coups\n")])],
+               [_code([]), _code([_stream("n = 3\n")]),
+                _code([_stream("Grille résolue en 3 coups\n")])])
+    b = nbci.build_conformance_entry(wt, RS, PY)
+    text = nbci.render_conformance_yaml(b)
+    assert "# Cellules non mesurées (motif relevé à la génération) :" in text
+    assert "#   - c0: bannière d'environnement (versions) côté Python, non mesurée" in text
+    assert "#   - c1: sortie riche côté Python (figure/HTML), non mesurée" in text
+    assert yaml.safe_load(text)[0]["measures"] == b["entry"]["measures"]
+
+
+def test_no_unmeasured_block_when_every_cell_is_measured(tmp_path):
+    wt = _repo(tmp_path, [_code([_stream("ok\n")])], [_code([_stream("ok\n")])])
+    b = nbci.build_conformance_entry(wt, RS, PY)
+    assert b["skipped"] == []
+    assert "Cellules non mesurées" not in nbci.render_conformance_yaml(b)
+
+
 @pytest.mark.parametrize("text,banner", [
     ("Python 3.13.16, stdlib only\n", True),
     ("Z3 version : 4.16.0\n", True),

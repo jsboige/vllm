@@ -1236,6 +1236,16 @@ def render_conformance_yaml(built: dict) -> str:
         "# divergence est un écart d'API documenté : le fichier n'est jamais",
         "# réécrit par l'outil une fois présent.",
     ]
+    # The cells the generator chose NOT to measure, with the measured reason
+    # (CoursIA#27818 review, 22/11: a PR comment said « motif écrit dans
+    # l'entrée » and the entry carried none -- the generator knew it and
+    # dropped it). Comments, not keys: the registry schema has no field for a
+    # cell that is not a measure, and the repo's hand-written entries already
+    # carry such motives as header comments (gametheory-04h-routing-poa).
+    skipped = [" ".join(str(s).split()) for s in built.get("skipped") or []]
+    if skipped:
+        head += ["#", "# Cellules non mesurées (motif relevé à la génération) :"]
+        head += [f"#   - {s}" for s in skipped]
     lines = head + [f"- name: {_yq(e['name'])}", f"  family: {_yq(e['family'])}",
                     f"  python: {e['python']}"]
     if e.get("csharp"):
