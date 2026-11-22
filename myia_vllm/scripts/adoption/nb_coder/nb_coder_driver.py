@@ -4929,6 +4929,31 @@ def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
     return p.returncode, (p.stdout or p.stderr).strip()
 
 
+PUSH_TIMEOUT_S = 900
+
+
+def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S) -> tuple[int, str]:
+    """`git push -u origin <branch>` that never crashes the grain (22/11, CoursIA#28018).
+
+    CoursIA's pre-push hook is `git lfs pre-push`: a manual push of #28018 took 85 s, the
+    driver's took more than its 300 s timer, and the uncaught TimeoutExpired crashed a
+    grain whose notebook was built AND approved. A timed-out push is judged by the remote,
+    not the timer: if origin's branch already points at HEAD the push landed and stage 5
+    goes on; otherwise it is a plain push failure, recorded, never a crash."""
+    try:
+        return _git(wt, "push", "-u", "origin", branch, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        _, head = _git(wt, "rev-parse", "HEAD", timeout=60)
+        lrc, lout = _git(wt, "ls-remote", "origin", f"refs/heads/{branch}", timeout=120)
+    except subprocess.TimeoutExpired:
+        return 1, f"push timed out after {timeout} s; remote not readable either"
+    if lrc == 0 and lout.split()[:1] == [head]:
+        return 0, f"push timed out after {timeout} s, but origin/{branch} is at HEAD"
+    return 1, f"push timed out after {timeout} s (origin/{branch} not at HEAD)"
+
+
 def _repo_slug(wt: Path) -> str | None:
     """owner/repo parsed from the worktree's origin URL (#433 review: no hard-coded
     repo -- the PR targets wherever the branch is pushed, neutral by construction).
@@ -5335,7 +5360,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         except Exception as e:
             integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
 
-    rc, out = _git(wt_path, "push", "-u", "origin", branch)
+    rc, out = _push_branch(wt_path, branch)
     if rc != 0:
         entry["error"] = f"push: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-push-failed", entry

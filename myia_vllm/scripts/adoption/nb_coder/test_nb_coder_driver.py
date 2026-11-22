@@ -635,3 +635,66 @@ def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp
     blob = sh("git", "-C", str(wt), "show", f"HEAD:{nb_rel}")
     assert "autofix-marker" in blob
     assert nb_in_wt.read_text(encoding="utf-8").endswith("autofix-marker\n")
+
+
+# ---- stage5 push bounded and judged by the remote (CoursIA #28018, 22/11) ----
+
+def _push_repo(tmp_path):
+    import subprocess
+
+    def sh(*cmd):
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        assert p.returncode == 0, (cmd, p.stderr)
+        return p.stdout
+    origin = tmp_path / "origin.git"
+    sh("git", "init", "--bare", "-q", str(origin))
+    wt = tmp_path / "wt"
+    sh("git", "init", "-q", "-b", "main", str(wt))
+    sh("git", "-C", str(wt), "remote", "add", "origin", str(origin))
+    (wt / "a.txt").write_text("a", encoding="utf-8")
+    sh("git", "-C", str(wt), "add", "a.txt")
+    sh("git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-q", "-m", "a")
+    return wt, sh
+
+
+def test_push_timeout_is_a_recorded_failure_not_a_crash(tmp_path, monkeypatch):
+    """#28018: an LFS pre-push hook outlived the 300 s timer and the uncaught
+    TimeoutExpired crashed an approved grain. A push killed before it lands is
+    now `rc != 0` with a reason stage 5 records as pr-push-failed."""
+    import subprocess
+    wt, _ = _push_repo(tmp_path)
+    real = d._git
+
+    def slow_push(w, *a, timeout=300):
+        if a[:1] == ("push",):
+            raise subprocess.TimeoutExpired(["git", *a], timeout)
+        return real(w, *a, timeout=timeout)
+    monkeypatch.setattr(d, "_git", slow_push)
+    rc, out = d._push_branch(wt, "main", timeout=5)
+    assert rc != 0 and "timed out after 5 s" in out and "not at HEAD" in out
+
+
+def test_push_timeout_after_the_branch_landed_goes_on(tmp_path, monkeypatch):
+    """The hook is the slow part, not the transfer: when origin's branch already
+    points at HEAD, a timed-out push landed and stage 5 must create the PR."""
+    import subprocess
+    wt, sh = _push_repo(tmp_path)
+    sh("git", "-C", str(wt), "push", "-q", "origin", "main")   # it did land
+    real = d._git
+
+    def slow_push(w, *a, timeout=300):
+        if a[:1] == ("push",):
+            raise subprocess.TimeoutExpired(["git", *a], timeout)
+        return real(w, *a, timeout=timeout)
+    monkeypatch.setattr(d, "_git", slow_push)
+    rc, out = d._push_branch(wt, "main", timeout=5)
+    assert rc == 0 and "is at HEAD" in out
+
+
+def test_push_runs_for_real_without_a_timeout(tmp_path):
+    wt, sh = _push_repo(tmp_path)
+    rc, _ = d._push_branch(wt, "main")
+    assert rc == 0
+    head = sh("git", "-C", str(wt), "rev-parse", "HEAD").strip()
+    assert sh("git", "-C", str(wt), "ls-remote", "origin", "refs/heads/main").split()[0] == head

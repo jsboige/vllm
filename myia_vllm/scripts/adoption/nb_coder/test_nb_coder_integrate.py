@@ -625,6 +625,31 @@ def test_back_link_extends_the_copied_bar_with_the_python_twin():
         assert not second["back"]["todo"] and new not in second["touched"]
 
 
+def test_back_link_on_a_crlf_port_keeps_its_line_endings():
+    """CoursIA#28003/#28004/#28018 (22/11): the driver writes the built port
+    with Path.write_text, CRLF on Windows. The round-trip check compared it
+    with an LF re-dump, failed at byte 1, and the PR shipped without the back
+    link, the README row nor the nav edge. A CRLF port now round-trips, gets
+    its back link, and stays CRLF (git's eol=lf normalises it at add)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        lf = (repo / new).read_bytes()
+        assert b"\r\n" not in lf
+        (repo / new).write_bytes(lf.replace(b"\n", b"\r\n"))
+        raw = (repo / new).read_bytes().decode("utf-8")
+        fmt = nbci.detect_nb_format(raw)
+        assert fmt["newline"] == "\r\n"
+        assert nbci.dump_nb(json.loads(raw), fmt) == raw
+        first = nbci.integrate(repo, new, src)
+        assert first["back"]["todo"] and new in first["touched"]
+        after = (repo / new).read_bytes()
+        assert b"Serie-03b-Python.ipynb" in after
+        assert after.count(b"\n") == after.count(b"\r\n")   # no bare LF left
+        assert (repo / src).read_bytes().count(b"\r\n") == 0  # LF twin stays LF
+
+
 def test_back_link_mirrors_the_bar_twin_label():
     """po-2028 folders: the copied bar carries `[Version C#](…)` -> the link
     back reads `Version Python`, the folder's word."""
