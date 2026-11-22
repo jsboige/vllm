@@ -307,6 +307,20 @@ def test_gate_repair_findings_one_per_entry():
     assert "translittère" in out[0]["detail"] and "a-Rust.ipynb" in out[0]["detail"]
 
 
+def test_prose_counts_repair_keeps_a_data_count_and_renames_its_noun():
+    # CoursIA#27929 (22/11): « 10 cellules sur 24 » counted the cases of a matrix; with only
+    # "drop the measure" to go on, three revisions kept the number and the grain failed.
+    rec = {"gates": [{"gate": "prose-counts", "ok": False, "detail": {"measured": True,
+            "cells": [3], "findings": [{"cell": 3, "text": "compteur « 10 cellules » (cellule 3)"}]}}]}
+    fix, = nbcd.gate_repair_findings(rec)
+    assert fix["cell"] == 3 and "10 cellules" in fix["detail"]
+    assert "retire la mesure" in fix["detail"]                 # artifact/duration case kept
+    assert "« 10 cases sur 24 »" in fix["detail"]               # data case: rename the noun
+    p = nbcd.creation_json_prompt([{"idx": 0, "cell_type": "markdown", "role": "t"}], 1,
+                                  src_cells=[_md("# T")])
+    assert "« 10 cases sur 24 »" in p and "DONNÉES du calcul" in p
+
+
 # ------------------------------------------------------------------ prose anchored on outputs
 
 # Fake claims organ: one finding per « NUM ms » in a markdown cell, carrying the cell's
