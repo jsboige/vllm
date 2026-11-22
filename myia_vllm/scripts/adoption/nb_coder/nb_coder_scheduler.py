@@ -38,6 +38,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -441,13 +442,73 @@ def git_run(argv: list[str], timeout: float = 300) -> tuple[int, str]:
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+# A grain that fails after posting its [CLAIMED] leaves the issue locked: nothing released
+# it, so other lanes' auto-picks were refused for the guard's 48 h stale threshold. That
+# is the hazard --claim-late was adopted for (CoursIA rule 21/11), and it still holds
+# under --claim-late when the late claim lands and the PR then fails to open. The
+# scheduler sees every end, a killed driver included, so the release lives here. It goes
+# through the authoritative guard, which posts [DELIVERED] instead of [RELEASED] when an
+# open PR of the lane references the issue.
+CLAIM_REPO_SLUG = "jsboige/CoursIA"
+# Line-anchored, like the guard's reducer: a marker quoted mid-sentence is not a marker.
+CLAIM_MARK_RE = re.compile(r"(?m)^[ \t>*_]*\[(CLAIMED|RELEASED|DELIVERED)\] lane (\S+)")
+CLAIM_READ_TIMEOUT_S = 120
+CLAIM_RELEASE_TIMEOUT_S = 240
+
+
+def last_claim_marker(bodies: list[str]) -> tuple[str, str] | None:
+    """(kind, lane) of the last claim marker across the issue's comments, in order."""
+    last = None
+    for body in bodies:
+        for m in CLAIM_MARK_RE.finditer(body or ""):
+            last = (m.group(1), m.group(2))
+    return last
+
+
+class GuardClaims:
+    """The two GitHub legs of a claim release. Injectable as `claims` in offline tests."""
+
+    def __init__(self, repo: str):
+        self.repo = Path(repo)
+
+    def last_marker(self, issue: int) -> tuple[str, str] | None:
+        """Raises when GitHub does not answer: a release is never decided blind."""
+        p = subprocess.run(["gh", "api", "--paginate",
+                            f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments?per_page=100",
+                            "--jq", ".[].body | @json"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+        if p.returncode != 0:
+            raise RuntimeError(f"gh rc={p.returncode}: {(p.stderr or '').strip()[:160]}")
+        return last_claim_marker([json.loads(line) for line in p.stdout.splitlines()
+                                  if line.strip()])
+
+    def release(self, issue: int, lane: str, notebook: str, note: str) -> tuple[int, str]:
+        script = self.repo / "scripts" / "check_lane_claim.py"
+        if not script.is_file():
+            return -1, f"{script} absent"
+        # cwd = the target repo, as the driver runs the guard (_run_claim_guard).
+        try:
+            p = subprocess.run([sys.executable, str(script), str(issue), "--lane", lane,
+                                "--paths", notebook, "--release", note],
+                               cwd=self.repo, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
+                               timeout=CLAIM_RELEASE_TIMEOUT_S)
+        except Exception as exc:
+            return -1, str(exc)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
 class Scheduler:
-    """Pure orchestration. spawn/gate/sleep/clock/git are injectable for offline tests."""
+    """Pure orchestration. spawn/gate/sleep/clock/git/claims are injectable for offline tests."""
 
     def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None,
-                 git=None):
+                 git=None, claims=None):
         self.args = args
         self.git = git or git_run
+        # main() wires GuardClaims; left None, nothing is released (offline tests never
+        # reach GitHub through a failed claimed grain).
+        self.claims = claims
         self.process_probe = probe or process_identity
         self.state_dir = Path(args.state_dir)
         self.state_path = self.state_dir / "state.json"
@@ -983,9 +1044,37 @@ class Scheduler:
                 ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed, failure_class=cls)
+                self._release_claim(key, entry.get("item"), verdict)
             if g["status"] in ("done", "failed"):
                 self._release_worktree(key, entry.get("item"))
             del self.active[key]
+
+    def _release_claim(self, key: str, item: dict | None, verdict: str) -> None:
+        """Release our [CLAIMED] on a failed grain's issue, when it is the last marker there.
+
+        Never released: a foreign holder (late-claim refusals), our own [DELIVERED] or
+        [RELEASED], an issue without markers, an issue another active grain of ours still
+        builds (lot issues carry several notebooks), or an unreadable thread."""
+        a = self.args
+        if self.claims is None or not item or not a.lane \
+                or not item.get("claim", getattr(a, "claim", False)):
+            return
+        issue = int(item["issue"])
+        if any(k != key and int((e.get("item") or {}).get("issue", -1)) == issue
+               for k, e in self.active.items()):
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="sibling-grain-active")
+        try:
+            last = self.claims.last_marker(issue)
+        except Exception as exc:
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="marker-unread", detail=str(exc)[:200])
+        if last != ("CLAIMED", a.lane):
+            return
+        note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+        rc, out = self.claims.release(issue, a.lane, item["notebook"], note)
+        self._event("claim-released" if rc == 0 else "claim-release-failed", key=key,
+                    issue=issue, rc=rc, detail=(out or "").strip()[-300:])
 
     def _release_worktree(self, key: str, item: dict | None) -> None:
         """Remove a terminal grain's worktree once nothing in it is unique.
@@ -1359,7 +1448,7 @@ def main(argv=None) -> int:
     except QueueError as exc:
         print(json.dumps({"verdict": "queue-invalid", "error": str(exc)}))
         return 2
-    sched = Scheduler(args)
+    sched = Scheduler(args, claims=None if args.dry_run else GuardClaims(args.repo))
     sched.merge_queue(items, digest)
     try:
         return sched.run()
