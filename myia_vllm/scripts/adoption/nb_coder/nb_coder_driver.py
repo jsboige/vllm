@@ -1521,9 +1521,13 @@ CREATION_LINK_COUNT_RULES = (
     "- LIENS : aucun lien vers un fichier qui n'existe pas. Ne translittère JAMAIS le "
     "suffixe d'un voisin (`…-Python.ipynb` → `…-Rust.ipynb`) : un voisin n'existe dans le "
     "langage cible que si le dépôt le contient. En cas de doute, garde la cible du jumeau.\n"
-    "- COMPTAGES : si une phrase recopiée porte une mesure d'artefact ou de durée "
-    "(« ~80 lignes », « 9 lignes », « ~20 min »), retire la mesure et garde le prédicat "
-    "(règle #9377 du dépôt). C'est la SEULE retouche permise de la prose du jumeau.\n"
+    "- COMPTAGES : la garde du dépôt refuse en markdown tout chiffre suivi de « lignes », "
+    "« cellules », « modules », « fichiers » ou « notebooks » (règle #9377). Si la phrase "
+    "recopiée mesure un artefact ou une durée (« ~80 lignes », « ~20 min »), retire la "
+    "mesure et garde le prédicat. Si le chiffre compte des DONNÉES du calcul (les cellules "
+    "d'une matrice ou d'une grille), garde le chiffre et change le nom : « 10 cellules sur "
+    "24 » devient « 10 cases sur 24 ». Ce sont les SEULES retouches permises de la prose "
+    "du jumeau.\n"
     "- COMMENTAIRES : une cellule de code longue (8 lignes ou plus) porte des commentaires "
     "de lecture ; reporte ceux du jumeau quand ils sont fournis.\n")
 
@@ -5821,9 +5825,14 @@ _GATE_FIX_TEXT = {
     "uncommented-code": "cellule de code longue sans commentaire : reporte les commentaires "
                         "de lecture du jumeau dans la syntaxe du langage cible (`//` en "
                         "Rust/C#) et commente les étapes du calcul (garde du dépôt #26690)",
-    "prose-counts": "compteur quantitatif en prose (lignes, durée) : retire la mesure et garde "
-                    "le prédicat — « une solution compacte (~80 lignes) » devient « une "
-                    "solution compacte » (garde du dépôt #17636)",
+    # 22/11, CoursIA#27929: "10 cellules sur 24" counted the cases of a matrix; told only to
+    # drop the measure, three revisions in a row kept the number and the grain failed.
+    "prose-counts": "compteur quantitatif en prose (chiffre suivi de lignes, cellules, modules, "
+                    "fichiers, ou une durée ; garde du dépôt #17636). S'il mesure un artefact "
+                    "ou une durée, retire la mesure et garde le prédicat — « une solution "
+                    "compacte (~80 lignes) » devient « une solution compacte ». S'il compte des "
+                    "données du calcul (cases d'une matrice, d'une grille), garde le chiffre et "
+                    "change le nom — « 10 cellules sur 24 » devient « 10 cases sur 24 »",
     "unit-result": "la cellule affiche la valeur unité `()` parce qu'elle se termine par un "
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
