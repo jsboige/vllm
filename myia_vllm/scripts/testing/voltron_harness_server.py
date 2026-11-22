@@ -51,14 +51,21 @@ import real_task_bench as rb  # checkers + extraction JSON éprouvés du banc
 ENGINE_URL = "http://127.0.0.1:5028"
 ENGINE_MODEL = "voltron-1-mini"
 ENGINE_CONTAINER = "voltron-harness"
-HUB_URL = "http://192.168.0.50:3000"  # chat() ajoute /v1/chat/completions
-HUB_MODEL = "swift-1.5-27b"
+# CHANGES_REQUESTED ai-01 §7-8 : aucune adresse LAN ni chemin machine versionnés
+# — tout par environnement, le lanceur local fournit les valeurs (exemple
+# documenté dans docs/voltron-harness-adoption.md §1).
+HUB_URL = os.environ.get("VOLTRON_HUB_URL", "")  # chat() ajoute /v1/chat/completions
+HUB_MODEL = os.environ.get("VOLTRON_HUB_MODEL", "swift-1.5-27b")
 PORT = 5029
-JOBS_DIR = r"D:\vllm-data\bench\v2_jobs"
-USAGE_PATH = r"D:\vllm-data\bench\v2_usage.json"  # compteur DURABLE (piège po-2025 :
-# les compteurs engine avancent en fin de requête et repartent à zéro au boot —
-# l'instrument d'adoption doit survivre aux restarts)
+_data_root = os.path.join(os.path.expanduser("~"), ".voltron_harness")
+JOBS_DIR = os.environ.get("VOLTRON_JOBS_DIR") or os.path.join(_data_root, "jobs")
+USAGE_PATH = os.environ.get("VOLTRON_USAGE_PATH") or os.path.join(_data_root, "usage.json")
+# compteur DURABLE (piège po-2025 : les compteurs engine avancent en fin de
+# requête et repartent à zéro au boot — l'instrument d'adoption doit survivre
+# aux restarts)
 MAX_DATA_CHARS = 20000  # garde contexte 32K : data + prompt + réponse
+MAX_DEFS_CHARS = 4000   # class_definitions sérialisées (contexte, pas corpus)
+MAX_BODY_BYTES = 2 * 1024 * 1024  # borne POST (CHANGES_REQUESTED §6)
 JOB_CONCURRENCY = 6     # moteur mesuré N=64 (3 673 t/s) ; 6 laisse la place
                          # aux appels /v1/task directs et borne la charge hub
 MAX_REPAIR_ROUNDS = 2
@@ -211,8 +218,10 @@ def build_contract(t):
     if ty == "numbers":
         data, wanted = t.get("data", ""), t.get("numbers")
         rp = t.get("report_prompt", "")
-        if not wanted or not rp:
-            return None, "numbers: 'report_prompt' et 'numbers' (liste) requis"
+        # isinstance(list) : une chaîne est itérée caractère par caractère
+        # (CHANGES_REQUESTED §6) — "44" devenait ["4", "4"]
+        if not isinstance(wanted, list) or not wanted or not rp:
+            return None, "numbers: 'report_prompt' et 'numbers' (liste non vide) requis"
         if len(data) > MAX_DATA_CHARS:
             return None, f"numbers: data > {MAX_DATA_CHARS} caractères"
         wanted_s = [str(n) for n in wanted]
@@ -238,6 +247,10 @@ def build_contract(t):
 
     if ty == "diff":
         a, b = t.get("a", ""), t.get("b", "")
+        # bornes d'entrée (CHANGES_REQUESTED §6) : même garde que data
+        if not isinstance(a, str) or not isinstance(b, str) \
+                or len(a) > MAX_DATA_CHARS or len(b) > MAX_DATA_CHARS:
+            return None, f"diff: 'a' et 'b' = chaînes JSON ≤{MAX_DATA_CHARS} caractères"
         try:
             ja, jb = json.loads(a), json.loads(b)
         except Exception as exc:
@@ -281,7 +294,7 @@ def run_classify(t):
     3/3 escalades en stage c, max_tokens épuisé en raisonnement) ; prérempli,
     il complète mécaniquement. La preuve est LIÉE au verdict : l'étape B
     reçoit la classe choisie en A et copie la ligne qui la justifie — gate
-    inchangé (classe ∈ taxonomie, ligne_cle verbatim ≥15)."""
+    inchangé (classe ∈ taxonomie, ligne_cle verbatim ≥8)."""
     built = build_contract(t)
     if isinstance(built, tuple) and built[0] is None and len(built) == 2:
         return {"ok": False, "stage": "reject", "answer": "", "detail": built[1],
@@ -298,6 +311,12 @@ def run_classify(t):
     defs_ctx = ""
     if isinstance(defs, dict) and defs:
         defs_ctx = "\n".join(f"- {k} : {v}" for k, v in defs.items()) + "\n"
+        # borne d'entrée (CHANGES_REQUESTED §6) : les définitions sont du
+        # contexte, pas un corpus — même famille de garde que data
+        if len(defs_ctx) > MAX_DEFS_CHARS:
+            return {"ok": False, "stage": "reject", "answer": "",
+                    "detail": f"classify: class_definitions > {MAX_DEFS_CHARS} "
+                    "caractères sérialisés", "turns": 0, "dt_s": 0.0}
 
     ok_engine, msg = ensure_engine()
     if not ok_engine:
@@ -372,11 +391,15 @@ def run_classify(t):
         return {"ok": True, "stage": "a", "answer": combined, "detail": "",
                 "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
-    # --- phase C : coordinateur hub sur le prompt combiné original, re-gaté
+    # --- phase C : coordinateur hub sur le prompt combiné original, re-gaté.
+    # stage/turns ne marquent QUE si l'appel a réellement eu lieu (complément
+    # relecture ai-01 : posés avant le test de clé, ils étiquetaient "c" une
+    # phase qui n'a pas tourné et gonflaient la métrique appels/tâche).
     coord_note = ""
-    stage = "c"
-    turns += 1
-    if HUB_KEY:
+    stage = "a"
+    if HUB_KEY and HUB_URL:
+        stage = "c"
+        turns += 1
         try:
             out = clean_answer(chat(HUB_URL, HUB_MODEL,
                                     [{"role": "user", "content": prompt + COORD_NOTE}],
@@ -388,7 +411,7 @@ def run_classify(t):
         except Exception as exc:
             detail = f"worker 2-étapes échoué ({detail}); coordinateur hub échoué: {exc!r}"
     else:
-        coord_note = " (coordinateur indisponible: ZAI_API_KEY absent au démarrage)"
+        coord_note = " (coordinateur indisponible: ZAI_API_KEY ou VOLTRON_HUB_URL absent au démarrage)"
     return {"ok": False, "stage": stage, "answer": combined,
             "detail": detail + coord_note, "turns": turns,
             "dt_s": round(time.time() - t0, 2)}
@@ -437,7 +460,7 @@ def run_task(t):
     # --- phase C : coordinateur hub, prompt SEC (mesuré : les brouillons du 1.7B
     # polluent le 27B), réponse re-gatée comme les autres.
     coord_note = ""
-    if not ok and HUB_KEY:
+    if not ok and HUB_KEY and HUB_URL:
         stage = "c"
         turns += 1
         try:
@@ -448,7 +471,7 @@ def run_task(t):
         except Exception as exc:
             detail = f"résiduel après worker (phase A échouée: {detail}); coordinateur hub échoué: {exc!r}"
     elif not ok:
-        coord_note = " (coordinateur indisponible: ZAI_API_KEY absent au démarrage du serveur)"
+        coord_note = " (coordinateur indisponible: ZAI_API_KEY ou VOLTRON_HUB_URL absent au démarrage du serveur)"
 
     ans = clean_answer(out)
     if ok and t.get("type") == "extract":
@@ -464,10 +487,13 @@ def run_task(t):
             "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
 
-def _run_tasks(job_id, idx_tasks):
+def _run_tasks(job_id, idx_tasks, count_usage=True):
     """Exécute un SOUS-ENSEMBLE (index, tâche) d'un job — plein ou reprise.
     Concurrence : le moteur tient N=64 (3 673 t/s mesurés) alors qu'un job
-    séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11)."""
+    séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11).
+    count_usage=False sur la REPRISE (CHANGES_REQUESTED §4) : une tâche relancée
+    ne re-bump pas tasks_total — le compteur d'adoption compte des exécutions
+    complétées une fois, pas des tentatives."""
     job = _jobs[job_id]
 
     def one(i_t):
@@ -477,7 +503,8 @@ def _run_tasks(job_id, idx_tasks):
                 raise ValueError(
                     f"objet JSON attendu, reçu {type(t).__name__} — contrat §2")
             res = run_task(t)
-            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
+            if count_usage:
+                _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
         except Exception as exc:  # une tâche ne tue JAMAIS le job — même
             # malformée : elle devient un résultat d'erreur consultable, les
             # autres avancent (mesuré 21/11 : un str dans le lot gelait le
@@ -488,7 +515,14 @@ def _run_tasks(job_id, idx_tasks):
         with _jobs_lock:
             job["results"].append(res)
             job["done"] += 1
-        _persist(job_id)
+        # CHANGES_REQUESTED §1 : la persistance ne doit JAMAIS casser le pool —
+        # un échec d'écriture se loggue, le résultat reste en mémoire et la
+        # persistance suivante reprend l'état complet.
+        try:
+            _persist(job_id)
+        except Exception as exc:
+            print(f"[persist] job {job_id}: écriture échouée ({exc!r}) — "
+                  f"état conservé en mémoire", flush=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
         list(ex.map(one, idx_tasks))
@@ -504,16 +538,34 @@ def run_job(job_id):
     _run_tasks(job_id, list(enumerate(_jobs[job_id]["tasks"])))
 
 
+_persist_lock = threading.Lock()
+_persist_seq = 0
+
+
 def _persist(job_id):
     # La CHARGE est persistée aussi (depuis la reprise 21/11) : c'est elle qui
     # rend un job interrompu relançable. Écriture atomique tmp+replace — un
     # serveur tué mi-écriture ne laisse pas de JSON tronqué.
+    # CHANGES_REQUESTED §1 (bloquant) : jusqu'à JOB_CONCURRENCY threads
+    # persistent le MÊME job — sérialisation par verrou dédié + tmp À NOM
+    # UNIQUE par écriture (un tmp partagé produisait du JSON entrelacé via
+    # os.replace, ou un PermissionError Windows en remplaçant un tmp encore
+    # ouvert) + snapshot des résultats sous _jobs_lock (un append concurrent
+    # pendant json.dump lèverait « list changed size during iteration »).
+    global _persist_seq
     os.makedirs(JOBS_DIR, exist_ok=True)
-    job = dict(_jobs[job_id])
-    tmp = os.path.join(JOBS_DIR, f"{job_id}.json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(job, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, os.path.join(JOBS_DIR, f"{job_id}.json"))
+    with _jobs_lock:
+        job = dict(_jobs[job_id])
+        job["results"] = list(job["results"])
+    with _persist_lock:
+        _persist_seq += 1
+        tmp = os.path.join(JOBS_DIR, f"{job_id}.{threading.get_ident()}-"
+                                     f"{_persist_seq}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(job, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(JOBS_DIR, f"{job_id}.json"))
 
 
 def _wait_engine(timeout_s=300):
@@ -570,8 +622,11 @@ def _recover_orphans():
         _wait_engine()
         job["recovered"] = job.get("recovered", 0) + 1
         _persist(jid)
+        # count_usage=False : les tâches relancées ne re-bumpent pas le
+        # compteur d'adoption (CHANGES_REQUESTED §4 — la direction prudente
+        # pour un instrument de mesure : sous-compter, jamais sur-compter)
         threading.Thread(target=_run_tasks, args=(jid, pending),
-                         daemon=True).start()
+                         kwargs={"count_usage": False}, daemon=True).start()
         print(f"[reprise] {jid}: {len(pending)}/{job.get('total', '?')} tâches "
               f"relancées (recovery #{job['recovered']})", flush=True)
 
@@ -583,20 +638,41 @@ _usage_lock = threading.Lock()
 
 def _usage():
     """Compteurs persistés — l'instrument de mesure d'ADOPTION (usage réel,
-    survit aux restarts serveur ET engine)."""
-    try:
-        with open(USAGE_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+    survit aux restarts serveur ET engine). Lecture tolérante (affichage)."""
+    u, _ = _load_usage()
+    if u is None:
         return {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
                 "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
                 "last": None}
+    return u
+
+
+def _load_usage():
+    """(dict|None, writable) — writable=False : fichier PRÉSENT mais illisible ;
+    l'appelant doit refuser d'écrire plutôt que repartir de zéro
+    (CHANGES_REQUESTED §3 : c'est l'historique d'adoption, un dict à zéro
+    l'écraserait au bump suivant). None+writable = premier boot légitime."""
+    try:
+        with open(USAGE_PATH, encoding="utf-8") as f:
+            return json.load(f), True
+    except FileNotFoundError:
+        return None, True
+    except Exception as exc:
+        print(f"[usage] {USAGE_PATH} illisible ({exc!r}) — écriture REFUSÉE, "
+              f"l'historique n'est pas écrasé", flush=True)
+        return None, False
 
 
 def _bump_usage(ttype, ok, job=False, via_job=False):
-    """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+replace."""
+    """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+fsync+replace."""
     with _usage_lock:
-        u = _usage()
+        u, writable = _load_usage()
+        if not writable:
+            return None
+        if u is None:
+            u = {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+                 "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
+                 "last": None}
         if job:
             u["jobs_total"] = u.get("jobs_total", 0) + 1
         else:
@@ -609,9 +685,11 @@ def _bump_usage(ttype, ok, job=False, via_job=False):
             u["ok"] = u.get("ok", 0) + int(bool(ok))
         u["last"] = datetime.now(timezone.utc).isoformat()
         os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
-        tmp = USAGE_PATH + ".tmp"
+        tmp = f"{USAGE_PATH}.{threading.get_ident()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(u, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, USAGE_PATH)
         return u
 
@@ -642,9 +720,9 @@ CAPABILITIES = {
         "numbers": {"champs": "data, report_prompt, numbers [str|int]",
                     "gate": "chaque nombre cité (bornes digits) ; aucun nombre inventé"},
         "diff": {"champs": "a, b (JSON tous deux)",
-                 "gate": "l'OUTIL calcule le diff profond ; le modèle rédige le rapport "
-                         "(chaque clé divergente + deux valeurs ; valeurs >60 chars exemptées "
-                         "de citation verbatim)"}},
+                 "gate": "l'OUTIL calcule le diff de PREMIER niveau (top_diff) ; le modèle "
+                         "rédige le rapport (chaque clé divergente + deux valeurs ; valeurs "
+                         ">60 chars exemptées de citation verbatim)"}},
     "refuse": "verdicts/jugements, sorties non gatées, data >20000 chars — cf. docs/voltron-harness-adoption.md",
     "mesures": "banc real_task_bench : chaîne complète 40/40 ; service A→C documenté dans docs/voltron-harness-adoption.md",
 }
@@ -676,13 +754,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, _usage())
         elif self.path.startswith("/v1/jobs/"):
             jid = self.path.split("/", 3)[3]
+            # CHANGES_REQUESTED §5 : valider le format AVANT tout os.path.join
+            # (un jid forgé ne traverse pas vers le disque)
+            if not re.fullmatch(r"job-\d{8}T\d{6}Z-[0-9a-f]{6}", jid):
+                self._send(400, {"error": "identifiant de job malformé"})
+                return
             with _jobs_lock:
                 job = _jobs.get(jid)
             if not job:
                 # relire depuis le disque (serveur redémarré)
                 p = os.path.join(JOBS_DIR, f"{jid}.json")
                 if os.path.exists(p):
-                    job = json.load(open(p, encoding="utf-8"))
+                    with open(p, encoding="utf-8") as f:
+                        job = json.load(f)
             if not job:
                 self._send(404, {"error": f"job inconnu: {jid}"})
             else:
@@ -693,6 +777,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_BODY_BYTES:  # CHANGES_REQUESTED §6 : corps borné
+            self._send(413, {"error": f"corps > {MAX_BODY_BYTES} octets"})
+            return
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except Exception as exc:
@@ -724,10 +811,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     print(f"harnais serveur sur 127.0.0.1:{PORT} — engine {ENGINE_URL}, "
-          f"hub {HUB_URL} ({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'})",
+          f"hub {HUB_URL or '(VOLTRON_HUB_URL absent)'} "
+          f"({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'})",
           flush=True)
-    _recover_orphans()  # avant serve_forever : reprendre, puis servir
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    # BIND AVANT REPRISE (complément relecture ai-01) : le bind qui échoue
+    # garantit l'instance unique — un second lancement meurt ici au lieu de
+    # relancer les jobs 'running' du disque en double exécution.
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    _recover_orphans()  # instance unique acquise : reprendre, puis servir
+    srv.serve_forever()
 
 
 if __name__ == "__main__":

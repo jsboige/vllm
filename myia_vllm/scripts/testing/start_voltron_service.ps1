@@ -38,6 +38,20 @@ $claudeCfg = Get-Content "$env:USERPROFILE\.claude.json" -Raw | ConvertFrom-Json
 $key = $claudeCfg.mcpServers.'sk-agent'.env.ZAI_API_KEY
 if (-not $key) { Write-Warning "ZAI_API_KEY introuvable — phase C (coordinateur) désactivée" }
 
+# ---- 2b. config locale (hors dépôt) : hub URL + chemins de données ----------
+# CHANGES_REQUESTED §7-8 : plus aucune adresse LAN ni chemin machine versionné
+# dans le code — le serveur lit VOLTRON_HUB_URL / VOLTRON_JOBS_DIR /
+# VOLTRON_USAGE_PATH, ce fichier les fournit (KEY=VALUE, une par ligne).
+$envFile = 'D:\vllm-data\bench\v2_service.env'
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^\s*([A-Za-z_]+)\s*=\s*(.+?)\s*$') { Set-Item "env:$($Matches[1])" $Matches[2] }
+    }
+    Write-Host "[config] $envFile chargé (VOLTRON_HUB_URL=$env:VOLTRON_HUB_URL)"
+} else {
+    Write-Warning "$envFile absent — hub/chemins par défaut du serveur (~/.voltron_harness, phase C désactivée sans VOLTRON_HUB_URL)"
+}
+
 # ---- 3. serveur (arrière-plan, log sur disque) ------------------------------
 $log = 'D:\vllm-data\bench\v2_server.log'
 $err = 'D:\vllm-data\bench\v2_server.err.log'

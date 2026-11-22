@@ -1,7 +1,7 @@
 # === VOLTRON HARNESS — driver 0-token (po-2028, machine locale) ===
 # Usage : . D:\vllm-data\bench\voltron_driver.ps1
 # puis  : VTask classify $texte @{ classes = @("fondations","figure") }
-# Doc   : d:\dev\wt-po2028-vllm\myia_vllm\docs\voltron-harness-adoption.md (§6b)
+# Doc   : myia_vllm/docs/voltron-harness-adoption.md (§6b) dans le dépôt vllm
 $SVC = "http://127.0.0.1:5029"
 
 function VTask($type, $data, $extra) {
@@ -13,7 +13,9 @@ function VTask($type, $data, $extra) {
   $body = @{ type = $type } + $(if ($data) { @{ data = $data } } else { @{} }) + $extra |
     ConvertTo-Json -Depth 8 -Compress
   (Invoke-WebRequest -Uri "$SVC/v1/task" -Method POST -ContentType "application/json" `
-    -Body $body -TimeoutSec 180).Content | ConvertFrom-Json
+    -Body $body -TimeoutSec 420).Content | ConvertFrom-Json
+  # 420 s ≥ pire cas service (timeout hub 300 s + réparations) — à 180, le
+  # client rendait « échec » pendant que la tâche aboutissait côté service
 }
 
 function VJob($name, $tasks) {

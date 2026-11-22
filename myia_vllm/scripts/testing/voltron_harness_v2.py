@@ -31,9 +31,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import real_task_bench as rb  # noqa: E402
 
-HUB_URL = "http://192.168.0.50:3000"  # chat() ajoute /v1/chat/completions
-HUB_MODEL = "swift-1.5-27b"
-STATE_DIR = r"D:\vllm-data\bench\v2_state"
+HUB_URL = os.environ.get("VOLTRON_HUB_URL", "")  # chat() ajoute /v1/chat/completions
+HUB_MODEL = os.environ.get("VOLTRON_HUB_MODEL", "swift-1.5-27b")
+STATE_DIR = os.environ.get("VOLTRON_STATE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".voltron_harness", "state")
 MAX_REPAIR_ROUNDS = 2
 
 

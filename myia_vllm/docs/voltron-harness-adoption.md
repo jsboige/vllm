@@ -24,6 +24,7 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) |
 | Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
+| Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
 | Rollback | `docker stop voltron-harness` + kill du process python :5029 — aucune donnée perdue |
 | Logs | `D:\vllm-data\bench\v2_server.log` · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
 
@@ -212,7 +213,8 @@ $SVC = "http://127.0.0.1:5029"
 function VTask($type, $data, $extra) {
   $body = @{ type = $type; data = $data } + $extra | ConvertTo-Json -Depth 8 -Compress
   (Invoke-WebRequest -Uri "$SVC/v1/task" -Method POST -ContentType "application/json" `
-    -Body $body -TimeoutSec 180).Content | ConvertFrom-Json
+    -Body $body -TimeoutSec 420).Content | ConvertFrom-Json
+  # 420 s ≥ pire cas service (timeout hub 300 s + réparations)
 }
 # --- exemples (décommenter et adapter) ---
 # VTask classify (Get-Content C:\log.txt -Raw) @{ classes = @("oom","engine-init","path-mangling") }
@@ -286,3 +288,14 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    malformée gelait TOUT le lot (`ex.map` tué, job `running` à vie) — elle
    devient un résultat d'erreur consultable. Validé live kill/relance (12/12,
    index sans doublon) + test isolé 5 branches.
+8. ✅ **Passe review PR #508 (22/11)** — durcissement suite CHANGES_REQUESTED
+   ai-01 : persistance de job sérialisée (verrou dédié + tmp unique par
+   écriture + fsync — l'ancien tmp partagé produisait PermissionError Windows
+   dès 2 threads, 7/8 tués en hammer mesuré), échec de `_persist` ne casse plus
+   le pool, compteur d'usage refuse d'écrire sur fichier illisible (l'historique
+   d'adoption ne repart pas de zéro), reprise sans re-comptage, `jid` validé par
+   regex avant lecture disque, bornes d'entrée (`diff` a/b, class_definitions,
+   numbers liste, corps POST 2 Mo), bind du port AVANT la reprise (instance
+   unique), IP LAN et chemins machine sortis du code (env), `stage=c` seulement
+   si la phase C a tourné, tests commités (`test_voltron_recovery.py`, 5/5 —
+   dont le hammer N-threads rouge sur l'ancienne tête).

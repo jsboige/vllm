@@ -356,8 +356,8 @@ def main() -> None:
     ap.add_argument("--only-cat", default="", help="restrindre à une catégorie (debug)")
     ap.add_argument("--no-coord", action="store_true",
                     help="désactiver le coordonnateur (REFUS finals restent des refus)")
-    ap.add_argument("--coord-url", default="http://192.168.0.50:3000",
-                    help="hub claudish (même route que sk-agent)")
+    ap.add_argument("--coord-url", default=os.environ.get("VOLTRON_HUB_URL", ""),
+                    help="hub claudish (même route que sk-agent) — env VOLTRON_HUB_URL")
     ap.add_argument("--coord-model", default="swift-1.5-27b")
     args = ap.parse_args()
 
