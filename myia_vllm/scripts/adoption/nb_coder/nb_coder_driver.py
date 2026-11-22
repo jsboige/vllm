@@ -5159,6 +5159,9 @@ def integration_pr_lines(integ: dict | None) -> str:
         note = f" -- {integ['nav_note']}" if integ.get("nav_note") else ""
         lines.append(f"- Ligne README (`{integ['readme']}`) et arête nav "
                      f"(`{integ.get('nav')}`) ajoutées sur le jumeau Python{note}.")
+    if integ.get("back"):
+        lines.append(f"- Lien retour vers le jumeau d'origine ajouté au nouveau carnet "
+                     f"(`{integ['back']}`, markdown seul).")
     conf = integ.get("conformance") or {}
     if conf.get("todo") and conf.get("file"):
         cs = (f", côté C# `{conf['csharp']}` comparé où il imprime le même texte, "
@@ -5255,6 +5258,8 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
                 entry["integration"] = {"files": integ["touched"],
                                         "nav": (integ["nav"] or {}).get("how"),
                                         "nav_note": (integ["nav"] or {}).get("note"),
+                                        "back": (integ.get("back") or {}).get("how")
+                                        if (integ.get("back") or {}).get("todo") else None,
                                         "readme": (integ["readme"] or {}).get("label"),
                                         "conformance": integ.get("conformance"),
                                         "registered": reg,

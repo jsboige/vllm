@@ -585,6 +585,160 @@ def test_integrate_idempotent_second_run_writes_nothing():
         assert {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()} == snapshot
 
 
+# ------------------------------------------------------------- back link
+
+ARG_BAR = ("[← Dung_AF_Semantics](Argumentation-03-Dung-AF-Semantics-Python.ipynb) | "
+           "[↑ ArgumentAnalysis](README.md) | "
+           "[Ranking_Semantics →](Argumentation-03c-Ranking-Semantics-Python.ipynb)\n")
+SERIE = "MyIA.AI.Notebooks/Serie"
+
+
+def _pair(repo: Path, rust_cell0: str, python_cell0: str = ARG_BAR,
+          stem: str = "Serie-03b") -> tuple[str, str]:
+    """A source twin and the port the driver built from it (cell 0 copied)."""
+    src = f"{SERIE}/{stem}-Python.ipynb"
+    new = f"{SERIE}/{stem}-Rust.ipynb"
+    _nb(repo / src, [_md(python_cell0), _code("x = 1\n")])
+    _nb(repo / new, [_md(rust_cell0), _code("let x = 1;\n")])
+    return new, src
+
+
+def test_back_link_extends_the_copied_bar_with_the_python_twin():
+    """CoursIA#27905 (22/11): the Rust port copied the twin's bar
+    `← | ↑ | →`, which cannot name the twin itself; the coordinator's review
+    asked for the link back. The integration extends the port's bar, writes
+    markdown only, reports the notebook as touched, and is idempotent."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        before = json.loads((repo / new).read_text(encoding="utf-8"))
+        first = nbci.integrate(repo, new, src)
+        assert first["back"]["todo"] and first["back"]["how"] == "extended-nav-bar"
+        assert new in first["touched"]
+        after = json.loads((repo / new).read_text(encoding="utf-8"))
+        assert after["cells"][0]["source"][0] == (
+            ARG_BAR.rstrip("\n") + " | [jumeau Python](Serie-03b-Python.ipynb)\n")
+        assert after["cells"][1] == before["cells"][1]       # code cell untouched
+        assert "lien retour" in nbci.integration_commit_message(first, "l:w")
+        second = nbci.integrate(repo, new, src)
+        assert not second["back"]["todo"] and new not in second["touched"]
+
+
+def test_back_link_mirrors_the_bar_twin_label():
+    """po-2028 folders: the copied bar carries `[Version C#](…)` -> the link
+    back reads `Version Python`, the folder's word."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        bar = ("**Navigation** : [<< Prev](Serie-02-Python.ipynb) | "
+               "[Version C#](Serie-03b-CSharp.ipynb)\n")
+        new, src = _pair(repo, bar, bar)
+        plan = nbci.plan_back_link(repo, new, src)
+        assert plan["todo"] and plan["label"] == "Version Python"
+
+
+def test_back_link_to_an_unsuffixed_original_names_python():
+    """ANALYSE shape: the original carries no suffix (`ANALYSE-08-X.ipynb`);
+    a port that already names it `[ANALYSE-08 (Python)](…)` in its
+    `| Index | … |` row is left alone, one without gets `jumeau Python`."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        src = f"{SERIE}/ANALYSE-08-X.ipynb"
+        new = f"{SERIE}/ANALYSE-08-X-Rust.ipynb"
+        _nb(repo / src, [_md("# Titre\n"), _code("x = 1\n")])
+        _nb(repo / new, [_md("| Index | [ANALYSE-08 (Python)](ANALYSE-08-X.ipynb) |\n"),
+                         _code("let x = 1;\n")])
+        plan = nbci.plan_back_link(repo, new, src)
+        assert not plan["todo"] and "by its language" in plan["why"]
+        _nb(repo / new, [_md("**Navigation** : [<< Prev](ANALYSE-07.ipynb)\n"),
+                         _code("let x = 1;\n")])
+        plan = nbci.plan_back_link(repo, new, src)
+        assert plan["todo"] and plan["label"] == "jumeau Python"
+
+
+def test_back_link_list_item_says_origin_not_port():
+    """A prose list host gets `— le carnet d'origine, en Python.`: the source
+    twin is the original, not a port."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        cell = "## Pour aller plus loin\n\n- [Suite](Serie-04-Python.ipynb) — la suite.\n"
+        new, src = _pair(repo, cell, cell)
+        nbci.apply_nav_link(nbci.plan_back_link(repo, new, src))
+        text = "".join(json.loads((repo / new).read_text(encoding="utf-8"))
+                       ["cells"][0]["source"])
+        assert "[Serie-03b-Python](Serie-03b-Python.ipynb) — le carnet d'origine, en Python." in text
+        assert "porté en" not in text
+
+
+def test_a_prose_paragraph_with_an_arrow_is_not_a_bar():
+    """CoursIA#27905 cell 18 (22/11): « **Agrégation d'audiences → choix
+    social** : … [Tweety-9](…) … » holds an arrow and a notebook link; the
+    inbound edge glued ` | [jumeau Rust](…)` onto its last sentence. Only the
+    real bar of cell 0 is extended, in both directions."""
+    import tempfile
+    prose = ("**Agrégation d'audiences → choix social** : si chaque individu a sa "
+             "propre audience, comment décider ? C'est le pont vers "
+             "[Tweety-9 (préférences)](../Tweety/Tweety-09-Preferences-Python.ipynb).\n")
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        src = f"{SERIE}/Serie-03b-Python.ipynb"
+        new = f"{SERIE}/Serie-03b-Rust.ipynb"
+        for rel in (src, new):
+            _nb(repo / rel, [_md(ARG_BAR), _code("x = 1\n"), _md(prose)])
+        inbound = nbci.plan_nav_link(repo / src, new)
+        back = nbci.plan_back_link(repo, new, src)
+        assert inbound["cells"] == [0] and back["cells"] == [0]
+        nbci.apply_nav_link(inbound)
+        nbci.apply_nav_link(back)
+        for rel in (src, new):
+            cells = json.loads((repo / rel).read_text(encoding="utf-8"))["cells"]
+            assert "".join(cells[2]["source"]) == prose
+
+
+def test_a_long_headed_nav_line_gets_a_sibling_line_not_a_tail():
+    """Repo measure (22/11): the word bound alone dropped GameTheory-09c's
+    « **Navigation** : [..] — engagement crédible · [..] » bar. A long line
+    that opens on a nav label stays a bar; its twin goes on a sibling
+    paragraph (same blockquote), never glued onto its last sentence."""
+    import tempfile
+    head = ("> **Carnet suivant** : [Serie-04-Python](Serie-04-Python.ipynb) — "
+            "la même construction, appliquée cette fois aux préférences partielles.")
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        src = f"{SERIE}/Serie-03b-Python.ipynb"
+        new = f"{SERIE}/Serie-03b-Rust.ipynb"
+        _nb(repo / src, [_md("# T\n"), _md(head)])
+        plan = nbci.plan_nav_link(repo / src, new)
+        assert plan["how"] == "added-nav-sibling-line" and plan["cells"] == [1]
+        nbci.apply_nav_link(plan)
+        text = "".join(json.loads((repo / src).read_text(encoding="utf-8"))["cells"][1]["source"])
+        assert text.startswith(head + "\n>\n> **")
+        assert "→ [Serie-03b-Rust](Serie-03b-Rust.ipynb) — le même carnet, porté en Rust." in text
+        assert not nbci.plan_nav_link(repo / src, new)["todo"]   # idempotent
+    assert not nbci._is_prose_line("**Navigation** : [Version C#](a.ipynb) | "
+                                   "[b](b.ipynb) — engagement crédible · [c](c.ipynb) — "
+                                   "sécurité, patrouilles et défense en profondeur")
+    assert nbci._is_prose_line("> **Acquis et parenté** : expérience B — suppose A, la "
+                               "convention donnée de [x](x.ipynb) → dont le répertoire")
+
+
+def test_back_link_skipped_when_the_twin_lives_elsewhere():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _nb(repo / "A/X-Python.ipynb", [_md("# T\n")])
+        _nb(repo / "B/X-Rust.ipynb", [_md(ARG_BAR)])
+        plan = nbci.plan_back_link(repo, "B/X-Rust.ipynb", "A/X-Python.ipynb")
+        assert not plan["todo"] and "another folder" in plan["why"]
+        assert not nbci.plan_back_link(repo, "B/Y-Rust.ipynb", "B/Y-Python.ipynb")["todo"]
+        # a source name that does not resolve gets no (dead) link
+        plan = nbci.plan_back_link(repo, "B/X-Rust.ipynb", "B/X-Python.ipynb")
+        assert not plan["todo"] and "dead" in plan["why"]
+
+
 # ------------------------------------------------------------- format detection
 
 BS = chr(92)   # a literal backslash, spelled out: no escape-sequence ambiguity
