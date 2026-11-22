@@ -177,6 +177,14 @@ def failure_class(verdict: str | None) -> str:
 FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed",
                     "run": "failed"}
 
+# A verifier that CRASHED (empty model response, REST bucket out mid-run) judged nothing:
+# the build it was handed is still on disk with its trace. Measured 22/11 00:22Z on
+# CoursIA#27885: 46 min of engine time (plan, build, repair, gates all passed) were thrown
+# away because the critic's call returned an empty response, and nothing re-offered the
+# grain. The driver's --verify-from re-gates and re-verifies that build with zero coder
+# turn; the scheduler now asks for it once, from the grain's own trace.
+VERIFY_RECOVERY_PREFIX = "verify-error"
+
 
 
 class QueueError(ValueError):
@@ -480,6 +488,8 @@ class Scheduler:
                 # an explicit re-add after a withdrawal is an operator decision
                 g.update({"status": "pending", "not_before": None,
                           "requeued": utcnow(), "retry": item.get("retry", 0)})
+                g.pop("resume_from", None)
+                g.pop("verify_recoveries", None)
                 self._event("requeued", key=key)
             elif item.get("retry", 0) > g.get("retry", 0):
                 self._apply_retry(key, g, item["retry"])
@@ -511,6 +521,10 @@ class Scheduler:
                     previous_verdict=g.get("last_verdict"))
         g.update({"status": "pending", "not_before": None, "attempts": 0,
                   "requeued": utcnow()})
+        # A retry is a decision on a FAILED grain, usually after its spec or the harness
+        # changed: it builds afresh, never from the trace of the run it replaces.
+        g.pop("resume_from", None)
+        g.pop("verify_recoveries", None)
 
     def _legacy_driver_log(self, key: str, pid) -> str | None:
         """driver.log of a grain launched before `driver_log` was recorded in the state.
@@ -706,16 +720,29 @@ class Scheduler:
         create_time = ident[0] if ident is not None else 0.0
         return AdoptedDriver(pid, create_time, str(log), offset, self.process_probe)
 
-    def driver_command(self, item: dict) -> list[str]:
+    def run_trace(self, item: dict) -> Path | None:
+        """The driver's verdict record for this grain (`issue-<N>.json` in its run dir),
+        when the run left one: what --verify-from resumes from."""
+        try:
+            p = (Path(self.args.out_root) / f"issue-{grain_slug(item)}"
+                 / f"issue-{item['issue']}.json")
+        except Exception:
+            return None
+        return p if p.is_file() else None
+
+    def driver_command(self, item: dict, resume_from: str | None = None) -> list[str]:
         a = self.args
-        from_spec = bool(item.get("from_spec", False))
+        # --verify-from reads the creation mode from the trace and the driver refuses
+        # --from-spec / --source-nb / --meta-from next to it.
+        from_spec = bool(item.get("from_spec", False)) and not resume_from
         out_dir = Path(a.out_root) / f"issue-{grain_slug(item)}"
         worktree = Path(a.worktree_root) / f"wt-{grain_slug(item)}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
-        source_nb = None if from_spec else item.get("source_nb", a.source_nb)
+        source_nb = (None if (from_spec or resume_from)
+                     else item.get("source_nb", a.source_nb))
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
@@ -759,6 +786,8 @@ class Scheduler:
             cmd.append("--fresh-worktree")
         if item.get("allow_foreign_origin", False):
             cmd.append("--allow-foreign-origin")
+        if resume_from:
+            cmd += ["--verify-from", str(resume_from)]
         return cmd
 
     # ---------------------------------------------------------------- ramp
@@ -909,6 +938,22 @@ class Scheduler:
                 ramp["done"] += 1
                 self._event("completed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed)
+            elif (verdict.startswith(VERIFY_RECOVERY_PREFIX)
+                  and g.get("verify_recoveries", 0) < getattr(self.args,
+                                                              "verify_recoveries", 0)
+                  and (trace := self.run_trace(entry.get("item") or {})) is not None):
+                # Deferred, not failed: the tree stays (the driver reuses it or re-creates
+                # it at the trace's head) and the ramp is not blocked by a crash that
+                # judged nothing. A second verify-error on the same grain fails as before.
+                g["status"] = "deferred"
+                g["verify_recoveries"] = g.get("verify_recoveries", 0) + 1
+                g["resume_from"] = str(trace)
+                wait = self.args.backoff_s
+                g["not_before"] = self.clock() + wait
+                ramp["deferred"] += 1
+                self._event("verify-recovery", key=key, rc=rc, verdict=verdict,
+                            trace=str(trace), recovery=g["verify_recoveries"],
+                            retry_in_s=wait)
             else:
                 g["status"] = "failed"
                 g["ramp_failed_ts"] = now
@@ -1069,7 +1114,8 @@ class Scheduler:
                             held = "launch-gap"
                             held_extra["next_launch_in_s"] = round(wait, 1)
                             break
-                    cmd = self.driver_command(item)
+                    cmd = self.driver_command(
+                        item, resume_from=self.state["grains"][key].get("resume_from"))
                     self.state["last_launch_ts"] = self.clock()
                     if self.args.dry_run:
                         self._event("dry-launch", key=key, cmd=cmd)
@@ -1214,6 +1260,10 @@ def parse_args(argv=None):
     ap.add_argument("--backoff-s", type=float, default=60.0)
     ap.add_argument("--backoff-max-s", type=float, default=900.0)
     ap.add_argument("--max-attempts", type=int, default=6)
+    ap.add_argument("--verify-recoveries", type=int, default=1,
+                    help="times a grain whose verifier crashed (verdict verify-error) is "
+                         "relaunched with --verify-from on its own trace, reusing the "
+                         "build already paid for (0 = fail it, the old behavior)")
     ap.add_argument("--max-launch", type=int, default=0,
                     help="cap launches in THIS scheduler run (0 = unlimited)")
     ap.add_argument("--launch-gap-s", type=float, default=0.0,

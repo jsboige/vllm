@@ -743,3 +743,103 @@ def test_implicit_occupation_deferral_is_retried_not_failed(tmp_path):
     sched.tick()
     g = sched.state["grains"]["#1:Dir/N1.ipynb"]
     assert g["status"] == "deferred" and g["not_before"] > clock["t"]
+
+
+# ---------------------------------------------------------------- verify-error recovery
+PORT = {"issue": 1, "notebook": "Dir/N1-Rust.ipynb", "source_nb": "Dir/N1-Python.ipynb",
+        "meta_from": "Dir/M-Rust.ipynb", "claim": True}
+
+
+def _trace(sched, it):
+    d = Path(sched.args.out_root) / f"issue-{S.grain_slug(it)}"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"issue-{it['issue']}.json"
+    p.write_text(json.dumps({"issue": it["issue"], "verdict": "verify-error"}))
+    return p
+
+
+def _flag(cmd, name):
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def test_a_verifier_crash_is_resumed_once_from_its_own_trace(tmp_path):
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(verdict="verify-error", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [PORT], spawn=spawn)
+    sched.clock = lambda: clock["t"]
+    trace = _trace(sched, PORT)
+    key = S.grain_key(PORT)
+    sched.tick()                                  # launch: a full build
+    assert "--source-nb" in spawn.calls[0] and "--verify-from" not in spawn.calls[0]
+    clock["t"] += 10
+    sched.tick()                                  # reap: verify-error -> deferred
+    g = sched.state["grains"][key]
+    assert g["status"] == "deferred" and g["resume_from"] == str(trace)
+    assert g["verify_recoveries"] == 1
+    ev = _events(sched, "verify-recovery")[-1]
+    assert ev["trace"] == str(trace) and ev["recovery"] == 1
+    assert not _events(sched, "failed")
+    clock["t"] = g["not_before"] + 1
+    assert sched.tick()["launched"] == 1
+    cmd = spawn.calls[1]
+    # the driver refuses the creation flags next to --verify-from
+    assert _flag(cmd, "--verify-from") == str(trace)
+    for absent in ("--source-nb", "--meta-from", "--from-spec"):
+        assert absent not in cmd
+    assert "--claim" in cmd and _flag(cmd, "--issue") == "1"
+    clock["t"] += 10
+    sched.tick()                                  # the recovery crashes too: failed
+    assert g["status"] == "failed" and len(spawn.calls) == 2
+    assert len(_events(sched, "verify-recovery")) == 1
+
+
+def test_a_verifier_crash_without_a_trace_fails_as_before(tmp_path):
+    spawn = SpawnRecorder(verdict="verify-error", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [PORT], spawn=spawn)
+    sched.run()
+    g = sched.state["grains"][S.grain_key(PORT)]
+    assert g["status"] == "failed" and "resume_from" not in g
+    assert _events(sched, "failed")[-1]["failure_class"] == "run"
+
+
+def test_verify_recoveries_zero_keeps_the_old_behavior(tmp_path):
+    spawn = SpawnRecorder(verdict="verify-error", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [PORT], spawn=spawn, verify_recoveries=0)
+    _trace(sched, PORT)
+    sched.run()
+    assert sched.state["grains"][S.grain_key(PORT)]["status"] == "failed"
+    assert len(spawn.calls) == 1
+
+
+def test_a_content_rejection_is_never_resumed(tmp_path):
+    # verify-reject is a JUDGEMENT: the verifier read the build and refused it
+    spawn = SpawnRecorder(verdict="verify-reject", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [PORT], spawn=spawn)
+    _trace(sched, PORT)
+    sched.run()
+    assert sched.state["grains"][S.grain_key(PORT)]["status"] == "failed"
+    assert not _events(sched, "verify-recovery")
+
+
+def test_a_raised_retry_builds_afresh_after_a_failed_recovery(tmp_path):
+    spawn = SpawnRecorder(verdict="verify-error", rc=1, done_after=0)
+    sched = make_sched(tmp_path, [PORT], spawn=spawn, backoff_s=0.0)
+    _trace(sched, PORT)
+    sched.run()
+    key = S.grain_key(PORT)
+    assert sched.state["grains"][key]["status"] == "failed" and len(spawn.calls) == 2
+    _requeue(sched, tmp_path, PORT | {"retry": 1})
+    g = sched.state["grains"][key]
+    assert "resume_from" not in g and "verify_recoveries" not in g
+    cmd = sched.driver_command(PORT, resume_from=g.get("resume_from"))
+    assert "--verify-from" not in cmd and "--source-nb" in cmd
+
+
+def test_a_verifier_crash_keeps_its_tree_for_the_resume(tmp_path):
+    git = FakeGit()
+    sched, _ = _sched_with_tree(tmp_path, git, verdict="verify-error", rc=1)
+    _trace(sched, item(1))
+    sched.tick()
+    sched.tick()
+    assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] == "deferred"
+    assert git.calls == []
