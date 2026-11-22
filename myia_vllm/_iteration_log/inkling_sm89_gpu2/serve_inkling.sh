@@ -14,6 +14,11 @@
 #                             drafter) + the 2.02 GiB WSL2/DXG tax leave ~4 GiB for activations,
 #                             graphs and KV; peaster's 3090 at 0.95 got an 8,639-token pool.
 #   EAGER=0 | 1               1 = --enforce-eager if CUDA graphs leave no KV (throughput then void)
+#   EXTKV=1 | 0               0 = --no-enable-extensible-kv-cache (KV sized at profiling, as prod
+#                             runs since 19/11 with --disable-extensible-kv-cache on v0.34.0).
+#                             Window 22/11, runs 2-3: the extensible cache kept 1.88 GiB "for
+#                             transient activations" after warmup and left 1.5-1.59 GiB of KV out
+#                             of the 3.64 GiB profiled; eager mode won back only 0.09 GiB.
 # Text only (--limit-mm-per-prompt image 0), no drafter (no --speculative-config): the two levers
 # peaster measured as the largest KV pools. max-num-batched-tokens 1024: the sliding-window
 # reservation (40 caches) scales with it (peaster: 8192 does not boot at 196K).
@@ -25,6 +30,7 @@ set -e
 KV=${KV:-bf16}
 MAXLEN=${MAXLEN:-4096}
 EAGER=${EAGER:-0}
+EXTKV=${EXTKV:-1}
 NAME=inkling-eval
 EXTRA_ENV=()
 EXTRA_ARGS=()
@@ -33,6 +39,7 @@ if [ "$KV" = "fp8" ]; then
   EXTRA_ARGS+=(--kv-cache-dtype fp8)
 fi
 [ "$EAGER" = "1" ] && EXTRA_ARGS+=(--enforce-eager)
+[ "$EXTKV" = "0" ] && EXTRA_ARGS+=(--no-enable-extensible-kv-cache)
 docker rm -f "$NAME" 2>/dev/null || true
 sleep 10  # let a killed engine's CUDA context release VRAM before the free-memory check
 MSYS_NO_PATHCONV=1 docker run -d --name "$NAME" \
@@ -60,4 +67,4 @@ MSYS_NO_PATHCONV=1 docker run -d --name "$NAME" \
   --no-enable-flashinfer-autotune \
   --port 5022 \
   "${EXTRA_ARGS[@]}"
-echo "$NAME started (KV=$KV MAXLEN=$MAXLEN EAGER=$EAGER). Cold boot = Triton/Humming JIT, minutes."
+echo "$NAME started (KV=$KV MAXLEN=$MAXLEN EAGER=$EAGER EXTKV=$EXTKV). Cold boot = Triton/Humming JIT, minutes."

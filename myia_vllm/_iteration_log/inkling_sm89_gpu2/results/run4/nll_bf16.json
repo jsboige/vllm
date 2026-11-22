@@ -1,0 +1,10 @@
+{
+  "label": "bf16",
+  "model": "inkling-2-mini",
+  "tokens_scored": 267,
+  "multi_entry_skipped": 0,
+  "mean_nll": 1.5958510793520417,
+  "ppl": 4.9325252566221796,
+  "prompt_tokens": 268,
+  "elapsed_s": 12.27
+}

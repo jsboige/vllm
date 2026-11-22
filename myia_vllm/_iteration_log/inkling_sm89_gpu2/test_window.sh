@@ -38,11 +38,16 @@ case "$P" in
 esac
 
 # 2. upstream unit tests on SM89 (bounded; a hung kernel must not eat the window)
+# SKIP_UT=1: a later run in the same slot (run 3, 22/11) when run 2 already recorded them.
+if [ "${SKIP_UT:-0}" = "1" ]; then log "unit tests skipped (SKIP_UT=1)"; else
 UT_BUDGET=900; [ "$(left)" -lt 4800 ] && UT_BUDGET=600   # capacity (stages 3-4) is the main answer
 log "unit tests, budget ${UT_BUDGET}s"
 MSYS_NO_PATHCONV=1 docker run -d --name inkling-ut --gpus '"device=2"' --label autoheal=False \
   -e CUDA_DEVICE_ORDER=PCI_BUS_ID -e CUDA_VISIBLE_DEVICES=2 -e HF_HUB_OFFLINE=1 \
-  -w /opt/inkling-tests --entrypoint python3 $IMG -m pytest tests/models/inkling2 -q -rfE -p no:cacheprovider >/dev/null
+  -w /opt/inkling-tests -e PYTHONPATH=/opt/inkling-tests --entrypoint sh $IMG -c \
+  'touch tests/__init__.py tests/models/__init__.py && exec python3 -m pytest tests/models/inkling2 -q -rfE -p no:cacheprovider' >/dev/null
+# (window 1, 22/11: dist-packages ships its own `tests/__init__.py`, which shadowed the copied
+#  namespace package -> "No module named 'tests.models'". A regular package first on PYTHONPATH wins.)
 for i in $(seq 1 $((UT_BUDGET / 10))); do
   [ "$(docker inspect inkling-ut --format '{{.State.Status}}' 2>/dev/null)" != "running" ] && break
   sleep 10
@@ -51,6 +56,16 @@ docker logs inkling-ut > "$OUT/unit_tests.log" 2>&1
 log "unit tests: status=$(docker inspect inkling-ut --format '{{.State.Status}} rc={{.State.ExitCode}}')"
 tail -n 6 "$OUT/unit_tests.log"
 docker rm -f inkling-ut >/dev/null 2>&1
+fi
+
+# Full engine log on failure, then the first error lines (window 1, 22/11: a --tail 80 kept only
+# the API server's "See root cause above" and lost the worker traceback).
+boot_cause() {
+  docker logs inkling-eval > "$OUT/boot_$1.full.log" 2>&1
+  grep -anE 'Error|Exception|error:|assert|Traceback|raise |not supported|unsupported|requires' "$OUT/boot_$1.full.log" \
+    | grep -v 'Failed core proc' | head -40 > "$OUT/boot_$1.cause.txt"
+  log "full log $(wc -l < "$OUT/boot_$1.full.log") lines; first error lines:"; head -n 20 "$OUT/boot_$1.cause.txt"
+}
 
 run_mode() {  # $1 = bf16|fp8
   local kv=$1
@@ -62,12 +77,12 @@ run_mode() {  # $1 = bf16|fp8
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5022/health)
     [ "$code" = "200" ] && break
     st=$(docker inspect inkling-eval --format '{{.State.Status}}' 2>/dev/null)
-    if [ "$st" != "running" ]; then log "engine $kv died (status=$st)"; docker logs --tail 80 inkling-eval > "$OUT/boot_$kv.fail.log" 2>&1; tail -n 25 "$OUT/boot_$kv.fail.log"; return 1; fi
+    if [ "$st" != "running" ]; then log "engine $kv died (status=$st)"; boot_cause "$kv"; return 1; fi
     G0=$(GPU0); if [ $(( G0 - G0_BEFORE )) -gt 1500 ]; then log "GPU 0 grew by $((G0-G0_BEFORE)) MiB during boot -> abort"; exit 14; fi
     [ "$(left)" -lt 600 ] && { log "boot $kv too slow"; docker logs --tail 40 inkling-eval 2>&1; return 1; }
     sleep 10
   done
-  [ "$code" = "200" ] || { log "$kv never healthy"; docker logs --tail 60 inkling-eval > "$OUT/boot_$kv.fail.log" 2>&1; return 1; }
+  [ "$code" = "200" ] || { log "$kv never healthy"; boot_cause "$kv"; return 1; }
   log "$kv healthy"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
   docker logs inkling-eval 2>&1 | grep -aE 'GPU KV cache size|Maximum concurrency|Model loading took|Loading weights took|kv_cache_dtype|capability|Humming|PDL|e4m3' | tail -20 > "$OUT/boot_$kv.kv.txt"
   cat "$OUT/boot_$kv.kv.txt"
