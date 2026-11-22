@@ -1388,7 +1388,25 @@ def sync_main(worktree: Path, notebook: str, source_nb: str, lane: str,
     result = integrate(worktree, notebook, source_nb)
     for f in result.get("touched", []):
         _git(worktree, "add", "--", f)
-    _git(worktree, *GIT_IDENTITY, "commit", "--no-edit")
+    # A CLEAN `git merge` has already committed (rc 0): a bare `commit
+    # --no-edit` then has no message to reuse and fails, leaving the
+    # integration staged while the reseal reads a HEAD without it -- guards
+    # replayed on the working tree said green on a branch whose push would
+    # carry nothing (CoursIA#27900, 22/11). `--no-edit` only concludes a merge
+    # still in progress (conflicts resolved from origin/main); otherwise the
+    # integration gets its own commit, named after what it wrote.
+    in_merge = _git(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD")[0] == 0
+    if in_merge:
+        rc_c, out_c = _git(worktree, *GIT_IDENTITY, "commit", "--no-edit")
+    elif result.get("touched"):
+        rc_c, out_c = _git(worktree, *GIT_IDENTITY, "commit", "-m",
+                           integration_commit_message(result, lane))
+    else:
+        rc_c, out_c = 0, ""
+    if rc_c != 0 or result.get("error"):
+        return {"merge": merge, "integration": result,
+                "commit_error": out_c[-300:] if rc_c != 0 else None,
+                "guards": replay_guards(worktree, notebook)}
     return {"merge": merge, "integration": result,
             "reseal": _reseal_after(worktree, notebook, source_nb, lane, facts),
             "guards": replay_guards(worktree, notebook)}
@@ -1451,6 +1469,8 @@ def main(argv: list[str] | None = None) -> int:
         result["guards"] = result.get("guards") or replay_guards(wt, args.notebook)
         print(json.dumps(result, ensure_ascii=False, indent=1, default=str))
         return 0 if (result.get("merge", {}).get("merged")
+                     and not result.get("commit_error")
+                     and not (result.get("integration") or {}).get("error")
                      and all(g["rc"] == 0 for g in result["guards"])) else 1
 
     result = integrate(wt, args.notebook, args.source_nb)
