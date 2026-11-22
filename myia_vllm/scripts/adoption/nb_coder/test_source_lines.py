@@ -18,8 +18,10 @@ from pathlib import Path
 
 TREE = ast.parse(Path(__file__).with_name("nb_coder_driver.py").read_text(encoding="utf-8"))
 NODES = [n for n in TREE.body if isinstance(n, ast.FunctionDef)
-         and n.name in {"_text", "_lines", "apply_edits", "normalize_sources"}]
-NS = {"Path": Path, "json": json, "hashlib": hashlib}
+         and n.name in {"_text", "_lines", "apply_edits", "normalize_sources",
+                        "nb_read_text", "nb_load", "nb_dump"}]
+NS = {"Path": Path, "json": json, "hashlib": hashlib,
+      "_NB_STORE": None}   # --write-mode json: the persistence choke point writes the file itself
 exec(compile(ast.Module(body=NODES, type_ignores=[]), "nb_coder_driver.py", "exec"), NS)
 
 
