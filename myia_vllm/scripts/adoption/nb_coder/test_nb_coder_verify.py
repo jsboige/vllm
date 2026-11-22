@@ -299,3 +299,38 @@ def test_unparsable_under_budget_is_not_a_truncation(monkeypatch, tmp_path):
     short = {"response": "no json here", "usage": {"completion_tokens": 120}}
     rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [short])
     assert rc == 2 and t["verdict"] == "error:unparsable" and len(prompts) == 1
+
+
+# ------------------------------------- sk-agent's "empty model response" error (22/11)
+
+_EMPTY_ERR = "empty model response — agent.invoke produced no output"
+
+
+def test_empty_model_response_error_at_budget_is_retried_short(monkeypatch, tmp_path):
+    """22/11 CoursIA#27893: sk-agent returns the empty answer as an ERROR envelope with
+    completion_tokens at the budget (the critic thought until the cap). One retry with
+    the truncation note; an answer on the retry is the verdict."""
+    cut = {"error": _EMPTY_ERR, "usage": {"prompt_tokens": 48097, "completion_tokens": 32768}}
+    ok = {"response": '```json\n{"verdict": "approve", "findings": []}\n```',
+          "usage": {"prompt_tokens": 48097, "completion_tokens": 7000}}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [cut, ok])
+    assert rc == 0 and t["verdict"] == "approve"
+    assert t["verify_retry"] == "truncated"
+    assert len(prompts) == 2 and prompts[1].endswith(v.TRUNCATED_NOTE)
+
+
+def test_empty_model_response_error_without_usage_gets_the_empty_note(monkeypatch, tmp_path):
+    """#27780/#27781: same error, zero usage -- the cloud-empty case, RETRY_NOTE."""
+    empty = {"error": _EMPTY_ERR, "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+    ok = {"response": '```json\n{"verdict": "reject", "findings": []}\n```'}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [empty, ok])
+    assert rc == 1 and t["verdict"] == "reject"
+    assert t["verify_retry"] == "empty-response"
+    assert prompts[1].endswith(v.nbcd.RETRY_NOTE)
+
+
+def test_empty_model_response_twice_still_names_the_call_failure(monkeypatch, tmp_path):
+    empty = {"error": _EMPTY_ERR}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [empty, empty])
+    assert rc == 2 and len(prompts) == 2
+    assert t["verdict"].startswith("error:call-failed: empty model response")
