@@ -339,6 +339,25 @@ def test_a_stalled_loop_is_not_extended(monkeypatch, tmp_path):
     assert len(calls["sk"]) == 2 and rec["verdict"] == "verify-reject"
 
 
+def test_a_gate_broken_by_the_last_round_earns_one_round(monkeypatch, tmp_path):
+    # 22/11 CoursIA#27930: the budgeted round fixed the verifier major but its rewrite
+    # dropped the comments of a long cell; the gate ended the grain with no round on it.
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION] * 2, [("approve", [])])
+    broken = {"gate": "uncommented-code", "ok": False,
+              "detail": {"measured": True, "cells": [1], "flagged": 1,
+                         "findings": [{"cell": 1, "text": "cellule 1 : 89 lignes, 0 commentaire"}]}}
+    gate_runs = iter([[broken], [{"gate": "uncommented-code", "ok": True}]])
+    monkeypatch.setattr(D, "run_gates", lambda *a, **kw: next(gate_runs))
+    rec = _rejected_rec()
+    _loop(_loop_args(revise_rounds=1), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved" and len(calls["sk"]) == 2
+    r = rec["revisions"]
+    assert r[0]["result"] == "verify-reject" and r[0]["extended"]["budget"] == 2
+    assert "uncommented-code" in calls["sk"][1]["prompt"] or "commentaire" in calls["sk"][1]["prompt"]
+    assert len(calls["verify"]) == 1          # the verifier ran once, on the repaired draft
+
+
 def test_revise_extend_zero_keeps_the_fixed_budget(monkeypatch, tmp_path):
     built = _nb(tmp_path)
     calls = _fake_engine(monkeypatch, [REVISION] * 3,
@@ -366,6 +385,11 @@ def test_majors_of_another_source_do_not_extend(monkeypatch, tmp_path):
     (2, 2, 4, "execution", None, 3, 1, False),   # different sources
     (2, 2, 4, "execution", "execution", 3, 1, True),
     (2, 2, 4, None, None, 3, None, False),       # no verifier count after the round
+    # 22/11 CoursIA#27930: a verifier round whose rewrite broke a gate -> one round for it
+    (2, 2, 4, None, "gates", 1, 1, True),
+    (2, 2, 4, "gates", "execution", 1, 1, True),  # a gate fix that broke execution
+    (4, 4, 4, None, "gates", 1, 1, False),        # still bounded by the cap
+    (2, 2, 4, "gates", None, 1, 1, False),        # the verifier coming back: no extension
 ])
 def test_revise_round_extends(done, budget, cap, s_in, s_out, m_in, m_out, want):
     assert D.revise_round_extends(done, budget, cap, s_in, s_out, m_in, m_out) is want
