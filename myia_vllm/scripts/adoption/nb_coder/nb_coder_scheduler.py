@@ -149,6 +149,10 @@ CONTENT_FAILURE_PREFIXES = (
     # lane took the notebook while we built it). The engine served the whole run, so it
     # proves a served run and never blocks the ramp; the grain itself is not done.
     "late-claim-refused",
+    # 22/11 (CoursIA#27805 -> main red): the source twin changed STRUCTURE or CODE on
+    # origin/main while the port was built. The engine served the whole run; the port is
+    # stale, so stage 5 refuses the push and a retry re-ports from the new source.
+    "source-drifted",
 )
 
 

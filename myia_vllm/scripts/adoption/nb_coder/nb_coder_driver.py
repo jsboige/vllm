@@ -5029,6 +5029,43 @@ def _load_integrate_module():
     return mod
 
 
+def _load_drift_module():
+    """nb_coder_drift.py, loaded by path like the integration module."""
+    import importlib.util
+    path = Path(__file__).with_name("nb_coder_drift.py")
+    spec = importlib.util.spec_from_file_location("nb_coder_drift", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
+    """Did the port's source twin move on origin/main since the worktree's base?
+
+    22/11, CoursIA main red for every open PR: #27805 ported Sudoku-07-Norvig while
+    #27348 added three cells to its Python twin; merged on stale checks, the port
+    lacked a block of its source, the index-aligned conformance spec diverged and
+    the attestation named a blob the squash never wrote. Read BEFORE the branch:
+    `markdown-only` re-bases the detached worktree on origin/main so the
+    integration edits (nav link, README row, reseal) land on the fresh twin;
+    `structure`/`code`/`deleted` refuse the push (the port is stale, a retry
+    re-ports from the new source). A fetch that fails leaves the comparison to
+    the last known origin/main and says so -- fail-open, as before this guard."""
+    rc_f, out_f = _git(wt_path, "fetch", "-q", "origin", "main")
+    try:
+        drift = _load_drift_module().source_drift(wt_path, "HEAD", src_twin)
+    except Exception as e:  # never a blocker on an instrument failure
+        return {"drift": "unmeasured", "error": f"{type(e).__name__}: {e}"[:300]}
+    if rc_f != 0:
+        drift["fetch_error"] = out_f[:200]
+    if drift.get("drift") == "markdown-only":
+        rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
+        drift["rebased"] = rc == 0
+        if rc != 0:
+            drift["rebase_error"] = out[:300]
+    return drift
+
+
 def integration_pr_lines(integ: dict | None) -> str:
     """PR-body section for the stage-5 repo integration (21/11): one line per
     replayed guard with its exit code. A guard still red AFTER integration is
@@ -5086,6 +5123,21 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
+
+    cm0 = rec.get("create_mode") or {}
+    src0 = cm0.get("source") if isinstance(cm0, dict) else None
+    if src0:
+        drift = stage5_source_drift(wt_path, str(src0))
+        entry["source_drift"] = drift
+        if drift.get("drift") in ("structure", "code", "deleted"):
+            entry["error"] = (f"source twin {src0} changed on origin/main since the build "
+                              f"({drift['drift']}): the port is stale, no PR")
+            rec["verdict"], rec["pr"] = f"source-drifted:{drift['drift']}", entry
+            return
+        if drift.get("drift") == "markdown-only" and not drift.get("rebased"):
+            entry["error"] = f"markdown-only drift, re-base failed: {drift.get('rebase_error')}"
+            rec["verdict"], rec["pr"] = "source-drifted:rebase-failed", entry
+            return
 
     rc, out = _git(wt_path, "checkout", "-b", branch)
     if rc != 0:
@@ -5256,6 +5308,11 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
         f"run record complet dans le out-dir du harnais.\n"
         + integration_pr_lines(entry.get("integration"))
+        + ("\n- Jumeau source modifié **en markdown seul** sur `main` depuis la construction "
+           f"(blob {(entry.get('source_drift') or {}).get('base_blob')} → "
+           f"{(entry.get('source_drift') or {}).get('main_blob')}, cellules de code "
+           "identiques) : intégration rejouée sur la version fraîche."
+           if (entry.get("source_drift") or {}).get("rebased") else "")
         + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
