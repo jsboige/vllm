@@ -11,7 +11,7 @@
 #   3 boot bf16 KV -> KV pool, passage NLL, single-stream decode, GSM8K (budgeted)
 #   4 boot fp8 KV (env-gated line) -> same probes; the bf16/fp8 delta is the capacity answer
 set -u
-cd /d/vllm
+cd "$(dirname "$0")/../../.." || exit 12   # repo root of THIS checkout (worktree or main)
 : "${STOP_AT:?STOP_AT=<ISO-UTC> required}"
 D=myia_vllm/_iteration_log/inkling_sm89_gpu2
 OUT=$D/results
@@ -38,7 +38,7 @@ case "$P" in
 esac
 
 # 2. upstream unit tests on SM89 (bounded; a hung kernel must not eat the window)
-UT_BUDGET=1500; [ "$(left)" -lt 4800 ] && UT_BUDGET=900
+UT_BUDGET=900; [ "$(left)" -lt 4800 ] && UT_BUDGET=600   # capacity (stages 3-4) is the main answer
 log "unit tests, budget ${UT_BUDGET}s"
 MSYS_NO_PATHCONV=1 docker run -d --name inkling-ut --gpus '"device=2"' --label autoheal=False \
   -e CUDA_DEVICE_ORDER=PCI_BUS_ID -e CUDA_VISIBLE_DEVICES=2 -e HF_HUB_OFFLINE=1 \

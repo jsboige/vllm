@@ -20,7 +20,7 @@
 #
 # ISOLATION (measured 2026-10-30): under WSL2 `--gpus device=2` NO LONGER isolates; the
 # CUDA_DEVICE_ORDER=PCI_BUS_ID + CUDA_VISIBLE_DEVICES=2 pair below is what pins pci 72:00.0.
-# Run from Git Bash in d:/vllm:  MSYS_NO_PATHCONV=1 KV=bf16 bash myia_vllm/_iteration_log/inkling_sm89_gpu2/serve_inkling.sh
+# Run from Git Bash in the repo root (main or a worktree):  MSYS_NO_PATHCONV=1 KV=bf16 bash myia_vllm/_iteration_log/inkling_sm89_gpu2/serve_inkling.sh
 set -e
 KV=${KV:-bf16}
 MAXLEN=${MAXLEN:-4096}
