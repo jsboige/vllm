@@ -75,15 +75,28 @@ Effet de bord mesuré : les pages tmpfs comptant dans le commit hôte, les 17 Gi
 
 ## (2) Condensation (logs roosync)
 
-**Emplacement (trouvé le 09/10, il manquait depuis deux cycles)** : `%TEMP%\roo-state-manager-logs\roosync-<YYYYMMDD>.log` (le nom suit le DÉMARRAGE du process, pas minuit — lire jour + veille ; des rotations `…-96.log`…`…-99.log` coexistent, prendre le nom exact du jour).
+**Emplacement** : `%TEMP%\roo-state-manager-logs\`. **Il y a un fichier PAR PROCESS RSM** : `roosync-<YYYYMMDD>.log`, puis `roosync-<YYYYMMDD>-1.log`, …, `-201.log`, etc. Le 22/11, on en comptait 324 pour la journée. Le nom suit le démarrage du process, pas minuit. **Un grep sur le seul fichier du jour rend un zéro qui ne mesure rien** : il faut concaténer tous les fichiers du jour, et ceux de la veille.
 
 ```bash
-L="$LOCALAPPDATA/Temp/roo-state-manager-logs"
-grep -aiE 'condensat' "$L/roosync-$(date -u +%Y%m%d).log" | grep -avE 'LLM config:'
-grep -aE '\[(ERROR|WARN)\]' "$L/roosync-$(date -u +%Y%m%d).log" | grep -avE 'LLM config' | tail -20
+L="$LOCALAPPDATA/Temp/roo-state-manager-logs"; D=$(date -u +%Y%m%d)
+cat "$L"/roosync-$D*.log > .tmp/rsm_today.log; ls "$L" | grep -c "roosync-$D"   # nombre de process
+grep -aiE 'condensat' .tmp/rsm_today.log | grep -avE 'LLM config:|cloud fallback condensation succeeded'
+grep -aE '\[(ERROR|WARN)\]' .tmp/rsm_today.log | grep -avE 'LLM config' | tail -20
+# gardien de taille du résumé : Swift d'abord (voir ci-dessous)
+for p in 'Summary exceeds size limit, auto-condensing' 'Auto-condensed Summary (attempt' \
+         'Auto-condense Summary attempt 1 failed' 'Auto-condense Summary: LLM did not converge'; do
+  printf '%5d  %s\n' "$(grep -ac "$p" .tmp/rsm_today.log)" "$p"; done
 ```
 
-Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai échec prod = minute isolée à 1-2 évts. `cloud fallback condensation succeeded` isolé pendant une indispo vLLM = nominal (dégradation gracieuse).
+Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai échec prod = minute isolée à 1-2 évts.
+
+**Deux chemins de condensation, deux ordres différents (code RSM lu le 22/11, `tools/roosync/dashboard.ts`).**
+- **Génération du statut et du résumé : le cloud d'abord, depuis #4434 (17/11).** glm-4.7 passe par le hub, et le primaire `localhost:5002` sert de secours. Le levier est `CONDENSE_SUMMARY_CLOUD_FIRST=0`. Donc `#2719 cloud fallback condensation succeeded` est **le chemin nominal** (44 fois le 22/11), pas un signe de panne de Swift.
+- **Gardien de taille du résumé** (« Summary exceeds size limit, auto-condensing », quand le résumé dépasse 5 Ko) : **Swift d'abord.** L'appel est borné par le délai de la passe, puis le cloud prend le relais, puis une troncature déterministe.
+  - Mesuré le 22/11 : **10 échecs sur 12**, tous en `Request timed out` après 37 à 58 s, et 10 troncatures déterministes (« LLM did not converge »).
+  - Au même moment, Swift était sain, à environ 22 tok/s par flux avec 5 requêtes longues.
+  - Condenser ~1 500 tokens prend donc ~70 s, plus que le délai alloué. C'est un **désaccord de budget côté RSM**, pas un wedge (SUPPOSÉ, cohérent avec la mesure).
+  - À relayer au propriétaire (roo-extensions) s'il persiste, sans redémarrer quoi que ce soit ici.
 
 **CORRECTION (09/10) — le banner « Condensation LLM config » EST dans le log**, à `[INFO]` toutes les 5 min (`primary=qwen3.6-35b-a3b @ http://localhost:5002/v1 | cloud-fallback=… key=OK`). La spec affirmait le contraire (« jamais dans le log, stderr ») : **faux**, et cela faisait passer un battement de santé pour une absence de signal. Le banner **est le battement qui prouve que la condensation est configurée sur notre moteur** — le lire, ne pas l'exclure. Ce qu'on **filtre** (`grep -v 'LLM config:'`), ce sont les 200+ battements pour ne garder que les **événements** réels (aucun le 09/10 : condensation nominale).
 
