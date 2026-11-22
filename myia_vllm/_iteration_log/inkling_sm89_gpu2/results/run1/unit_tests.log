@@ -1,0 +1,16 @@
+
+==================================== ERRORS ====================================
+___________ ERROR collecting tests/models/inkling2/test_core_ops.py ____________
+ImportError while importing test module '/opt/inkling-tests/tests/models/inkling2/test_core_ops.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/models/inkling2/test_core_ops.py:13: in <module>
+    from tests.models.inkling2.test_attention import shear_rel_logits
+E   ModuleNotFoundError: No module named 'tests.models'
+=========================== short test summary info ============================
+ERROR tests/models/inkling2/test_core_ops.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 12.97s
