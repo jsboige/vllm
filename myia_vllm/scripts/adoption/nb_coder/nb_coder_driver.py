@@ -4548,7 +4548,8 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
-              rel: str | None = None, scratch: Path | None = None) -> list[dict]:
+              rel: str | None = None, scratch: Path | None = None,
+              spec_body: str | None = None, spec_ref: str | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
     Judged on the DELTA (cells the build touched): the source's own prose is the repo's
@@ -4631,7 +4632,8 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
         # notebook never printed. Delta-judged against the twin's own unanchored stock.
         gates.append(prose_anchor_gate(repo, src_nb, built_nb))
     if create_mode and rel and _norm_rel(rel).endswith("-Rust.ipynb"):
-        conf = rust_conformance_gate(src_nb, built_nb)
+        conf = rust_conformance_gate(src_nb, built_nb, spec_body=spec_body,
+                                     spec_ref=spec_ref)
         if conf is not None:
             gates.append(conf)
     return gates
@@ -4643,18 +4645,33 @@ def _kernel_language(nb_path: Path) -> str | None:
             or (meta.get("language_info") or {}).get("name"))
 
 
-def rust_conformance_gate(src_nb: Path, built_nb: Path) -> dict | None:
+def _spec_ref(args, issue: dict | None = None) -> str | None:
+    """`#28072` for a spec-declared-absent motif: the CLI's `--issue` when the
+    args namespace carries it (tests build minimal namespaces without one),
+    else the fetched issue's own number, else no anchor at all -- the motif
+    still names the `Tolerances` table and the cell."""
+    num = getattr(args, "issue", None) or (issue or {}).get("number")
+    return f"#{num}" if num else None
+
+
+def rust_conformance_gate(src_nb: Path, built_nb: Path, spec_body: str | None = None,
+                          spec_ref: str | None = None) -> dict | None:
     """Stage-3 gate for a Rust port of a Python twin (CoursIA c0018, 21/11): the
     `rust_conformance.d` entry written at delivery compares each Rust cell's output to
     the twin's same-index cell, strict text equality, durations by presence only. The
     three lot-1 PRs came back from review on exactly that (a stray `()`, a count the
     outputs did not show). Measured here BEFORE the PR, so the constructive loop
     repairs it instead of a review round. None when there is no Python twin to compare
-    to (a spec twin carries no outputs; a C# source is not the registry's reference)."""
+    to (a spec twin carries no outputs; a C# source is not the registry's reference).
+    `spec_body` (the lot spec's issue body, `spec_ref` e.g. `#28072`): its
+    `## Tolerances` table downgrades the strict rule per cell -- a stochastic
+    port judged against text its own RNG can never reproduce failed #28072
+    twice while the model correctly contested it."""
     if (_kernel_language(src_nb) or "").lower() != "python":
         return None
     try:
-        divs = _load_integrate_module().conformance_divergences(src_nb, built_nb)
+        divs = _load_integrate_module().conformance_divergences(
+            src_nb, built_nb, spec_body=spec_body, spec_ref=spec_ref)
     except Exception as e:  # the gate measures, it never crashes a build
         return {"gate": "rust-conformance", "ok": True,
                 "detail": {"measured": False, "error": f"{type(e).__name__}: {e}"[:300]}}
@@ -5243,6 +5260,8 @@ def integration_pr_lines(integ: dict | None) -> str:
         lines.append(f"- Entrée de conformité Rust `{conf['file']}` écrite : "
                      f"{conf.get('measures', 0)} mesures, dont "
                      f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
+        for d in (conf.get("spec_absent") or [])[:8]:
+            lines.append(f"  - Côté Rust déclaré absent {d.get('id')} : {d.get('reason')}.")
         for d in (conf.get("divergences") or [])[:5]:
             lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
     elif conf.get("file") and conf.get("why"):
@@ -5315,7 +5334,10 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     if src_twin:
         try:
             nbci = _load_integrate_module()
-            integ = nbci.integrate(wt_path, nb_rel, str(src_twin))
+            integ = nbci.integrate(wt_path, nb_rel, str(src_twin),
+                                   spec_body=(issue.get("body")
+                                              if isinstance(issue, dict) else None),
+                                   spec_ref=_spec_ref(args, issue))
             if integ.get("error"):
                 entry["integration"] = integ
             else:
@@ -6018,9 +6040,12 @@ def exec_repair_findings(rec: dict, built_path: Path) -> list[dict]:
 
 def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
                       kname: str, wt_path: Path, out_dir: Path,
-                      prior: dict | None = None) -> None:
+                      prior: dict | None = None, spec_body: str | None = None,
+                      spec_ref: str | None = None) -> None:
     """Stages 3-4, harness-only (no model turn inside). .NET post-execution hygiene runs
-    BEFORE anything reads the file: gates and verify judge the DELIVERED state."""
+    BEFORE anything reads the file: gates and verify judge the DELIVERED state.
+    `spec_body`/`spec_ref` carry the lot spec's issue body to the rust-conformance
+    gate (its `## Tolerances` table downgrades the strict rule per cell)."""
     if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
         if kname.startswith(".net"):
             rec["banner_strip"] = strip_dotnet_banner(
@@ -6034,7 +6059,7 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
                                  canon_version=(rec.get("create_metadata") or {})
                                  .get("language_version"),
                                  repo=wt_path, rel=_norm_rel(getattr(args, "notebook", None) or ""),
-                                 scratch=out_dir)
+                                 scratch=out_dir, spec_body=spec_body, spec_ref=spec_ref)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -6157,7 +6182,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         prior = {"round": rnd, "findings": findings, "addressed": entry.get("addressed"),
                  "contested": entry.get("contested")}
         gates_then_verify(args, rec, src_nb, built_path, create_mode, kname, wt_path, out_dir,
-                          prior=prior)
+                          prior=prior, spec_body=issue.get("body"),
+                          spec_ref=_spec_ref(args, issue))
         entry["result"] = rec["verdict"]
         if str(rec["verdict"]).startswith("verify-"):
             out = [f for f in (rec.get("verify") or {}).get("findings") or []
@@ -6362,7 +6388,8 @@ async def run_revision(args, rec: dict) -> dict:
         # on-disk build — zero model turn — then let the normal loop take over (a reject
         # gets its constructive rounds; an approval opens the PR).
         rec["verdict"] = "built-executed-ok"
-        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir)
+        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir,
+                          spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
     else:
         # a seeded gate repair enters the loop as a reject; the exhaustion-restore
         # inside revise_loop brings the honest gates-failed verdict back if the
@@ -6751,7 +6778,8 @@ async def run(args, rec: dict) -> dict:
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     kname_used = args.kernel_override or kernel["kernel_name"]
     gates_then_verify(args, rec, src_nb, built_path, create_mode, kname_used,
-                      Path(wt["path"]), out_dir)
+                      Path(wt["path"]), out_dir,
+                      spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
     if rec.get("verdict") == "verify-reject":
         await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built_path,
                           kname=kname_used, exec_dir=exec_dir, conventions=conventions,

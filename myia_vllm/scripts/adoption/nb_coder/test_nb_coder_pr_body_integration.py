@@ -74,7 +74,7 @@ def _run_stage5(tmp_path, monkeypatch, fake_integrate):
 
 
 def test_pr_body_carries_the_integration_lines(tmp_path, monkeypatch):
-    body = _run_stage5(tmp_path, monkeypatch, lambda wt, nb, src: {
+    body = _run_stage5(tmp_path, monkeypatch, lambda wt, nb, src, **kw: {
         "touched": [], "nav": {"how": "list"}, "readme": {"label": "Rust"},
         "conformance": None, "pair": None})
     section = body.split("## Intégration dépôt", 1)[1]
@@ -83,7 +83,7 @@ def test_pr_body_carries_the_integration_lines(tmp_path, monkeypatch):
 
 
 def test_pr_body_says_a_failed_integration(tmp_path, monkeypatch):
-    def boom(wt, nb, src):
+    def boom(wt, nb, src, **kw):
         raise ValueError("N-Python.ipynb: byte-faithful round-trip failed")
     body = _run_stage5(tmp_path, monkeypatch, boom)
     assert "Échec de l'intégration" in body
