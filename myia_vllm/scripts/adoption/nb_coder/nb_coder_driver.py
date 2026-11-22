@@ -810,6 +810,66 @@ def late_reservation(args, rec: dict) -> bool:
     return True
 
 
+# 22/11 (conveyor, 03:50->04:45Z): under --claim-late six grains were taken by faster
+# lanes while Swift was building them (CoursIA#27927, #27928, #27930, #27931, #27935,
+# #27936). The refusal only surfaced at the late reservation, ~1.5 h of engine time
+# after the other lane's marker. A cheap probe (one REST call) at the stage boundaries
+# stops the run as soon as another lane's marker is the issue's last word -- confirmed
+# by the same scoped guard as the reservation before anything is thrown away.
+_CLAIM_MARK_RE = re.compile(r"^\s*\[(CLAIMED|RELEASED|DELIVERED)\] lane (\S+)")
+MIDRUN_REFUSED = f"{LATE_CLAIM_REFUSED}:midrun"
+MIDRUN_COLLISIONS = ("refused-claim-held-by-another-lane", "refused-claim-implicit-occupation")
+
+
+def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> str | None:
+    """The other lane whose [CLAIMED]/[DELIVERED] is the issue's LAST claim marker.
+
+    None when the last marker is ours or a [RELEASED], when there is none, or when GitHub
+    does not answer: fail-open, the late reservation stays the authority."""
+    try:
+        p = subprocess.run(["gh", "api", f"repos/{slug}/issues/{issue_n}/comments?per_page=100",
+                            "--jq", "[.[].body]"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if p.returncode != 0:
+        return None
+    try:
+        bodies = json.loads(p.stdout or "[]")
+    except ValueError:
+        return None
+    last = None
+    for body in bodies if isinstance(bodies, list) else []:
+        m = _CLAIM_MARK_RE.match(body or "")
+        if m:
+            last = m.groups()
+    if last and last[0] != "RELEASED" and last[1] != lane:
+        return last[1]
+    return None
+
+
+def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
+    """True when the run must stop now: the claim was deferred (--claim-late), another
+    lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
+    notebook (held by another lane, or an occupying PR that may touch it). A guard that
+    times out, is broken, or answers a disjoint occupation never stops the run."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    if cr.get("deferred") != "late":
+        return False
+    holder = last_foreign_marker(args.issue, args.lane)
+    probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
+    rec.setdefault("midrun_claim_probes", []).append(probe)
+    if not holder:
+        return False
+    cc = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+    verdict = claim_verdict(cc)
+    probe["guard"] = {"rc": cc.get("rc"), "verdict": verdict}
+    if verdict in MIDRUN_COLLISIONS:
+        rec["verdict"] = f"{MIDRUN_REFUSED}:{stage}:{holder}"
+        return True
+    return False
+
+
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     """Detached worktree of origin/main: the dirty checkout is never read or touched.
 
@@ -5944,6 +6004,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         rnd = first + done
         if rec.get("verdict") != "verify-reject":
             break
+        if midrun_claim_abort(args, rec, f"revise+{rnd}"):
+            break
         findings = [f for f in (rec.get("verify") or {}).get("findings") or []
                     if isinstance(f, dict)]
         source_in = (rec.get("verify") or {}).get("source")
@@ -6031,7 +6093,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     # that died during a round keeps its own verdict instead of being masked.
     src = (rec.get("verify") or {}).get("source")
     if (src in ("gates", "execution")
-            and not str(rec.get("verdict") or "").startswith("verify-approved")
+            and not str(rec.get("verdict") or "").startswith(("verify-approved",
+                                                               MIDRUN_REFUSED))
             and rec.get("verdict") != "kernel-start-failed"):
         origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
         rec["verdict"] = origin.get("from") or rec["verdict"]
@@ -6467,6 +6530,8 @@ async def run(args, rec: dict) -> dict:
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
+            if midrun_claim_abort(args, rec, "plan"):
+                return rec
 
             # ---- stage 2 BUILD (correction: copy of the target) / CREATION (skeleton + all cells)
             t2 = time.time()
@@ -6518,6 +6583,8 @@ async def run(args, rec: dict) -> dict:
             if scratch.is_file():
                 rec["sources_normalized"] = normalize_sources(scratch)   # CR 1a, couvre le mode mcp
             rec["stage2_s"] = round(time.time() - t2, 1)
+            if midrun_claim_abort(args, rec, "build"):
+                return rec
 
             # ---- harness: structural diff first, then execution; the harness judges alone
             t3 = time.time()
