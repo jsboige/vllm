@@ -1,0 +1,80 @@
+  File "/usr/local/lib/python3.14/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 60, in build_async_engine_client
+    async with build_async_engine_client_from_engine_args(
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        engine_args,
+        ^^^^^^^^^^^^
+        usage_context=usage_context,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        client_config=client_config,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as engine:
+    ^
+  File "/usr/lib/python3.14/contextlib.py", line 214, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+    async_llm = AsyncLLM.from_vllm_config(
+        vllm_config=vllm_config,
+    ...<6 lines>...
+        client_index=client_index,
+    )
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/async_llm.py", line 265, in from_vllm_config
+    return cls(
+        vllm_config=vllm_config,
+    ...<9 lines>...
+        client_index=client_index,
+    )
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/async_llm.py", line 194, in __init__
+    self.engine_core = EngineCoreClient.make_async_mp_client(
+                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        vllm_config=vllm_config,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+        renderer=renderer,
+        ^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/local/lib/python3.14/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/core_client.py", line 183, in make_async_mp_client
+    return AsyncMPClient(
+        *client_args,
+        renderer=renderer,
+    )
+  File "/usr/local/lib/python3.14/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/core_client.py", line 1198, in __init__
+    super().__init__(
+    ~~~~~~~~~~~~~~~~^
+        asyncio_mode=True,
+        ^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        renderer=renderer,
+        ^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/core_client.py", line 731, in __init__
+    with launch_core_engines(
+         ~~~~~~~~~~~~~~~~~~~^
+        vllm_config, executor_class, log_stats, addresses
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as engine_launch:
+    ^
+  File "/usr/lib/python3.14/contextlib.py", line 148, in __exit__
+    next(self.gen)
+    ~~~~^^^^^^^^^^
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/utils.py", line 1410, in launch_core_engines
+    wait_for_engine_startup(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        handshake_socket,
+        ^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        launch,
+        ^^^^^^^
+    )
+    ^
+  File "/usr/local/lib/python3.14/dist-packages/vllm/v1/engine/utils.py", line 1494, in wait_for_engine_startup
+    raise RuntimeError(
+    ...<8 lines>...
+    )
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
