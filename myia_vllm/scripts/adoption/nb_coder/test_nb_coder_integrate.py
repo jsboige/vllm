@@ -629,3 +629,105 @@ def test_format_detection_round_trips_both_encodings():
         fmt = nbci.detect_nb_format(raw)
         assert fmt["ensure_ascii"] is ensure_ascii
         assert nbci.dump_nb(json.loads(raw), fmt) == raw
+
+
+# ------------------------------------------------------------- sync-main commit
+
+README_REL = "MyIA.AI.Notebooks/Serie/README.md"
+
+
+def _fake_integration(monkeypatch, wt: Path, write: bool = True):
+    def fake_integrate(worktree, notebook, source_nb):
+        touched = []
+        if write:
+            p = Path(worktree) / README_REL
+            p.write_text(p.read_text(encoding="utf-8") + "| X-Rust |\n",
+                         encoding="utf-8", newline="")
+            touched = [README_REL]
+        return {"notebook": "MyIA.AI.Notebooks/Serie/X-Rust.ipynb",
+                "source_nb": "MyIA.AI.Notebooks/Serie/X-Python.ipynb",
+                "readme": {"todo": write, "file": README_REL}, "touched": touched}
+    monkeypatch.setattr(nbci, "integrate", fake_integrate)
+    monkeypatch.setattr(nbci, "owned_files", lambda *a: [README_REL])
+    monkeypatch.setattr(nbci, "replay_guards", lambda *a, **k: [])
+    seen = {}
+
+    def fake_reseal(worktree, *a, **k):
+        seen["head_readme"] = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"HEAD:{README_REL}"],
+            capture_output=True, text=True, encoding="utf-8").stdout
+        return {"reseal": {"skipped": "fake"}}
+    monkeypatch.setattr(nbci, "_reseal_after", fake_reseal)
+    return seen
+
+
+def _pr_branch_behind_main(td: Path, conflict: bool) -> Path:
+    wt = _git_repo(td)
+    (wt / README_REL).parent.mkdir(parents=True)
+    (wt / README_REL).write_text("| base |\n", encoding="utf-8", newline="")
+    _commit_all(wt)
+    if conflict:
+        (wt / README_REL).write_text("| base |\n| main row |\n", encoding="utf-8", newline="")
+    else:
+        (wt / "other.txt").write_text("main\n", encoding="utf-8")
+    _commit_all(wt)
+    subprocess.run(["git", "-C", str(wt), "update-ref", "refs/remotes/origin/main", "main"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "pr", "HEAD~1"],
+                   check=True, capture_output=True)
+    if conflict:
+        (wt / README_REL).write_text("| base |\n| pr row |\n", encoding="utf-8", newline="")
+    else:
+        (wt / "nb.txt").write_text("pr\n", encoding="utf-8")
+    _commit_all(wt)
+    return wt
+
+
+def _status(wt: Path) -> str:
+    return subprocess.run(["git", "-C", str(wt), "status", "--porcelain"],
+                          capture_output=True, text=True).stdout
+
+
+def _head_subject(wt: Path) -> str:
+    return subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%s"],
+                          capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+
+def test_sync_main_clean_merge_commits_the_integration(tmp_path, monkeypatch):
+    """CoursIA#27900: on a CLEAN merge the old `commit --no-edit` failed (no
+    message to reuse), the integration stayed staged and the reseal read a HEAD
+    without it. The integration must be at HEAD before the reseal runs."""
+    wt = _pr_branch_behind_main(tmp_path, conflict=False)
+    seen = _fake_integration(monkeypatch, wt)
+    out = nbci.sync_main(wt, "MyIA.AI.Notebooks/Serie/X-Rust.ipynb",
+                         "MyIA.AI.Notebooks/Serie/X-Python.ipynb", "lane:x")
+    assert out["merge"]["merged"] and not out.get("commit_error")
+    assert _status(wt) == ""
+    assert _head_subject(wt).startswith("Chore(integration): ligne README pour X-Rust")
+    assert "| X-Rust |" in seen["head_readme"]          # reseal saw it at HEAD
+    assert (wt / "other.txt").exists()                  # main's change folded in
+
+
+def test_sync_main_conflict_merge_concludes_with_the_integration(tmp_path, monkeypatch):
+    wt = _pr_branch_behind_main(tmp_path, conflict=True)
+    seen = _fake_integration(monkeypatch, wt)
+    out = nbci.sync_main(wt, "MyIA.AI.Notebooks/Serie/X-Rust.ipynb",
+                         "MyIA.AI.Notebooks/Serie/X-Python.ipynb", "lane:x")
+    assert out["merge"].get("resolved_theirs") == [README_REL]
+    assert _status(wt) == ""
+    parents = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%P"],
+                             capture_output=True, text=True).stdout.split()
+    assert len(parents) == 2                            # the merge commit itself
+    assert "| main row |" in seen["head_readme"] and "| X-Rust |" in seen["head_readme"]
+
+
+def test_sync_main_up_to_date_nothing_to_write_commits_nothing(tmp_path, monkeypatch):
+    wt = _pr_branch_behind_main(tmp_path, conflict=False)
+    subprocess.run(["git", "-C", str(wt), "merge", "-q", "--no-edit", "origin/main"],
+                   check=True, capture_output=True)
+    before = _head_subject(wt)
+    _fake_integration(monkeypatch, wt, write=False)
+    out = nbci.sync_main(wt, "MyIA.AI.Notebooks/Serie/X-Rust.ipynb",
+                         "MyIA.AI.Notebooks/Serie/X-Python.ipynb", "lane:x")
+    assert out["merge"]["already_up_to_date"] and not out.get("commit_error")
+    assert _head_subject(wt) == before and _status(wt) == ""
