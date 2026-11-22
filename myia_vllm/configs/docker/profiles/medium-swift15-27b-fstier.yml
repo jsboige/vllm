@@ -131,7 +131,11 @@ services:
     # Rollback to v0.32 (image, volume AND the v0.34-only flag below): restore this
     # file from git before the v0.34 commit — see _iteration_log/v0340_bump/NOTES.md.
     # 24/10 → 18/11: overlay_v0320_tierpin (stock v0.32.0 + the same race fix).
-    image: ${VLLM_IMAGE_SWIFT15:-vllm-openai-v0340-tierpin:v1}
+    # 22/11 (Q65, user GO): overlay_v0340_fsadmit = the same tierpin fix + the fs-tier
+    # write-admission filter (issue #198, PR #532), lost since the 09/11 MTP window.
+    # Image-only rollback: VLLM_IMAGE_SWIFT15=vllm-openai-v0340-tierpin:v1 ; filter-only
+    # rollback on this image: MYIA_FS_ADMIT_MIN_HITS=0 (both need a recreate).
+    image: ${VLLM_IMAGE_SWIFT15:-vllm-openai-v0340-fsadmit:v1}
     container_name: myia_vllm-medium-swift15-27b
     # Maintenance#303 (07/11): container limits. The 08/09 48g cap was a
     # `docker update` — dead since the 04/11 recreate left the engine at
@@ -232,6 +236,7 @@ services:
       - VLLM_FLOAT32_MATMUL_PRECISION=high
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
       - VLLM_USE_FLASHINFER_SAMPLER=0
+      - MYIA_FS_ADMIT_MIN_HITS=${MYIA_FS_ADMIT_MIN_HITS:-2} # fsadmit overlay: cascade a chunk to the fs tier only after N RAM-tier lookup hits; 0 = upstream write-through (rollback).
       - VLLM_WSL2_ENABLE_PIN_MEMORY=0 # VERDICT (fenetre 05/10): cudaHostRegister of the shm offload region is BROKEN under WSL2, chunked or not -- v0.30.0 (monolithic) crashed at is_padding.fill_, v0.31.0+#51081 (chunked, PR tested live) crashed at async_utils copy_event.synchronize. pin=0 = the only working offload config on this host.
     volumes:
       - ${VLLM_MODELS_PATH:-./models}:/models:ro
