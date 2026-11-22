@@ -554,10 +554,14 @@ def _persist(job_id):
     # pendant json.dump lèverait « list changed size during iteration »).
     global _persist_seq
     os.makedirs(JOBS_DIR, exist_ok=True)
-    with _jobs_lock:
-        job = dict(_jobs[job_id])
-        job["results"] = list(job["results"])
     with _persist_lock:
+        # Snapshot DANS _persist_lock (re-review 22/11 : pris avant, deux
+        # threads pouvaient écrire à rebours — le fichier régressait d'un
+        # résultat). Ordre _persist_lock -> _jobs_lock sûr : rien ne tient
+        # _jobs_lock en appelant _persist (vérifié ligne par ligne en review).
+        with _jobs_lock:
+            job = dict(_jobs[job_id])
+            job["results"] = list(job["results"])
         _persist_seq += 1
         tmp = os.path.join(JOBS_DIR, f"{job_id}.{threading.get_ident()}-"
                                      f"{_persist_seq}.tmp")
@@ -777,6 +781,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length < 0:  # re-review 22/11 : read(-1) lit jusqu'à l'EOF
+            self._send(400, {"error": "Content-Length négatif"})
+            return
         if length > MAX_BODY_BYTES:  # CHANGES_REQUESTED §6 : corps borné
             self._send(413, {"error": f"corps > {MAX_BODY_BYTES} octets"})
             return
