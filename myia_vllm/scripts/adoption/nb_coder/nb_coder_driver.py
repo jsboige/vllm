@@ -1997,18 +1997,30 @@ def repair_round_extends(rounds_done: int, budget: int, cap: int, before: int,
 # hint fix the verifier had spelled out. A round that does not strictly reduce the
 # majors ends the loop as before ([2, 1, 1] and [4, 4, 4] on the same day stay as they are).
 REVISE_EXTEND_DEFAULT = 2
+# Harness-synthesized finding sources: deterministic, narrow (one gate, one failing cell).
+DETERMINISTIC_SOURCES = ("gates", "execution")
 
 
 def revise_round_extends(rounds_done: int, budget: int, cap: int, source_in, source_out,
                          majors_in, majors_out) -> bool:
-    """One more revision round when the budget is spent, the cap is not reached, and the
-    round just run strictly reduced the major findings — measured on findings of the SAME
-    source (verifier vs verifier, execution vs execution, gates vs gates): a synthesized
-    execution finding and a verifier major are not on one scale."""
+    """One more revision round when the budget is spent, the cap is not reached, and either
+
+    - the round just run strictly reduced the major findings — measured on findings of the
+      SAME source (verifier vs verifier, execution vs execution, gates vs gates): a
+      synthesized execution finding and a verifier major are not on one scale; or
+    - the round answered one source and its rewrite broke a DETERMINISTIC one (a gate, or
+      execution) that the builder has never been shown. 22/11, CoursIA#27930: the last
+      budgeted round fixed a real verifier major (Pauli Y anti-diagonal) but rewrote cell
+      11 without its `//` comments; `uncommented-code` then ended the grain terminal with
+      no round ever spent on it. A new deterministic finding gets one round; ping-pong
+      stays bounded by the cap, and a verifier that comes back is not extended here."""
     if not (isinstance(majors_in, int) and isinstance(majors_out, int)):
         return False
-    return (rounds_done >= budget and budget < cap and source_in == source_out
-            and majors_out < majors_in)
+    if rounds_done < budget or budget >= cap:
+        return False
+    if source_in == source_out:
+        return majors_out < majors_in
+    return source_out in DETERMINISTIC_SOURCES and majors_out > 0
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
