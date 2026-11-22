@@ -583,3 +583,49 @@ def test_integrate_idempotent_second_run_writes_nothing():
                                 "MyIA.AI.Notebooks/Serie/Serie-02-Python.ipynb")
         assert second["touched"] == []
         assert {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()} == snapshot
+
+
+# ------------------------------------------------------------- format detection
+
+BS = chr(92)   # a literal backslash, spelled out: no escape-sequence ambiguity
+LATEX_UP = BS + "uparrow"            # the LaTeX command, one backslash
+JSON_UP = BS + BS + "uparrow"        # how json.dumps stores it
+
+
+def test_latex_backslash_u_is_not_an_ascii_escape():
+    """CoursIA#27900 (22/11): a LaTeX up-arrow in a markdown cell is an escaped
+    backslash + 'uparrow' in the JSON text. The old substring test read it as
+    an ensure_ascii file, the round-trip check refused, and the port PR
+    shipped with no README row and no nav edge."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "Serie-02-Python.ipynb"
+        cells = [_md(NAV_BAR.replace("Serie-07", "Serie-02")),
+                 _md("Croissance $f(n) " + LATEX_UP + "$ très rapide.\n"),
+                 _code("x = 1\n"),
+                 _md("## Navigation\n\n| [a](a.ipynb) |\n")]
+        _nb(path, cells)
+        raw = path.read_bytes().decode("utf-8")
+        assert BS + "u" in raw and JSON_UP in raw   # the trap itself
+        assert nbci.detect_nb_format(raw)["ensure_ascii"] is False
+        action = nbci.plan_nav_link(path, "Serie-02-Rust.ipynb")
+        nbci.apply_nav_link(action)                 # raised before the fix
+        after = path.read_bytes().decode("utf-8")
+        assert "Serie-02-Rust.ipynb" in after
+        assert "très" in after and JSON_UP in after
+
+
+def test_format_detection_round_trips_both_encodings():
+    """Raw non-ASCII + control-char escapes (ANSI colours in outputs) is
+    ensure_ascii=False; a pure-ASCII file with real backslash-u escapes is
+    True. Both must reproduce their own bytes, which is what apply_nb checks."""
+    code = _code("print('x')\n")
+    code["outputs"] = [{"output_type": "stream", "name": "stdout",
+                        "text": [chr(27) + "[31mrouge" + chr(27) + "[0m é\n"]}]
+    nb = {"cells": [_md("Été $" + LATEX_UP + "$\n"), code], "metadata": {},
+          "nbformat": 4, "nbformat_minor": 5}
+    for ensure_ascii in (False, True):
+        raw = json.dumps(nb, ensure_ascii=ensure_ascii, indent=1)
+        fmt = nbci.detect_nb_format(raw)
+        assert fmt["ensure_ascii"] is ensure_ascii
+        assert nbci.dump_nb(json.loads(raw), fmt) == raw

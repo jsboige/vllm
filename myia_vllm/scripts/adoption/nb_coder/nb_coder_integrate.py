@@ -142,11 +142,20 @@ def detect_nb_format(raw: str) -> dict:
     origin/main); the detection keeps the module honest if another series
     formats differently, and ``apply_nb`` refuses to write when a round-trip
     of the UNCHANGED notebook does not reproduce the original bytes.
+
+    ``ensure_ascii`` is read from the characters, never from a backslash-u
+    substring (CoursIA#27900, 22/11): a LaTeX up-arrow command in a markdown
+    cell is stored as an ESCAPED backslash followed by ``uparrow``, so the
+    substring test answered True on an ``ensure_ascii=False`` file, the
+    round-trip failed and the port PR shipped without README row nor nav
+    edge. A file holding one raw non-ASCII character cannot have been dumped
+    with ``ensure_ascii=True``; a pure-ASCII file is reproduced by True (every
+    escape it carries is re-emitted as such).
     """
     m = re.search(r"^\{[\r\n]+( +)\"cells\"", raw, re.MULTILINE)
     indent = len(m.group(1)) if m else 1
     return {"indent": indent,
-            "ensure_ascii": ("\\u" in raw),
+            "ensure_ascii": raw.isascii(),
             "trailing_nl": raw.endswith("\n")}
 
 
