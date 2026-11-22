@@ -154,12 +154,19 @@ def detect_nb_format(raw: str) -> dict:
     edge. A file holding one raw non-ASCII character cannot have been dumped
     with ``ensure_ascii=True``; a pure-ASCII file is reproduced by True (every
     escape it carries is re-emitted as such).
+
+    ``newline`` is read from the file too (22/11, CoursIA#28003/#28004/#28018):
+    the driver writes the built port with ``Path.write_text``, which turns
+    every newline into CRLF on Windows. Without it the round-trip of a CRLF
+    port failed at byte 1 and the back link (#582) was never applied. JSON
+    strings never hold a raw newline, so only the structural ones change.
     """
     m = re.search(r"^\{[\r\n]+( +)\"cells\"", raw, re.MULTILINE)
     indent = len(m.group(1)) if m else 1
     return {"indent": indent,
             "ensure_ascii": raw.isascii(),
-            "trailing_nl": raw.endswith("\n")}
+            "trailing_nl": raw.endswith("\n"),
+            "newline": "\r\n" if "\r\n" in raw else "\n"}
 
 
 def load_nb(path: Path) -> tuple[dict, dict, str]:
@@ -168,8 +175,9 @@ def load_nb(path: Path) -> tuple[dict, dict, str]:
 
 
 def dump_nb(nb: dict, fmt: dict) -> str:
-    return json.dumps(nb, ensure_ascii=fmt["ensure_ascii"],
-                      indent=fmt["indent"]) + ("\n" if fmt["trailing_nl"] else "")
+    out = json.dumps(nb, ensure_ascii=fmt["ensure_ascii"],
+                     indent=fmt["indent"]) + ("\n" if fmt["trailing_nl"] else "")
+    return out.replace("\n", "\r\n") if fmt.get("newline") == "\r\n" else out
 
 
 def apply_nb(path: Path, nb: dict, fmt: dict, original_raw: str) -> None:
