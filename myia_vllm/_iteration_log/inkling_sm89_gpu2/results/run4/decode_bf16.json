@@ -1,0 +1,33 @@
+{
+  "label": "bf16",
+  "model": "inkling-2-mini",
+  "runs": [
+    {
+      "i": 0,
+      "completion_tokens": 243,
+      "elapsed_s": 14.93,
+      "tok_s": 16.3,
+      "finish": "stop",
+      "head": "A hash table puts items into buckets based on a hash of the key. If two keys land in the same bucket, that’s a collision. One common fix is chaining: the bucket"
+    },
+    {
+      "i": 1,
+      "completion_tokens": 512,
+      "elapsed_s": 6.22,
+      "tok_s": 82.4,
+      "finish": "length",
+      "head": "The user wants a Python function that merges two sorted lists into one sorted list, then an explanation. This is a classic algorithmic problem. I should provide"
+    },
+    {
+      "i": 2,
+      "completion_tokens": 512,
+      "elapsed_s": 4.49,
+      "tok_s": 114.0,
+      "finish": "length",
+      "head": "The user wants a description of the water cycle for a ten-year-old, about two hundred words. Need produce final answer only. Need ensure ~200 words, age-appropr"
+    }
+  ],
+  "total_tokens": 1267,
+  "total_s": 25.64,
+  "tok_s_overall": 49.4
+}

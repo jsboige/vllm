@@ -1,0 +1,33 @@
+{
+  "label": "fp8",
+  "model": "inkling-2-mini",
+  "runs": [
+    {
+      "i": 0,
+      "completion_tokens": 393,
+      "elapsed_s": 18.5,
+      "tok_s": 21.2,
+      "finish": "stop",
+      "head": "A hash table uses a hash function to choose a bucket for each key. If two different keys land in the same bucket, that’s a collision. One common fix is chaining"
+    },
+    {
+      "i": 1,
+      "completion_tokens": 512,
+      "elapsed_s": 6.88,
+      "tok_s": 74.5,
+      "finish": "length",
+      "head": "Here’s a classic two-pointer implementation:\n\n```python\ndef merge_sorted_lists(list1, list2):\n    merged = []\n    i = 0\n    j = 0\n\n    while i < len(list1) and "
+    },
+    {
+      "i": 2,
+      "completion_tokens": 512,
+      "elapsed_s": 5.72,
+      "tok_s": 89.5,
+      "finish": "length",
+      "head": "The user wants a description of the water cycle for a ten-year-old, about two hundred words. Need produce final answer only. Need ensure ~200 words, age-appropr"
+    }
+  ],
+  "total_tokens": 1417,
+  "total_s": 31.1,
+  "tok_s_overall": 45.6
+}

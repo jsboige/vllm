@@ -1,0 +1,11 @@
+25:(EngineCore pid=112) INFO 11-22 12:20:52 [cuda.py:238] NVIDIA Confidential Computing not detected: NVML failed: NVMLError_NotSupported(3)
+49:[Flashinfer]: Error querying CC state: Not Supported
+53:(EngineCore pid=112) ERROR 11-22 12:24:47 [core.py:1777] Traceback (most recent call last):
+97:(EngineCore pid=112) ERROR 11-22 12:24:47 [core.py:1777]     raise ValueError(
+100:(EngineCore pid=112) ERROR 11-22 12:24:47 [core.py:1777] ValueError: To serve at least one request with the model's max seq len (4096), (1.81 GiB KV cache is needed, which is larger than the available KV cache memory (1.59 GiB). Based on the available memory, the estimated maximum model length is 1920. The KV cache gets what is left after the model, its activations, CUDA graphs and warmup within `gpu_memory_utilization`=0.9; increase it (with the extensible KV cache it defaults to 1.0) or decrease `max_model_len` or `max_num_seqs`. CUDA graphs take less with fewer or smaller capture sizes in the compilation config. Decreasing `max_model_len` also reduces what is needed. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/ for more details.
+101:Traceback (most recent call last):
+109:    raise e
+152:    raise ValueError(
+155:ValueError: To serve at least one request with the model's max seq len (4096), (1.81 GiB KV cache is needed, which is larger than the available KV cache memory (1.59 GiB). Based on the available memory, the estimated maximum model length is 1920. The KV cache gets what is left after the model, its activations, CUDA graphs and warmup within `gpu_memory_utilization`=0.9; increase it (with the extensible KV cache it defaults to 1.0) or decrease `max_model_len` or `max_num_seqs`. CUDA graphs take less with fewer or smaller capture sizes in the compilation config. Decreasing `max_model_len` also reduces what is needed. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/ for more details.
+157:Traceback (most recent call last):
+277:    raise RuntimeError(

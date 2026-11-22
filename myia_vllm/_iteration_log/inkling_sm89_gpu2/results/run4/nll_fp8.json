@@ -1,0 +1,10 @@
+{
+  "label": "fp8",
+  "model": "inkling-2-mini",
+  "tokens_scored": 267,
+  "multi_entry_skipped": 0,
+  "mean_nll": 1.595190702283999,
+  "ppl": 4.929269005350336,
+  "prompt_tokens": 268,
+  "elapsed_s": 14.27
+}
