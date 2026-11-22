@@ -366,12 +366,29 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
     return items, digest
 
 
+REPLACE_ATTEMPTS = 40  # ~18 s of patience in total, far above any reader's json.load
+
+
 def atomic_write_json(path: Path, payload: dict) -> None:
+    """Write `payload` to `path` through a temp file and an atomic rename.
+
+    On Windows a reader that holds the target open (the feeder's poll, an
+    operator's `json.load`) makes `os.replace` fail with WinError 5 for the
+    duration of its read: Python opens files without FILE_SHARE_DELETE. The
+    scheduler died on exactly that on 22/11 04:4xZ, mid-run, with five drivers
+    in flight. The rename is retried with a short backoff before giving up."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n",
                    encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
 
 
 def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
