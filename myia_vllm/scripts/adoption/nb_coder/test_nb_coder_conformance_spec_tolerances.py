@@ -226,6 +226,47 @@ def test_duration_row_numbers_only_is_absent_a_word_change_is_not(tmp_path):
     assert b2["spec_absent"] == []
 
 
+@pytest.mark.parametrize("tolerance", [
+    "egalite stricte ; temps : presence seule",          # App-12 #28069 cell 39
+    "egalite stricte ; ms/coup : presence seule",        # App-12 #28069 cell 55
+    "egalite stricte ; durées murales : présence seule",
+])
+def test_duration_row_wordings_seen_in_specs(tolerance):
+    row = {"quantity": "tableau du tournoi", "tolerance": tolerance,
+           "compare": "sortie Python cellule 39"}
+    assert nbci.spec_row_kind(row) == "duration"
+
+
+def test_duration_word_without_presence_seule_stays_strict():
+    row = {"quantity": "temps de calcul", "tolerance": "egalite stricte",
+           "compare": "sortie Python cellule 3"}
+    assert nbci.spec_row_kind(row) == "strict"
+
+
+def test_duration_row_never_hides_an_integer_result(tmp_path):
+    """App-12 #28069 cell 39: `Greedy 6W-0D-0L ... 2306.2` vs a Rust run that
+    wins fewer games. The duration row tolerates the wall-clock DECIMAL, never
+    the integer game results printed next to it."""
+    spec = _spec("| 1 | tableau du tournoi | egalite stricte ; temps : presence seule |"
+                 " sortie Python cellule 1 |\n")
+    # a table column with no unit: the duration-LINE detector cannot anchor it,
+    # only the spec row can tolerate it
+    py = "Greedy      6W-0D-0L   Score 66   2306.2\n"
+    wt = _repo(tmp_path, [_md(), _code([_stream(py)])],
+               [_md(), _code([_stream("Greedy      6W-0D-0L   Score 66   1.7\n")])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28069")
+    assert b["divergences"] == []
+    assert b["entry"]["measures"][0]["sides"]["rust"]["absent"].startswith(
+        "durees en presence seule (spec #28069, Tolerances, cellule 1)")
+    for i, wrong in enumerate(("Greedy      4W-0D-2L   Score 66   1.7\n",     # W/D/L
+                               "Greedy      6W-0D-0L   Score 48   1.7\n")):   # score
+        wt2 = _repo(tmp_path / f"wrong{i}", [_md(), _code([_stream(py)])],
+                    [_md(), _code([_stream(wrong)])])
+        b2 = nbci.build_conformance_entry(wt2, RS, PY, spec_body=spec)
+        assert [d["id"] for d in b2["divergences"]] == ["c1_text"], wrong
+        assert b2["spec_absent"] == []
+
+
 def test_strict_rows_and_absent_cells_stay_strict(tmp_path):
     """App-12 (#28069) reproduces MT19937 exactly: its rows are all strict, and a
     one-character divergence must still fail the gate. A cell with NO row too."""

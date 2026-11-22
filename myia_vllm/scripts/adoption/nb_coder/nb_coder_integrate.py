@@ -1224,8 +1224,15 @@ _SPEC_TOLERANCES_HEAD_RE = re.compile(r"^#{2,6}\s*tolerances?\b")
 _SPEC_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
 # « sortie Python cellule N » / « sorties Python » / « jumeau Python »
 _SPEC_PY_OUTPUT_RE = re.compile(r"sorties?\s+python|python\s+cellule|jumeau\s+python")
-_SPEC_DUREE_RE = re.compile(r"\bdurees?\b")
-_NUM_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
+# The wall-clock words a duration row uses (accent-folded): lots 1-12 write
+# « durees : presence seule », App-12 #28069 writes « temps : presence seule »
+# and « ms/coup : presence seule » for the same contract.
+_SPEC_DUREE_RE = re.compile(r"\b(?:durees?|temps|murales?)\b|ms/coup")
+# Only DECIMAL numbers are masked by a duration row: wall-clock values print
+# with a fractional part (`1.8`, `302.0`, `2306.2`), while the integers next to
+# them are game results the spec keeps strict (App-12 #28069: `4W-0D-2L`,
+# `Score 66`). An integer duration column stays strict -- fail-closed.
+_NUM_TOKEN_RE = re.compile(r"\d+\.\d+(?:[eE][-+]?\d+)?")
 
 
 def _flat(s: str) -> str:
@@ -1299,10 +1306,12 @@ def spec_row_kind(row: dict | None) -> str:
 
 
 def _durations_only_diff(ref: str, other: str) -> bool:
-    """True when two outputs differ ONLY by their numeric tokens (CoursIA#28072
+    """True when two outputs differ ONLY by their decimal numbers (CoursIA#28072
     cell 48: `0.0 0.3` vs `1.8 302.0` inside a table with no time unit, so the
-    duration-LINE detector never anchored them). Numbers are masked and runs of
-    whitespace collapsed -- a table's column padding follows the number widths."""
+    duration-LINE detector never anchored them). Decimals are masked and runs
+    of whitespace collapsed -- a table's column padding follows the number
+    widths. Integers are NOT masked: a wrong win count or score next to a
+    duration column is a divergence, never tolerated by the duration row."""
     def mask(text: str) -> list[list[str]]:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         return [_NUM_TOKEN_RE.sub("#", ln).split() for ln in text.split("\n")]
