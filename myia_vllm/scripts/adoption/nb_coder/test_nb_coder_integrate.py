@@ -731,3 +731,75 @@ def test_sync_main_up_to_date_nothing_to_write_commits_nothing(tmp_path, monkeyp
                          "MyIA.AI.Notebooks/Serie/X-Python.ipynb", "lane:x")
     assert out["merge"]["already_up_to_date"] and not out.get("commit_error")
     assert _head_subject(wt) == before and _status(wt) == ""
+
+
+# ------------------------------------------- one attestation per PR (#27855)
+
+_FAKE_TWIN_TOOL = '''import sys, pathlib
+a = sys.argv[1:]
+if "--check" in a:
+    sys.exit(1)
+by = a[a.index("--by") + 1]
+d = pathlib.Path("scripts/notebook_tools/twin_pairs.d/demo-pair")
+n = max(int(p.name[:4]) for p in d.glob("*.yaml")) + 1
+lines = ["date: '2026-11-22'", "by: " + by, "python_sha: head", ""]
+(d / f"{n:04d}-2026-11-22-{by.replace(':', '-')}.yaml").write_text(
+    chr(10).join(lines), encoding="utf-8")
+'''
+
+
+def _attest(wt: Path, name: str, by: str):
+    p = wt / "scripts/notebook_tools/twin_pairs.d/demo-pair" / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"date: '2026-11-21'\nby: {by}\npython_sha: x\n", encoding="utf-8")
+
+
+def _branch_with_attestations(td: Path) -> Path:
+    wt = _git_repo(td)
+    tool = wt / "scripts/notebook_tools/check_twin_parity.py"
+    tool.parent.mkdir(parents=True)
+    tool.write_text(_FAKE_TWIN_TOOL, encoding="utf-8")
+    _attest(wt, "0001-2026-11-12-codex-cloud-marathon2.yaml", "codex-cloud:marathon2")
+    _commit_all(wt)
+    subprocess.run(["git", "-C", str(wt), "update-ref", "refs/remotes/origin/main", "main"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "pr"],
+                   check=True, capture_output=True)
+    _attest(wt, "0002-2026-11-21-myia-ai-01-vllm.yaml", "myia-ai-01:vllm")   # 1st reseal
+    _attest(wt, "0003-2026-11-21-myia-po-2028-claudish.yaml", "'myia-po-2028:claudish'")
+    _commit_all(wt)
+    return wt
+
+
+def test_reseal_drops_the_branch_own_earlier_attestation(tmp_path):
+    """CoursIA#27855: two integrations on one branch left 0005 (intermediate
+    python_sha) and 0006 (head, colliding with #27311). After the second reseal
+    only the attestation just written may remain among the lane's own
+    branch-added ones; main's and another lane's are untouched."""
+    wt = _branch_with_attestations(tmp_path)
+    res = nbci.reseal_pair(wt, "Demo Pair", "myia-ai-01:vllm")
+    d = "scripts/notebook_tools/twin_pairs.d/demo-pair/"
+    assert res["ok"], res
+    assert res["superseded"] == [d + "0002-2026-11-21-myia-ai-01-vllm.yaml"]
+    names = sorted(p.name for p in (wt / d).glob("*.yaml"))
+    assert names == ["0001-2026-11-12-codex-cloud-marathon2.yaml",
+                     "0003-2026-11-21-myia-po-2028-claudish.yaml",
+                     "0004-2026-11-22-myia-ai-01-vllm.yaml"]
+    st = _status(wt)
+    assert f"D  {d}0002-2026-11-21-myia-ai-01-vllm.yaml" in st   # staged for the commit
+
+
+def test_reseal_keeps_everything_without_an_integration_ref(tmp_path):
+    """No origin/main to diff against: nothing is judged superseded."""
+    wt = _branch_with_attestations(tmp_path)
+    subprocess.run(["git", "-C", str(wt), "update-ref", "-d", "refs/remotes/origin/main"],
+                   check=True, capture_output=True)
+    res = nbci.reseal_pair(wt, "Demo Pair", "myia-ai-01:vllm")
+    assert res["ok"] and res["superseded"] == []
+    assert len(list((wt / "scripts/notebook_tools/twin_pairs.d/demo-pair").glob("*.yaml"))) == 4
+
+
+def test_attestation_by_reads_plain_and_quoted():
+    assert nbci._attestation_by("date: x\nby: myia-ai-01:vllm\n") == "myia-ai-01:vllm"
+    assert nbci._attestation_by("by: 'myia-po-2028:claudish'\n") == "myia-po-2028:claudish"
+    assert nbci._attestation_by("date: x\n") is None

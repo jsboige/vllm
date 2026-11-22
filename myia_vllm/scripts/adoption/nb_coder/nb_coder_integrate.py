@@ -27,6 +27,9 @@ cycle (~1 h) for remedies a deterministic pass applies itself:
      no-op blob-only on a content change without a path change (po-2028
      measured): the reseal retries ONCE with ``--force`` when the first pass
      wrote nothing (lot 1 measured plain ``--update`` working, so plain first).
+     One attestation per PR, at head: a reseal ``git rm``s the earlier
+     attestation(s) of the same pair that this branch added under the same
+     lane (CoursIA#27855 review: an intermediate seal is not registry history).
   4. C# ports additionally REGISTER the new pair at delivery
      (``twin_pairs.d/<slug>.yaml``, parity_level native-both, schema python/
      csharp -- a Rust notebook is not a schema member and lot 1 measured no
@@ -805,7 +808,9 @@ def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
     proc = _run("--update")
     audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
     if proc.returncode == 0 and audit:
+        dropped = drop_superseded_attestations(worktree, pair_name, lane, audit)
         return out | {"ok": True, "rc": proc.returncode, "audit_files": audit,
+                      "superseded": dropped,
                       "tail": (proc.stdout or proc.stderr or "")[-400:]}
     chk = _run("--check")
     if chk.returncode == 0:  # pair already sealed at HEAD: nothing to attest
@@ -817,7 +822,59 @@ def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
     out |= {"forced": True, "rc": proc.returncode, "audit_files": audit,
             "tail": (proc.stdout or proc.stderr or "")[-400:]}
     out["ok"] = proc.returncode == 0 and bool(audit)
+    if out["ok"]:
+        out["superseded"] = drop_superseded_attestations(
+            worktree, pair_name, lane, audit)
     return out
+
+
+def _attestation_by(text: str) -> str | None:
+    """The ``by:`` field of an attestation yaml (plain or quoted scalar)."""
+    for line in text.splitlines():
+        m = re.match(r"""\s*by:\s*['"]?([^'"#]+?)['"]?\s*(?:#.*)?$""", line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def drop_superseded_attestations(worktree: Path, pair_name: str, lane: str,
+                                 new_files: list[str]) -> list[str]:
+    """One attestation per PR, at head (review ai-01:CoursIA on CoursIA#27855,
+    22/11): a branch that is integrated twice (driver stage 5, then a later
+    ``nb_coder_integrate.py`` pass or ``--sync-main`` after a twin moved on
+    main) re-seals twice, and each reseal APPENDS an attestation. The earlier
+    one attests an intermediate blob that is neither main nor head, and it
+    also takes an ordinal that can collide with an open PR (0006 of #27311).
+
+    The registry is append-only ON MAIN; an attestation this branch added and
+    never merged is not history yet. So after a successful reseal, ``git rm``
+    every attestation of the SAME pair that the branch itself added (diff
+    merge-base(HEAD, origin/main)..HEAD, status A) and that THIS lane wrote,
+    keeping the one just written. Attestations on main, and those another lane
+    added on the branch, are never touched. An index gap is valid (the repo's
+    own test does not check contiguity), so nothing is renumbered. The removal
+    is staged; the callers' ``git add -- twin_pairs.d`` + commit carry it."""
+    rc, base = _git(worktree, "merge-base", "HEAD", "origin/main")
+    if rc != 0 or not base.strip():
+        return []
+    pair_dir = (TWIN_PAIRS_DIR / _slug(pair_name)).as_posix() + "/"
+    rc, out = _git(worktree, "diff", "--name-only", "--diff-filter=A",
+                   base.strip(), "HEAD", "--", pair_dir)
+    if rc != 0:
+        return []
+    keep = {f.strip().rstrip("/") for f in new_files}
+    dropped: list[str] = []
+    for rel in (l.strip() for l in out.splitlines()):
+        if not rel or rel in keep or not rel.endswith(".yaml"):
+            continue
+        path = worktree / rel
+        if not path.is_file():
+            continue
+        if _attestation_by(path.read_text(encoding="utf-8", errors="replace")) != lane:
+            continue
+        if _git(worktree, "rm", "-q", "--", rel)[0] == 0:
+            dropped.append(rel)
+    return dropped
 
 
 def _status(worktree: Path, path: str) -> list[str]:
