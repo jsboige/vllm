@@ -3645,13 +3645,18 @@ TOOLLESS_NOTE = ("\n\nCe tour n'a AUCUN outil : tout ce qu'il te faut est dans c
 
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
                   max_tokens: int | None = None, model: str | None = None,
-                  tools: bool = True) -> tuple[dict, float]:
+                  tools: bool = True, resume: bool = False) -> tuple[dict, float]:
     # model: explicit per-turn override (the spec turn passes --spec-model); every other
     # call site is a coder turn and falls back to --coder-model (#4831).
+    # resume: re-enter the PAUSED loop of `conv` (sk-agent #4742 options.continue). No new
+    # user message is added, and the tool rounds already run are never re-run.
     spec = agent_spec_for(args.agent, model or getattr(args, "coder_model", None),
                           max_tokens or args.max_tokens, 0.4, tools=tools)
-    payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
-               "include_steps": True, "agent_spec": json.dumps(spec)}
+    payload = {"prompt": "" if resume else prompt, "agent": args.agent,
+               "timeout": args.timeout, "include_steps": True,
+               "agent_spec": json.dumps(spec)}
+    if resume:
+        payload["options"] = json.dumps({"continue": True})
     if conv:
         payload["conversation_id"] = conv
     t0 = time.time()
@@ -3687,6 +3692,24 @@ GATE_WAIT_POLL_S = 60
 GATE_WAIT_MAX_S = 1800
 _gate_sleep = asyncio.sleep     # seam for tests
 
+# A MID-TURN pause is a different envelope from the refusal above: the turn had started,
+# its tool rounds are committed, and sk-agent (#4742) stopped the loop between two rounds,
+# because the gate turned non-green (`capacity_gate`) or because a round budget was reached
+# (`round_budget`). Its `response` is the banner "[paused: <reason>] resume with
+# options.continue on conversation_id '…'", not an answer. Read as one, it became
+# `stage1-unparsed`. Measured 22/11 on App-12 (#28069): paused at round 3 after 545 s, with
+# 3 reads of the source and its C# twin already paid, and the grain burned. The way out is
+# `options.continue` on the same conversation. The rounds already paid are kept, and a
+# refused continue keeps its paused epoch, so it is repeated as a continue.
+MAX_CONTINUES = 8               # round_budget continues are free of the gate: bound them
+
+
+def resumable_pause(env: dict) -> str:
+    """The pause reason when `env` is a resumable mid-turn pause, else ""."""
+    if env.get("error") or not (env.get("paused") and env.get("resumable")):
+        return ""
+    return str((env.get("pause") or {}).get("reason") or "paused")
+
 
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
                         conv: str | None, max_tokens: int | None = None,
@@ -3694,16 +3717,22 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
     tools = stage_uses_tools(stage)
     attempt = 0
     waited = 0
+    continues = 0
+    resume = False
     while True:
         tob = engine_tokens()
         env, dt = await sk_call(session, args,
                                 prompt + ("" if tools else TOOLLESS_NOTE)
                                 + (RETRY_NOTE if attempt else ""), conv,
-                                max_tokens, model=model, tools=tools)
+                                max_tokens, model=model, tools=tools, resume=resume)
         toa = engine_tokens()
-        rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
+        pause = resumable_pause(env)
+        label = stage if not attempt else f"{stage}-retry"
+        rec["calls"].append({"stage": f"{label}-continue" if resume else label,
                              "tools": tools,
                              **({"gate_waited_s": waited} if waited else {}),
+                             **({"paused": pause, "round_index": env.get("round_index")}
+                                if pause else {}),
                              "elapsed_s": dt, "error": env.get("error"),
                              # model_used/agent_used: the sk-agent ENTRY that routed the call,
                              # not proof of the model that answered (20/11: a hub reroute left
@@ -3718,12 +3747,31 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
+        if pause:
+            conv = env.get("conversation_id") or conv
+            if continues < MAX_CONTINUES and (pause != "capacity_gate"
+                                              or waited < GATE_WAIT_MAX_S):
+                continues += 1
+                resume = True
+                if pause == "capacity_gate":
+                    await _gate_sleep(GATE_WAIT_POLL_S)
+                    waited += GATE_WAIT_POLL_S
+                continue
+            # Out of budget: a deferral like an outlasting refusal, never a banner to parse.
+            return {**env, "response": "",
+                    "error": (f"capacity gate refused: mid-turn pause ({pause}) still "
+                              f"unresolved after {continues} continue(s), {waited}s waited"
+                              if pause == "capacity_gate" else
+                              f"mid-turn pause ({pause}) still unresolved after "
+                              f"{continues} continue(s)")}
         if gate_refusal(env) and waited < GATE_WAIT_MAX_S:
             await _gate_sleep(GATE_WAIT_POLL_S)
             waited += GATE_WAIT_POLL_S
-            continue        # same prompt, same attempt: the refused turn committed nothing
+            continue        # same call: a refused fresh turn committed nothing, a refused
+            #                 continue keeps its paused epoch (resume stays set)
         if attempt == 0 and (env.get("error") or "").startswith("empty model response"):
             attempt = 1
+            resume = False  # the retry is a fresh prompt: an emptied epoch cannot continue
             continue
         return env
 
