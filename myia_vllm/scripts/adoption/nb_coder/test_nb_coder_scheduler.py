@@ -843,3 +843,45 @@ def test_a_verifier_crash_keeps_its_tree_for_the_resume(tmp_path):
     sched.tick()
     assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] == "deferred"
     assert git.calls == []
+
+
+# ---------------------------------------------------------------- state.json rename (22/11)
+
+def test_state_rename_retries_while_a_reader_holds_the_file(tmp_path, monkeypatch):
+    """22/11 04:4xZ: the scheduler died on `os.replace` -> WinError 5 because the
+    feeder had state.json open; the rename now waits for the reader."""
+    target = tmp_path / "live" / "state.json"
+    calls, real = [], S.os.replace
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) < 3:
+            raise PermissionError(5, "Accès refusé")
+        real(src, dst)
+
+    monkeypatch.setattr(S.os, "replace", flaky)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    S.atomic_write_json(target, {"grains": {}})
+    assert len(calls) == 3
+    assert json.loads(target.read_text(encoding="utf-8")) == {"grains": {}}
+
+
+def test_state_rename_gives_up_after_bounded_attempts(tmp_path, monkeypatch):
+    def denied(src, dst):
+        raise PermissionError(5, "Accès refusé")
+
+    monkeypatch.setattr(S.os, "replace", denied)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        S.atomic_write_json(tmp_path / "state.json", {})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the sharing violation is Windows-only")
+def test_state_rename_survives_a_real_open_reader(tmp_path):
+    import threading
+    target = tmp_path / "state.json"
+    target.write_text("{}", encoding="utf-8")
+    reader = open(target, encoding="utf-8")  # Python opens without FILE_SHARE_DELETE
+    threading.Timer(0.3, reader.close).start()
+    S.atomic_write_json(target, {"v": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"v": 1}
