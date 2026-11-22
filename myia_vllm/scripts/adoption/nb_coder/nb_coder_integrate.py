@@ -395,6 +395,41 @@ def visible_text(text: str) -> str:
     return LINK_RE.sub(lambda m: m.group(1), text)
 
 
+# Words a bar may carry OUTSIDE its links (`**Navigation** :`, `Précédent :
+# [..] | Suivant : [..]`, `⬅️ Précédent | 🏠 Index | Suivant ➡️`).
+PROSE_WORDS_MAX = 8
+
+# A long line is still a bar when it OPENS on a bold nav label (« **Navigation**
+# : [..] — desc · [..] », GameTheory-09c; « **Carnet suivant** : [..] — .. »).
+# Words, not arrows: « **Agrégation d'audiences → choix social** » is a title.
+NAV_HEAD_RE = re.compile(r"^\s*(?:>\s*)*\*\*([^*]+)\*\*")
+NAV_HEAD_WORDS = ("navigation", "suivant", "précédent", "precedent", "suite",
+                  "next", "prev")
+
+
+def _words_outside_links(line: str) -> int:
+    return len(re.findall(r"\w+", LINK_RE.sub(" ", line)))
+
+
+def _has_nav_head(line: str) -> bool:
+    m = NAV_HEAD_RE.match(line)
+    return bool(m) and any(w in m.group(1).lower() for w in NAV_HEAD_WORDS)
+
+
+def _is_prose_line(line: str) -> bool:
+    """A paragraph that happens to hold an arrow and a notebook link is not a
+    bar (CoursIA#27905, 22/11: « **Agrégation d'audiences → choix social** :
+    … [Tweety-9](…) … » got ` | [jumeau Rust](…)` glued onto its last
+    sentence). Measured on the words left once the links are removed, unless
+    the line opens on a nav label; table rows and list items keep their own
+    shapes (`_table_block`, list item). Repo measure (22/11, 1,589 notebooks
+    with a bar): the word bound alone dropped the bars of 49, among them
+    GameTheory-09c's headed `**Navigation**` bar -- hence the head clause."""
+    if _is_pipe_row(line) or LIST_ITEM_RE.match(line):
+        return False
+    return _words_outside_links(line) > PROSE_WORDS_MAX and not _has_nav_head(line)
+
+
 def _nav_bar_cells(cells: list[dict]) -> dict[int, int]:
     """{cell index: line index} of the LAST nav-bar line of every markdown cell
     that carries one — a bar is a line with a .ipynb link and a nav marker
@@ -412,6 +447,8 @@ def _nav_bar_cells(cells: list[dict]) -> dict[int, int]:
                 continue
             if not any(m.group(2).lower().endswith(".ipynb")
                        for m in LINK_RE.finditer(line)):
+                continue
+            if _is_prose_line(line):
                 continue
             last = j
         if last is not None:
@@ -458,7 +495,7 @@ def _table_block(lines: list[str], j: int) -> tuple[int, int] | None:
 
 
 def _table_nav_row(bar_row: str, n_cols: int, label: str, stem: str,
-                   new_name: str, lang: str) -> str:
+                   new_name: str, lang: str, origin: bool = False) -> str:
     """New table row mirroring the bar row's layout: the link goes in the
     column where the bar row has its .ipynb link, the nav marker `→` (one the
     repo guard reads on the line) in the column where the bar row has its own
@@ -480,7 +517,8 @@ def _table_nav_row(bar_row: str, n_cols: int, label: str, stem: str,
         out[link_col] = f"[→ {stem}]({new_name})"
     free = [k for k in range(len(out)) if not out[k]]
     if free:
-        out[free[-1]] = f"même carnet, porté en {lang}"
+        out[free[-1]] = (f"carnet d'origine, en {lang}" if origin
+                         else f"même carnet, porté en {lang}")
     return "| " + " | ".join(out) + " |\n"
 
 
@@ -531,22 +569,42 @@ def _list_item_end(lines: list[str], j: int) -> int:
 
 
 def _insert_list_item(lines: list[str], j: int, label: str, stem: str,
-                      new_name: str, lang: str) -> None:
+                      new_name: str, lang: str, origin: bool = False) -> None:
     """Sibling list item after the list item at line j, same bullet and
     indent, with the `→` marker the repo guard reads on the line."""
     m = LIST_ITEM_RE.match(lines[j])
     end = _list_item_end(lines, j)
     cap = label[:1].upper() + label[1:]
+    relation = (f"le carnet d'origine, en {lang}" if origin
+                else f"le même carnet, porté en {lang}")
     item = (f"{m.group('indent')}{m.group('bullet')} **{cap}** → "
-            f"[{stem}]({new_name}) — le même carnet, porté en {lang}.\n")
+            f"[{stem}]({new_name}) — {relation}.\n")
     if not lines[end].endswith("\n"):
         lines[end] += "\n"
         item = item.rstrip("\n")
     lines.insert(end + 1, item)
 
 
+def _insert_sibling_line(lines: list[str], j: int, label: str, stem: str,
+                         new_name: str, lang: str, origin: bool = False) -> None:
+    """Sibling paragraph after the headed nav line at line j (« **Carnet
+    suivant** : [..](..) — la suite .. »): a ` | [..]` tail would glue the twin
+    onto the line's last sentence. Same blockquote prefix, the `→` marker the
+    repo guard reads on the line."""
+    prefix = re.match(r"^\s*(?:>\s*)*", lines[j]).group(0)
+    cap = label[:1].upper() + label[1:]
+    relation = (f"le carnet d'origine, en {lang}" if origin
+                else f"le même carnet, porté en {lang}")
+    para = f"{prefix}**{cap}** → [{stem}]({new_name}) — {relation}.\n"
+    if not lines[j].endswith("\n"):
+        lines[j] += "\n"
+        para = para.rstrip("\n")
+    lines[j + 1:j + 1] = [prefix.rstrip() + "\n", para]
+
+
 def plan_nav_link(twin_path: Path, nb_rel: str,
-                  hot: set[str] | None = None) -> dict:
+                  hot: set[str] | None = None, *, lang: str | None = None,
+                  base_stem: str | None = None, origin: bool = False) -> dict:
     """Plan the inbound nav edge in the Python twin.
 
     Shapes, all measured on the lot-1 fixes: extend every existing nav bar with
@@ -561,6 +619,10 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
     markdown cell and REPORT it — the smallest change the guard accepts, less
     than the series' full prev|index|next bar a reviewer may want.
 
+    ``lang``/``base_stem``/``origin`` serve the OUTBOUND edge (`plan_back_link`):
+    the host is then the new port and the target its source twin, whose name
+    carries no port suffix ``split_port_name`` knows (`-Python`, or none).
+
     HOT cells (`hot`: ids carrying a deposited translation, `hot_cell_ids`)
     are never hosts (CoursIA#27855): their bars are skipped and reported, and
     the edge falls back, in order, to a non-hot Navigation cell, a sibling
@@ -573,7 +635,9 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
     """
     nb_rel = nb_rel.replace("\\", "/")
     new_name = nb_rel.rsplit("/", 1)[-1]
-    base_stem, lang = split_port_name(nb_rel)
+    port_stem, port_lang = split_port_name(nb_rel)
+    base_stem = base_stem or port_stem
+    lang = lang or port_lang
     stem = Path(nb_rel).stem
     hot = hot or set()
     nb, fmt, raw = load_nb(twin_path)
@@ -602,7 +666,7 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
             if LIST_ITEM_RE.match(bar) and block is None:
                 # A prose list item (`- **Carnet suivant** : [..](..) — ..`):
                 # a ` | [..]` tail would glue the twin onto another sentence.
-                _insert_list_item(lines, j, label, stem, new_name, lang)
+                _insert_list_item(lines, j, label, stem, new_name, lang, origin)
                 hows.add("added-nav-list-item")
             elif block is not None:
                 # A body row of a real Markdown table (Search-03c's « Ponts »
@@ -611,12 +675,16 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
                 # the table's last row, with the header's column count.
                 end, n_cols = block
                 row = _table_nav_row(bar, n_cols, label, Path(nb_rel).stem,
-                                     new_name, lang)
+                                     new_name, lang, origin)
                 if not lines[end].endswith("\n"):
                     lines[end] += "\n"
                     row = row.rstrip("\n")
                 lines.insert(end + 1, row)
                 hows.add("added-nav-table-row")
+            elif _words_outside_links(bar) > PROSE_WORDS_MAX:
+                # A headed nav line carrying descriptions (`_has_nav_head`).
+                _insert_sibling_line(lines, j, label, stem, new_name, lang, origin)
+                hows.add("added-nav-sibling-line")
             else:
                 body, tail = bar.rstrip("\r\n"), bar[len(bar.rstrip("\r\n")):]
                 lines[j] = f"{body} | [{label}]({new_name}){tail}"
@@ -647,7 +715,7 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
                      for m in LINK_RE.finditer(line))]
         if not items:
             continue
-        _insert_list_item(lines, items[-1], label, stem, new_name, lang)
+        _insert_list_item(lines, items[-1], label, stem, new_name, lang, origin)
         set_cell_text(cells[i], "".join(lines))
         return _finish_plan(twin_path, nb, fmt, raw,
                             {"todo": True, "how": "added-nav-list-item",
@@ -682,6 +750,54 @@ def apply_nav_link(action: dict) -> bool:
         return False
     apply_nb(Path(action["file"]), action["_nb"], action["_fmt"], action["_raw"])
     return True
+
+
+def twin_display_lang(nb_rel: str) -> str:
+    """Display language of a twin from its name: `-CSharp` -> C#, `-Rust` ->
+    Rust, `-Python` or no suffix -> Python (ANALYSE's originals carry none:
+    `ANALYSE-08-Ramsey-VdW.ipynb`)."""
+    stem = Path(nb_rel).stem
+    for suffix, display in LANG_SUFFIXES:
+        if stem.endswith("-" + suffix):
+            return display
+    return "Python"
+
+
+def plan_back_link(worktree: Path, notebook: str, source_nb: str) -> dict:
+    """Outbound edge: the NEW port links back to its source twin (22/11,
+    CoursIA#27905 + #27864 reviews). The port copies the twin's nav bar, and
+    that bar cannot name the twin itself: the Rust notebook linked the C# twin
+    and the series, never its Python original, and each review asked for the
+    edge by hand. Same shapes and markdown-only proof as the inbound edge, on
+    the new notebook; idempotent (a link to the twin in a nav context is an
+    edge already)."""
+    notebook = notebook.replace("\\", "/")
+    source_nb = source_nb.replace("\\", "/")
+    new_path = Path(worktree) / notebook
+    if not new_path.is_file():
+        return {"todo": False, "why": "new notebook not in the worktree"}
+    if not (Path(worktree) / source_nb).is_file():
+        return {"todo": False, "why": "source twin not in the worktree -- a link "
+                                      "to it would be dead, not placed"}
+    if Path(notebook).parent != Path(source_nb).parent:
+        return {"todo": False, "why": "source twin in another folder -- a bare "
+                                      "link would not resolve, not placed"}
+    lang = twin_display_lang(source_nb)
+    target = source_nb.rsplit("/", 1)[-1]
+    # A link that names the twin by its language (`[ANALYSE-08 (Python)](…)` in
+    # ANALYSE's `| Index | … |` row, which carries no nav marker the guard
+    # reads) is the edge a reviewer asks for: a second, minimal bar would only
+    # duplicate it.
+    for cell in load_nb(new_path)[0].get("cells", []):
+        if cell.get("cell_type") != "markdown":
+            continue
+        for m in LINK_RE.finditer(cell_text(cell)):
+            if (m.group(2).rsplit("/", 1)[-1] == target
+                    and lang.lower() in m.group(1).lower()):
+                return {"todo": False, "why": "twin already linked by its language"}
+    base_stem, _ = split_port_name(notebook)
+    return plan_nav_link(new_path, source_nb, set(), lang=lang,
+                         base_stem=base_stem, origin=True)
 
 
 # ------------------------------------------------------------------ registry
@@ -1335,15 +1451,19 @@ def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
         return {"error": f"source notebook not found: {source_nb}"}
     nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
     apply_nav_link(nav)
+    back = plan_back_link(worktree, notebook, source_nb)
+    apply_nav_link(back)
     readme = plan_readme_row(worktree, notebook, source_nb)
     apply_readme_row(readme)
     conf = plan_conformance(worktree, notebook, source_nb)
     apply_conformance(conf)
     touched = ([source_nb] if nav.get("todo") else []) + \
+              ([notebook] if back.get("todo") else []) + \
               ([readme["file"]] if readme.get("todo") else []) + \
               ([conf["file"]] if conf.get("todo") else [])
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items() if not k.startswith("_")},
+            "back": {k: v for k, v in back.items() if not k.startswith("_")},
             "readme": {k: v for k, v in readme.items() if k != "path"},
             "conformance": _conformance_summary(conf),
             "pair": find_twin_pair(worktree, source_nb),
@@ -1364,6 +1484,10 @@ def integration_commit_message(result: dict, lane: str) -> str:
         parts.append("arête nav")
         why.append("arête entrante exigée par check-nav-chain (le jumeau Python ne "
                    "change qu'en markdown : barre/section Navigation)")
+    if result.get("notebook") in touched:
+        parts.append("lien retour")
+        why.append("lien du nouveau carnet vers son jumeau d'origine (la barre "
+                   "recopiée du jumeau ne peut pas le nommer ; markdown seul)")
     conf = result.get("conformance") or {}
     if conf.get("file") in touched:
         parts.append("entrée rust_conformance")
@@ -1389,15 +1513,19 @@ def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
     if not twin.is_file():
         return {"error": f"source notebook not found: {source_nb}"}
     nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
+    back = plan_back_link(worktree, notebook, source_nb)
     readme = plan_readme_row(worktree, notebook, source_nb)
     conf = plan_conformance(worktree, notebook, source_nb)
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items()
                     if not k.startswith("_") and k != "file"},
+            "back": {k: v for k, v in back.items()
+                     if not k.startswith("_") and k != "file"},
             "readme": {k: v for k, v in readme.items() if k != "path"},
             "conformance": _conformance_summary(conf),
             "pair": find_twin_pair(worktree, source_nb),
-            "todo": bool(nav.get("todo") or readme.get("todo") or conf.get("todo"))}
+            "todo": bool(nav.get("todo") or back.get("todo") or readme.get("todo")
+                         or conf.get("todo"))}
 
 
 # ------------------------------------------------------------------ sync-main

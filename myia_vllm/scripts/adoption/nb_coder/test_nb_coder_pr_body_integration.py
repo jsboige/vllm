@@ -88,3 +88,13 @@ def test_pr_body_says_a_failed_integration(tmp_path, monkeypatch):
     body = _run_stage5(tmp_path, monkeypatch, boom)
     assert "Échec de l'intégration" in body
     assert "byte-faithful round-trip failed" in body
+
+
+def test_pr_body_says_the_link_back_only_when_written():
+    """22/11 (CoursIA#27905): the link back to the source twin is said in the
+    body when the integration wrote it, and only then."""
+    body = d.integration_pr_lines({"readme": "Rust", "nav": "extended-nav-bar",
+                                   "back": "extended-nav-bar"})
+    assert "Lien retour vers le jumeau d'origine" in body and "`extended-nav-bar`" in body
+    assert "Lien retour" not in d.integration_pr_lines({"readme": "Rust", "nav": "x",
+                                                        "back": None})
