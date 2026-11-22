@@ -4141,6 +4141,85 @@ def dead_link_hits(built_cells: list, repo: Path, rel: str) -> list[dict]:
     return hits
 
 
+# `[label](target "title")`: the label and target of one markdown link, for the rewrite below.
+MD_LABELED_LINK_RE = re.compile(r"\[([^\]\n]*)\]\(\s*(<?)([^)\s>]+)(>?)((?:\s+[\"'][^\"']*[\"'])?)\s*\)")
+
+
+def _series_id(target: str) -> str | None:
+    """`dir/Lean-19d-Borne-Bennett-Python.ipynb` -> `dir/Lean-19d`: the file name up to its
+    first token that carries a digit (the series position), directory kept. None when no
+    token carries one (nothing safe to match on)."""
+    path = unquote(target.split("#", 1)[0].split("?", 1)[0])
+    head, _, name = path.rpartition("/")
+    toks = name.split("-")
+    for k, t in enumerate(toks[:-1]):
+        if any(ch.isdigit() for ch in t):
+            return f"{head}/{'-'.join(toks[:k + 1])}" if head else "-".join(toks[:k + 1])
+    return None
+
+
+def resolve_dead_links(built_nb: Path, src_nb: Path, repo: Path, rel: str) -> dict:
+    """Rewrite, before the gates read it, a dead relative link of the built notebook onto
+    the EXISTING target its source twin links for the same neighbour (22/11, CoursIA#27932:
+    asked by the verifier to restore the twin's sibling links, Swift rebuilt their file
+    names from the labels — `Lean-19-Borne-Hoeffding-Python.ipynb`, `Lean-19d-Borne-Bennett-
+    Python.ipynb`, neither in the repo — and the dead-links gate failed the grain after its
+    last round, 29 min of engine time). The twin's cell 0 had the right names all along.
+    Match, in order: a twin link with the SAME label; else the ONE twin target sharing the
+    dead target's series id (`Lean-19d`, directory included). Candidates are only twin links
+    whose target exists. No unique match = no rewrite: the gate stays the judge."""
+    try:
+        nb = json.loads(built_nb.read_text(encoding="utf-8"))
+        src_cells = _cells(src_nb)
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    base = (repo / rel).parent
+
+    def alive(target: str) -> bool:
+        path = unquote(target.split("#", 1)[0].split("?", 1)[0])
+        return bool(path) and (base / path).exists()
+
+    by_label: dict[str, set] = {}
+    by_series: dict[str, set] = {}
+    for c in src_cells:
+        if c.get("cell_type") != "markdown":
+            continue
+        for m in MD_LABELED_LINK_RE.finditer(_text(c.get("source"))):
+            t = m.group(3).strip()
+            if t.startswith(("#", "/")) or LINK_SCHEME_RE.match(t) or not alive(t):
+                continue
+            by_label.setdefault(m.group(1).strip(), set()).add(t)
+            sid = _series_id(t)
+            if sid:
+                by_series.setdefault(sid, set()).add(t)
+    dead = {(h["cell"], h["target"]) for h in dead_link_hits(nb.get("cells") or [], repo, rel)}
+    fixed: list[dict] = []
+    for i, c in enumerate(nb.get("cells") or []):
+        if c.get("cell_type") != "markdown":
+            continue
+
+        def swap(m, i=i):
+            t = m.group(3).strip()
+            if (i, t) not in dead:
+                return m.group(0)
+            cand = by_label.get(m.group(1).strip()) or set()
+            if len(cand) != 1:
+                cand = by_series.get(_series_id(t) or "") or set()
+            if len(cand) != 1:
+                return m.group(0)
+            new = next(iter(cand))
+            fixed.append({"cell": i, "from": t, "to": new})
+            return f"[{m.group(1)}]({m.group(2)}{new}{m.group(4)}{m.group(5)})"
+
+        text = _text(c.get("source"))
+        out = MD_LABELED_LINK_RE.sub(swap, text)
+        if out != text:
+            c["source"] = _lines(out)
+    if fixed:
+        built_nb.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"ok": True, "fixed": fixed}
+
+
 def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
@@ -5731,6 +5810,9 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
             rec["banner_strip"] = strip_dotnet_banner(
                 wt_path / "scripts" / "notebook_tools" / "strip_probe_banner.py", built_path)
         rec["ext_banner_strip"] = strip_kernel_extension_banner(built_path)
+        rel = _norm_rel(getattr(args, "notebook", None) or "")
+        if create_mode and rel:
+            rec["link_fix"] = resolve_dead_links(built_path, src_nb, wt_path, rel)
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})

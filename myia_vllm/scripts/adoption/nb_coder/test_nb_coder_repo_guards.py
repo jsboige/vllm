@@ -109,6 +109,76 @@ def test_dead_links_flags_only_absent_relative_targets(tmp_path):
         (0, "Sudoku-06-AIMA-CSP-Rust.ipynb"), (2, "Sudoku-08-HumanStrategies-Rust.ipynb")]
 
 
+def _lean19(tmp_path):
+    """The CoursIA#27932 layout: four Lean-19 Python twins, the Rust port being built."""
+    repo = tmp_path / "repo"
+    folder = repo / "MyIA.AI.Notebooks" / "SymbolicAI" / "Lean"
+    folder.mkdir(parents=True)
+    for n in ("Lean-19-Detection-MIMO-Index-Python", "Lean-19b-Borne-Chernoff-Python",
+              "Lean-19c-Borne-Bernstein-Python", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python"):
+        (folder / f"{n}.ipynb").write_text("{}", encoding="utf-8")
+    (folder / "README.md").write_text("x", encoding="utf-8")
+    src = _nb(tmp_path / "src.ipynb", [_md(
+        "**Navigation** : [<< Lean-19 Hoeffding](Lean-19-Detection-MIMO-Index-Python.ipynb) · "
+        "[Lean-19b Chernoff](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+        "[Lean-19d Bayésien](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb) · "
+        "[Sommaire série](README.md)")])
+    return repo, "MyIA.AI.Notebooks/SymbolicAI/Lean/Lean-19c-Borne-Bernstein-Rust.ipynb", src
+
+
+def test_resolve_dead_links_rewrites_onto_the_twins_existing_target(tmp_path):
+    """22/11 CoursIA#27932: labels changed, file names rebuilt from them — both dead links
+    land on the one twin target sharing their series id; live links stay byte-identical."""
+    repo, rel, src = _lean19(tmp_path)
+    built = _nb(tmp_path / "built.ipynb", [
+        _md("**Navigation** : [Index](README.md) · [Lean-19](Lean-19-Borne-Hoeffding-Python.ipynb) · "
+            "[Lean-19b](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+            "[Python](Lean-19c-Borne-Bernstein-Python.ipynb) · "
+            "[Lean-19d](Lean-19d-Borne-Bennett-Python.ipynb)\nsuite"),
+        _code("// [faux](absent.ipynb) dans du code : non touché")])
+    out = nbcd.resolve_dead_links(built, src, repo, rel)
+    assert out["ok"] and [(f["from"], f["to"]) for f in out["fixed"]] == [
+        ("Lean-19-Borne-Hoeffding-Python.ipynb", "Lean-19-Detection-MIMO-Index-Python.ipynb"),
+        ("Lean-19d-Borne-Bennett-Python.ipynb", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb")]
+    cells = json.loads(built.read_text(encoding="utf-8"))["cells"]
+    assert isinstance(cells[0]["source"], list)  # list-of-lines kept (CoursIA convention)
+    assert "".join(cells[0]["source"]) == (
+        "**Navigation** : [Index](README.md) · [Lean-19](Lean-19-Detection-MIMO-Index-Python.ipynb) · "
+        "[Lean-19b](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+        "[Python](Lean-19c-Borne-Bernstein-Python.ipynb) · "
+        "[Lean-19d](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb)\nsuite")
+    assert cells[1]["source"] == "// [faux](absent.ipynb) dans du code : non touché"
+    assert nbcd.dead_link_hits(cells, repo, rel) == []
+
+
+def test_resolve_dead_links_label_match_wins_and_ambiguity_is_left_to_the_gate(tmp_path):
+    repo, rel, _ = _lean19(tmp_path)
+    folder = repo / "MyIA.AI.Notebooks" / "SymbolicAI" / "Lean"
+    (folder / "Lean-19-Autre-Python.ipynb").write_text("{}", encoding="utf-8")
+    src = _nb(tmp_path / "src2.ipynb", [_md(
+        "[Hoeffding](Lean-19-Detection-MIMO-Index-Python.ipynb) [autre](Lean-19-Autre-Python.ipynb) "
+        "[Bennett](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb)")])
+    built = _nb(tmp_path / "built2.ipynb", [_md(
+        "[Hoeffding](Lean-19-X-Python.ipynb) [suite](Lean-19-Y-Python.ipynb) "
+        "[Sans série](Introuvable.ipynb) [Rust](Lean-19d-Borne-Bennett-Rust.ipynb)")])
+    out = nbcd.resolve_dead_links(built, src, repo, rel)
+    # same label → its target; two twin targets share `Lean-19` → no guess; no series id → no
+    # guess; `Lean-19d` has ONE twin target (the Python twin), the advice the gate itself gives
+    assert [(f["from"], f["to"]) for f in out["fixed"]] == [
+        ("Lean-19-X-Python.ipynb", "Lean-19-Detection-MIMO-Index-Python.ipynb"),
+        ("Lean-19d-Borne-Bennett-Rust.ipynb", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb")]
+    left = nbcd.dead_link_hits(json.loads(built.read_text(encoding="utf-8"))["cells"], repo, rel)
+    assert [h["target"] for h in left] == ["Lean-19-Y-Python.ipynb", "Introuvable.ipynb"]
+
+
+def test_resolve_dead_links_without_dead_links_leaves_the_file_untouched(tmp_path):
+    repo, rel, src = _lean19(tmp_path)
+    built = _nb(tmp_path / "built3.ipynb", [_md("[Python](Lean-19c-Borne-Bernstein-Python.ipynb)")])
+    before = built.read_bytes()
+    assert nbcd.resolve_dead_links(built, src, repo, rel) == {"ok": True, "fixed": []}
+    assert built.read_bytes() == before
+
+
 # ------------------------------------------------------------------ uncommented code
 
 _UC_FAKE = r'''
