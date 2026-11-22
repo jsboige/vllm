@@ -358,9 +358,18 @@ def budget_exhausted(env: dict, max_tokens: int) -> bool:
 
 
 def verify_retry_reason(env: dict, max_tokens: int) -> str:
-    """Why ONE retry is owed, or "" — an error envelope never gets one (call failure)."""
+    """Why ONE retry is owed, or "" — an error envelope never gets one (call failure),
+    except sk-agent's own "empty model response" error, which is the empty case itself.
+
+    22/11: sk-agent now reports a content-less answer as an ERROR envelope, not as a 200
+    with empty text, so the empty retry above never fired: 4 of 49 conveyor verdicts
+    (#27780, #27781, #27885, #27893) died on it, two of them with completion_tokens at
+    the 32 768 budget -- the critic thought until the cap and wrote nothing visible. The
+    driver already retries that error once (``empty model response`` at attempt 0)."""
     if env.get("error"):
-        return ""
+        if not str(env["error"]).startswith("empty model response"):
+            return ""
+        return "truncated" if budget_exhausted(env, max_tokens) else "empty-response"
     text = (env.get("response") or "").strip()
     if not text:
         return "empty-response"
