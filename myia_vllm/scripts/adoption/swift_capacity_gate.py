@@ -63,6 +63,27 @@ def read_metrics(url, timeout=5.0):
         return r.read().decode("utf-8", errors="replace")
 
 
+# 23/11 (measured): under hub long-context load /metrics takes more than 5 s to answer. On the
+# 200 scheduler probes of 12:29Z -> 18:41Z the gate returned 183 unknown and 0 green, while the
+# engine was green whenever it DID answer (running=3 at 17:47Z). A timed-out probe measures
+# nothing: try the ladder before declaring the instrument blind. 5 + 20 s fits the scheduler's
+# own 30 s gate timeout; a refused connection fails instantly on every rung.
+TIMEOUTS_S = tuple(float(x) for x in os.environ.get("SWIFT_GATE_TIMEOUTS", "5,20").split(",")
+                   if x.strip())
+
+
+def read_metrics_retry(url, read=None):
+    """read_metrics on the timeout ladder. Returns (text, rungs used); re-raises the last error."""
+    read = read or read_metrics
+    error = None
+    for rung, timeout in enumerate(TIMEOUTS_S or (5.0,), 1):
+        try:
+            return read(url, timeout=timeout), rung
+        except Exception as e:  # timeout, reset, refused: next rung, else the caller's unknown
+            error = e
+    raise error
+
+
 def load_state(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -95,7 +116,7 @@ def classify(running, waiting, preempt_delta, waiting_prev, age_s):
 
 def probe(url=DEFAULT_URL, state_path=None):
     state_path = state_path or os.environ.get("SWIFT_GATE_STATE", DEFAULT_STATE)
-    text = read_metrics(url)
+    text, tries = read_metrics_retry(url)
     running = _metric(text, "vllm:num_requests_running")
     waiting = _metric(text, "vllm:num_requests_waiting")
     preempt = _metric(text, "vllm:num_preemptions_total")
@@ -120,7 +141,7 @@ def probe(url=DEFAULT_URL, state_path=None):
     verdict = classify(running, waiting, preempt_delta, waiting_prev, age_s or 0)
     out = {"verdict": verdict, "running": running, "waiting": waiting,
            "preemptions": preempt,
-           "preempt_delta": preempt_delta, "kv_gpu_perc": kv,
+           "preempt_delta": preempt_delta, "kv_gpu_perc": kv, "tries": tries,
            "age_s": round(age_s, 1) if age_s else None}
     save_state(state_path, {"ts": now, "preemptions": preempt, "waiting": waiting})
     return out, {"green": 0, "yellow": 1, "red": 2}[verdict]
@@ -149,6 +170,29 @@ def selftest():
         ok = ok and got == exp
         print("case %d: running=%d waiting=%d preempt_delta=%s prev_wait=%s -> %s (%s)"
               % (i + 1, r, w, pd, wp, got, status))
+    # 23/11: the ladder. A reader that times out once must be retried on the next rung, a
+    # reader that never answers must surface as an error (the caller's unknown), never as text.
+    timeouts = []
+
+    def flaky(url, timeout=5.0):
+        timeouts.append(timeout)
+        if len(timeouts) < 2:
+            raise TimeoutError("timed out")
+        return "metrics"
+    text, rung = read_metrics_retry("x", read=flaky)
+    ladder_retry = (text, rung, tuple(timeouts)) == ("metrics", 2, TIMEOUTS_S[:2])
+
+    def dead(url, timeout=5.0):
+        raise TimeoutError("timed out")
+    try:
+        read_metrics_retry("x", read=dead)
+        ladder_dead = False
+    except TimeoutError:
+        ladder_dead = True
+    for name, good in (("ladder: first rung times out -> second rung answers", ladder_retry),
+                       ("ladder: no rung answers -> error, not a verdict", ladder_dead)):
+        print("%s (%s)" % (name, "ok" if good else "FAIL"))
+        ok = ok and good
     print("SELFTEST", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
