@@ -316,9 +316,9 @@ done
 | `vllm#69165` / `#69141` | Inkling 2 Mini sur SM8x (noyaux) et experts INT4 — le chemin de notre image `inkling-sm89-test:v2` | merge → image de release sans patch local, refaire le banc apparié |
 | `vllm#69181` / `#69444` | taille du KV Inkling (historique de convolution lisible seul) | merge ou mesure nouvelle en commentaire → re-mesurer le pool à MAXLEN ≥ 100 K |
 | `vllm#69715` / `#69280` | réserve des groupes conv-state, planificateur KV hybride (Inkling) | merge → la capacité Inkling peut changer d'ordre de grandeur |
+| `jsboige/vllm` PR ouvertes | review humaine | review/CI rouge → traiter |
 
 **Lignes Inkling (ajoutées 24/11, dossier rouvert par le user)** : les artefacts jumeaux (`#69444`, `#69280`) ne se lisent que si le représentant de leur ligne a bougé. Les mesures de référence sont dans le dépôt : `myia_vllm/_iteration_log/inkling_sm89_gpu2/NOTES.md` (SM89 le 22/11, banc apparié du 23/11, ce qui n'est pas établi). **Un résultat de banc s'écrit dans ce journal au cycle qui le produit** — celui du 23/11 est resté deux jours dans un brouillon de `.tmp/`, et la lane a cru le 24/11 que le banc n'avait jamais tourné.
-| `jsboige/vllm` PR ouvertes | review humaine | review/CI rouge → traiter |
 
 **Ce qui n'est PAS de la veille amont** : re-tester la famille spec-dec (CLOSE 0/4, GO user requis), merger/approuver les PR d'autres lanes (hors mandat, relayer), ni relancer un test dont le critère est mort (`#40798` fermée sans merge le 2026-05-30).
 
