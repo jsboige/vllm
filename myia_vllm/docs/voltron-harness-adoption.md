@@ -22,10 +22,10 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
 | Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, ~7,1/8 Gio VRAM ; **tier RAM retiré 24/11** — 4 Gio de shm pour 0 octet relu sur ~24 h, conteneur ~7 Gio → ~3 Gio) |
 | Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
-| Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente) |
+| Auto-guérison | engine muet → `docker start voltron-harness` (un seul partagé entre threads, puis ≤1/30 s pendant l'attente) + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente ; `returncode`/`stderr` sont rapportés dans le résultat et journalisés seulement au changement d'erreur) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
-| Rollback | `docker stop voltron-harness` + kill du process python :5029 — aucune donnée perdue |
+| Rollback | **arrêter d'abord le process python :5029**, puis `docker stop voltron-harness` — sinon le service relance son moteur ; aucune donnée perdue |
 | Logs | `D:\vllm-data\bench\v2_server.log` · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
 
 Réponse type : `{"ok": true, "stage": "a"|"c", "answer": "...", "detail": "",
@@ -143,6 +143,14 @@ malformée (p.ex. un str dans la liste) devient un résultat d'erreur consultabl
 `ex.map`). Les jobs antérieurs au 21/11 (charge non persistée) passent
 `orphaned` — terminal honnête, re-POST conseillé.
 
+**Garantie de reprise : au moins une fois, pas exactement une fois.** Si le
+serveur meurt après l'exécution d'une tâche mais avant la persistance de son
+résultat, cette tâche est **ré-exécutée** au boot. Le consommateur doit donc
+fournir des tâches idempotentes ou dédoublonner sur l'index `task` ; une tâche
+rejouée n'est jamais re-comptée dans `/v1/usage`. Le service ne livre pas
+lui-même de résultat vers un destinataire externe : ce choix évite une double
+livraison, au prix d'une possible double exécution locale.
+
 ## 3bis. Coupures d'engine (24/11) — le job survit à la panne
 
 **Cause mesurée** : la garde anti-famine du commit hôte (`Guard-Commit-Famine`,
@@ -166,8 +174,10 @@ Un conteneur arrêté ne revient donc **pas** seul : le service le relance.
   2 rejeux ; `/v1/task` synchrone : ≤120 s après les 240 s d'auto-guérison,
   plus les appels modèle déjà en cours). **Tant que le moteur est muet pendant
   une attente, son conteneur est relancé toutes les 30 s** (`docker start`,
-  idempotent, un seul start partagé entre tous les threads) — un start unique
-  émis pendant l'agonie du conteneur serait un no-op. Pour une tâche longue,
+  idempotent, un seul start partagé entre tous les threads, **y compris le
+  premier start d'auto-guérison**) — un start unique émis pendant l'agonie du
+  conteneur serait un no-op. Un refus de la CLI est rapporté dans `detail` et
+  journalisé au changement d'erreur seulement. Pour une tâche longue,
   préférer un job : il n'est pas soumis au timeout HTTP de l'appelant ;
 - attente épuisée : `engine_outage` sur le job — **les tâches restantes ne sont
   plus lancées tant que l'engine est muet** (résultat `engine-down`,
@@ -396,3 +406,12 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    **Validé en réel sur le service redéployé** : job de 48 tâches, `docker kill`
    en plein vol, conteneur relancé par le service seul, **48/48 `ok` en 160,1 s**
    (§3bis).
+10. ✅ **Suivi de revue #599 (24/11)** — un compteur `usage.json` valide en
+   JSON mais non-objet (par exemple `[]`) est désormais traité comme illisible
+   : le job finalise et l'historique n'est pas écrasé. Le premier `docker start`
+   d'`ensure_engine` partage la même porte que l'attente (6 appels concurrents
+   → 1 start), et son `returncode`/`stderr` devient un résultat consultable, sans
+   journal répétitif. Garantie de reprise explicitée : **au moins une fois**, une
+   tâche non persistée peut être ré-exécutée, sans double comptage ni double
+   livraison (§3). Tests : `test_voltron_recovery.py` **7/7**, `test_voltron_outage.py`
+   **12/12** ; les deux nouveaux scénarios étaient rouges sur `main` avant correctif.

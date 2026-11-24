@@ -13,7 +13,7 @@ Couvre (CHANGES_REQUESTED ai-01 §2) :
      implémentation à tmp partagé (JSON entrelacé / PermissionError Windows),
      vert dès que l'écriture est sérialisée à tmp unique ;
   4. le compteur d'usage REFUSE d'écrire sur un fichier illisible (l'historique
-     d'adoption ne repart pas de zéro) ;
+     d'adoption ne repart pas de zéro), JSON non-objet compris (#599 D1) ;
   5. la reprise ne re-compte pas les tâches relancées ;
   6. un os.replace REFUSÉ (WinError 5) ne tue ni le job, ni le boot, ni un
      résultat, ni la réponse à POST /v1/jobs — reproduit 24/11 (~1 passage
@@ -298,6 +298,31 @@ def test_usage_illisible_refuse_ecriture():
         assert r is None, "le bump doit refuser sur fichier illisible"
         with open(os.path.join(mod.USAGE_PATH), encoding="utf-8") as f:
             assert f.read() == corrupt, "l'historique a été écrasé !"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_usage_non_objet_ne_tue_pas_le_job():
+    """#599 D1 : un usage.json valide en JSON mais non-objet ([]) est ILLEGIBLE
+    pour l'instrument, comme un JSON tronqué. Le job finalise et le compteur
+    reste intact — l'ancien code levait AttributeError avant la finalisation."""
+    scratch = tempfile.mkdtemp(prefix="vhs_usage_shape_")
+    try:
+        mod = load_module(scratch)
+        os.makedirs(mod.JOBS_DIR)
+        with open(mod.USAGE_PATH, "w", encoding="utf-8") as f:
+            f.write("[]")
+        task = {"type": "classify", "text": "t0"}
+        jid = "job-20260101T000003Z-abc123"
+        with mod._jobs_lock:
+            mod._jobs[jid] = {"status": "running", "name": "usage-shape",
+                              "total": 1, "done": 0, "results": [], "tasks": [task]}
+        mod._run_tasks(jid, [(0, task)])
+        done = rjob(mod, jid + ".json")
+        assert done["status"] == "done" and done["done"] == 1, done
+        assert done["results"][0]["ok"] is True, done
+        with open(mod.USAGE_PATH, encoding="utf-8") as f:
+            assert f.read() == "[]", "le compteur non-objet a été écrasé"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

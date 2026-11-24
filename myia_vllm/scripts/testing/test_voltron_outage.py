@@ -25,7 +25,9 @@ recycle la VM WSL, le moteur revient 2 à 9 min plus tard) :
  10. `GET /v1/jobs/<id>` est un instantané pris sous le verrou (une clé ajoutée
      pendant la réponse ne casse pas la connexion du consommateur) ;
  11. moteur muet : l'attente RELANCE son conteneur, puis le relance toutes les
-     30 s (un conteneur tué ne revient pas par sa politique de restart).
+     30 s (un conteneur tué ne revient pas par sa politique de restart) ;
+ 12. `ensure_engine` partage son premier start et rapporte le retour Docker
+     (#599 D2/D3).
 
 Exécution : python -m pytest myia_vllm/scripts/testing/test_voltron_outage.py -v
             (ou directement : python test_voltron_outage.py)
@@ -241,6 +243,7 @@ def test_ensure_engine_survit_au_timeout_docker_start():
 
         probes = []
         mod.engine_healthy = lambda timeout=2: probes.append(1) or False
+        mod._last_nudge[0] = None  # nouvelle coupure : la CLI absente doit être tentée
 
         def absent(*a, **kw):
             raise FileNotFoundError("docker")
@@ -248,6 +251,32 @@ def test_ensure_engine_survit_au_timeout_docker_start():
             ok, msg = mod.ensure_engine()
         assert ok is False and "docker start échoué" in msg, (ok, msg)
         assert len(probes) == 1, "aucune boucle de sondes après un docker absent"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_ensure_engine_partage_et_journalise_le_start():
+    """#599 D2/D3 : le premier start d'ensure_engine passe lui aussi par la
+    porte partagée (6 appels concurrents → 1 start), et le returncode/stderr
+    de docker start sont retournés au lieu d'être perdus."""
+    scratch = tempfile.mkdtemp(prefix="vho_start_shared_")
+    try:
+        mod = load_module(scratch)
+        mod.engine_healthy = lambda timeout=2: False
+        mod._wait_engine = lambda timeout_s=300: False
+        mod._last_nudge[0] = None
+        starts = []
+
+        def start_failed(*a, **kw):
+            starts.append(1)
+            return subprocess.CompletedProcess(a[0], 1, stdout=b"", stderr=b"No such container")
+        with patched(mod.subprocess, "run", start_failed):
+            threads = [threading.Thread(target=mod.ensure_engine) for _ in range(6)]
+            [t.start() for t in threads]
+            [t.join() for t in threads]
+            assert len(starts) == 1, f"un seul start partagé : {len(starts)}"
+            attempted, msg = mod._docker_start()
+        assert attempted is True and "returncode=1" in msg and "No such container" in msg, msg
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
