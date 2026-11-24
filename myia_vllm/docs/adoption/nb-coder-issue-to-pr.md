@@ -104,6 +104,9 @@ series scoping.
 The driver calls `swift_capacity_gate.py` before **each** notebook (exit 0 only) and defers on
 yellow/red — this is precisely a "consumer armed after 24 h observation" of the gate rollout
 (#4712). Build work is batchable, so red = come back next hourly slot; no in-flight kill needed.
+Since 24/11 the gate also reads the **host commit charge** when the engine runs on the same host:
+at or above `SWIFT_GATE_HOST_COMMIT_MAX_PCT` (default 90, `0` disables) any verdict becomes
+`red` with `reason: host-commit`. The scheduler holds new launches on it like on any red.
 
 ### 3.2bis Mode création (`--source-nb`) — les grains de parité C# (vague 1, 17/11)
 
