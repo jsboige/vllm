@@ -160,3 +160,31 @@ quantizer mismatch with no tracked fix.
 - **The real candidate is still TP=2 on GPUs 0/1, in place of Swift.** That needs a prod window
   and the user's GO. At TP=1 a 4090 holds about 1.7 requests of 4K: a feasibility answer, not a
   capacity one.
+
+## Paired capability bench vs Swift (23/11/2026, 23:40:13Z → 01:15:22Z, GPU 2)
+
+Until 24/11 this run lived only in a scratch draft and a CoursIA comment. The draft is kept here
+as [`paired_bench_20261123.md`](paired_bench_20261123.md). Engine: image `inkling-sm89-test:v2` =
+nightly `647a76866` (v0.34.0rc1) + #69165 + #69141 (INT4 experts) + #69181 (tail-only widened to
+SM8x) + fp8 KV, batch 1024, async scheduling off, extensible KV off. `MAXLEN=16384`,
+`max_tokens=8192`, weights 14.87 GiB, TP=1.
+
+- **Pool: 227,429 KV tokens in fp8 on ONE 4090 at gpu-util 0.90** (13.88 requests of 16,384).
+  It replaces the 8,006 of the day before, which was measured at `MAXLEN=4096` without tail-only.
+- **Paired verdict**: MMLU-Pro 76.7 % vs 83.8 % raw (p = 0.0201), **p = 0.82 on the 184 items
+  Inkling did not truncate**; IFEval 94.0 % vs 89.5 % (117 of 200 items, p = 0.125); tools
+  81.2 % vs 100 % (**p = 0.0312**); LiveCodeBench not run (window over).
+- **Per-request decode**, computed on 24/11 from the bench files (`completion_tokens / latency_s`,
+  4 concurrent, same prompts): Inkling median **40.9 / 44.0 / 31.4 tok/s** vs Swift
+  **24.6 / 26.2 / 24.5** on MMLU-Pro / IFEval / tools. Inkling had a dedicated card and Swift was
+  measured on prod under real traffic, so the ratio favours Inkling.
+- **End-to-end latency for the same task is no better, because Inkling writes more.** Median
+  completion tokens 1021 vs 458 (MMLU-Pro), 1428 vs 815 (IFEval), 134 vs 75 (tools). Median
+  latency 24.0 s vs 19.6 s (MMLU-Pro), 33.3 s vs 33.6 s (IFEval), 15.6 s vs 4.5 s (tools).
+- **The six tool failures are behavioural, not parser errors** (read on 24/11 in the bench's
+  `tools.jsonl`, OpenAI path): it answers the arithmetic itself instead of calling `calculator`
+  (`calc_sqrt`; `calc_percentage` has the same signature: no call, `end_turn`), asks for the
+  timezone instead of calling `set_alarm` (the Anthropic twin: no call, 496 tokens), emits
+  `web_search` without its `query` argument, and calls `get_weather` although the weather is given.
+- **Not established**: context above 16,384 (prod serves 262,144); capacity and throughput at TP=2
+  on GPUs 0/1 at gpu-util 0.71 with 48 streams; code quality (LiveCodeBench missing).
