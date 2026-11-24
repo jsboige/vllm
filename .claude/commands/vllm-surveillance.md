@@ -140,13 +140,15 @@ foreach($f in 'workspace-vllm.md','global.md'){
 ## (2ter) Tapis nb_coder — cœur du producteur
 
 ```bash
+CONV=$(ls -d /d/vllm/.tmp/nbcoder/conveyor-* 2>/dev/null | sort | tail -1)   # run VIVANT = le plus récent (un chemin figé pointe sur un run mort : mesuré 25/11, `20261120` figé dans la spec alors que `20261124` tournait)
+echo "conveyor vivant: $CONV"
 tail -3 /d/vllm/.tmp/nbcoder/feeder/feeder.log | cut -c1-180          # dernière ligne > 1 h = feeder mort
-tail -2 /d/vllm/.tmp/nbcoder/conveyor-20261120/live/scheduler.jsonl | cut -c1-220   # "held … pending=0 active=0" répété = plus rien à lancer maintenant
-python -I -c "import json,datetime as d,collections;s=json.load(open('d:/vllm/.tmp/nbcoder/conveyor-20261120/live/state.json'));g=s.get('grains',{});nb=sorted(v['not_before'] for v in g.values() if v.get('not_before'));print('grains',dict(collections.Counter(v.get('status') for v in g.values())),'prochain not_before',d.datetime.fromtimestamp(nb[0],d.UTC).isoformat() if nb else '-','state_age_min',round((d.datetime.now(d.UTC)-d.datetime.fromisoformat(s['updated'])).total_seconds()/60))"
-wc -l /d/vllm/.tmp/nbcoder/conveyor-20261120/queue.jsonl /d/vllm/.tmp/nbcoder/feeder/pending.jsonl   # file du scheduler · restant à nourrir
+tail -2 "$CONV/live/scheduler.jsonl" | cut -c1-220   # "held … pending=0 active=0" répété = plus rien à lancer maintenant
+python -I -c "import json,sys,datetime as d,collections;s=json.load(open(sys.argv[1]));g=s.get('grains',{});nb=sorted(v['not_before'] for v in g.values() if v.get('not_before'));print('grains',dict(collections.Counter(v.get('status') for v in g.values())),'prochain not_before',d.datetime.fromtimestamp(nb[0],d.UTC).isoformat() if nb else '-','state_age_min',round((d.datetime.now(d.UTC)-d.datetime.fromisoformat(s['updated'])).total_seconds()/60))" "$CONV/live/state.json"
+wc -l "$CONV/queue.jsonl" /d/vllm/.tmp/nbcoder/feeder/pending.jsonl   # file du scheduler · restant à nourrir
 ```
 
-**Deux files, deux rôles** (chemins mesurés 24/11) : `conveyor-20261120/queue.jsonl` = ce que le scheduler peut lancer, 1 ligne par grain ; `feeder/pending.jsonl` = ce que le feeder n'a pas encore poussé, avec son `not_before`.
+**Deux files, deux rôles** (chemins mesurés 24/11) : `<conveyor-*>/queue.jsonl` = ce que le scheduler peut lancer, 1 ligne par grain — le répertoire change à chaque relance (`20261120`, `20261124`, …), d'où la ligne `CONV=` ci-dessus ; `feeder/pending.jsonl` = ce que le feeder n'a pas encore poussé, avec son `not_before`.
 
 **État au 24/11 03:30Z** : feeder arrêté depuis le 23/11 19:35:03Z, **3 grains en attente** (#27892, #28069, #28097), tous à `not_before = 2026-11-26T01:40:00Z` ; scheduler vivant, `held gate-yellow` avec `pending=0 active=0` ; sa file compte 4 lignes (#28069, #28085, #28007, #28000), qui correspondent à 3 grains en échec et 1 différé au 26/11 03:09:46Z. **Prochaine relance utile : le 26/11, à partir de 01:40Z.**
 
@@ -296,11 +298,12 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 
 ```bash
 # 1 seul appel par artefact, sortie compacte. `updated_at` change sur commentaire/review/label.
-for a in vllm-project/vllm/pulls/63551 vllm-project/vllm/pulls/58813 \
-         vllm-project/vllm/issues/58807 vllm-project/vllm/pulls/53414 \
-         vllm-project/vllm/pulls/69165 vllm-project/vllm/pulls/69141 \
-         vllm-project/vllm/pulls/69181 vllm-project/vllm/pulls/69715; do
-  gh api "repos/$a" --jq '"\(.number)\t\(.state)\tmerged=\(.merged_at // "-")\tupdated=\(.updated_at)\tcomments=\(.comments)"'
+# `issues/<n>` rend AUSSI les PR (sous-objet `pull_request`, `merged_at` dedans). Un artefact
+# dont on ignore la nature se lit par `issues/`, jamais par `pulls/` : un 404 sur `pulls/` veut dire
+# « c'est une issue », pas « l'artefact a disparu » (mesuré 25/11 sur #69715 et #69280).
+for n in 63551 58813 58807 53414 69165 69141 69181 69715 69280 69444; do
+  gh api "repos/vllm-project/vllm/issues/$n" --jq '"\(.number)\t\(if .pull_request then "PR" else "issue" end)\t\(.state)\tmerged=\(.pull_request.merged_at // "-")\tupdated=\(.updated_at)\tcomments=\(.comments)"' \
+    || echo "ERREUR $n — artefact absent ou API en échec : re-mesurer, ne pas conclure"
 done
 ```
 
