@@ -20,9 +20,9 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | | |
 | --- | --- |
 | URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
-| Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, tier RAM 4 Gio, ~6,2/8 Gio VRAM) |
-| Endpoints | `GET /health` · `GET /v1/capabilities` · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) |
-| Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s) |
+| Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, ~7,1/8 Gio VRAM ; **tier RAM retiré 24/11** — 4 Gio de shm pour 0 octet relu sur ~24 h, conteneur ~7 Gio → ~3 Gio) |
+| Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
+| Auto-guérison | engine muet → `docker start voltron-harness` + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
 | Rollback | `docker stop voltron-harness` + kill du process python :5029 — aucune donnée perdue |
@@ -32,6 +32,10 @@ Réponse type : `{"ok": true, "stage": "a"|"c", "answer": "...", "detail": "",
 "turns": 2, "dt_s": 8.4}`. `stage=c` signale que le coordinateur 27B a fini
 la tâche (worker insuffisant) ; `ok=false` rend le **meilleur effort + le
 détail du gate** — un échec est actionnable, pas un aveuglement.
+**Coupures d'engine (24/11)** : un résultat coupé porte `stage="engine-error"`
+ou `"engine-down"` et **`transient: true`** — l'appelant peut re-POSTer tel
+quel (le service le fait déjà de lui-même, voir §3bis). Un refus HTTP de
+l'engine (400/500) n'est PAS transitoire et n'est jamais rejoué.
 
 ## 2. Les quatre contrats (familles mesurées, banc `real_task_bench`)
 
@@ -127,7 +131,7 @@ GET /v1/jobs/job-20261118T...-ab12cd
 Le job s'exécute en tâche de fond du service **à concurrence 6** (moteur mesuré
 N=64 = 3 673 t/s ; fumée 12 tâches : 12/12 stage a en <12 s), **persisté sur
 disque après chaque tâche** (un redémarrage du serveur ne perd rien ; le `GET`
-relit le disque). Cas d'usage : balayer 30 fenêtres de logs, trier une inbox, rapporter
+sert l'état en mémoire du service — le disque après un restart serveur). Cas d'usage : balayer 30 fenêtres de logs, trier une inbox, rapporter
 une série de diffs — l'agent appelant lance en début de session et relit en
 fin de session (contrat BG FrogNano : ~0 token pendant, livrable forme fixe).
 **Reprise après restart serveur (21/11)** : la charge est persistée dès le POST
@@ -138,6 +142,56 @@ malformée (p.ex. un str dans la liste) devient un résultat d'erreur consultabl
 — elle ne gèle plus le lot (défaut mesuré 21/11 : le pool entier mourait via
 `ex.map`). Les jobs antérieurs au 21/11 (charge non persistée) passent
 `orphaned` — terminal honnête, re-POST conseillé.
+
+## 3bis. Coupures d'engine (24/11) — le job survit à la panne
+
+**Cause mesurée** : la garde anti-famine du commit hôte (`Guard-Commit-Famine`,
+tâche Maintenance) recycle la VM WSL (`wsl --shutdown`, 20-23/11 : 1 à 4
+tirs/jour). Le conteneur revient seul par sa politique de restart après **1 min
+49 s à 2 min 06 s** (7 tirs) — un tir a pris **8 min 52 s** (23/11 12:50Z), au-delà
+de l'attente de 240 s de l'auto-guérison. Les tâches lancées dans cette fenêtre
+mouraient en `stage: error` ; en synchrone, la connexion se fermait sans réponse.
+
+**Second cas, mesuré 24/11** : après un `docker kill` sur notre conteneur en
+`--restart unless-stopped`, la politique de restart **n'a rien fait pendant 20
+min** (événements `kill` puis `die 137`, aucun `restart`, `restartCount` 0).
+Un conteneur arrêté ne revient donc **pas** seul : le service le relance.
+
+**Comportement maintenant** :
+
+- une coupure de transport (connexion refusée/reset, timeout, réponse tronquée)
+  est taguée **`transient: true`**. Un refus HTTP de l'engine (400/500) n'est
+  **pas** transitoire : il n'est jamais rejoué ;
+- la tâche **attend le retour de l'engine puis est REJOUEE** (jobs : ≤3600 s,
+  2 rejeux ; `/v1/task` synchrone : ≤120 s après les 240 s d'auto-guérison,
+  plus les appels modèle déjà en cours). **Tant que le moteur est muet pendant
+  une attente, son conteneur est relancé toutes les 30 s** (`docker start`,
+  idempotent, un seul start partagé entre tous les threads) — un start unique
+  émis pendant l'agonie du conteneur serait un no-op. Pour une tâche longue,
+  préférer un job : il n'est pas soumis au timeout HTTP de l'appelant ;
+- attente épuisée : `engine_outage` sur le job — **les tâches restantes ne sont
+  plus lancées tant que l'engine est muet** (résultat `engine-down`,
+  `transient: true`, à re-POSTer), le job finalise quand même. Engine revenu :
+  le drapeau tombe, le job reprend (chaque coupure a sa propre attente) ;
+- `GET /v1/jobs/<id>` expose `waiting_engine` (tâches en attente du moteur),
+  `engine_outages` (nombre de coupures subies) ;
+- le compteur d'adoption compte une tâche rejouée **une seule fois**.
+**Effet de bord connu** : pendant une coupure, les tâches restantes du job
+attendent (elles ne partent pas en échec immédiat) — préférer un job à un appel
+synchrone si l'engine est en reboot. Pour arrêter le moteur : **arrêter d'abord
+le service**, sinon sa prochaine attente relance le conteneur.
+
+**Validé en réel (24/11)** : job de sonde de 48 tâches, `docker kill` de
+l'engine pendant le lot.
+
+- version **avant** relance du conteneur : 42/48 faites avant le kill, les 6
+  tâches en vol coupées (`RemoteDisconnected`), puis attendues et **rejouées**,
+  **48/48 `ok`** — mais le moteur n'est revenu que par un `docker start`
+  externe, ~20 min plus tard (sa politique de restart ne l'a pas fait) ;
+- version **finale** (relance pendant l'attente), job `job-20261124T015015Z-91bbba`,
+  kill à 01:50:19Z : 42/48 faites, 6 tâches en attente du moteur, puis
+  **48/48 `ok` en 160,1 s** — conteneur relancé par le service seul, rejouées
+  sans intervention, compteur d'adoption inchangé (5 723 → 5 723, sonde).
 
 ## 4. Mesures
 
@@ -213,8 +267,9 @@ $SVC = "http://127.0.0.1:5029"
 function VTask($type, $data, $extra) {
   $body = @{ type = $type; data = $data } + $extra | ConvertTo-Json -Depth 8 -Compress
   (Invoke-WebRequest -Uri "$SVC/v1/task" -Method POST -ContentType "application/json" `
-    -Body $body -TimeoutSec 420).Content | ConvertFrom-Json
-  # 420 s ≥ pire cas service (timeout hub 300 s + réparations)
+    -Body $body -TimeoutSec 900).Content | ConvertFrom-Json
+  # Coupure : rejeu borné à 120 s après l'auto-guérison, PLUS les appels en cours.
+  # Pas de garantie de durée totale : pour une tâche longue, utiliser /v1/jobs.
 }
 # --- exemples (décommenter et adapter) ---
 # VTask classify (Get-Content C:\log.txt -Raw) @{ classes = @("oom","engine-init","path-mangling") }
@@ -228,6 +283,11 @@ Résultat : `$r.ok` (bool), `$r.stage` (`a` worker seul · `c` coordinateur
 27B), `$r.answer` (le livrable **déjà gaté**), `$r.detail` (pourquoi pas si
 `ok=false`), `$r.turns`, `$r.dt_s`. **C'est `answer` qu'on consomme, pas un
 texte à re-lire** — le service a déjà payé la vérification.
+
+**Sondes de santé** : ajouter l'en-tête `X-Voltron-Probe: 1` (sur `/v1/task`
+comme sur `POST /v1/jobs`) pour que le trafic de test **ne gonfle pas le
+compteur d'adoption** — le compteur est l'instrument du mandat, il ne doit
+mesurer que les consommateurs réels.
 
 **Tâche longue en fond** (le réflexe « je lance et j'oublie ») :
 
@@ -297,5 +357,42 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    regex avant lecture disque, bornes d'entrée (`diff` a/b, class_definitions,
    numbers liste, corps POST 2 Mo), bind du port AVANT la reprise (instance
    unique), IP LAN et chemins machine sortis du code (env), `stage=c` seulement
-   si la phase C a tourné, tests commités (`test_voltron_recovery.py`, 5/5 —
-   dont le hammer N-threads rouge sur l'ancienne tête).
+   si la phase C a tourné, tests commités (`test_voltron_recovery.py`, 5/5 à
+   l'époque — dont le hammer N-threads rouge sur l'ancienne tête).
+9. ✅ **Résilience aux coupures d'engine + découverte OpenAPI (24/11)** —
+   §3bis : rejeu des tâches coupées avec attente du retour de l'engine (cause
+   racine : la garde anti-famine du commit hôte recycle la VM WSL 1 à 4
+   fois/jour ; retour 1 min 49 s–2 min 06 s, une fois 8 min 52 s), échec rapide
+   des tâches restantes tant que l'engine est muet puis reprise du job,
+   `transient: true` pour l'appelant, `docker start` bloqué toléré,
+   `/openapi.json` + `OPTIONS` (sans CORS), sonde `X-Voltron-Probe` hors
+   compteur d'adoption, logs UTF-8 (un print de rejeu levait UnicodeEncodeError
+   sous console cp1252 → la coupure devenait « stage: error » au lieu d'être
+   rejouée), `GET /v1/jobs/<id>` en instantané sous verrou (une clé ajoutée
+   pendant la réponse fermait la connexion). **Correction du rouge « flake » du
+   22/11 : c'était un vrai défaut** — la dernière écriture du job n'était pas
+   protégée ; un `os.replace` refusé par Windows (destination tenue par un
+   lecteur ou l'antivirus, PermissionError WinError 5, reproduit ~1 passage sur
+   12) tuait le thread à la finalisation : `done` jamais sur disque, job fini
+   relancé au boot suivant ; au boot, la même exception empêchait le serveur de
+   démarrer ; et un compteur d'usage muet changeait une tâche RÉUSSIE en
+   « stage: error ». Persistance : 6 essais (3,15 s cumulés), jamais d'exception,
+   tmp de l'essai raté nettoyé, même garde sur le compteur d'usage et sur
+   `POST /v1/jobs` (la connexion se fermait sans réponse si la première
+   écriture du job était refusée). Tests : `test_voltron_outage.py` **11/11**,
+   `test_voltron_recovery.py` **6/6** (8 passages) — **preuve rouge sur
+   l'ancienne tête : 1/11 et 4/6**. Tier RAM retiré (§1) : −3,5 Gio de
+   consommation conteneur, KV identique (159 248 tokens), mesuré après
+   recréation. **Deux leçons d'instrumentation, mesurées 24/11** : (a) une
+   suite de tests ne doit jamais toucher le moteur ni Docker du siège — le
+   seul `subprocess.run` du serveur est remplacé par un garde qui hérite de
+   `BaseException`, car les deux `except Exception` qui l'entourent avaleraient
+   un `Exception` ordinaire ; sans ce garde, la suite de reprise a lancé le
+   VRAI conteneur. (b) Lire un fichier de job pendant son remplacement atomique
+   est **refusé par Windows** (~1 lecture sur 20 sous écriture continue), et un
+   lecteur qui sonde fait échouer **0,2 à 10 % des remplacements** (0,2 % sur
+   D:, 10 % dans `%TEMP%`) — c'est la cause du rouge intermittent restant après
+   la réparation ci-dessus : côté service, 6 essais ; côté tests, relire.
+   **Validé en réel sur le service redéployé** : job de 48 tâches, `docker kill`
+   en plein vol, conteneur relancé par le service seul, **48/48 `ok` en 160,1 s**
+   (§3bis).
