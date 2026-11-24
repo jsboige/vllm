@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import contextlib
 import fnmatch
 import hashlib
@@ -52,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tokenize
 import traceback
@@ -141,17 +143,252 @@ def _lines(x):
     return x.splitlines(keepends=True) if isinstance(x, str) else (x or [])
 
 
+# ---- notebook persistence: ONE choke point for every harness write (CoursIA ASK 22/11 11:18Z)
+#
+# json (default): the harness writes the file itself with `json.dumps(indent=1)`, as before.
+# mcp-serial: every write goes through the papermill MCP `write_notebook`, one at a time, on
+# a session of its own, and each one is PROVED before the run goes on:
+#   * compare-and-swap: the file still holds the bytes the applier read (`nb_load`).
+#     Anything that wrote it in between (a second writer, or a timed-out kernel call still
+#     persisting) gets the write refused, never merged;
+#   * readback: once the server answers, the file is re-read FROM DISK and compared, cell
+#     by cell, with what was sent: count, cell_type, id, source, outputs, execution_count,
+#     metadata, attachments. The server's own read_notebook drops `attachments`, so it
+#     cannot be the witness. Only what nbformat's own writer does is tolerated: key order,
+#     multiline fields stored as str or as a list of lines, the keys strip_transient drops,
+#     and an id added to a cell that had none.
+# The appliers are sync and run inside the driver's event loop, which cannot await
+# itself. So the session lives on a dedicated thread with its own loop, opened and closed
+# by ONE task: anyio cancel scopes must be exited by the task that entered them.
+
+
+class NbWriteError(RuntimeError):
+    """mcp-serial: a notebook write the harness could not prove (kind: conflict, unseen,
+    server, readback). The grain stops on it with verdict `mcp-write-<kind>`."""
+
+    def __init__(self, kind: str, detail: str):
+        super().__init__(f"mcp-serial {kind}: {detail}")
+        self.kind, self.detail = kind, detail
+
+
+def find_nb_write_error(exc: BaseException):
+    """The NbWriteError inside `exc`, unwrapping the ExceptionGroups the MCP task groups
+    add around anything raised under their context (F4, vllm#441)."""
+    if isinstance(exc, NbWriteError):
+        return exc
+    for sub in getattr(exc, "exceptions", None) or ():
+        found = find_nb_write_error(sub)
+        if found is not None:
+            return found
+    cause = exc.__cause__ or exc.__context__
+    return find_nb_write_error(cause) if isinstance(cause, NbWriteError) else None
+
+
+_NB_STORE = None          # McpNbStore when --write-mode mcp-serial, else None (json writes)
+_NB_MISSING = object()
+_NB_TRANSIENT_META = ("orig_nbformat", "orig_nbformat_minor", "signature")
+
+
+def _nb_key(nb_path) -> str:
+    return str(Path(nb_path).resolve())
+
+
+def _nb_sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def nb_read_text(nb_path) -> str:
+    """The notebook text, exactly as Path.read_text gives it (universal newlines), read in
+    ONE system read so that mcp-serial records the sha of the very bytes it parsed."""
+    b = Path(nb_path).read_bytes()
+    if _NB_STORE is not None:
+        _NB_STORE.seen(nb_path, _nb_sha(b))
+    return b.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def nb_load(nb_path) -> dict:
+    return json.loads(nb_read_text(nb_path))
+
+
+def nb_dump(nb_path, nb: dict) -> None:
+    if _NB_STORE is None:
+        Path(nb_path).write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                                 encoding="utf-8")
+    else:
+        _NB_STORE.write(nb_path, nb)
+
+
+def _nb_join(v):
+    """nbformat stores a multiline string as a str or as a list of lines: same text."""
+    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+        return "".join(v)
+    return v
+
+
+def _nb_canon_output(o):
+    if not isinstance(o, dict):
+        return o
+    o = {k: v for k, v in o.items() if k != "transient"}
+    if "text" in o:
+        o["text"] = _nb_join(o["text"])
+    if isinstance(o.get("data"), dict):
+        o["data"] = {m: _nb_join(v) for m, v in o["data"].items()}
+    return o
+
+
+def _nb_canon_cell(c: dict) -> dict:
+    c = dict(c)
+    c["source"] = _nb_join(c.get("source", ""))
+    meta = dict(c.get("metadata") or {})
+    meta.pop("trusted", None)                 # strip_transient
+    c["metadata"] = meta
+    if "outputs" in c:
+        c["outputs"] = [_nb_canon_output(o) for o in c.get("outputs") or []]
+    if isinstance(c.get("attachments"), dict):
+        c["attachments"] = {n: ({m: _nb_join(v) for m, v in a.items()}
+                                if isinstance(a, dict) else a)
+                            for n, a in c["attachments"].items()}
+    return c
+
+
+def nb_diff(sent: dict, disk: dict) -> tuple[list[str], list[str]]:
+    """(differences, normalizations) between the notebook sent and the one on disk."""
+    diffs: list[str] = []
+    notes: list[str] = []
+    a, b = sent.get("cells") or [], disk.get("cells") or []
+    if len(a) != len(b):
+        diffs.append(f"cells {len(a)}->{len(b)}")
+    for i, (x, y) in enumerate(zip(a, b)):
+        cx, cy = _nb_canon_cell(x), _nb_canon_cell(y)
+        for k in sorted(set(cx) | set(cy)):
+            vx, vy = cx.get(k, _NB_MISSING), cy.get(k, _NB_MISSING)
+            if vx == vy:
+                continue
+            if k == "id" and vx is _NB_MISSING:
+                notes.append(f"cell {i} id added")
+                continue
+            diffs.append(f"cell {i} {k}")
+    ma = {k: v for k, v in (sent.get("metadata") or {}).items() if k not in _NB_TRANSIENT_META}
+    mb = {k: v for k, v in (disk.get("metadata") or {}).items() if k not in _NB_TRANSIENT_META}
+    if ma != mb:
+        diffs.append("notebook metadata")
+    if sent.get("nbformat", 4) != disk.get("nbformat"):
+        diffs.append("nbformat")
+    lo, hi = sent.get("nbformat_minor", 0), disk.get("nbformat_minor", 0)
+    if hi < lo:
+        diffs.append(f"nbformat_minor {lo}->{hi}")
+    elif hi > lo:
+        notes.append(f"nbformat_minor {lo}->{hi}")
+    return diffs, notes
+
+
+class McpNbStore:
+    """The mcp-serial writer: one papermill MCP session, one write at a time, each proved."""
+
+    def __init__(self, py=None, cwd=None, *, call_timeout: float = 300.0,
+                 handshake_timeout: float = 180.0):
+        self._lock = threading.Lock()
+        self._seen: dict[str, str] = {}
+        self._call_timeout = call_timeout
+        self._q = None
+        self._dead = None
+        self.writes = 0
+        self.log: list[dict] = []
+        self._loop = asyncio.new_event_loop()
+        params = StdioServerParameters(command=str(py or PM_PY),
+                                       args=["-u", "-m", "papermill_mcp.main"],
+                                       env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                                       cwd=str(cwd or PM_CWD))
+        ready: concurrent.futures.Future = concurrent.futures.Future()
+        self._thread = threading.Thread(target=self._run,
+                                        args=(params, ready, handshake_timeout),
+                                        name="nb-store", daemon=True)
+        self._thread.start()
+        ready.result(timeout=handshake_timeout + 30)
+
+    def _run(self, params, ready, handshake_timeout):
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._serve(params, ready, handshake_timeout))
+        finally:
+            self._loop.close()
+
+    async def _serve(self, params, ready, handshake_timeout):
+        try:
+            async with stdio_client(params) as (r, w):
+                async with ClientSession(r, w) as session:
+                    await asyncio.wait_for(session.initialize(), handshake_timeout)
+                    self._q = asyncio.Queue()
+                    ready.set_result(True)
+                    while True:
+                        item = await self._q.get()
+                        if item is None:
+                            break
+                        tool, payload, fut = item
+                        if not fut.done():
+                            fut.set_result(await pm_call(session, tool, payload))
+        except BaseException as exc:      # surfaced to the caller, never a silent thread death
+            self._dead = f"{type(exc).__name__}: {exc}"[:300]
+            if not ready.done():
+                ready.set_exception(RuntimeError(f"mcp-serial session failed: {self._dead}"))
+
+    def call(self, tool: str, payload: dict) -> dict:
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            self._loop.call_soon_threadsafe(self._q.put_nowait, (tool, payload, fut))
+            return fut.result(timeout=self._call_timeout)
+        except Exception as exc:
+            dead = f" (session: {self._dead})" if self._dead else ""
+            raise NbWriteError("server", f"{tool}: {type(exc).__name__}: {exc}{dead}"[:300]
+                               ) from None
+
+    def close(self) -> None:
+        if self._q is not None and not self._loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._q.put_nowait, None)
+        self._thread.join(timeout=30)
+
+    def seen(self, nb_path, sha: str) -> None:
+        self._seen[_nb_key(nb_path)] = sha
+
+    def write(self, nb_path, nb: dict) -> None:
+        p = Path(nb_path)
+        key = _nb_key(p)
+        with self._lock:
+            t0 = time.time()
+            if p.exists():
+                if key not in self._seen:
+                    raise NbWriteError("unseen", f"{p.name}: the harness writes a notebook it "
+                                                 "never read (no base to compare against)")
+                if _nb_sha(p.read_bytes()) != self._seen[key]:
+                    raise NbWriteError("conflict", f"{p.name}: changed on disk since the "
+                                                   "harness read it (a second writer)")
+            res = self.call("write_notebook", {"path": key, "content": nb})
+            if not isinstance(res, dict) or res.get("success") is not True:
+                raise NbWriteError("server", f"{p.name}: "
+                                             f"{json.dumps(res, ensure_ascii=False)[:300]}")
+            b = p.read_bytes()
+            diffs, notes = nb_diff(nb, json.loads(b.decode("utf-8")))
+            if diffs:
+                raise NbWriteError("readback", f"{p.name}: " + "; ".join(diffs[:8]))
+            self._seen[key] = _nb_sha(b)
+            self.writes += 1
+            self.log.append({"nb": p.name, "cells": len(nb.get("cells") or []),
+                             "ms": round((time.time() - t0) * 1000),
+                             **({"normalized": notes[:8]} if notes else {})})
+
+
 def normalize_sources(nb_path: Path) -> int:
     """Rewrite any str-form cell source into list-of-lines form; returns the count converted.
     Covers the MCP write mode (update_cell/add_cell write strings). No-op when nothing to convert."""
-    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    nb = nb_load(nb_path)
     n = 0
     for c in nb.get("cells", []):
         if isinstance(c.get("source"), str):
             c["source"] = c["source"].splitlines(keepends=True)
             n += 1
     if n:
-        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        nb_dump(nb_path, nb)
     return n
 
 
@@ -1292,7 +1529,7 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
     then deletes (desc), then inserts (anchor desc, anchor = ORIGINAL index). A delete
     shifts every later cell by -1, so an insert anchored at `a` lands at
     a - #(deletes < a) + 1 in the post-delete array."""
-    raw = nb_path.read_text(encoding="utf-8")
+    raw = nb_read_text(nb_path)
     nb = json.loads(raw)
     cells = nb["cells"]
     rep = {"roundtrip_ok": json.dumps(nb, ensure_ascii=False, indent=1) + "\n" == raw,
@@ -1353,7 +1590,7 @@ def apply_edits(nb_path: Path, payload: dict) -> dict:
                                    "chars": len(src), "id": cid})
         except Exception as exc:
             rep["errors"].append(f"insert: {exc}")
-    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    nb_dump(nb_path, nb)
     rep["wrote"] = True
     return rep
 
@@ -2004,7 +2241,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
 def apply_create(nb_path: Path, payload: dict) -> dict:
     """Creation-mode applier: fill the harness-made skeleton with every model cell, ONE
     read-modify-write. Ids follow nbformat 4.5+ (required by the papermill server)."""
-    raw = nb_path.read_text(encoding="utf-8")
+    raw = nb_read_text(nb_path)
     nb = json.loads(raw)
     cells_in = payload.get("cells") or []
     rep = {"cells_written": 0, "types": [], "empty_sources": [], "errors": []}
@@ -2025,8 +2262,7 @@ def apply_create(nb_path: Path, payload: dict) -> dict:
             cell["outputs"] = []
         new_cells.append(cell)
     nb["cells"] = new_cells
-    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
-                       encoding="utf-8")
+    nb_dump(nb_path, nb)
     rep["cells_written"] = len(new_cells)
     rep["types"] = [c["cell_type"] for c in new_cells]
     return rep
@@ -2273,7 +2509,7 @@ def strike_absent_deps(nb_path: Path, absent: list[str], only_idx) -> list[dict]
     gone = {_crate_norm(a) for a in absent}
     if not gone:
         return []
-    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    nb = nb_load(nb_path)
     struck: list[dict] = []
     for i in sorted(only_idx or []):
         if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
@@ -2289,8 +2525,7 @@ def strike_absent_deps(nb_path: Path, absent: list[str], only_idx) -> list[dict]
         if len(kept) != len(lines):
             nb["cells"][i]["source"] = _lines("\n".join(kept))
     if struck:
-        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
-                           encoding="utf-8")
+        nb_dump(nb_path, nb)
     return struck
 
 
@@ -3299,7 +3534,7 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
     ``cell_type: "code"`` is also refused: the prose round must not reset a code cell's
     outputs by smuggling it in as a markdown edit.
     """
-    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    nb = nb_load(nb_path)
     rep = {"replaced": [], "unknown_idx": [], "bad": [], "out_of_scope": []}
     for c in payload.get("cells") or []:
         try:
@@ -3340,8 +3575,7 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
             cell["outputs"] = []
             cell["execution_count"] = None
         rep["replaced"].append(i)
-    nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
-                       encoding="utf-8")
+    nb_dump(nb_path, nb)
     return rep
 
 
@@ -3533,7 +3767,7 @@ def apply_revision(nb_path: Path, payload: dict) -> dict:
     cell count (the plan of cells is imposed; the structure gate re-checks it). A rewritten
     code cell loses its outputs: the harness re-executes the whole notebook afterwards.
     Nothing is written when nothing is applicable."""
-    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    nb = nb_load(nb_path)
     rep: dict = {"replaced": [], "unknown_idx": [], "bad": [], "type_changed": []}
     for c in payload.get("cells") or []:
         if not isinstance(c, dict):
@@ -3565,8 +3799,7 @@ def apply_revision(nb_path: Path, payload: dict) -> dict:
             cell["execution_count"] = None
         rep["replaced"].append(i)
     if rep["replaced"]:
-        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
-                           encoding="utf-8")
+        nb_dump(nb_path, nb)
     return rep
 
 
@@ -4293,7 +4526,7 @@ def resolve_dead_links(built_nb: Path, src_nb: Path, repo: Path, rel: str) -> di
     dead target's series id (`Lean-19d`, directory included). Candidates are only twin links
     whose target exists. No unique match = no rewrite: the gate stays the judge."""
     try:
-        nb = json.loads(built_nb.read_text(encoding="utf-8"))
+        nb = nb_load(built_nb)
         src_cells = _cells(src_nb)
     except (OSError, ValueError) as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
@@ -4340,7 +4573,7 @@ def resolve_dead_links(built_nb: Path, src_nb: Path, repo: Path, rel: str) -> di
         if out != text:
             c["source"] = _lines(out)
     if fixed:
-        built_nb.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        nb_dump(built_nb, nb)
     return {"ok": True, "fixed": fixed}
 
 
@@ -4718,7 +4951,7 @@ def strip_kernel_extension_banner(nb_path: Path) -> dict:
     (`C:/Users/<user>/…`), so a merged notebook carrying it is a real machine-path leak,
     and the build cannot repair it. Model-written text keeps facing the gate."""
     try:
-        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        nb = nb_load(nb_path)
     except (OSError, ValueError) as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
     removed = []
@@ -4731,8 +4964,7 @@ def strip_kernel_extension_banner(nb_path: Path) -> dict:
             removed.append({"cell": i, "outputs": len(outs) - len(kept)})
             c["outputs"] = kept
     if removed:
-        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
-                           encoding="utf-8")
+        nb_dump(nb_path, nb)
     return {"ok": True, "removed": removed}
 
 
@@ -6659,8 +6891,7 @@ async def run(args, rec: dict) -> dict:
                                               (meta.get("language_info") or {}).get("version")}
                 skeleton = {"cells": [], "metadata": meta,
                             "nbformat": 4, "nbformat_minor": 5}
-                scratch.write_text(json.dumps(skeleton, ensure_ascii=False, indent=1) + "\n",
-                                   encoding="utf-8")
+                nb_dump(scratch, skeleton)
             else:
                 shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
             sha_before = _sha(scratch)
@@ -6685,14 +6916,14 @@ async def run(args, rec: dict) -> dict:
                     return rec
             else:
                 prompt2 = (build_json_prompt(plan, exec_idx, src_cells, len(src_cells), conventions)
-                           if args.write_mode == "json"
+                           if args.write_mode in ("json", "mcp-serial")
                            else build_prompt(scratch_nb, plan, exec_idx, src_cells,
                                              len(src_cells), conventions))
                 env2 = await sk_call_retry(sk, args, rec, "2-build", prompt2, conv)
                 built, env2 = await parse_or_repair(sk, args, rec, "2-build", env2, conv)
                 rec["build_model_answer"] = {"parsed": built,
                                              "chars": len(env2.get("response") or "")}
-                if args.write_mode == "json" and built:
+                if args.write_mode in ("json", "mcp-serial") and built:
                     rec["apply"] = apply_edits(scratch, built)
             if scratch.is_file():
                 rec["sources_normalized"] = normalize_sources(scratch)   # CR 1a, couvre le mode mcp
@@ -6891,8 +7122,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "grain-tier-unknown:AUTO (ai-01:CoursIA, 16/11). Default MED: the "
                          "harness's own grains are full notebook builds, not one-cell edits. "
                          "Lowercase is accepted and normalised.")
-    ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
+    ap.add_argument("--write-mode", choices=["json", "mcp-serial", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
+                         "mcp-serial = the same harness writes, each one sent through the "
+                         "papermill MCP write_notebook, serialized, compare-and-swap + "
+                         "readback proved (CoursIA ASK 22/11); "
                          "mcp = the model calls the papermill write tools (lost-update hazard "
                          "when it parallelises its calls, measured 14/11)")
     ap.add_argument("--kernel-override", default=None)
@@ -7043,9 +7277,22 @@ def main() -> int:
            "models": {"spec": args.spec_model, "coder": args.coder_model,
                       "verifier": args.verifier_model},
            "engine_tokens_before": engine_tokens()}
+    global _NB_STORE
     try:
-        rec = asyncio.run(run_revision(args, rec)
-                          if (args.revise_from or args.verify_from) else run(args, rec))
+        if args.write_mode == "mcp-serial" and args.max_stage >= 2:
+            _NB_STORE = McpNbStore()
+        try:
+            rec = asyncio.run(run_revision(args, rec)
+                              if (args.revise_from or args.verify_from) else run(args, rec))
+        except Exception as inner:
+            # An unproved write stops the grain with its own verdict: a refused write is
+            # not a harness crash, and the notebook left on disk is the one the last PROVED
+            # write made. Looked up through the ExceptionGroups the MCP task groups add.
+            nbw = find_nb_write_error(inner)
+            if nbw is None:
+                raise
+            rec["mcp_write_error"] = {"kind": nbw.kind, "detail": nbw.detail[:500]}
+            rec["verdict"] = f"mcp-write-{nbw.kind}"
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
         # away the calls, the last stage and the plan: a stage-5 crash produced the same
@@ -7059,6 +7306,11 @@ def main() -> int:
         # `dry` is NOT forced here: it says "the run stopped before stage 5", which a crash on
         # --max-stage 5 does not mean (co-review of #442, F4-1). rec already carries the true
         # value from main() — a crash is a crash, not a dry run.
+    if _NB_STORE is not None:
+        rec["nb_store"] = {"mode": "mcp-serial", "writes": _NB_STORE.writes,
+                           "log": _NB_STORE.log[-40:]}
+        _NB_STORE.close()
+        _NB_STORE = None
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
