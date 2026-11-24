@@ -24,20 +24,25 @@ job 'running' dont le thread est mort voit ses tâches restantes RELANCÉES
 (la charge est persistée) ; les jobs pré-reprise deviennent 'orphaned'.
 
 Auto-guérison : si l'engine :5028 est muet, `docker start voltron-harness`
-puis attente santé ≤240 s. Bind 127.0.0.1:5029 — usage local machine,
-même politique que l'engine d'éval (keyless, boucle locale).
+puis attente santé ≤240 s. Une tâche coupée par une indisponibilité TRANSITOIRE
+de l'engine est attendue puis rejouée (≤2 fois ; 1 h d'attente pour un job en
+fond, 2 min pour un appel synchrone) — elle n'est plus livrée en échec.
+Bind 127.0.0.1:5029 — usage local machine, même politique que l'engine
+d'éval (keyless, boucle locale).
 
 Clé hub : env ZAI_API_KEY au lancement du serveur (résolue en mémoire par
 start_voltron_service.ps1 depuis ~/.claude.json, jamais écrite sur disque).
 Absent → phase C sautée, la réponse porte stage="a" + note.
 """
 import concurrent.futures
+import http.client
 import json
 import os
 import re
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -47,6 +52,16 @@ sys_dir = os.path.dirname(os.path.abspath(__file__))
 import sys
 sys.path.insert(0, sys_dir)
 import real_task_bench as rb  # checkers + extraction JSON éprouvés du banc
+
+# Les logs du service sont FRANÇAIS (accents, tirets cadratins, « ≤ ») et les
+# réponses HTTP de l'UTF-8 ; le log doit l'être aussi. Défaut mesuré 24/11 : la
+# console Windows cp1252 levait UnicodeEncodeError DANS un print de rejeu —
+# une coupure d'engine devenait « stage: error » au lieu d'être rejouée.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass  # flux redirigé sans reconfigure : on garde le comportement d'avant
 
 ENGINE_URL = "http://127.0.0.1:5028"
 ENGINE_MODEL = "voltron-1-mini"
@@ -69,6 +84,19 @@ MAX_BODY_BYTES = 2 * 1024 * 1024  # borne POST (CHANGES_REQUESTED §6)
 JOB_CONCURRENCY = 6     # moteur mesuré N=64 (3 673 t/s) ; 6 laisse la place
                          # aux appels /v1/task directs et borne la charge hub
 MAX_REPAIR_ROUNDS = 2
+# Coupure d'engine TRANSITOIRE (moteur tué, VM WSL recyclée, boot en cours) :
+# on attend le moteur et on REJOUE la tâche au lieu de la livrer en échec.
+# Bornes mesurées sur po-2028 (8 tirs de la garde anti-famine du commit,
+# 20-23/11) : moteur servi 1 min 49 s à 2 min 06 s après le tir, 8 min 52 s au
+# pire — au-delà des 240 s d'ensure_engine.
+ENGINE_BOOT_WAIT_S = 240  # auto-guérison avant une tâche ; boot mesuré 115-150 s
+ENGINE_NUDGE_EVERY_S = 30  # moteur muet pendant une attente : docker start / 30 s
+ENGINE_RETRIES = 2
+ENGINE_WAIT_JOB_S = 3600  # job en fond : personne n'attend — tolérance 1 h
+ENGINE_RETRIES_SYNC = 1
+ENGINE_WAIT_SYNC_S = 120  # borne d'ATTENTE du rejeu synchrone ; s'ajoute aux
+                          # appels modèle en cours. Pour une tâche longue :
+                          # préférer /v1/jobs, qui n'a pas de timeout client.
 
 # Ancrage de format par contrat (mesuré 20/11) : sans préremplissage, le 1.7B
 # délibère en prose et le livrable arrive noyé — ou jamais (max_tokens épuisé
@@ -113,20 +141,52 @@ def engine_healthy(timeout=2):
         return False
 
 
+def _docker_start():
+    """`docker start` du conteneur de l'engine, sans attendre. Retourne
+    (tentative, message) : faux seulement si la CLI est absente — plus rien à
+    tenter de ce côté. Une CLI bloquée ou un daemon injoignable (VM WSL en
+    cours de recyclage) n'est PAS une raison de renoncer : la politique de
+    restart du conteneur peut le ramener seule."""
+    try:
+        subprocess.run(["docker", "start", ENGINE_CONTAINER],
+                       capture_output=True, timeout=30)
+    except FileNotFoundError as exc:
+        return False, f"docker start échoué: {exc!r}"
+    except Exception as exc:
+        print(f"[engine] docker start sans effet ({exc!r}) — attente du retour",
+              flush=True)
+    return True, ""
+
+
 def ensure_engine():
     """Auto-guérison : docker start + attente santé. Retourne (ok, message)."""
     if engine_healthy():
         return True, ""
-    try:
-        subprocess.run(["docker", "start", ENGINE_CONTAINER],
-                       capture_output=True, timeout=30)
-    except Exception as exc:
-        return False, f"docker start échoué: {exc}"
-    for _ in range(48):  # ≤240 s : boot mesuré 115-150 s
-        if engine_healthy():
-            return True, ""
-        time.sleep(5)
-    return False, "engine voltron-harness muet après docker start (240 s)"
+    started, msg = _docker_start()
+    if not started:
+        return False, msg
+    if _wait_engine(ENGINE_BOOT_WAIT_S):
+        return True, ""
+    return False, f"engine {ENGINE_CONTAINER} muet après docker start " \
+                  f"({ENGINE_BOOT_WAIT_S} s)"
+
+
+def _is_engine_blip(exc):
+    """Vrai pour une COUPURE de transport vers l'engine (moteur tué, VM
+    recyclée, boot en cours) — à opposer à un refus du moteur (HTTPError 4xx/5xx :
+    la requête est en cause, la rejouer ne sert à rien)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return isinstance(exc, (urllib.error.URLError, OSError,
+                            http.client.HTTPException))
+
+
+def _engine_error(step, exc, t0, turns):
+    """Résultat d'échec engine ; `transient` dit si la coupure est rejouable
+    par _run_task_resilient."""
+    return {"ok": False, "stage": "engine-error", "answer": "",
+            "detail": f"{step}: appel engine échoué: {exc!r}", "turns": turns,
+            "dt_s": round(time.time() - t0, 2), "transient": _is_engine_blip(exc)}
 
 
 # ---------------------------------------------------------------- contrats
@@ -321,7 +381,7 @@ def run_classify(t):
     ok_engine, msg = ensure_engine()
     if not ok_engine:
         return {"ok": False, "stage": "engine-down", "answer": "", "detail": msg,
-                "turns": 0, "dt_s": round(time.time() - t0, 2)}
+                "turns": 0, "dt_s": round(time.time() - t0, 2), "transient": True}
 
     pre_classe = '{"classe": "'
     p_a = (f"Texte :\n{data}\n\nClasse ce texte dans EXACTEMENT une de ces "
@@ -338,9 +398,7 @@ def run_classify(t):
         if objs:
             classe = str(objs[0].get("classe", ""))
     except Exception as exc:
-        return {"ok": False, "stage": "engine-error", "answer": "",
-                "detail": f"étape classe: appel engine échoué: {exc!r}",
-                "turns": turns, "dt_s": round(time.time() - t0, 2)}
+        return _engine_error("étape classe", exc, t0, turns)
 
     def step_b(extra=""):
         p_b = (f"Texte :\n{data}\n\nCe texte relève de la classe {classe}. "
@@ -362,7 +420,12 @@ def run_classify(t):
             objs = rb.extract_json_objs(pre_classe + out_a)
             if objs:
                 ligne = str(objs[0].get("ligne_cle", ""))
-    except Exception:
+    except Exception as exc:
+        # Une COUPURE d'engine ne se rabat pas sur « preuve vide » : elle ferait
+        # brûler les tours de réparation puis payer le coordinateur hub pour une
+        # indisponibilité de 2 min — on la remonte, le rejeu s'en charge.
+        if _is_engine_blip(exc):
+            return _engine_error("étape preuve", exc, t0, turns)
         ligne = ""
 
     combined = json.dumps({"classe": classe, "ligne_cle": ligne}, ensure_ascii=False)
@@ -381,8 +444,9 @@ def run_classify(t):
                     classe = str(objs[0].get("classe", ""))
             else:
                 ligne = step_b("\n" + feedback(detail))
-        except Exception:
-            pass
+        except Exception as exc:
+            if _is_engine_blip(exc):
+                return _engine_error("réparation", exc, t0, turns)
         combined = json.dumps({"classe": classe, "ligne_cle": ligne},
                               ensure_ascii=False)
         ok, detail = gate(combined)
@@ -431,7 +495,7 @@ def run_task(t):
     ok_engine, msg = ensure_engine()
     if not ok_engine:
         return {"ok": False, "stage": "engine-down", "answer": "", "detail": msg,
-                "turns": 0, "dt_s": round(time.time() - t0, 2)}
+                "turns": 0, "dt_s": round(time.time() - t0, 2), "transient": True}
 
     # --- phase A : worker local + réparation dirigée (delta signé, jamais la réponse)
     # Le gate porte TOUJOURS la réponse nettoyée : on certifie ce qu'on livre
@@ -443,17 +507,20 @@ def run_task(t):
         out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs,
                                 max_tokens=max_tokens, prefill=pre))
     except Exception as exc:
-        return {"ok": False, "stage": "engine-error", "answer": "",
-                "detail": f"appel engine échoué: {exc!r}", "turns": 0,
-                "dt_s": round(time.time() - t0, 2)}
+        return _engine_error("phase A", exc, t0, 0)
     ok, detail = gate((pre or "") + out)
     turns = 1
     stage = "a"
     while not ok and turns <= MAX_REPAIR_ROUNDS:
         msgs.append({"role": "assistant", "content": (pre or "") + out})
         msgs.append({"role": "user", "content": feedback(detail)})
-        out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs,
-                                max_tokens=max_tokens, prefill=pre))
+        try:
+            out = clean_answer(chat(ENGINE_URL, ENGINE_MODEL, msgs,
+                                    max_tokens=max_tokens, prefill=pre))
+        except Exception as exc:
+            # sans cette garde, l'exception traversait one() : « stage: error »
+            # en job, connexion fermée sans réponse en appel synchrone
+            return _engine_error("réparation", exc, t0, turns + 1)
         ok, detail = gate((pre or "") + out)
         turns += 1
 
@@ -487,13 +554,64 @@ def run_task(t):
             "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
 
-def _run_tasks(job_id, idx_tasks, count_usage=True):
+class EngineOutage(Exception):
+    """Tâche non lancée : son job a épuisé son attente d'engine (voir _run_tasks)."""
+
+
+def _is_transient(res):
+    """Échec REJOABLE = une coupure d'engine (engine-down, ou engine-error de
+    transport). Un reject du contrat, un refus HTTP du moteur, un échec du hub
+    ne le sont pas : les rejouer redonne le même résultat."""
+    return (res.get("stage") in ("engine-down", "engine-error")
+            and bool(res.get("transient")))
+
+
+def _run_task_resilient(t, wait_s, job, retries, ctx=""):
+    """run_task + REJEU sur coupure transitoire d'engine (mesuré po-2028 : la
+    garde anti-famine du commit hôte recycle la VM WSL 1 à 4 fois par jour, le
+    moteur revient 2 à 9 min plus tard — une tâche en vol échouait pour de bon,
+    ou payait le coordinateur hub pour une coupure de 2 min).
+
+    `job` : le dict du job (un dict jetable pour un appel synchrone). Chaque
+    coupure a droit à son attente ; une attente ÉPUISÉE (moteur muet pendant
+    tout le délai) pose `engine_outage` sur le job et le reste du job échoue
+    tout de suite (sinon N tâches restantes × wait_s) — les résultats portent
+    `transient: true`, l'appelant re-POSTe les tâches en échec une fois le
+    moteur revenu."""
+    res = run_task(t)
+    for _ in range(retries):
+        if not _is_transient(res) or job.get("engine_outage"):
+            break
+        with _jobs_lock:
+            job["waiting_engine"] = job.get("waiting_engine", 0) + 1
+        print(f"[engine] coupure transitoire {ctx}{res['stage']}: "
+              f"{res.get('detail', '')[:140]} — attente du moteur ≤{wait_s} s",
+              flush=True)
+        back = _wait_engine(wait_s)
+        with _jobs_lock:
+            job["waiting_engine"] -= 1
+            if not back:
+                job["engine_outage"] = True
+                job["engine_outages"] = job.get("engine_outages", 0) + 1
+        if not back:
+            print(f"[engine] moteur toujours muet après {wait_s} s {ctx}— échec "
+                  f"rapide des tâches restantes (transient=true, à re-POSTer)",
+                  flush=True)
+            break
+        print(f"[engine] moteur revenu {ctx}— rejeu de la tâche", flush=True)
+        res = run_task(t)
+    return res
+
+
+def _run_tasks(job_id, idx_tasks, count_usage=True,
+               wait_s=ENGINE_WAIT_JOB_S, retries=ENGINE_RETRIES):
     """Exécute un SOUS-ENSEMBLE (index, tâche) d'un job — plein ou reprise.
     Concurrence : le moteur tient N=64 (3 673 t/s mesurés) alors qu'un job
     séquentiel plafonne à ~1 req — 5 586 tâches = des heures vs ~15 min (20/11).
     count_usage=False sur la REPRISE (CHANGES_REQUESTED §4) : une tâche relancée
     ne re-bump pas tasks_total — le compteur d'adoption compte des exécutions
-    complétées une fois, pas des tentatives."""
+    complétées une fois, pas des tentatives (un rejeu après coupure non plus :
+    le comptage a lieu sur le résultat FINAL)."""
     job = _jobs[job_id]
 
     def one(i_t):
@@ -502,27 +620,41 @@ def _run_tasks(job_id, idx_tasks, count_usage=True):
             if not isinstance(t, dict):
                 raise ValueError(
                     f"objet JSON attendu, reçu {type(t).__name__} — contrat §2")
-            res = run_task(t)
-            if count_usage:
-                _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
+            if job.get("engine_outage"):
+                # attente d'engine ÉPUISÉE par une autre tâche du job : plus
+                # rien ne tourne tant que le moteur est muet (ni run_task, ni
+                # docker start, ni attente) ; moteur revenu → le job reprend
+                if not engine_healthy():
+                    raise EngineOutage()
+                with _jobs_lock:
+                    job.pop("engine_outage", None)
+                print(f"[engine] moteur revenu — le job {job_id} reprend",
+                      flush=True)
+            res = _run_task_resilient(t, wait_s, job, retries,
+                                      ctx=f"job {job_id} tâche {i}: ")
         except Exception as exc:  # une tâche ne tue JAMAIS le job — même
             # malformée : elle devient un résultat d'erreur consultable, les
             # autres avancent (mesuré 21/11 : un str dans le lot gelait le
             # pool entier via ex.map, job 'running' à vie)
-            res = {"ok": False, "stage": "error", "answer": "",
-                   "detail": f"exécution tâche {i}: {exc!r}", "turns": 0, "dt_s": 0.0}
+            transient = isinstance(exc, EngineOutage)
+            res = {"ok": False, "stage": "engine-down" if transient else "error",
+                   "answer": "", "transient": transient,
+                   "detail": (f"tâche {i}: attente d'engine épuisée pour ce job "
+                              f"— re-POSTer quand le moteur est revenu") if transient
+                   else f"exécution tâche {i}: {exc!r}",
+                   "turns": 0, "dt_s": 0.0}
         res["task"] = i
         with _jobs_lock:
             job["results"].append(res)
             job["done"] += 1
         # CHANGES_REQUESTED §1 : la persistance ne doit JAMAIS casser le pool —
-        # un échec d'écriture se loggue, le résultat reste en mémoire et la
-        # persistance suivante reprend l'état complet.
-        try:
-            _persist(job_id)
-        except Exception as exc:
-            print(f"[persist] job {job_id}: écriture échouée ({exc!r}) — "
-                  f"état conservé en mémoire", flush=True)
+        # un échec d'écriture se loggue (voir _persist_safe), le résultat reste
+        # en mémoire et la persistance suivante reprend l'état complet. Le
+        # compteur est HORS du try de la tâche : un instrument qui ne peut pas
+        # écrire ne doit pas changer une tâche réussie en « stage: error ».
+        _persist_safe(job_id)
+        if count_usage and isinstance(t, dict):
+            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
         list(ex.map(one, idx_tasks))
@@ -531,11 +663,13 @@ def _run_tasks(job_id, idx_tasks, count_usage=True):
     with _jobs_lock:
         if job["done"] >= job["total"]:
             job["status"] = "done"
-    _persist(job_id)
+    _persist_safe(job_id)
 
 
 def run_job(job_id):
-    _run_tasks(job_id, list(enumerate(_jobs[job_id]["tasks"])))
+    # un job de sonde (X-Voltron-Probe) ne gonfle pas le compteur d'adoption
+    _run_tasks(job_id, list(enumerate(_jobs[job_id]["tasks"])),
+               count_usage=not _jobs[job_id].get("probe"))
 
 
 _persist_lock = threading.Lock()
@@ -565,25 +699,75 @@ def _persist(job_id):
         _persist_seq += 1
         tmp = os.path.join(JOBS_DIR, f"{job_id}.{threading.get_ident()}-"
                                      f"{_persist_seq}.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(job, f, ensure_ascii=False, indent=1)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, os.path.join(JOBS_DIR, f"{job_id}.json"))
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(job, f, ensure_ascii=False, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, os.path.join(JOBS_DIR, f"{job_id}.json"))
+        except BaseException:
+            # le tmp de CETTE écriture n'a pas été commité : un essai raté ne
+            # doit pas laisser un fichier de plus à côté des jobs
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
+
+def _persist_safe(job_id):
+    """_persist qui ne lève JAMAIS. Un refus Windows transitoire sur os.replace
+    (la destination est tenue par un lecteur ou un antivirus — mesuré 24/11 :
+    PermissionError WinError 5, ~1 passage sur 12) tuait le thread du job à la
+    FINALISATION : le statut `done` ne touchait jamais le disque, et la reprise
+    au boot relançait un job déjà fini. Au boot (_recover_orphans), la même
+    exception empêchait le serveur de démarrer. Échec définitif : se loggue,
+    l'état reste en mémoire et la prochaine écriture le reprend."""
+    for attempt in range(6):
+        try:
+            _persist(job_id)
+            return True
+        except Exception as exc:
+            err = exc
+            time.sleep(0.05 * 2 ** attempt)  # 3,15 s cumulés au pire
+    print(f"[persist] job {job_id}: écriture échouée ({err!r}) — "
+          f"état conservé en mémoire", flush=True)
+    return False
 
 
 def _wait_engine(timeout_s=300):
-    """Reprise : l'engine partage souvent la fenêtre de redémarrage (reboot
-    hôte) — boot mesuré 115-150 s, on attend 300 s avant de brûler les tâches."""
-    t0 = time.time()
-    while time.time() - t0 < timeout_s:
-        try:
-            with urllib.request.urlopen(f"{ENGINE_URL}/health", timeout=5) as r:
-                if r.status == 200:
-                    return True
-        except Exception:
-            time.sleep(5)
+    """Attend que l'engine réponde /health (poll 5 s). Reprise après restart
+    serveur : l'engine partage souvent la fenêtre de redémarrage (reboot hôte)
+    — boot mesuré 115-150 s, on attend 300 s avant de brûler les tâches. Même
+    attente après une coupure transitoire, du délai passé par l'appelant.
+
+    Tant que l'engine est muet, son conteneur est RELANCÉ toutes les 30 s
+    (mesuré 24/11 : après un `docker kill`, la politique de restart n'a rien
+    fait pendant 20 min ; et un `docker start` émis pendant l'agonie du
+    conteneur est un no-op — un seul start avant l'attente ne suffit pas).
+    `docker start` est sans effet sur un conteneur qui démarre déjà : le retour
+    spontané après recyclage WSL (1 min 49 s – 2 min 06 s mesurés) est respecté."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout_s:
+        if engine_healthy(timeout=5):
+            return True
+        _nudge_engine(time.monotonic())
+        time.sleep(5)
     return False
+
+
+_nudge_lock = threading.Lock()
+_last_nudge = [None]  # temps monotone du dernier start, partagé entre threads
+
+
+def _nudge_engine(now):
+    """`docker start` au plus toutes les 30 s, à partager entre tous les
+    threads qui attendent (6 tâches coupées = un seul start par période)."""
+    with _nudge_lock:
+        if _last_nudge[0] is not None and now - _last_nudge[0] < ENGINE_NUDGE_EVERY_S:
+            return
+        _last_nudge[0] = now
+    _docker_start()
 
 
 def _recover_orphans():
@@ -612,7 +796,7 @@ def _recover_orphans():
         if "tasks" not in job:  # pré-reprise : charge jamais persistée
             job["status"] = "orphaned"
             job["orphaned_at"] = datetime.now(timezone.utc).isoformat()
-            _persist(jid)
+            _persist_safe(jid)
             print(f"[reprise] {jid}: sans charge -> orphaned (re-POST conseillé)",
                   flush=True)
             continue
@@ -620,12 +804,20 @@ def _recover_orphans():
         pending = [(i, t) for i, t in enumerate(job["tasks"]) if i not in done_idx]
         if not pending:  # tué entre dernière tâche et finalisation
             job["status"] = "done"
-            _persist(jid)
+            _persist_safe(jid)
             print(f"[reprise] {jid}: déjà complet -> finalisé", flush=True)
             continue
+        # un boot serveur tombe souvent dans une fenêtre de coupure : un
+        # conteneur arrêté est RELANCÉ pendant l'attente (_wait_engine), et non
+        # seulement attendu ; le drapeau d'avant restart est effacé juste après
         _wait_engine()
+        # un boot est une NOUVELLE coupure : le drapeau d'une attente épuisée
+        # avant le restart ne doit pas faire échouer le reste du job tout de
+        # suite — il reçoit sa propre attente (voir _run_task_resilient)
+        job.pop("engine_outage", None)
+        job.pop("waiting_engine", None)
         job["recovered"] = job.get("recovered", 0) + 1
-        _persist(jid)
+        _persist_safe(jid)
         # count_usage=False : les tâches relancées ne re-bumpent pas le
         # compteur d'adoption (CHANGES_REQUESTED §4 — la direction prudente
         # pour un instrument de mesure : sous-compter, jamais sur-compter)
@@ -688,14 +880,32 @@ def _bump_usage(ttype, ok, job=False, via_job=False):
             bt["ok"] += int(bool(ok))
             u["ok"] = u.get("ok", 0) + int(bool(ok))
         u["last"] = datetime.now(timezone.utc).isoformat()
-        os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
+        # Même refus transitoire que sur les jobs (voir _persist_safe) : un
+        # lecteur tient le fichier au moment du remplacement — mesuré 24/11,
+        # 0,2 à 10 % des remplacements sous un lecteur qui sonde. On réessaie ;
+        # un instrument qui ne peut pas écrire ne doit JAMAIS altérer le
+        # résultat d'une tâche (il était appelé dans le try de la tâche : un
+        # refus changeait une tâche réussie en « error »).
         tmp = f"{USAGE_PATH}.{threading.get_ident()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(u, f, ensure_ascii=False, indent=1)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, USAGE_PATH)
-        return u
+        for attempt in range(6):
+            try:
+                os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(u, f, ensure_ascii=False, indent=1)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, USAGE_PATH)
+                return u
+            except Exception as exc:
+                err = exc
+                try:
+                    os.remove(tmp)  # un essai raté ne laisse rien à côté du compteur
+                except OSError:
+                    pass
+                time.sleep(0.05 * 2 ** attempt)  # 3,15 s cumulés au pire
+        print(f"[usage] écriture échouée ({err!r}) — compteur non incrémenté",
+              flush=True)
+        return None
 
 
 # ---------------------------------------------------------------- HTTP
@@ -711,7 +921,13 @@ CAPABILITIES = {
                              "les tâches restantes d'un job interrompu sont relancées au boot)",
         "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument d'adoption",
         "GET /health": "engine + hub + serveur",
+        "GET /openapi.json": "contrat OpenAPI 3.1 du service (montage en tools)",
         "GET /v1/capabilities": "ce document"},
+    "coupure_engine": "une tâche coupée par une indisponibilité transitoire du moteur est "
+                       "attendue puis rejouée (1 h max par tâche en job, 2 min en appel "
+                       "direct) ; un conteneur du moteur arrêté est relancé par le service ; "
+                       "si le moteur ne revient pas, les résultats portent transient=true — "
+                       "re-POSTer ces tâches",
     "types": {
         "extract": {"champs": "data (≤20000 chars), fields [str], verbatim (défaut true), "
                               "instruction (la sémantique de l'extraction, ex. « la catégorie "
@@ -729,6 +945,123 @@ CAPABILITIES = {
                          ">60 chars exemptées de citation verbatim)"}},
     "refuse": "verdicts/jugements, sorties non gatées, data >20000 chars — cf. docs/voltron-harness-adoption.md",
     "mesures": "banc real_task_bench : chaîne complète 40/40 ; service A→C documenté dans docs/voltron-harness-adoption.md",
+}
+
+# Contrat OpenAPI 3.1 du service — la découverte par un chargeur de tools
+# (mesuré 23/11 08:44Z : un consommateur a sondé /openapi.json puis /docs,
+# tous deux 404, et OPTIONS /v1/task a rendu 501 — il est reparti en appel
+# direct). Pas de `servers` : le service bind la boucle locale et aucune
+# adresse ne vit dans le code — le chargeur monte l'URL qu'il a appelée.
+_TASK_SCHEMA = {
+    "type": "object",
+    "required": ["type"],
+    "properties": {
+        "type": {"type": "string", "enum": ["extract", "classify", "numbers", "diff"]},
+        "data": {"type": "string", "maxLength": MAX_DATA_CHARS,
+                 "description": "Texte source (extract, classify, numbers)."},
+        "fields": {"type": "array", "items": {"type": "string"},
+                   "description": "extract : clés EXACTES du JSON attendu."},
+        "verbatim": {"type": "boolean", "default": True,
+                     "description": "extract : chaque valeur chaîne doit être une "
+                                    "sous-chaîne de data (false pour les nombres, booléens)."},
+        "instruction": {"type": "string",
+                        "description": "extract : ce qu'il faut extraire (la sémantique)."},
+        "classes": {"type": "array", "items": {"type": "string"},
+                    "description": "classify : taxonomie fermée."},
+        "class_definitions": {"type": "object", "additionalProperties": {"type": "string"},
+                              "description": "classify, optionnel : {classe: définition}."},
+        "report_prompt": {"type": "string", "description": "numbers : la consigne de rédaction."},
+        "numbers": {"type": "array", "items": {"type": ["string", "integer"]},
+                    "description": "numbers : les nombres à réciter."},
+        "a": {"type": "string", "description": "diff : config A (JSON sérialisé)."},
+        "b": {"type": "string", "description": "diff : config B (JSON sérialisé)."},
+    },
+}
+_RESULT_SCHEMA = {
+    "type": "object",
+    "required": ["ok", "stage", "answer", "detail", "turns", "dt_s"],
+    "properties": {
+        "ok": {"type": "boolean", "description": "Le contrat de l'appelant est tenu."},
+        "stage": {"type": "string",
+                  "enum": ["a", "c", "reject", "error", "engine-down", "engine-error"],
+                  "description": "a = worker local seul ; c = coordinateur 27B ; reject = "
+                                 "contrat d'entrée invalide ; error = tâche non exécutable "
+                                 "(job) ; engine-* = moteur indisponible."},
+        "answer": {"type": "string", "description": "Le livrable, déjà gaté (vide si ok=false)."},
+        "detail": {"type": "string", "description": "Pourquoi ok=false — actionnable."},
+        "turns": {"type": "integer", "description": "Appels modèle effectués."},
+        "dt_s": {"type": "number"},
+        "transient": {"type": "boolean",
+                      "description": "Échec par coupure d'engine, déjà rejoué : "
+                                     "re-POSTer la tâche plus tard."},
+    },
+}
+OPENAPI = {
+    "openapi": "3.1.0",
+    "info": {
+        "title": "harnais voltron",
+        "version": "2026-11-24",
+        "description": "Une requête HTTP → une réponse déjà fiabilisée. Un petit modèle "
+                       "local exécute la tâche, la répare (≤2 tours) et, si le vérificateur "
+                       "mécanique refuse encore, un coordinateur 27B la reprend. La réponse "
+                       "est TOUJOURS 200 : lire `ok` ; `ok=false` vient avec `detail` "
+                       "(actionnable). Consommer `answer` — le coût de vérification est déjà "
+                       "payé. Ne pas déléguer : verdict, jugement, comptage.",
+    },
+    "paths": {
+        "/v1/task": {"post": {
+            "summary": "Tâche gatée en un appel : extraire des champs, classer un texte "
+                       "avec preuve citée, rédiger un rapport de nombres fidèle, ou comparer "
+                       "deux configs JSON",
+            "description": "0,3 à 30 s. `stage` dit qui a fini la tâche (a : modèle local ; "
+                           "c : coordinateur 27B).",
+            "requestBody": {"required": True,
+                            "content": {"application/json": {"schema": _TASK_SCHEMA}}},
+            "responses": {"200": {"description": "Toujours 200 — lire `ok`.",
+                                  "content": {"application/json": {
+                                      "schema": _RESULT_SCHEMA}}}},
+        }},
+        "/v1/jobs": {"post": {
+            "summary": "Lancer une liste de tâches en background et relire le résultat plus tard",
+            "description": "Exécution en fond (concurrence 6), chaque résultat persisté au "
+                           "fil de l'eau — survive au redémarrage du service et aux coupures "
+                           "du moteur local.",
+            "requestBody": {"required": True,
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "required": ["tasks"],
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "tasks": {"type": "array", "items": _TASK_SCHEMA},
+                                }}}}},
+            "responses": {"200": {"description": "Job créé.",
+                                  "content": {"application/json": {"schema": {
+                                      "type": "object",
+                                      "required": ["job_id", "total"],
+                                      "properties": {"job_id": {"type": "string"},
+                                                     "total": {"type": "integer"}}}}}}},
+        }},
+        "/v1/jobs/{id}": {"get": {
+            "summary": "Relire un job : statut, avancement, résultats",
+            "description": "`status` : running | done | orphaned. Chaque élément de "
+                           "`results` porte son index `task` et le schéma d'un résultat. "
+                           "`engine_outage: true` : le moteur local est resté muet, les "
+                           "résultats en `transient: true` sont à re-POSTer.",
+            "responses": {"200": {"description": "L'état du job."}},
+        }},
+        "/v1/usage": {"get": {
+            "summary": "Compteurs d'usage durables du service",
+            "responses": {"200": {"description": "Totaux par type de tâche."}},
+        }},
+        "/health": {"get": {
+            "summary": "Santé du serveur et de son moteur local",
+            "responses": {"200": {"description": "Toujours 200 — lire `engine`."}},
+        }},
+        "/v1/capabilities": {"get": {
+            "summary": "Le contrat du service en prose : types de tâches, gates, refus",
+            "responses": {"200": {"description": "Le document de capacités."}},
+        }},
+    },
 }
 
 
@@ -753,6 +1086,8 @@ class Handler(BaseHTTPRequestHandler):
             # "/" sert les capacités : premier réflexe d'un consommateur (mesuré,
             # claudish-cd 20/11 — un 404 "route inconnue" à la racine est une friction)
             self._send(200, CAPABILITIES)
+        elif self.path == "/openapi.json":
+            self._send(200, OPENAPI)
         elif self.path == "/v1/usage":
             with _usage_lock:
                 self._send(200, _usage())
@@ -765,16 +1100,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with _jobs_lock:
                 job = _jobs.get(jid)
-            if not job:
+                # Instantané SOUS le verrou : le job gagne des clés en cours de
+                # route (waiting_engine, engine_outage, engine_outages) — itérer
+                # le dict live lèverait « dictionary changed size during
+                # iteration » : la connexion du consommateur se fermerait.
+                view = (None if job is None else
+                        {k: v for k, v in job.items() if k != "tasks"})
+            if view is None:
                 # relire depuis le disque (serveur redémarré)
                 p = os.path.join(JOBS_DIR, f"{jid}.json")
                 if os.path.exists(p):
                     with open(p, encoding="utf-8") as f:
-                        job = json.load(f)
-            if not job:
+                        disk = json.load(f)
+                    view = {k: v for k, v in disk.items() if k != "tasks"}
+            if view is None:
                 self._send(404, {"error": f"job inconnu: {jid}"})
             else:
-                view = {k: v for k, v in job.items() if k != "tasks"}
                 self._send(200, view)
         else:
             self._send(404, {"error": "route inconnue"})
@@ -793,27 +1134,46 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"JSON invalide: {exc}"})
             return
         if self.path == "/v1/task":
-            res = run_task(body)
-            _bump_usage(body.get("type", "?"), res.get("ok"))
+            probe = self.headers.get("X-Voltron-Probe") == "1"
+            # coupure transitoire d'engine : UNE attente courte + rejeu
+            res = _run_task_resilient(body, ENGINE_WAIT_SYNC_S, {},
+                                      ENGINE_RETRIES_SYNC, ctx="appel /v1/task: ")
+            if not probe:  # trafic de test du siège : hors compteur d'adoption
+                _bump_usage(body.get("type", "?"), res.get("ok"))
             self._send(200, res)
         elif self.path == "/v1/jobs":
             tasks = body.get("tasks")
             if not isinstance(tasks, list) or not tasks:
                 self._send(400, {"error": "'tasks' = liste non vide requis"})
                 return
-            _bump_usage(None, None, job=True)
+            probe = self.headers.get("X-Voltron-Probe") == "1"
+            if not probe:
+                _bump_usage(None, None, job=True)
             jid = f"job-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
             with _jobs_lock:
                 _jobs[jid] = {"status": "running", "name": body.get("name", ""),
                               "total": len(tasks), "done": 0, "results": [],
-                              "tasks": tasks,
+                              "tasks": tasks, "probe": probe,
                               "created": datetime.now(timezone.utc).isoformat()}
-            _persist(jid)  # la charge est sur disque AVANT le premier tour —
-            # un kill immédiat reste reprisable (reprise au boot, 21/11)
+            # la charge est sur disque AVANT le premier tour — un kill immédiat
+            # reste reprisable (reprise au boot, 21/11). Un refus d'écriture ne
+            # ferme pas la connexion : le job vit en mémoire, la persistance
+            # suivante reprend tout son état.
+            _persist_safe(jid)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             self._send(200, {"job_id": jid, "total": len(tasks)})
         else:
             self._send(404, {"error": "route inconnue"})
+
+    def do_OPTIONS(self):
+        # Pré-vol d'un chargeur de tools (mesuré 23/11 08:44Z : OPTIONS /v1/task
+        # → 501, le chargeur est reparti). PAS d'en-tête CORS : le service est
+        # sans clé et dépense des tokens hub en phase C — une page web ne doit
+        # pas pouvoir l'appeler.
+        self.send_response(204)
+        self.send_header("Allow", "GET, POST, OPTIONS")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 def main():
