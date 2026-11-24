@@ -74,6 +74,17 @@ services:
   vllm-medium-swift15-27b:
     image: ${VLLM_IMAGE_SWIFT15:-vllm/vllm-openai:v0.32.0}
     container_name: myia_vllm-medium-swift15-27b
+    # Same container limits as medium-swift15-27b-fstier.yml (Maintenance#303),
+    # engine and sidecars. This
+    # profile had NONE: a rollback recreated the engine with NO ceiling in the
+    # shared WSL VM (next to qdrant/postgres) — the 04/11 hole measured at
+    # 37.98 GiB / 208 PIDs. Only corrects a future rollback: this profile is not
+    # running, and nothing here recreates the production container. Sizing (24/11
+    # on the live fstier container): 32.8 GiB shmem (the 32 GiB KV tier) + 8.9
+    # anon + 0.4 kernel; 65 912 allocation refusals at the 48 GiB cap, 0 OOM.
+    mem_limit: 48g
+    memswap_limit: 48g
+    pids_limit: 512
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -179,6 +190,10 @@ services:
   watchdog-swift15-27b:
     image: docker:cli
     container_name: myia_vllm-watchdog-swift15-27b
+    # Maintenance#303 (07/11): measured 25.5 MiB / 2 PIDs.
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -324,6 +339,10 @@ services:
   wedge-telemetry:
     image: python:3-slim
     container_name: myia_vllm-wedge-telemetry-swift15
+    # Maintenance#303 (07/11): measured 16.9 MiB / 1 PID.
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
     command: ["python", "/app/wedge_telemetry.py", "--interval", "60", "--out", "/out/wedge_telemetry.jsonl"]
     # GPU columns (#273): see medium-swift15-27b-fstier.yml — `utility` injects
     # nvidia-smi (NVML only, no CUDA context, no VRAM).
