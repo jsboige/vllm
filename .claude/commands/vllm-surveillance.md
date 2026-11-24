@@ -1,20 +1,24 @@
 ---
-description: Cycle surveillance vllm 2h (PROVISOIRE, fenêtre pilote haiku→swift ~23/10) puis retour 6h — la spec versionnée du cron
+description: Cycle surveillance vllm (6 h à :17) — la spec versionnée du cron
 ---
 
-# Cycle surveillance vLLM (2 h PROVISOIRE → 6 h) — spec versionnée
+# Cycle surveillance vLLM (6 h à :17) — spec versionnée
 
 **Le cron ne porte qu'une ligne : `/vllm-surveillance`** (+ fallback chemin ci-dessous). Tout changement de spec passe par un commit/PR sur ce fichier — plus de spec volumineuse inline dans le prompt cron. Convention flotte 07-08/10/2026 (« la spec vit dans le dépôt »), fermée à 3/3 sièges.
 
-Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/vllm-surveillance.md`) et l'exécuter tel quel. **Fin de cycle : re-armer le cron** (`CronCreate`, **cadence 2 h à :17 PROVISOIRE**, session-only) et vérifier par `CronList`.
+Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/vllm-surveillance.md`) et l'exécuter tel quel. **Fin de cycle : re-armer le cron** (`CronCreate`, **cadence 6 h à :17**, session-only) et vérifier par `CronList`.
 
-**⏱ CADENCE PROVISOIRE 2 h (user 20/10, ~23→26/10) — pendant le pilote haiku→swift** : charge nouvelle (po-2027+po-2028, ~582 req/h) sur une config qui n'a tenu que le régime nocturne. À chaque cycle : watch §5quater (prefix-hit, preemptions, re-prefill) + **marge commit hôte (§3, seuil 85 %)**. **Retour à 6 h** une fois la fenêtre Minimax passée et la charge stabilisée (reset quota 25/10) : remettre la ligne cadence à « 6 h à :17 » et cette note en ligne de changelog.
+**⏱ CADENCE 6 h à :17.** La cadence provisoire 2 h du pilote haiku→swift (20-26/10) est historique : le cron vivant est « Every 6 hours at :17 » (`CronList`, vérifié le 24/11 ; l'heure affichée du prochain tir comprend le décalage propre au job). À chaque cycle : watch §5quater (prefix-hit, preemptions, re-prefill) + **marge commit hôte (§3, seuil 85 %)**.
 
-## Prod concernée (état 2026-10-09)
+## Prod concernée (état 2026-11-24)
 
-**Swift-1.5-Qwen3.8-27B W4A16-AWQ + FP8 KV sur stock `vllm/vllm-openai:v0.31.0` + offload KV RAM 24 GiB (TOUJOURS non pinné)** — localhost:5002, GPUs 0/1 TP=2, profil `medium-swift15-27b.yml`, gpu-util 0.70, **batch 8192 + `max-num-seqs 48` (adoptés 08/10 soir, PR #104 — frais-vs-frais : N=32 +35 %, N=48 907 t/s, prefill +21 % ; avant : 4096/32)**, 262K, **KV 424 610**, noms duaux `swift-1.5-27b` + `qwen3.6-35b-a3b` (alias). Rollback armé : `medium-qwen36-stock-tq.yml`. Conteneurs : `myia_vllm-medium-swift15-27b` · `myia_vllm-watchdog-swift15-27b` (v5, **GEN_TIMEOUT 90 s**) · `myia_vllm-wedge-telemetry-swift15`. **GPU 2 = CoursIA** (training quand occupé, 78-300 MiB quand libre — un GPU 2 chargé n'est PAS une anomalie vllm).
+**Swift-1.5-Qwen3.8-27B W4A16-AWQ + NVFP4 KV + multi-tier GPU→RAM→fs** — localhost:5002, GPUs 0/1 TP=2, profil **`medium-swift15-27b-fstier.yml`**, gpu-util 0.71, batch 8192 + `max-num-seqs 48`, 262K, noms duaux `swift-1.5-27b` + `qwen3.6-35b-a3b` (alias). **Image overlay `vllm-openai-v0340-fsadmit:v1`** (stock v0.34.0 + race tiering corrigée + filtre d'admission fs `MYIA_FS_ADMIT_MIN_HITS=2`, PR #589), `--disable-extensible-kv-cache`. Rollback armé : `medium-qwen36-stock-tq.yml` ; image seule : `VLLM_IMAGE_SWIFT15=…v0340-tierpin:v1`. Conteneurs : `myia_vllm-medium-swift15-27b` · `myia_vllm-watchdog-swift15-27b` · `myia_vllm-wedge-telemetry-swift15`. **GPU 2 = CoursIA** (training quand occupé, 78-300 MiB quand libre — un GPU 2 chargé n'est PAS une anomalie vllm).
+
+**★ Limites du conteneur (`Maintenance#303`, mesurées 24/11)** : `mem_limit 48g`, `memswap_limit 48g`, `pids_limit 512` dans le profil `-fstier`. À l'intérieur : 32,8 GiB de **shmem = le tier KV RAM de 32 GiB en entier** (`--kv-offloading-size 32`), 8,9 GiB anon, 0,4 noyau ; `memory.events.max = 65 912` refus d'allocation à la limite, `oom 0`. **Toute baisse de plafond sans baisse du tier aggrave ces refus.** Le rollback `medium-swift15-27b.yml` porte les mêmes limites (moteur et sidecars) depuis la PR de cette correction.
 
 **NE JAMAIS modifier/redémarrer sans GO user.** Jamais `pin=1` avec l'offload (`cudaHostRegister` WSL2 falsifié ×2). Si un boot-OOM récidive malgré 0.70 : fait nouveau majeur — diagnostiquer GPU 0 au moment du boot, ne pas rebaisser mécaniquement.
+
+**★ Un « DOWN » du watchdog HÔTE (`Watchdog-vLLM-API`) n'est PAS une panne moteur** : mesuré 23-24/11, 74 sondes à 10 s sur 333, dont **92 % à ±2 min d'un échec de session `wsl.exe`** de la série Maintenance (`verify-qdrant-mount.log`), contre 33 % des sondes rapides — pendant que le moteur ne redémarrait pas et que le watchdog in-stack décodait. Avant tout geste : sonde indépendante `curl`, `RestartCount`/`StartedAt`, sondes de décodage in-stack. Détail et corrélation : dashboard workspace Maintenance, 24/11.
 
 **★ ANNONCER LA FENÊTRE SUR `global` AVANT TOUT RESTART MOTEUR (leçon 01/11, 21:11Z).** Même un restart court ou de validation : deux sous-agents `swift-reader` de CoursIA (954 s et 958 s, ~95k tokens) ont été coupés sans fichier écrit par deux redémarrages non annoncés. Le GO user autorise le geste, il ne dispense pas d'annoncer : message `global` avec **heure de début + durée attendue**, avant le geste. Non annoncé = vécu comme une panne chez le voisin, et une perte de travail réelle.
 
@@ -22,7 +26,7 @@ Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/
 
 Hôte = Europe/Paris (UTC+2 en heure d'été, **UTC+1 depuis le passage à l'heure d'hiver le 2026-10-25**) ; conteneurs, `StartedAt`, logs RSM = UTC ; `docker logs --since/--until` prend l'heure LOCALE. Ancrer sur l'epoch, suffixer les heures citées (`12:32Z`).
 
-**Le piège qui a fabriqué un faux signalement (08/10).** `Get-Date -Format u` rend l'heure **LOCALE** avec un suffixe **`Z`** : on obtient un horodatage qui *ressemble* à de l'UTC et ne l'est pas — décalage de +2 h, du mauvais côté. Un WARN « `:5003` injoignable depuis ~13:2xZ » était en réalité **11:2xZ**, et tombait dans une fenêtre de recréation du siège voisin : signalement faux, coût réel pour le voisin qui a dû le réfuter par la mesure. Même erreur commise sur ce siège le même jour (`Get-Date -Format "…HH:mm:ss 'Z'"`). **Toujours** `(Get-Date).ToUniversalTime()` (PowerShell) ou `datetime.now(timezone.utc)` (Python), et vérifier la conversion **avant** de poster une heure : l'offset local change aux changements d'heure (+2 en été, +1 en hiver — la règle « Z + 2 » ci-dessus historique). Un signalement horodaté faux est un signalement faux.
+**Le piège qui a fabriqué un faux signalement (08/10).** `Get-Date -Format u` rend l'heure **LOCALE** avec un suffixe **`Z`** : on obtient un horodatage qui *ressemble* à de l'UTC et ne l'est pas — décalage de +2 h, du mauvais côté. Un WARN « `:5003` injoignable depuis ~13:2xZ » était en réalité **11:2xZ**, et tombait dans une fenêtre de recréation du siège voisin : signalement faux, coût réel pour le voisin qui a dû le réfuter par la mesure. Même erreur commise sur ce siège le même jour (`Get-Date -Format "…HH:mm:ss 'Z'"`). **Récidive 24/11** : même piège en relisant le log LOCAL du watchdog hôte — « déployé 03:27Z » pour un geste fait à 02:27Z, corrigé sur PR #598 + commentaire issue + dashboard Maintenance. Ne jamais convertir de tête : prendre l'heure sur `date -u`, sur le timestamp du magasin, ou sur `[DateTimeOffset]::UtcNow`. **Toujours** `(Get-Date).ToUniversalTime()` (PowerShell) ou `datetime.now(timezone.utc)` (Python), et vérifier la conversion **avant** de poster une heure : l'offset local change aux changements d'heure (+2 en été, +1 en hiver — la règle « Z + 2 » ci-dessus historique). Un signalement horodaté faux est un signalement faux.
 
 ## ⚠️ `docker logs --since` INFIBLE depuis le 30/08 → `--tail` uniquement
 
@@ -105,6 +109,46 @@ Burst ≥ 12 évts/min = jest (paths `dashboard-test-*`/`__test-data__`) ; vrai 
 **Ce que le log contient aussi (et qui n'est PAS vllm)** : `[MessageManager] Error reading message file during parallel cache build: G:\…msg-…json` (messages du 02/10 illisibles) + `[MessageManager] Inbox cache rebuild hit its budget after 6200/6281 files (#3205)` + `[#3292] Explicit-id population approaching starvation threshold: 100/100`. **Périmètre RSM, pas vllm** — les relayer au propriétaire, ne pas les traiter ici.
 
 **⚠️ Seuil de condensation 266k — RÉSOLU (10/10) : c'est l'auto-compact de Claude Code, PAS un paramètre RSM.** Réponse de roo-extensions depuis le code (web1, 09/10) : **RSM n'a aucun seuil en tokens** — ses condensations sont bornées **octets** (51 200 max) ≈ ~20k tokens. Le « 95 % de 280k = 266k » cité par le user est le seuil d'**auto-compact de Claude Code lui-même**. Le vrai risque résiduel : une session Claude Code routée vers Swift croît vers 262-266k et dépasse **notre** fenêtre (262 144) **avant** de déclencher son propre auto-compact — v0.31 répond alors 400 **sans jamais rogner** (mesuré 09/10, 3 sondes frontière, PR #110). **La parade n'est pas côté moteur** : règle déposée sur claudish #431 ([c.6091076678](https://github.com/jsboige/claudish/issues/431)) — sur 400 « maximum context length », router **cette requête** vers le cloud dans le même tour, **jamais de retry local** (l'entrée ne se rogne pas, elle se contourne). **Signature à continuer à chercher dans le census §5ter : `status 400` + `body_bytes > 100 000` ⚠️ DISCRIMINANT RESSERRÉ le 03/11** — il est **trop large** tel quel : il attrape aussi les refus **media**. Mesuré 03/11 06:37:02Z (claudish hub-side, `reqN=11222`) : 400 « at most 4 image(s) per prompt » (5 images vs notre `--limit-mm-per-prompt {"image":4}`), classé `media`, step sauté, **fallback MiniMax dans le même tour en 14,2 s = #431 fonctionne**. La conversion `body_bytes`→tokens (~4 o/token) est **invalide sur un corps multimodal** : 5 images en base64 fabriquent 1,11 Mo pour ~5-10K tokens. ⇒ ne retenir comme signature de débordement de fenêtre que `status 400` + corps **sans** `image_url`/`input_image`. Première occurrence **texte pur** = à rendre au user ET à claudish immédiatement (elle prouverait que #431 ne couvre pas ce cas). L'escalade RSM d'origine est close sans action.
+
+## (2bis-a) Watchdog HÔTE `Watchdog-vLLM-API` — livraison des alertes (depuis #595/#598, 24/11)
+
+```bash
+L=/c/ProgramData/maint-scripts/logs
+tail -4 "$L/vllm-watchdog.log" | cut -c1-170
+for f in vllm-watchdog-undelivered.jsonl vllm-watchdog-undelivered.corrupt.jsonl; do
+  [ -s "$L/$f" ] && echo "PENDING $f : $(wc -l < "$L/$f") ligne(s)" || true; done
+pwsh -NoProfile -Command "(Get-ScheduledTaskInfo -TaskName 'Watchdog-vLLM-API').LastTaskResult"
+```
+
+**Non vide, ou `LastTaskResult=5` = alerte NON livrée** → poster son contenu à la main via `roosync_dashboard(action:"append")` (messageId de la ligne) et escalader ; la ligne n'est retirée du journal qu'après acceptation par la CLI. **Le code de sortie de la tâche ne mesure pas la santé moteur** : `1`/`2` = sonde hôte en échec à 10 s (le moteur peut être sain, voir §Prod). `0` moteur UP · `1` DOWN stack présent · `2` DOWN stack absent / docker injoignable · `5` alerte non livrée · `124` self-timeout. Depuis #598 le watchdog poste par la CLI avec un id stable par incident ; le critère de clôture de #595 est 24 h sans bloc **sans identifiant** dans les fichiers Drive `workspace-vllm.md`/`global.md` :
+
+```powershell
+$root='G:\Mon Drive\Synchronisation\RooSync\.shared-state\dashboards'
+foreach($f in 'workspace-vllm.md','global.md'){
+  try { $t=[IO.File]::ReadAllText((Join-Path $root $f)) }
+  catch { "{0}: ILLISIBLE ({1})" -f $f,$_.Exception.Message; continue }
+  $blocks=[regex]::Matches($t,'(?m)^### .*myia-ai-01\|vllm-watchdog\r?\n(?!\[msg: )')
+  "{0}: blocs watchdog SANS identifiant = {1}" -f $f,$blocks.Count }
+```
+
+**Une lecture en échec n'est PAS un zéro** : le 24/11 ~03:20Z, `ReadAllText` a levé « Ressources système insuffisantes » sur `workspace-vllm.md` et la forme précédente affichait quand même « 0 ». Le `try/catch` ci-dessus rend l'échec visible (`ILLISIBLE`) — un `0` non accompagné d'erreur seulement est une mesure. Pour travailler sans G: : copier les deux fichiers en local (`.tmp/`) et pointer `$root` vers la copie.
+
+**Un append MCP ne réécrit pas nécessairement le fichier Drive**, et `global.md` peut rester orphelin jusqu'au prochain export horodaté : ne pas conclure « la CLI ne marche pas » sur le seul fichier. Une lecture G: lente (mesuré 24/11 : 73 s) n'est pas une preuve de panne — relire avant de rapporter.
+
+## (2ter) Tapis nb_coder — cœur du producteur
+
+```bash
+tail -3 /d/vllm/.tmp/nbcoder/feeder/feeder.log | cut -c1-180          # dernière ligne > 1 h = feeder mort
+tail -2 /d/vllm/.tmp/nbcoder/conveyor-20261120/live/scheduler.jsonl | cut -c1-220   # "held … pending=0 active=0" répété = plus rien à lancer maintenant
+python -I -c "import json,datetime as d,collections;s=json.load(open('d:/vllm/.tmp/nbcoder/conveyor-20261120/live/state.json'));g=s.get('grains',{});nb=sorted(v['not_before'] for v in g.values() if v.get('not_before'));print('grains',dict(collections.Counter(v.get('status') for v in g.values())),'prochain not_before',d.datetime.fromtimestamp(nb[0],d.UTC).isoformat() if nb else '-','state_age_min',round((d.datetime.now(d.UTC)-d.datetime.fromisoformat(s['updated'])).total_seconds()/60))"
+wc -l /d/vllm/.tmp/nbcoder/conveyor-20261120/queue.jsonl /d/vllm/.tmp/nbcoder/feeder/pending.jsonl   # file du scheduler · restant à nourrir
+```
+
+**Deux files, deux rôles** (chemins mesurés 24/11) : `conveyor-20261120/queue.jsonl` = ce que le scheduler peut lancer, 1 ligne par grain ; `feeder/pending.jsonl` = ce que le feeder n'a pas encore poussé, avec son `not_before`.
+
+**État au 24/11 03:30Z** : feeder arrêté depuis le 23/11 19:35:03Z, **3 grains en attente** (#27892, #28069, #28097), tous à `not_before = 2026-11-26T01:40:00Z` ; scheduler vivant, `held gate-yellow` avec `pending=0 active=0` ; sa file compte 4 lignes (#28069, #28085, #28007, #28000), qui correspondent à 3 grains en échec et 1 différé au 26/11 03:09:46Z. **Prochaine relance utile : le 26/11, à partir de 01:40Z.**
+
+**Ne JAMAIS re-nourrir #28017/#28018** (faux-positifs de l'extracteur, déjà réglés hors tapis). Quarantaine `not_before` = retry une fois la date passée ; un scheduler qui n'a plus de grain n'est pas une panne. **Pas de nouveau lot Rust/std** : gel du coordinateur CoursIA — toute alimentation se fait d'abord en accord avec lui (§6). Vérifier avant de relancer : pid du scheduler, drivers détachés (un `TaskStop` tue l'arbre), révision du harnais dans `jsboige-mcp-servers` (la copie `myia_vllm/scripts/adoption/nb_coder` est gelée — user 22/11).
 
 ## (2bis) Producteur de pré-audit (nbaudit) — une ligne, à lire chaque cycle
 
@@ -280,7 +324,7 @@ Inbox `roosync_messages` : lire l'adressé `myia-ai-01:vllm`, répondre/ack, `ma
 ## Clôture (OBLIGATOIRE, cet ordre)
 
 1. **Commit + PR AVANT le rapport** — jamais annoncer du non-committé (`gh auth switch -u jsboige`, PR `--repo jsboige/vllm`, merge `--merge` ; si gh GraphQL limited → fallback REST).
-2. `append` **[DONE]** sur workspace-vllm (prod, condensation, G:, prover, sécurité, registre restitué).
+2. `append` **[DONE]** sur workspace-vllm (prod, condensation, G:, watchdog hôte §2bis-a, tapis §2ter, prover, sécurité, registre restitué).
 3. Ligne Active Work Log dans `MEMORY.md` (mémoire `~/.claude/projects/d--vllm/memory/`).
 4. **Re-arm le cron** (6 h à :17, session-only, prompt = `/vllm-surveillance` + fallback) + `CronList` vérifié.
 5. Zéro question bloquante au user : toute question va au registre `user-question-registry.md` (5 champs, dont l'attendu et le mécanisme de retrait), restitué en bloc au rapport.
