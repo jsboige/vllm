@@ -947,11 +947,13 @@ CAPABILITIES = {
     "mesures": "banc real_task_bench : chaîne complète 40/40 ; service A→C documenté dans docs/voltron-harness-adoption.md",
 }
 
-# Contrat OpenAPI 3.1 du service — la découverte par un chargeur de tools
-# (mesuré 23/11 08:44Z : un consommateur a sondé /openapi.json puis /docs,
-# tous deux 404, et OPTIONS /v1/task a rendu 501 — il est reparti en appel
-# direct). Pas de `servers` : le service bind la boucle locale et aucune
-# adresse ne vit dans le code — le chargeur monte l'URL qu'il a appelée.
+# Contrat OpenAPI 3.1 du service — le contrat doit être découvrable par un
+# chargeur de tools. Signal mesuré 23/11 08:44Z : un appelant du siège a sondé
+# /openapi.json puis /docs (404 tous deux) et OPTIONS /v1/task a rendu 501 —
+# faute de contrat, il n'a pas osé POSTer (pas un consommateur externe : la
+# seconde vigie de la lane). Pas de `servers` : le service bind la boucle
+# locale et aucune adresse ne vit dans le code — le chargeur monte l'URL
+# qu'il a appelée.
 _TASK_SCHEMA = {
     "type": "object",
     "required": ["type"],
@@ -1167,9 +1169,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         # Pré-vol d'un chargeur de tools (mesuré 23/11 08:44Z : OPTIONS /v1/task
-        # → 501, le chargeur est reparti). PAS d'en-tête CORS : le service est
-        # sans clé et dépense des tokens hub en phase C — une page web ne doit
-        # pas pouvoir l'appeler.
+        # → 501, l'appelant n'a pas poursuivi). PAS d'en-tête CORS : le service
+        # est sans clé et dépense des tokens hub en phase C — une page web ne
+        # doit pas pouvoir l'appeler.
         self.send_response(204)
         self.send_header("Allow", "GET, POST, OPTIONS")
         self.send_header("Content-Length", "0")
