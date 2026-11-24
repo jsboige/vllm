@@ -148,13 +148,17 @@ def _docker_start():
     cours de recyclage) n'est PAS une raison de renoncer : la politique de
     restart du conteneur peut le ramener seule."""
     try:
-        subprocess.run(["docker", "start", ENGINE_CONTAINER],
-                       capture_output=True, timeout=30)
+        p = subprocess.run(["docker", "start", ENGINE_CONTAINER],
+                           capture_output=True, timeout=30)
+        if p.returncode != 0:
+            # Un refus (conteneur inconnu, daemon indisponible) n'est pas un
+            # succès : le diagnostic accompagne le retry, sans journal à 30 s.
+            err = (p.stderr or b"").decode("utf-8", errors="replace").strip()
+            return True, f"docker start returncode={p.returncode}: {err[:400]}"
     except FileNotFoundError as exc:
         return False, f"docker start échoué: {exc!r}"
     except Exception as exc:
-        print(f"[engine] docker start sans effet ({exc!r}) — attente du retour",
-              flush=True)
+        return True, f"docker start sans effet ({exc!r})"
     return True, ""
 
 
@@ -162,13 +166,15 @@ def ensure_engine():
     """Auto-guérison : docker start + attente santé. Retourne (ok, message)."""
     if engine_healthy():
         return True, ""
-    started, msg = _docker_start()
+    # La même porte single-flight que l'attente : six tâches simultanées sur un
+    # engine muet ne doivent pas lancer six `docker start` (revue #599 D2).
+    started, msg = _nudge_engine(time.monotonic())
     if not started:
         return False, msg
     if _wait_engine(ENGINE_BOOT_WAIT_S):
         return True, ""
     return False, f"engine {ENGINE_CONTAINER} muet après docker start " \
-                  f"({ENGINE_BOOT_WAIT_S} s)"
+                  f"({ENGINE_BOOT_WAIT_S} s)" + (f" ; {msg}" if msg else "")
 
 
 def _is_engine_blip(exc):
@@ -758,16 +764,25 @@ def _wait_engine(timeout_s=300):
 
 _nudge_lock = threading.Lock()
 _last_nudge = [None]  # temps monotone du dernier start, partagé entre threads
+_last_nudge_error = [None]
 
 
 def _nudge_engine(now):
     """`docker start` au plus toutes les 30 s, à partager entre tous les
-    threads qui attendent (6 tâches coupées = un seul start par période)."""
+    threads qui attendent (6 tâches coupées = un seul start par période).
+    Retourne (tentative, message) : diagnostic sans journal répétitif."""
     with _nudge_lock:
         if _last_nudge[0] is not None and now - _last_nudge[0] < ENGINE_NUDGE_EVERY_S:
-            return
+            return True, ""
         _last_nudge[0] = now
-    _docker_start()
+    attempted, msg = _docker_start()
+    if msg:
+        with _nudge_lock:
+            if _last_nudge_error[0] != msg:
+                _last_nudge_error[0] = msg
+                # Une ligne par NOUVELLE erreur, pas un bruit permanent à 30 s.
+                print(f"[engine] {msg} — attente du retour", flush=True)
+    return attempted, msg
 
 
 def _recover_orphans():
@@ -850,7 +865,12 @@ def _load_usage():
     l'écraserait au bump suivant). None+writable = premier boot légitime."""
     try:
         with open(USAGE_PATH, encoding="utf-8") as f:
-            return json.load(f), True
+            u = json.load(f)
+        if not isinstance(u, dict):
+            # Valide en JSON mais inutilisable comme compteur : traiter comme
+            # illisible, jamais comme un historique à zéro (#599 D1).
+            raise ValueError("le compteur d'usage n'est pas un objet JSON")
+        return u, True
     except FileNotFoundError:
         return None, True
     except Exception as exc:
