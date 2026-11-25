@@ -115,6 +115,24 @@ services:
     # boot ~5 Go. Si l'incident se répète (contexts étrangers > ~4 Go), le
     # pallier d'urgence reste 0.90 (KV ~9 504 tok = 4,6x la fenêtre 2 048).
     #
+    # REDÉMARRABILITÉ (2026-11-25, lu dans le code v0.23.0 —
+    # vllm/v1/worker/utils.py:405 request_memory) : à l'init le moteur exige
+    # mémoire libre >= gpu-memory-utilization x total, soit >= 12,3 GiB ici ;
+    # sinon ValueError "Free memory on device ... is less than desired GPU
+    # memory utilization" et le conteneur crash-loop. Traduction : <= ~4 Go
+    # tenus par des TIERS (bureau Windows compris) au moment du boot. Aucune
+    # valeur de gpu-memory-utilization ne s'en sort — sous 0,75 le KV devient
+    # négatif (besoin propre du moteur ≈ 9,2 GiB : poids + pic d'activation +
+    # non-torch + graphs) ; au-dessus, l'exigence de mémoire libre monte. Le
+    # pallier 0,90 ci-dessus ne vaut que pour de la mémoire étrangère qui
+    # arrive PENDANT le profil, pas pour celle déjà présente à l'init.
+    # CONTRÔLE avant tout redémarrage délibéré, moteur tournant :
+    #   nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv
+    # GPU 0 memory.used <= ~10,3 Go (moteur ≈ 6,7 + <= 4 de tiers). Au-delà :
+    # faire libérer la carte d'abord, sinon le démarrage échoue (25/11 c177 :
+    # 15 671 MiB, ~9 Go de tiers résidents, embedder non redémarrable).
+    # Détail : myia_vllm/docs/seats/po2023-embeddings.md.
+    #
     # --api-key RETIRÉ (Q-P2023-10 (a), arbitrage user 01/11) : la clé vit déjà
     # dans l'env VLLM_API_KEY du conteneur — plus de duplication en ligne de
     # commande lisible par docker inspect / ps --no-trunc.

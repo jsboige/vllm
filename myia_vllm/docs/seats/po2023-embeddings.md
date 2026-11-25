@@ -57,6 +57,25 @@
   runbook po-2026 = procédure prête). Vigie : alerte >85 °C (registre Q-P2023-1).
 - Qdrant prod : `https://qdrant.myia.io` + LAN `http://192.168.0.47:6333` (distant .47).
 
+## Avant tout redémarrage de l'embedder : contrôle de VRAM (2026-11-25, c177)
+
+GPU 0 est partagé avec le bureau Windows et des conteneurs d'autres lanes
+(`comfyui-qwen`, `tts-api`). Le moteur refuse de démarrer si la carte est trop
+pleine — règle lue dans le code v0.23.0 (`vllm/v1/worker/utils.py:405`) :
+**mémoire libre ≥ `gpu-memory-utilization × total` à l'init** (≥ 12,3 GiB à 0,75),
+sinon `ValueError: Free memory on device ... is less than desired GPU memory
+utilization` et le conteneur crash-loop. Soit **≤ ~4 Go tenus par des tiers**.
+
+- Contrôle, moteur tournant : `nvidia-smi --query-gpu=index,memory.used,memory.free
+  --format=csv` → GPU 0 `memory.used` ≤ ~10,3 Go (moteur ≈ 6,7 Go + ≤ 4 Go de tiers).
+- Au-delà : **ne pas redémarrer** ; faire libérer la carte par la lane propriétaire
+  d'abord (régleur GPU : `myia-ai-01:CoursIA-2` ; locataires : po-2023:CoursIA).
+- Monter `--gpu-memory-utilization` n'aide pas (l'exigence de mémoire libre monte) ;
+  la baisser rend le KV négatif (besoin propre du moteur ≈ 9,2 GiB). Le « pallier
+  0,90 » du profil ne vaut que pour de la mémoire étrangère arrivant pendant le profil.
+- Mesuré le 25/11 14:56Z : 15 671 MiB occupés, ~9 Go de tiers résidents ⇒ embedder
+  non redémarrable tant que le niveau reste là (signalement global + CoursIA).
+
 ## Fix keep-alive sidecar (2026-10-20, PR #134)
 
 Les `ServerDisconnectedError` dans les logs du sidecar (9 111 du 13 au 20/10,
