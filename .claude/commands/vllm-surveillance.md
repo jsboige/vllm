@@ -190,6 +190,8 @@ timeout 30 sh -c "echo probe > '/g/Mon Drive/Synchronisation/RooSync/.vllm-probe
 
 Écriture KO/timeout > 30 s = DriveFS hang → le noter au rapport, ne pas boucler sur les posts dashboard (ils échoueront), et le signaler à roo-extensions (le dossier #4131 suit la bascule PG).
 
+**Où vit le stockage du moteur, et quoi répondre à un `[STOP][DISK]`** (mesuré 2026-11-25 23:54Z au registre `Lxss` + `docker system df`). Les deux disques qui portent la prod sont sur **C:**, pas sur D: : `Ubuntu\…\ext4.vhdx` = **1 002,1 Go** (`C:\Users\MYIA\AppData\Local\wsl\{35b80e90-…}` — tier KV disque, cache HF, runners CI) et `Docker\wsl\disk\docker_data.vhdx` = **697,0 Go** ; `DockerRootDir=/var/lib/docker`, donc **les journaux de conteneurs aussi**. ⇒ un **D: saturé ne menace pas le moteur** (mesuré le 25/11 à 0,91 % libre, moteur health 200 et RC=0) ; c'est **C:** qui compte, et le plancher de l'élagueur s'y lit déjà (`c_free`). Un `[STOP][DISK]` se traite en **trois lignes** : ce que la lane a écrit dans la fenêtre (volume + preuve), ce qu'elle peut retirer (lot **nommé**, preuve « 0 conteneur ne le monte »), et l'état **mesuré** de D:/C: — jamais un `du -sh /d/*` (scan lourd, que Maintenance écarte explicitement ; lancé le 25/11 puis arrêté). Relevé utile pour la récupération de C: : `docker system df` rend **~195 Go reclaimable toutes lanes** (images 63,1 · conteneurs 4,8 · volumes 107,5 · build cache 20,1) — **inventaire à transmettre, pas un lot à retirer** (magasin partagé, infra d'autrui). Lot propre à la lane, borné : `profiles_vllm-compile-cache-swift15-27b-v0320` (1,70 Go) + `profiles_vllm-compile-cache` (0,89 Go), caches d'images retirées du service.
+
 **Marge commit hôte — seuil 85 %** pour tout travail lourd (prouveur, `lake build`) :
 
 ```bash
