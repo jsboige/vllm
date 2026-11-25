@@ -150,7 +150,7 @@ wc -l "$CONV/queue.jsonl" /d/vllm/.tmp/nbcoder/feeder/pending.jsonl   # file du 
 
 **Deux files, deux rôles** (chemins mesurés 24/11) : `<conveyor-*>/queue.jsonl` = ce que le scheduler peut lancer, 1 ligne par grain — le répertoire change à chaque relance (`20261120`, `20261124`, …), d'où la ligne `CONV=` ci-dessus ; `feeder/pending.jsonl` = ce que le feeder n'a pas encore poussé, avec son `not_before`.
 
-**État au 24/11 03:30Z** : feeder arrêté depuis le 23/11 19:35:03Z, **3 grains en attente** (#27892, #28069, #28097), tous à `not_before = 2026-11-26T01:40:00Z` ; scheduler vivant, `held gate-yellow` avec `pending=0 active=0` ; sa file compte 4 lignes (#28069, #28085, #28007, #28000), qui correspondent à 3 grains en échec et 1 différé au 26/11 03:09:46Z. **Prochaine relance utile : le 26/11, à partir de 01:40Z.**
+**Pas d'état figé ici** (retiré le 25/11) : l'instantané écrit le 24/11 03:30Z (« file de 4 lignes », « prochaine relance utile : le 26/11, à partir de 01:40Z ») était faux au cycle suivant — mesuré 25/11 06:20Z : file de 3 lignes (#27722, #28018, #28097), 3 grains `deferred` + 1 `failed`, prochain `not_before` le 27/11 22:46Z. L'état se lit par les commandes ci-dessus (`state.json`, `scheduler.jsonl`) ; cette section ne garde que ce qui reste vrai. **`held gate-unknown`** (`last_gate.error: timed out`, exit 3) = la porte de capacité, processus hôte, n'a pas atteint le moteur : un échec du chemin hôte (§Prod), pas un verdict — le scheduler retient le grain, à bon escient. Mesuré 25/11 : 19 passes en 3 épisodes, dont 10 consécutives de 06:07:49Z à 06:16:51Z, pendant que `wsl.exe` échouait côté Maintenance et que le moteur servait.
 
 **Ne JAMAIS re-nourrir #28017/#28018** (faux-positifs de l'extracteur, déjà réglés hors tapis). Quarantaine `not_before` = retry une fois la date passée ; un scheduler qui n'a plus de grain n'est pas une panne. **Pas de nouveau lot Rust/std** : gel du coordinateur CoursIA — toute alimentation se fait d'abord en accord avec lui (§6). Vérifier avant de relancer : pid du scheduler, drivers détachés (un `TaskStop` tue l'arbre), révision du harnais dans `jsboige-mcp-servers` (la copie `myia_vllm/scripts/adoption/nb_coder` est gelée — user 22/11).
 
@@ -257,20 +257,19 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 **Attendu / à interpréter** :
 - **Sondes watchdog** `ua=curl` ~2/min, `"Reply with the single word: ok"` (max_tokens 8, finit en `stop` — depuis le 03/11 ; l'ancien `"Count to twenty."` à 24 tokens finissait en `length` et polluait les stats, mesuré 71 tokens nécessaires) : normal.
 - **Condensation** `ua=Python-*` « expert en synthèse … 15 Ko » : normal, horaire.
-- **Clé unique `fp=<MEDIUM>`** en tête : c'est la clé partagée des consommateurs internes (hub claudish, sk-agent, Roo, sondes). **Vérifier l'identité de la clé AVANT toute conclusion de sécurité** — comparaison côté hôte (`.env`), en n'imprimant que des `sha256[:12]` :
+- **Clé unique `fp=<MEDIUM>`** en tête : c'est la clé partagée des consommateurs internes (hub claudish, sk-agent, Roo, sondes). **Vérifier l'identité de la clé AVANT toute conclusion de sécurité** — comparaison côté hôte (`.env`), en n'imprimant que des `sha256[:12]`. **L'empreinte du census est celle du `auth_prefix`, pas de la clé** : le middleware écrit `authorization[:24] + "..."`, soit `"Bearer " + clé[:17] + "..."` (`error_source_capture.py`), et le census hache cette chaîne. `sha256(clé)[:12]` ne peut donc jamais égaliser un `fp=` (mesuré 25/11 : MEDIUM = `db2738ab1328` sous cette forme, `be312daf7c1c` dans le census). La forme ci-dessous recalcule l'empreinte du census pour chaque clé du `.env` — à rapprocher directement d'un `fp=`, **sans rien recopier de la clé dans la commande** (l'ancienne forme faisait coller 16 caractères de clé dans le terminal : fragment de secret dans le transcript, et deux essais sans correspondance) :
   ```bash
-  cd /d/vllm && python -c "
+  python -I -c "
   import hashlib
   vals={}
-  for l in open('myia_vllm/.env',encoding='utf-8',errors='replace'):
+  for l in open('d:/vllm/myia_vllm/.env',encoding='utf-8',errors='replace'):
       if '=' in l and not l.strip().startswith('#'):
-          k,v=l.strip().split('=',1); vals[k.strip()]=v.strip().strip('\"').strip(chr(39))
-  tok='<les 16 premiers car. du auth_prefix, SANS le Bearer>'
+          k,v=l.strip().split('=',1); vals[k.strip()]=v.strip().strip(chr(34)).strip(chr(39))
   for k,v in vals.items():
-      if 'KEY' in k.upper() and v: print('%-28s fp=%s match=%s'%(k,hashlib.sha256(v.encode()).hexdigest()[:12],v.startswith(tok)))
+      if 'KEY' in k.upper() and v: print('%-28s fp=%s'%(k,hashlib.sha256(('Bearer '+v[:17]+'...').encode()).hexdigest()[:12]))
   "
   ```
-- **Clé hors des connues (`MEDIUM`, `MEDIUM_VL`, `MINI`, `MICRO`, `external-vllm`) = anomalie** → §5 (alerte) + registre.
+- **Clé hors des connues (`MEDIUM`, `MEDIUM_VL`, `MINI`, `MICRO`, `external-vllm`) = anomalie** → §5 (alerte) + registre. **Nuance mesurée le 25/11** : une empreinte absente du `.env` et vue **uniquement en `status 401`** est une clé **refusée** — la porte tient. La signaler avec son IP et son agent, sans l'annoncer comme une utilisation non autorisée. Deux empreintes `Python-urllib` sans `X-Forwarded-For` (6 et 3 × 401) : SUPPOSÉ, un consommateur de la flotte à clé périmée.
 - **⚠️ MAIS une clé connue ne dit RIEN sur le client (arbitrage po-2025, 09/10).** Le hub claudish appelle `:5002` **sous MEDIUM pour *tous* ses clients** : la clé est un **seuil de sécurité**, pas un **discriminateur d'identité**. Pour attribuer une charge, le discriminant est la **TAILLE DES CORPS** — un client à contexte long (~57 K) se distingue par `body_bytes > 100 Ko`, jamais par la clé. Ne pas conclure « c'est interne, donc c'est bénin » : un client interne qui boucle (cf. latch Zoo #4025, ~20 h) pèse autant qu'un externe.
 - **`body_bytes` > 100 Ko = requêtes long-contexte** : ce sont elles qui pilotent le high-water VRAM. Un client qui boucle là-dessus (cf. latch Zoo #4025) se voit ici **avant** de se voir en VRAM.
 
