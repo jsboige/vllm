@@ -50,7 +50,13 @@ import time
 import urllib.parse
 import urllib.request
 
-DEFAULT_URL = os.environ.get("SWIFT_GATE_URL", "http://localhost:5002/metrics")
+# 25/11 11:50:33Z, measured on ai-01: the IPv6 leg of the published port HANGS while IPv4 serves.
+#   http://127.0.0.1:5002/health -> 200 in 5 ms
+#   http://[::1]:5002/health     -> no answer (timeout)
+#   http://localhost:5002/health -> no answer (the name is tried on ::1 first)
+# With `localhost` the gate burned its whole timeout ladder and answered gate-unknown (exit 3)
+# at 11:48:40Z while the engine was healthy: instrument artefact, not a capacity verdict.
+DEFAULT_URL = os.environ.get("SWIFT_GATE_URL", "http://127.0.0.1:5002/metrics")
 RED_RUNNING = float(os.environ.get("SWIFT_GATE_RED_RUNNING", "12"))
 YELLOW_RUNNING = float(os.environ.get("SWIFT_GATE_YELLOW_RUNNING", "8"))
 WINDOW_S = float(os.environ.get("SWIFT_GATE_WINDOW_S", "600"))

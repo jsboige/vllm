@@ -37,7 +37,7 @@ Le chemin lecture-complète (`--since`, `--tail` géant) voit le segment MORT du
 ## (1) Check prod read-only
 
 ```bash
-curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" --max-time 8 http://localhost:5002/health
+curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" --max-time 8 http://127.0.0.1:5002/health
 docker inspect myia_vllm-medium-swift15-27b --format 'RC={{.RestartCount}} status={{.State.Status}} health={{.State.Health.Status}} StartedAt={{.State.StartedAt}}'
 docker logs --tail 5000 myia_vllm-medium-swift15-27b > .tmp/eng.log 2>&1; echo "lignes=$(wc -l < .tmp/eng.log) oom=$(grep -ac 'out of memory' .tmp/eng.log)"   # lignes=0 => instrument aveugle, pas « 0 OOM »
 nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader
@@ -50,6 +50,16 @@ docker logs --tail 4000 myia_vllm-watchdog-swift15-27b 2>&1 | grep -c 'OK health
 # élagueur du tier fs (minuterie systemd DANS WSL depuis le 20/11) : état frais + disque invité au-dessus du plancher 40 GiB + cap (0 = pression disque C:, voir ci-dessous)
 python -c "import json,datetime as d;s=json.load(open('d:/vllm/myia_vllm/logs/fstier_state.json'));a=(d.datetime.now(d.UTC)-d.datetime.fromisoformat(s['ts_utc'].replace('Z','+00:00'))).total_seconds()/60;c=s['space_checks']['/mnt/c'];print('pruner age=%.0f min tier=%.1f GB cap=%.1f GB guest_free=%.1f GB c_free=%.1f%% errors=%s'%(a,s['bytes_total']/1e9,s.get('cap_bytes',-1)/1e9,s['space_checks']['guest_root']['free_bytes']/1e9,100*c['free_bytes']/c['total_bytes'],s.get('errors_count')))"
 ```
+
+**⚠️ Sonder le port publié par `127.0.0.1`, JAMAIS par `localhost` (mesuré 25/11 11:50:33Z).**
+La branche IPv6 du port publié peut pendre alors qu'IPv4 sert normalement — `localhost` se résout
+sur `::1` d'abord et la connexion ne rend jamais : `http://127.0.0.1:5002/health` = **200 en 5 ms**
+la même seconde où `localhost` et `[::1]` ne répondent pas. Trois processus hôte en ont fait les
+frais entre 11:48 et 11:50Z : la porte de capacité du tapis a rendu `gate-unknown` (exit 3, sa
+ladder de timeouts épuisée) et le watchdog hôte a vu `health=0`. **Un `000` sur `localhost` n'est
+pas un moteur mort** : contre-mesure in-stack (`docker exec … curl 127.0.0.1:5002/health`), qui a
+rendu 200 en 1,1 ms. À distinguer de l'épisode 06:05→06:17Z, où **les trois** voies, IPv4 comprise,
+étaient muettes.
 
 **Élagueur du tier fs — âge > 35 min ou disque invité < 40 GiB libres = organe mort, réparer dans le cycle.** Le tier n'a aucune éviction interne : sans élagueur il remplit le disque invité de 1,08 To, partagé avec le cache HF et les runners CI CoursIA (`coursia-runner.service`). Vécu le 20/11 : la tâche Windows passait par `wscript`→`pwsh`, tous deux figés par la panne G:/DriveFS ; dernier passage 07:22Z, tier 436,8 Go, **0 octet libre**, `Errno 28` côté moteur et ENOSPC sur les runners (retenue `main-red`, merges bloqués). Depuis, l'élagueur tourne par `fstier-prune.timer` dans la distribution Ubuntu, sans dépendre du shell Windows (`myia_vllm/scripts/monitoring/systemd/README.md`). La tâche Windows `fstier-prune` reste **désactivée**, pour n'avoir qu'un seul planificateur. Diagnostic : `wsl.exe -d Ubuntu -u root --exec journalctl -u fstier-prune.service -n 20`.
 
@@ -281,7 +291,7 @@ print('--- statut ---'); print(collections.Counter(r.get('status') for r in rec)
 
 1. **Hit rate prefix** (compteurs `/metrics`, reset à chaque boot — noter l'âge moteur) :
    ```bash
-   curl -s http://localhost:5002/metrics | grep -E '^vllm:(prefix_cache_queries_total|prompt_tokens_cached_by_source_total)'
+   curl -s http://127.0.0.1:5002/metrics | grep -E '^vllm:(prefix_cache_queries_total|prompt_tokens_cached_by_source_total)'
    ```
    **⚠ FORMULE CANONIQUE (corrigée 03/11, cycle 17:41Z)** : ratio = `Σ prompt_tokens_cached_by_source_total{device,host,disk,p2p} / prefix_cache_queries_total`. **`prefix_cache_hits_total` compte le DEVICE SEUL** — lu seul il a fabriqué une fausse panne (« 2,8 %, amortissement cassé ») alors que le vrai ratio était **86 %** : à working set > KV GPU, le tier RAM sert l'essentiel (host = 81 % du cache servi) et n'apparaît PAS dans ce compteur. En croisière longue (sessions récurrentes) le ratio doit **monter**. Vrai ratio plat ~0 avec des corps >100K en jeu = **amortissement cassé** → alerte user + registre — vérifié sur la formule complète avant de publier.
 2. **Signature re-prefill (census §5ter)** : même IP/empreinte avec `body_bytes > 100K` **répétés à cadence de tour** (au lieu de delta 1-10K) = le client re-paie tout son contexte à chaque tour.
