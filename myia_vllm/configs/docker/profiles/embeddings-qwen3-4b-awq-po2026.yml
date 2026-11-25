@@ -1,6 +1,11 @@
-# Docker Compose profile — Qwen3-Embedding-4B W4A16-AWQ (service d'embeddings flotte, po-2026, PROD)
+# Docker Compose profile — Qwen3-Embedding-4B W4A16-AWQ (service d'embeddings flotte, PROD)
 # ============================================================================
-# Siège : po-2026 (RTX 3080 Ti Laptop 16 Go VRAM, 64 Go RAM, cap vmmem WSL 16 Go
+# SIÈGE D'EXÉCUTION DEPUIS 2026-10-20 : po-2023 (GPU 0 = RTX 3080 Ti interne 16 Go).
+# po-2026 est HS (panne matérielle) ; ce profil y est né et les chemins C:\... plus
+# bas sont les siens. Sur po-2023 le dépôt prod est D:\Production\Embeddings — voir
+# myia_vllm/docs/seats/po2023-embeddings.md, seule référence de chemins à jour.
+# ============================================================================
+# Siège historique : po-2026 (RTX 3080 Ti Laptop 16 Go VRAM, 64 Go RAM, cap vmmem WSL 16 Go
 # depuis 2026-10-05). Ce service est l'embedder de TOUTE la flotte : Roo Code
 # (indexation sémantique multi-machines) + Open WebUI 7 tenants (RAG).
 # Chaîne publique : https://embeddings.myia.io (IIS ARR po-2023) → sidecar
@@ -29,24 +34,29 @@
 # Rollback image v0.21.0 PURGÉE 2026-10-06 (48,4 Go, mandat disque
 # jsboige/Maintenance#70) : re-pull via skopeo (keyring Docker Hub HS, procédure
 # au runbook) si retour arrière un jour nécessaire. Image courante : 29,8 Go.
-# Backups compose par version : dépôt local po-2026 C:\Production\Embeddings
-# (docker-archives/).
+# Backups compose par version : dépôt local du siège — po-2026 : C:\Production\Embeddings,
+# po-2023 (siège actuel) : D:\Production\Embeddings (docker-archives/).
 #
 # Secrets : ${VLLM_API_KEY} / ${HUGGING_FACE_HUB_TOKEN} via .env LOCAL au siège
 # (gitignored) — jamais dans un commit (incident rotation clé 09/2026).
 #
 # Sidecar :8004 (re-création, siège local uniquement, Git Bash avec
-# MSYS_NO_PATHCONV=1) :
+# MSYS_NO_PATHCONV=1). Commande VÉRIFIÉE contre le conteneur vivant du siège
+# po-2023 (docker inspect 2026-11-25 : Entrypoint/Cmd/WorkingDir/Env/Binds/
+# Memory/MemorySwap/PidsLimit/RestartPolicy identiques) :
 #   docker run -d --name embedding-proxy-logger -p 8004:8004 \
 #     --memory 256m --memory-swap 256m --pids-limit 128 \
-#     -v "C:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
-#     -v "C:\Production\Embeddings\logs\capture-20260906:/app/logs" -w /app/logs \
+#     -v "D:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
+#     -v "D:\Production\Embeddings\logs\capture-20261013:/app/logs" -w /app/logs \
 #     -e LISTEN_PORT=8004 -e TARGET_URL=http://host.docker.internal:8005 \
-#     -e MAX_LOG=100000 --restart unless-stopped \
+#     -e MAX_LOG=100000 -e PYTHONUNBUFFERED=1 --restart unless-stopped \
 #     --entrypoint python3 vllm/vllm-openai:v0.23.0 /app/proxy.py
 #   (--memory/--memory-swap/--pids-limit added 2026-11-07, Maintenance#303:
 #    the sidecar is a docker run with no compose file, so these flags ARE its
-#    source of truth and must survive any re-creation verbatim.)
+#    source of truth and must survive any re-creation verbatim.
+#    PYTHONUNBUFFERED=1 set 2026-11-04: without it the [N/100000] seq counter
+#    is buffered and the cadence reading is wrong.
+#    Po-2026 (historique) utilisait C:\Production\Embeddings + capture-20260906.)
 # TOUJOURS en container (python host direct = firewall bloque LAN + ARR 503
 # collant ~19 min — leçon 2026-08-14).
 # ----------------------------------------------------------------------------

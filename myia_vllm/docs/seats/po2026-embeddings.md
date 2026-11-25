@@ -1,5 +1,11 @@
 # Lane po-2026:Embeddings — instructions du siège vllm
 
+> **ARCHIVE — siège historique.** po-2026 est tombé en panne matérielle ; depuis le
+> 2026-10-20 le service d'embeddings tourne sur **po-2023** (voir
+> [`po2023-embeddings.md`](po2023-embeddings.md), seule référence de chemins à jour).
+> Les chemins `C:\Production\Embeddings` ci-dessous décrivent po-2026 et ne sont
+> PAS ceux du siège actuel (`D:\Production\Embeddings`). Conservé comme archive.
+
 ## Identité
 
 - **Ce siège** (`myia_vllm/` du clone `D:\Dev\vllm`) = poste de travail de la lane

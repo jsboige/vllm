@@ -9,6 +9,9 @@
 # Rollback complet : schtasks /Delete /TN GPU-Thermal-Governor /F  (le boot task 1800 reste seul)
 
 $ErrorActionPreference = 'Continue'
+# HOTE-DEPENDANT (2026-11-25) : $base est le depot prod de po-2026 (C:). Le siege
+# po-2023 ne l'execute PAS (pas de gouverneur thermique sur ce poste, cf.
+# docs/seats/po2023-embeddings.md) ; s'il y tournait un jour, $base = D:\Production\Embeddings.
 $base   = 'C:\Production\Embeddings'
 $logDir = Join-Path $base 'logs'
 $log    = Join-Path $logDir 'gpu-governor.log'
