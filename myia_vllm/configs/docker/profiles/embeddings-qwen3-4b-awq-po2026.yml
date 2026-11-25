@@ -38,11 +38,15 @@
 # Sidecar :8004 (re-création, siège local uniquement, Git Bash avec
 # MSYS_NO_PATHCONV=1) :
 #   docker run -d --name embedding-proxy-logger -p 8004:8004 \
+#     --memory 256m --memory-swap 256m --pids-limit 128 \
 #     -v "C:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
 #     -v "C:\Production\Embeddings\logs\capture-20260906:/app/logs" -w /app/logs \
 #     -e LISTEN_PORT=8004 -e TARGET_URL=http://host.docker.internal:8005 \
 #     -e MAX_LOG=100000 --restart unless-stopped \
 #     --entrypoint python3 vllm/vllm-openai:v0.23.0 /app/proxy.py
+#   (--memory/--memory-swap/--pids-limit added 2026-11-07, Maintenance#303:
+#    the sidecar is a docker run with no compose file, so these flags ARE its
+#    source of truth and must survive any re-creation verbatim.)
 # TOUJOURS en container (python host direct = firewall bloque LAN + ARR 503
 # collant ~19 min — leçon 2026-08-14).
 # ----------------------------------------------------------------------------
@@ -77,6 +81,16 @@ services:
       - "8005:8000"
 
     ipc: host
+
+    # --- Maintenance#303 bounds (2026-11-07, lane vllm po-2023) ---
+    # mem_limit = memswap_limit = 8g (swap disabled: the engine must fail
+    # loudly instead of ballooning the host through swap), pids_limit 512.
+    # Measured before bounding (docker stats, 2026-11-07): 2.87 GiB / 165 PIDs
+    # at rest; ~2.8x headroom covers CUDA-graph compilation and batch bursts
+    # without risking the host (31 GiB total, shared with the whole bench).
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 512
 
     # NOTE (leçon boot-blocking) : JAMAIS de ligne # dans le scalaire replié
     # command:> — elle devient du TEXTE de commande (compose: "invalid command
