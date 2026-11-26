@@ -17,6 +17,9 @@
     - robocopy sort 1..7 en cas de succes => le code de sortie n'est pas une erreur ;
     - robocopy SUIVIT les jonctions NTFS sans /XJ => toujours /XJ ;
     - deux releves dans la meme minute s'ecrasient => nom a la seconde + garde de collision ;
+    - le tri par NOM met `...Z_2.txt` AVANT `...Z.txt` (tri culturel) => -Mode diff
+      ordonne par l'horodatage d'en-tete, suffixe de collision en depart d'egalite ;
+    - le bilan additionnait les lignes L1 ET L2 (d:\dev compte alors deux fois) => bilan sur le niveau 1 seul ;
     - en PowerShell, -f est MOINS prioritaire que + => arguments du format entre parentheses.
 
   Exemples :
@@ -87,6 +90,23 @@ function Read-Snapshot {
   return @{ map = $map; free = $free; utc = $utc; drive = $drv; name = $F.Name }
 }
 
+function Get-SnapshotTime {
+  param([System.IO.FileInfo]$F)
+  # L'horodatage d'EN-TETE fait foi ; $null s'il est absent (releve ignore par -Mode diff).
+  $first = Get-Content -LiteralPath $F.FullName -TotalCount 1
+  if ($first -match '^### utc=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
+    return [DateTimeOffset]::Parse($Matches[1] + 'Z', [Globalization.CultureInfo]::InvariantCulture)
+  }
+  return $null
+}
+
+function Get-CollisionSuffix {
+  param([string]$BaseName)
+  # `..._2`, `..._10` : garde de collision du mode snapshot ; -1 = releve sans suffixe.
+  if ($BaseName -match '_(\d+)$') { return [int]$Matches[1] }
+  return -1
+}
+
 if ($Mode -eq 'snapshot') {
   $stamp = [DateTimeOffset]::UtcNow
   $drive = $Root.Substring(0, 1).ToUpperInvariant()
@@ -117,10 +137,37 @@ if ($Mode -eq 'snapshot') {
 }
 
 if ($Mode -eq 'diff') {
-  $files = @(Get-ChildItem -LiteralPath $OutDir -File -Filter 'ddrive_sizes_*.txt' | Sort-Object Name)
-  if ($files.Count -lt 2) { Write-Output ('diff impossible: {0} releve(s) dans {1}' -f $files.Count, $OutDir); exit 0 }
-  $b = Read-Snapshot -F $files[-2]
-  $a = Read-Snapshot -F $files[-1]
+  # Ordre = horodatage d'en-tete, JAMAIS le nom : la garde de collision suffixe
+  # `_2`, `_10`... et le tri culturel par nom place `...Z_2.txt` AVANT `...Z.txt`
+  # (reproduit le 26/11 sur fixture) => les « deux derniers » etaient deux
+  # releves de la meme seconde, sans debit, et le releve reellement precedent
+  # n'etait jamais compare. A horodatage egal, le suffixe le plus haut a ete
+  # ecrit en second.
+  $all = @(Get-ChildItem -LiteralPath $OutDir -File -Filter 'ddrive_sizes_*.txt')
+  $sorted = @(
+    $all | ForEach-Object { [pscustomobject]@{ File = $_; Time = (Get-SnapshotTime -F $_) } } |
+      Where-Object { $null -ne $_.Time } |
+      Sort-Object -Property @{ Expression = 'Time'; Descending = $true },
+                              @{ Expression = { Get-CollisionSuffix -BaseName $_.File.BaseName }; Descending = $true },
+                              @{ Expression = { $_.File.Name }; Descending = $true }
+  )
+  if ($all.Count -gt $sorted.Count) {
+    Write-Output ('### {0} releve(s) sans en-tete lisible ignore(s)' -f ($all.Count - $sorted.Count))
+  }
+  if ($sorted.Count -lt 2) { Write-Output ('diff impossible: {0} releve(s) lisible(s) dans {1}' -f $sorted.Count, $OutDir); exit 0 }
+  $a = Read-Snapshot -F $sorted[0].File
+  # Un deuxieme releve de la MEME seconde ne donne aucun debit (« moins de
+  # 15 min ») et laissait le releve reellement precedent non compare : on prend
+  # le plus recent dont l'horodatage DIFFERE (les suffixes de collision sautent).
+  $prev = @($sorted | Select-Object -Skip 1 | Where-Object { $_.Time -ne $sorted[0].Time })
+  if ($prev.Count -eq 0) {
+    Write-Output 'diff impossible: un seul horodatage distinct parmi les releves lisibles'
+    exit 0
+  }
+  if ($prev.Count -lt ($sorted.Count - 1)) {
+    Write-Output ('### {0} releve(s) de la meme seconde que le dernier ignore(s) pour le debit' -f ($sorted.Count - 1 - $prev.Count))
+  }
+  $b = Read-Snapshot -F $prev[0].File
   $gib = 1GB
   $drv = if ($a.drive) { $a.drive } else { '?' }
   Write-Output ('### avant : {0} | utc={1} | libre {2:N2} Go' -f $b.name, $b.utc, ($b.free / $gib))
@@ -159,9 +206,15 @@ if ($Mode -eq 'diff') {
   $big | Where-Object { $_.Delta -lt 0 } | Sort-Object Delta | Select-Object -First 20 |
     ForEach-Object { '{0,9:N2} {1,9:N2} -> {2,9:N2}  [{3}] {4}' -f ($_.Delta / $gib), ($_.Before / $gib), ($_.After / $gib), $_.Level, $_.Path }
 
-  $grown = ($big | Where-Object { $_.Delta -gt 0 } | Measure-Object Delta -Sum).Sum
-  $shrunk = ($big | Where-Object { $_.Delta -lt 0 } | Measure-Object Delta -Sum).Sum
-  Write-Output ('--- bilan des ecarts listes : +{0:N2} Go / {1:N2} Go => net {2:+0.00;-0.00} Go ; libre {3:+0.00;-0.00} Go' -f ($grown / $gib), ($shrunk / $gib), (($grown + $shrunk) / $gib), (($a.free - $b.free) / $gib))
+  # Bilan sur le niveau 1 SEULEMENT : les lignes L2 sont deja contenues dans
+  # l'agregat `d:\dev` et les additionner avec lui double-compte (1re mesure
+  # reelle, 26/11 11:47Z : +36,22 Go annonces pour -18,58 Go reellement
+  # perdus). Les listes par dossier gardent les deux niveaux, le bilan non ;
+  # `libre` reste la reference physique.
+  $lvl1 = @($big | Where-Object { $_.Level -eq 'L1' })
+  $grown = ($lvl1 | Where-Object { $_.Delta -gt 0 } | Measure-Object Delta -Sum).Sum
+  $shrunk = ($lvl1 | Where-Object { $_.Delta -lt 0 } | Measure-Object Delta -Sum).Sum
+  Write-Output ('--- bilan niveau 1 des ecarts listes : +{0:N2} Go / {1:N2} Go => net {2:+0.00;-0.00} Go ; libre {3:+0.00;-0.00} Go' -f ($grown / $gib), ($shrunk / $gib), (($grown + $shrunk) / $gib), (($a.free - $b.free) / $gib))
   if ($alert) { Write-Output ('### ALERTE : consommation au-dela de {0:N0} Go/h' -f $AlertGoPerHour) }
   exit 0
 }
