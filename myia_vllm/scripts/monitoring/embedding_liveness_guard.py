@@ -57,6 +57,11 @@ Safety rails, because an operator window is not an outage:
     within 15 minutes, and the pass returns at once instead of blocking.
   * Per-container restart cap (default 2/hour, state file) so a persistent fault
     cannot turn into a restart storm.
+  * One pass is bounded in wall clock (PASS_BUDGET_S). The scheduler kills its
+    launcher at 10 min, and a pass killed there survives as a detached orphan
+    that the next tick stacks on. A restart is started only if its worst case
+    fits in what is left, the health wait is clipped to the budget, and the
+    whisper check is skipped (recorded as not checked) once it is spent.
 
 Usage
 -----
@@ -104,6 +109,24 @@ DESKTOP_RESTART_CAP_PER_HOUR = 2
 DESKTOP_RESTART_MIN_GAP = 900  # seconds between two `docker desktop restart`
 DESKTOP_RESTART_CLI_TIMEOUT = 120  # seconds; the backend completes the restart on its own
 DESKTOP_RESTART_KEY = "__docker_desktop__"  # budget entry, not a container
+
+# --- pass budget ---------------------------------------------------------------
+# The Task Scheduler runs each pass through a hidden `wscript` launcher under
+# `ExecutionTimeLimit = PT10M`. Past that limit the launcher is killed and the
+# Python process survives as a detached orphan: IgnoreNew no longer covers it,
+# so the next tick starts a second pass on top (measured by Maintenance,
+# 2026-11-26). One pass therefore carries its own wall-clock budget, with
+# margin under the 600 s of the task: worst case 483 s, locked by the tests.
+PASS_BUDGET_S = 420
+INSPECT_TIMEOUT = 25  # seconds; each `docker inspect` of the restart path
+RESTART_CLI_TIMEOUT = 180  # seconds; `docker restart`
+# A container restart is started only if this much budget is left: its worst
+# case without the health wait (two inspects + the CLI). The health wait itself
+# is clipped to what remains of the budget.
+RESTART_MIN_BUDGET_S = 2 * INSPECT_TIMEOUT + RESTART_CLI_TIMEOUT
+# The whisper check: up to three HTTP pairs (15 s per request), the retry delay
+# and the 5 s settle.
+WHISPER_MIN_BUDGET_S = 3 * (15 + 15) + RETRY_DELAY + 5
 
 
 def now():
@@ -230,7 +253,7 @@ def container_state(name):
              "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"],
             capture_output=True,
             text=True,
-            timeout=25,
+            timeout=INSPECT_TIMEOUT,
         )
         if out.returncode != 0:
             return None, "absent"
@@ -247,7 +270,7 @@ def age_seconds(name):
             ["docker", "inspect", name, "--format", "{{.State.StartedAt}}"],
             capture_output=True,
             text=True,
-            timeout=25,
+            timeout=INSPECT_TIMEOUT,
         )
         if out.returncode != 0:
             return None
@@ -309,7 +332,7 @@ class RestartBudget:
             pass
 
 
-def restart_container(name, budget, dry_run):
+def restart_container(name, budget, dry_run, deadline=None):
     if dry_run:
         return "would restart %s (dry-run)" % name
     # Boot rail: same lesson as the vLLM watchdog v5 - a cold boot is not a
@@ -328,13 +351,17 @@ def restart_container(name, budget, dry_run):
     budget.save()
     try:
         out = subprocess.run(
-            ["docker", "restart", name], capture_output=True, text=True, timeout=180
+            ["docker", "restart", name], capture_output=True, text=True, timeout=RESTART_CLI_TIMEOUT
         )
         if out.returncode != 0:
             return "docker restart %s failed: %s" % (name, (out.stderr or "").strip()[:160])
     except Exception as exc:
         return "docker restart %s raised %s" % (name, type(exc).__name__)
-    ok = wait_healthy(name)
+    # The health wait never outlives the pass budget.
+    wait = HEALTH_TIMEOUT
+    if deadline is not None:
+        wait = min(wait, max(0.0, deadline - time.time()))
+    ok = wait_healthy(name, timeout=wait)
     return "%s restarted (%s)" % (name, "healthy" if ok else "NOT healthy yet")
 
 
@@ -353,11 +380,17 @@ def one_pass(args):
     # Set when `docker version` stays mute while the service answers: every
     # docker-driven gesture is skipped for the rest of the pass.
     cli_mute = False
+    # Wall-clock budget of this pass (see PASS_BUDGET_S).
+    deadline = time.time() + PASS_BUDGET_S
 
     def restart(name):
         if cli_mute:
             return "SKIP restart of %s: docker CLI mute this pass" % name
-        return restart_container(name, args.budget, args.dry_run)
+        left = deadline - time.time()
+        if left < RESTART_MIN_BUDGET_S:
+            return ("SKIP restart of %s: %ds left in this pass (< %ds) - the next pass decides"
+                    % (name, left, RESTART_MIN_BUDGET_S))
+        return restart_container(name, args.budget, args.dry_run, deadline)
 
     if not key:
         result["verdict"] = "NO_KEY"
@@ -456,23 +489,37 @@ def one_pass(args):
     fleet["ok_after_escalation"] = fleet["ok"]
     result["checks"].append(fleet)
     if direct is not None:
+        # Probed BEFORE the escalation: evidence of where the fault was, not a
+        # present failure. Counted as one, a pass that had just restored the
+        # chain still reported DEGRADED (found 2026-11-26, cycle 183).
+        direct["before_escalation"] = True
         result["checks"].append(direct)
 
     # --- whisper, HTTP level only (GPU 1 is another lane) ------------------
-    whisper = probe_whisper(args.deep_whisper, key)
-    if not whisper["ok"]:
-        time.sleep(RETRY_DELAY)
+    if deadline - time.time() < WHISPER_MIN_BUDGET_S:
+        # Not evaluated this pass. The record says so: an unchecked whisper must
+        # read neither as a failure nor as healthy.
+        result["checks"].append(
+            {"check": "whisper", "ok": None, "skipped": True,
+             "note": "not checked: pass budget spent, the next pass checks it"}
+        )
+    else:
         whisper = probe_whisper(args.deep_whisper, key)
-    if not whisper["ok"]:
-        # Only act if the app answers nothing at all; a 502/500 means the
-        # container needs a restart, a dead port means the same.
-        result["actions"].append(restart(WHISPER_CONTAINER))
-        if not args.dry_run:
-            time.sleep(5)
+        if not whisper["ok"]:
+            time.sleep(RETRY_DELAY)
             whisper = probe_whisper(args.deep_whisper, key)
-    result["checks"].append(whisper)
+        if not whisper["ok"]:
+            # Only act if the app answers nothing at all; a 502/500 means the
+            # container needs a restart, a dead port means the same.
+            result["actions"].append(restart(WHISPER_CONTAINER))
+            if not args.dry_run:
+                time.sleep(5)
+                whisper = probe_whisper(args.deep_whisper, key)
+        result["checks"].append(whisper)
 
-    failures = [c for c in result["checks"] if c.get("check") in ("embeddings", "whisper") and not c.get("ok")]
+    failures = [c for c in result["checks"]
+                if c.get("check") in ("embeddings", "whisper")
+                and not c.get("ok") and not c.get("skipped") and not c.get("before_escalation")]
     result["verdict"] = "OK" if not failures else "DEGRADED"
     result["failures"] = [c.get("check") + ":" + (c.get("error") or "?") for c in failures]
     return result
@@ -491,7 +538,9 @@ def main():
     args.budget = RestartBudget(args.state)
 
     while True:
+        started = time.time()
         res = one_pass(args)
+        res["duration_s"] = round(time.time() - started, 1)
         log_record(args.log, res)
 
         stamp = res["ts"]
@@ -506,7 +555,8 @@ def main():
                     c.get("path"), c.get("status"), c.get("model"), c.get("dims"), c.get("ok"), c.get("error", "")))
             elif c["check"] == "whisper":
                 print("  whisper    health=%s models=%s ok=%s %s" % (
-                    c.get("health_status"), c.get("models_status"), c.get("ok"), c.get("error", "")))
+                    c.get("health_status"), c.get("models_status"), c.get("ok"),
+                    c.get("error") or c.get("note") or ""))
             else:
                 print("  %-10s ok=%s %s" % (c["check"], c.get("ok"), c.get("error") or c.get("version") or c.get("note") or ""))
         for a in res["actions"]:
