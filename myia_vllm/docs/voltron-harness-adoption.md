@@ -26,7 +26,7 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
 | Rollback | **arrêter d'abord le process python :5029**, puis `docker stop voltron-harness` — sinon le service relance son moteur ; aucune donnée perdue |
-| Logs | `D:\vllm-data\bench\v2_server.log` · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
+| Logs | `D:\vllm-data\bench\v2_server.log` (routes d'exécution **attribuées** depuis le 26/11 : `caller=… kind=probe\|adoption ua=…` — §6d) · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
 
 Réponse type : `{"ok": true, "stage": "a"|"c", "answer": "...", "detail": "",
 "turns": 2, "dt_s": 8.4}`. `stage=c` signale que le coordinateur 27B a fini
@@ -297,7 +297,10 @@ texte à re-lire** — le service a déjà payé la vérification.
 **Sondes de santé** : ajouter l'en-tête `X-Voltron-Probe: 1` (sur `/v1/task`
 comme sur `POST /v1/jobs`) pour que le trafic de test **ne gonfle pas le
 compteur d'adoption** — le compteur est l'instrument du mandat, il ne doit
-mesurer que les consommateurs réels.
+mesurer que les consommateurs réels. Et **nommer l'appelant** :
+`X-Voltron-Caller: <votre-lane>` range vos appels sous votre nom dans
+`by_caller` (§6d). Les deux en-têtes vont ensemble : la sonde dit « ne compte
+pas », l'appelant dit « c'est moi ».
 
 **Tâche longue en fond** (le réflexe « je lance et j'oublie ») :
 
@@ -364,6 +367,53 @@ ne compte que les tâches réellement exécutées ; carte d'emploi et refus
 une question ouverte (posée sur `global` et à claudish-2c le 25/11), pas un
 acquis — d'ici là, la façade sert les clients locaux de po-2028.
 
+## 6d. Attribution des appels (26/11) — savoir QUI appelle
+
+Jusqu'ici le compteur disait **combien**, jamais **qui** : le 26/11 à 00:04Z
+deux tâches sont entrées dans l'adoption sans qu'aucune trace ne dise d'où
+elles venaient — rattachées par recoupement (heures, nature des charges) à
+la sonde d'une session sœur : une inférence, faute de trace. Deux en-têtes
+suffisent désormais :
+
+| En-tête | Effet | Qui doit le poser |
+|---|---|---|
+| `X-Voltron-Caller: <nom>` | range l'appel sous ce nom dans `by_caller` (`GET /v1/usage`) et dans le journal d'accès | **tout appelant** (lane, agent, lot) — consommateur comme sonde |
+| `X-Voltron-Probe: 1` | la tâche s'exécute mais n'entre **pas** dans le compteur d'adoption | **toute sonde, toute vigie** |
+
+Le nom est **déclaratif** : minuscules, lettres/chiffres/`._-`, 40 caractères
+(tout le reste est retiré, un nom vide devient `anonymous`). Il distingue, il
+n'autorise rien — le service est sans clé. Au-delà de 32 noms distincts, les
+nouveaux tombent sous `_others`.
+
+```powershell
+# un consommateur se nomme ; une vigie se nomme ET se exempte
+Invoke-RestMethod "$SVC/v1/task" -Method POST -ContentType "application/json" `
+  -Headers @{ "X-Voltron-Caller" = "claudish-cd" } -Body $task
+Invoke-RestMethod "$SVC/v1/task" -Method POST -ContentType "application/json" `
+  -Headers @{ "X-Voltron-Caller" = "vigie-po2028"; "X-Voltron-Probe" = "1" } -Body $probe
+
+(Invoke-RestMethod "$SVC/v1/usage").by_caller
+# <nom> : { n = <tâches exécutées> ; ok = <réussies> ; jobs = <lots reçus> }
+# anonymous : les appels sans X-Voltron-Caller, _others : au-delà de 32 noms
+```
+
+`GET /v1/usage` gagne donc `by_caller` : `{nom: {n, ok, jobs}}` — `n`/`ok`
+comme `by_type`, `jobs` = lots reçus. Un job garde l'appelant de son `POST
+/v1/jobs` pour toutes ses tâches, y compris celles qui terminent après un
+redémarrage du service (une tâche déjà comptée n'est jamais comptée deux
+fois). **Les tâches d'avant le 26/11 ne sont dans aucune ligne** : la somme
+des `n` de `by_caller` est donc inférieure à `tasks_total` — l'écart est tout
+l'historique d'avant le 26/11, c'est attendu.
+
+Le **journal d'accès** du service (`v2_server.log`) porte, sur les trois
+routes d'exécution (`/v1/task`, `/v1/jobs`, `/v1/chat/completions`), la
+ligne `caller=<nom|-> kind=<probe|adoption> ua='<User-Agent>'` — c'est le
+témoin des appels **sans** en-tête, comptés comme adoption par défaut.
+
+Limites vendues d'avance : un appelant qui ne pose ni sonde ni nom reste
+`anonymous` dans le compteur — seule sa ligne de journal le distingue, par
+son User-Agent. L'attribution n'est pas une authentification.
+
 ## 7. Feuille de route
 
 1. ✅ Service HTTP + moteur persistant + jobs background (ce document).
@@ -386,6 +436,9 @@ acquis — d'ici là, la façade sert les clients locaux de po-2028.
 3b. Corrigé au passage (même commit) : `POST /v1/task` avec un corps non objet
    répond **400** (au lieu de fermer la connexion), et une tâche malformée
    devient un résultat `stage: "error"` — même garde que les jobs (21/11).
+3c. ✅ **Attribution des appels (26/11, §6d)** : `X-Voltron-Caller` →
+   `by_caller` dans `GET /v1/usage` + journal d'accès attribué (appelant,
+   sonde/adoption, User-Agent) sur les routes d'exécution.
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
    recettes compatibles.
 5. Veille capacité : le moteur est surveillé par le cron vigie 6h du siège
