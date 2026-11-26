@@ -1,5 +1,5 @@
 ---
-description: Cycle surveillance vllm (6 h à :17) — la spec versionnée du cron
+description: Cycle surveillance vllm (6 h à :17) — la spec versionnée du cron, prod ai-01 UNIQUEMENT (tout autre siège → wrapper du siège)
 ---
 
 # Cycle surveillance vLLM (6 h à :17) — spec versionnée
@@ -9,6 +9,16 @@ description: Cycle surveillance vllm (6 h à :17) — la spec versionnée du cro
 Fallback si le skill ne charge pas : lire ce fichier (`d:/vllm/.claude/commands/vllm-surveillance.md`) et l'exécuter tel quel. **Fin de cycle : re-armer le cron** (`CronCreate`, **cadence 6 h à :17**, session-only) et vérifier par `CronList`.
 
 **⏱ CADENCE 6 h à :17.** La cadence provisoire 2 h du pilote haiku→swift (20-26/10) est historique : le cron vivant est « Every 6 hours at :17 » (`CronList`, vérifié le 24/11 ; l'heure affichée du prochain tir comprend le décalage propre au job). À chaque cycle : watch §5quater (prefix-hit, preemptions, re-prefill) + **marge commit hôte (§3, seuil 85 %)**.
+
+## ⚠️ Portée : à n'exécuter que sur le siège qui porte cette prod (ai-01)
+
+Tout ce qui suit décrit la prod **ai-01** : `127.0.0.1:5002`, les conteneurs `myia_vllm-*`, le watchdog hôte, `/dev/shm`, `fstier-prune`. **Sur un siège qui ne porte pas cette prod, ces objets sont absents par conception** — mesuré sur po-2028 le 26/11 : `:5002` refuse la connexion, aucun conteneur `myia_vllm-*`, le moteur est `voltron-harness` sur `127.0.0.1:5028` derrière le service `:5029`. Un `:5002` muet, un `docker ps --filter name=myia_vllm` vide ou un conteneur `myia_vllm-medium-swift15-27b` introuvable y sont **l'état nominal, pas une panne** :
+
+- ne pas en poster d'escalade ;
+- ne pas demander de GO pour « recréer » un service que ce siège ne porte pas ;
+- exécuter le wrapper du siège au lieu de cette spec : po-2028 → `vigie-vllm-po2028` (moteur `voltron-harness` sur `127.0.0.1:5028` derrière le service `:5029`, loopback, sans clé) ; po-2025 → `vigie` (FrogNano sur `:5003`) ; service d'embeddings → `myia_vllm:surveillance-embeddings` (12 h, écrit pour le siège po-2026 ; le service tourne sur po-2023 depuis le 20/10). La liste n'est pas exhaustive : `vigie` est versionné dans ce dépôt (`.claude/commands/`), `vigie-vllm-po2028` vit hors dépôt, dans le `~/.claude/commands/` du siège po-2028.
+
+Si le doute subsiste, la question à se poser avant tout signalement est : **ce siège est-il censé porter cet objet ?** Deux fausses escalades « `:5002` attendu, indisponible » ont été postées depuis po-2028 (25/11 05:57Z, 26/11 11:49Z) ; la lane du siège les a fermées sans rien réparer — rien n'était cassé. Déclencheur probable, non établi : cette spec exécutée hors d'ai-01.
 
 ## Prod concernée (état 2026-11-24)
 
