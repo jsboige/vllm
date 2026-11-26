@@ -30,6 +30,11 @@ dernier message user, le JSON du résultat dans choices[0].message.content.
 Pas de chat libre pour autant — le service n'a jamais livré de texte non gaté :
 un message sans tâche reconnaissable reçoit la carte d'emploi (FACADE_HELP).
 
+Attribution (26/11) : X-Voltron-Caller: <nom> range l'appel sous ce nom dans
+`by_caller` (GET /v1/usage) ; X-Voltron-Probe: 1 exécute HORS compteur
+d'adoption ; le journal d'accès des routes d'exécution porte l'appelant, la
+nature sonde/adoption et le User-Agent. Déclaratif — distingue, n'autorise rien.
+
 Auto-guérison : si l'engine :5028 est muet, `docker start voltron-harness`
 puis attente santé ≤240 s. Une tâche coupée par une indisponibilité TRANSITOIRE
 de l'engine est attendue puis rejouée (≤2 fois ; 1 h d'attente pour un job en
@@ -88,6 +93,17 @@ USAGE_PATH = os.environ.get("VOLTRON_USAGE_PATH") or os.path.join(_data_root, "u
 MAX_DATA_CHARS = 20000  # garde contexte 32K : data + prompt + réponse
 MAX_DEFS_CHARS = 4000   # class_definitions sérialisées (contexte, pas corpus)
 MAX_BODY_BYTES = 2 * 1024 * 1024  # borne POST (CHANGES_REQUESTED §6)
+# Attribution d'un appel (26/11). `X-Voltron-Caller` est DÉCLARATIF : l'appelant
+# se nomme pour être distingué dans `by_caller` (/v1/usage) et dans le journal
+# d'accès. Mesure fondatrice : deux appels comptés comme adoption le 26/11 à
+# 00:04Z étaient la sonde d'une session sœur sans X-Voltron-Probe — aucune
+# trace ne disait QUI avait appelé.
+CALLER_HEADER = "X-Voltron-Caller"
+CALLER_MAX = 32           # au-delà, les nouveaux noms tombent dans « _others »
+_CALLER_RE = re.compile(r"[^A-Za-z0-9._-]")
+_UA_RE = re.compile(r"[^\x20-\x7e]")
+# Routes d'EXÉCUTION : les seules dont le journal d'accès porte l'appelant
+_EXEC_ROUTES = {"/v1/task", "/v1/jobs", "/v1/chat/completions"}
 JOB_CONCURRENCY = 6     # moteur mesuré N=64 (3 673 t/s) ; 6 laisse la place
                          # aux appels /v1/task directs et borne la charge hub
 MAX_REPAIR_ROUNDS = 2
@@ -680,7 +696,8 @@ def _run_tasks(job_id, idx_tasks, count_usage=True,
         # écrire ne doit pas changer une tâche réussie en « stage: error ».
         _persist_safe(job_id)
         if count_usage and isinstance(t, dict):
-            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
+            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True,
+                        caller=job.get("caller"))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
         list(ex.map(one, idx_tasks))
@@ -872,7 +889,7 @@ def _usage():
     survit aux restarts serveur ET engine). Lecture tolérante (affichage)."""
     u, _ = _load_usage()
     if u is None:
-        return {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+        return {"tasks_total": 0, "ok": 0, "by_type": {}, "by_caller": {}, "jobs_total": 0,
                 "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
                 "last": None}
     return u
@@ -899,14 +916,26 @@ def _load_usage():
         return None, False
 
 
-def _bump_usage(ttype, ok, job=False, via_job=False):
-    """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+fsync+replace."""
+def caller_id(headers):
+    """Nom déclaré par l'appelant (`X-Voltron-Caller`), normalisé : minuscules,
+    seuls lettres, chiffres, `._-`, 40 caractères. Absent ou illisible → None
+    (compté comme « anonymous »). Un en-tête est une déclaration, pas une
+    authentification : il sert à distinguer, jamais à autoriser."""
+    raw = (headers.get(CALLER_HEADER) if headers is not None else None) or ""
+    return _CALLER_RE.sub("", raw.strip())[:40].lower() or None
+
+
+def _bump_usage(ttype, ok, job=False, via_job=False, caller=None):
+    """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+fsync+replace.
+    `caller` (voir caller_id) tient `by_caller` : {nom: {n, ok, jobs}} — la
+    répartition de l'adoption par appelant, née le 26/11 (les tâches d'avant
+    n'y sont pas : la somme de by_caller peut être < tasks_total)."""
     with _usage_lock:
         u, writable = _load_usage()
         if not writable:
             return None
         if u is None:
-            u = {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+            u = {"tasks_total": 0, "ok": 0, "by_type": {}, "by_caller": {}, "jobs_total": 0,
                  "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
                  "last": None}
         if job:
@@ -919,6 +948,18 @@ def _bump_usage(ttype, ok, job=False, via_job=False):
             bt["n"] += 1
             bt["ok"] += int(bool(ok))
             u["ok"] = u.get("ok", 0) + int(bool(ok))
+        bc = u.setdefault("by_caller", {})
+        if not isinstance(bc, dict):
+            bc = u["by_caller"] = {}
+        name = caller or "anonymous"
+        if name not in bc and len(bc) >= CALLER_MAX:
+            name = "_others"  # un nom forgé à chaque appel ne peut pas gonfler le fichier
+        entry = bc.setdefault(name, {"n": 0, "ok": 0, "jobs": 0})
+        if job:
+            entry["jobs"] += 1
+        else:
+            entry["n"] += 1
+            entry["ok"] += int(bool(ok))
         u["last"] = datetime.now(timezone.utc).isoformat()
         # Même refus transitoire que sur les jobs (voir _persist_safe) : un
         # lecteur tient le fichier au moment du remplacement — mesuré 24/11,
@@ -959,7 +1000,8 @@ CAPABILITIES = {
         "POST /v1/jobs": {"tasks": ["<task>..."], "name": "optionnel"},
         "GET /v1/jobs/<id>": "statut + résultats (persistés, REPRIS au restart serveur — "
                              "les tâches restantes d'un job interrompu sont relancées au boot)",
-        "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument d'adoption",
+        "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument "
+                         "d'adoption ; by_type par tâche, by_caller par appelant déclaré",
         "GET /health": "engine + hub + serveur",
         "POST /v1/chat/completions": "façade OpenAI — UNE tâche par appel : l'objet JSON de /v1/task dans "
                                      "le dernier message user ; content = JSON du résultat (ou carte "
@@ -967,6 +1009,10 @@ CAPABILITIES = {
         "GET /v1/models": "façade OpenAI — un seul modèle: voltron-harness",
         "GET /openapi.json": "contrat OpenAPI 3.1 du service (montage en tools)",
         "GET /v1/capabilities": "ce document"},
+    "attribution": "en-tête X-Voltron-Caller: <nom> (optionnel, déclaratif) range vos appels sous "
+                   "votre nom dans by_caller (GET /v1/usage) et dans le journal d'accès ; "
+                   "X-Voltron-Probe: 1 exécute la tâche HORS compteur d'adoption — toute sonde, "
+                   "toute vigie doit le poser (un appel sans en-tête est compté comme adoption)",
     "coupure_engine": "une tâche coupée par une indisponibilité transitoire du moteur est "
                        "attendue puis rejouée (1 h max par tâche en job, 2 min en appel "
                        "direct) ; un conteneur du moteur arrêté est relancé par le service ; "
@@ -1079,6 +1125,19 @@ _ERROR_SCHEMA = {
                              "properties": {"message": {"type": "string"},
                                             "type": {"type": "string"}}}},
 }
+# En-têtes d'attribution, communs aux trois routes d'exécution.
+_ATTR_HEADERS = [
+    {"name": "X-Voltron-Caller", "in": "header", "required": False,
+     "schema": {"type": "string", "maxLength": 40, "pattern": "^[A-Za-z0-9._-]+$"},
+     "description": "Nom de l'appelant (lane, agent, lot) — rangé dans `by_caller` de "
+                    "/v1/usage et dans le journal d'accès. Déclaratif : il distingue, "
+                    "il n'autorise rien."},
+    {"name": "X-Voltron-Probe", "in": "header", "required": False,
+     "schema": {"type": "string", "enum": ["1"]},
+     "description": "`1` = sonde de vigie : la tâche s'exécute mais n'entre pas dans le "
+                    "compteur d'adoption. Toute sonde doit le poser."},
+]
+
 OPENAPI = {
     "openapi": "3.1.0",
     "info": {
@@ -1093,6 +1152,7 @@ OPENAPI = {
     },
     "paths": {
         "/v1/task": {"post": {
+            "parameters": _ATTR_HEADERS,
             "summary": "Tâche gatée en un appel : extraire des champs, classer un texte "
                        "avec preuve citée, rédiger un rapport de nombres fidèle, ou comparer "
                        "deux configs JSON",
@@ -1105,6 +1165,7 @@ OPENAPI = {
                                       "schema": _RESULT_SCHEMA}}}},
         }},
         "/v1/jobs": {"post": {
+            "parameters": _ATTR_HEADERS,
             "summary": "Lancer une liste de tâches en background et relire le résultat plus tard",
             "description": "Exécution en fond (concurrence 6), chaque résultat persisté au "
                            "fil de l'eau — survive au redémarrage du service et aux coupures "
@@ -1134,7 +1195,10 @@ OPENAPI = {
         }},
         "/v1/usage": {"get": {
             "summary": "Compteurs d'usage durables du service",
-            "responses": {"200": {"description": "Totaux par type de tâche."}},
+            "responses": {"200": {"description": "Totaux par type de tâche (`by_type`) et par "
+                                             "appelant déclaré (`by_caller` : {nom: {n, ok, jobs}}, "
+                                             "noms absents avant le 26/11 — sa somme peut être "
+                                             "inférieure à tasks_total)."}},
         }},
         "/health": {"get": {
             "summary": "Santé du serveur et de son moteur local",
@@ -1145,6 +1209,7 @@ OPENAPI = {
             "responses": {"200": {"description": "Le document de capacités."}},
         }},
         "/v1/chat/completions": {"post": {
+            "parameters": _ATTR_HEADERS,
             "summary": "Façade OpenAI : UNE tâche par appel chat-completions (SDK, proxy, préset)",
             "description": "Le contenu du dernier message `user` porte l'objet JSON de `/v1/task` "
                            "(seul, en bloc ```json, ou imbriqué dans du texte). "
@@ -1321,7 +1386,8 @@ class Handler(BaseHTTPRequestHandler):
             probe = self.headers.get("X-Voltron-Probe") == "1"
             res = _run_sync(task, "appel /v1/chat/completions: ")
             if not probe:  # trafic de test du siège : hors compteur d'adoption
-                _bump_usage(task.get("type", "?"), res.get("ok"))
+                _bump_usage(task.get("type", "?"), res.get("ok"),
+                            caller=caller_id(self.headers))
             content = res
         elif kind == "batch":
             content = _reject("la façade exécute UNE tâche par appel ; un lot se confie à "
@@ -1348,6 +1414,20 @@ class Handler(BaseHTTPRequestHandler):
                    "choices": [{"index": 0, "logprobs": None, "finish_reason": "stop",
                                 "delta": {}}]})
         self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_request(self, code="-", size="-"):
+        # Journal d'accès ATTRIBUÉ sur les routes d'exécution : appelant déclaré,
+        # sonde ou adoption, User-Agent. Un appel sans X-Voltron-Probe est compté
+        # comme adoption — cette ligne est la seule trace qui dise QUI a appelé
+        # (26/11 00:04Z : deux appels comptés, attribués à la sonde d'une session
+        # sœur par recoupement de dashboards, faute de mieux).
+        line = f'"{self.command} {self.path} {self.request_version}" {code} {size}'
+        if self.path.split("?", 1)[0] in _EXEC_ROUTES:
+            ua = _UA_RE.sub(" ", self.headers.get("User-Agent") or "-").strip()
+            probe = self.headers.get("X-Voltron-Probe") == "1"
+            line += (f" caller={caller_id(self.headers) or '-'}"
+                     f" kind={'probe' if probe else 'adoption'} ua={ua[:60]!r}")
+        self.log_message("%s", line)
 
     def log_message(self, fmt, *args):
         print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%SZ')}] {fmt % args}", flush=True)
@@ -1421,10 +1501,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "objet JSON attendu (la tâche)"})
         elif self.path == "/v1/task":
             probe = self.headers.get("X-Voltron-Probe") == "1"
+            who = caller_id(self.headers)
             # coupure transitoire d'engine : UNE attente courte + rejeu
             res = _run_sync(body, "appel /v1/task: ")
             if not probe:  # trafic de test du siège : hors compteur d'adoption
-                _bump_usage(body.get("type", "?"), res.get("ok"))
+                _bump_usage(body.get("type", "?"), res.get("ok"), caller=who)
             self._send(200, res)
         elif self.path == "/v1/chat/completions":
             self._chat_completions(body)
@@ -1434,13 +1515,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "'tasks' = liste non vide requis"})
                 return
             probe = self.headers.get("X-Voltron-Probe") == "1"
+            who = caller_id(self.headers)
             if not probe:
-                _bump_usage(None, None, job=True)
+                _bump_usage(None, None, job=True, caller=who)
             jid = f"job-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
             with _jobs_lock:
                 _jobs[jid] = {"status": "running", "name": body.get("name", ""),
                               "total": len(tasks), "done": 0, "results": [],
-                              "tasks": tasks, "probe": probe,
+                              "tasks": tasks, "probe": probe, "caller": who,
                               "created": datetime.now(timezone.utc).isoformat()}
             # la charge est sur disque AVANT le premier tour — un kill immédiat
             # reste reprisable (reprise au boot, 21/11). Un refus d'écriture ne
