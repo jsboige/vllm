@@ -1,7 +1,9 @@
 <#
   ddrive_sizes.ps1 - releve de taille par dossier d'un disque (siege po-2028:vllm)
-  Lecture seule (robocopy /L = liste, aucune copie). Ne vit dans aucun worktree :
-  la premiere version a disparu avec le retrait de wt-po2028-vllm-599 (26/11).
+  Lecture seule (robocopy /L = liste, aucune copie). La premiere version a disparu
+  avec le retrait de wt-po2028-vllm-599 (26/11) ; la copie durable vit HORS de tout
+  worktree (D:\vllm-data\bench\seat-po2028\) et le fichier est aussi commite dans le
+  depot (myia_vllm/scripts/monitoring/).
 
   Modes :
     -Mode snapshot   ecrit <OutDir>\ddrive_sizes_<UTC>.txt
@@ -18,7 +20,7 @@
     - en PowerShell, -f est MOINS prioritaire que + => arguments du format entre parentheses.
 
   Exemples :
-    pwsh -NoProfile -File ddrive_sizes.ps1 -Mode snapshot            # ~5 min sur 1,4 To, en arriere-plan
+    pwsh -NoProfile -File ddrive_sizes.ps1 -Mode snapshot            # mesure 26/11 : 815 s sur 1,4 To, en arriere-plan
     pwsh -NoProfile -File ddrive_sizes.ps1 -Mode diff
 #>
 [CmdletBinding()]
