@@ -743,6 +743,16 @@ Observed: it killed the first cold boot of the stock image at 2026-08-11 00:03:0
 
 Fix: `labels: ["autoheal=False"]` — capital F is mandatory, the filter is `select(.Labels["autoheal"] != "False")`, an exact string comparison. **General rule: before analysing any unexplained container restart, check whether another restart authority exists on the host (`docker ps | grep -i heal`) — a flat `RestartCount` does not prove no restart happened.**
 
+### ⚠️ An NVIDIA driver (re)installed while the Docker Desktop VM runs kills the engine and breaks the GPU hook (2026-11-26)
+
+Measured on 2026-11-26. The host rebooted at 15:42:53Z, Docker Desktop was reinstalled at 15:52:11Z, and the stack came back (engine `StartedAt` 15:55:18Z). At 15:58:09→15:58:53Z an NVIDIA driver package was (re)installed under the running VM — `UserPnp` 20003 in the System log: service `nvlddmkm` added for each of the three cards (15:58:09 / 15:58:23 / 15:58:38Z), `NVDisplay.ContainerLocalSystem` (15:58:39Z), then the cards' HD-audio endpoints (`oem100.inf`, 15:58:48→15:58:53Z). **19 s later (15:58:57Z) both TP workers died together** on `torch.AcceleratorError: CUDA error: unknown error` → `EngineDeadError`; `OOMKilled=false`. Windows Update had found 0 updates at 15:53:36Z, so the installer was not Windows Update (not identified from this seat).
+
+**The restart is refused at container create**, and from then on **no `--gpus` container can start on the host** — `docker run --rm --gpus device=0 --entrypoint /bin/sh vllm-openai-v0340-fsadmit:v1 -c 'echo hook-ok'` failed 3/3 with `runc create failed … error running prestart hook #0: exit status 127, stderr: Inconsistency detected by ld.so: dl-setup_hash.c: 36: _dl_setup_hash: Assertion … failed!` (engine `ExitCode` 128). It is **not the profile, the image or a flag** — do not touch them.
+
+What stays healthy, and proves the scope: the daemon (29.9.3), the ~50 other containers, `nvidia-smi` (all three cards listed), `/dev/shm` (0 % after the reboot — no orphan to purge before the next boot).
+
+**Remedy: restart Docker Desktop** (the VM remounts the driver libraries); a host reboot is cleaner when `PendingFileRenameOperations` is not empty (4 entries measured). That gesture **cuts the ~50 shared containers**, so it is a notable-consequence gesture: **it is escalated (`global` + `machine`), never done unilaterally — even with prod down.** Do not relaunch the engine while the hook probe fails. Diagnosis in three reads: `Get-WinEvent` on `System` (provider `UserPnp`) and `Microsoft-Windows-Kernel-PnP/Configuration` since the last boot, the `LastWriteTimeUtc` of `C:\Windows\System32\DriverStore\FileRepository`, and the hook probe above.
+
 ### ⚠️ The Genesis image is IRREPRODUCIBLE — keep the backups until the stock soak concludes
 
 This is what motivated the migration, and it still governs the rollback path.
