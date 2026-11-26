@@ -21,7 +21,7 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | --- | --- |
 | URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
 | Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, ~7,1/8 Gio VRAM ; **tier RAM retiré 24/11** — 4 Gio de shm pour 0 octet relu sur ~24 h, conteneur ~7 Gio → ~3 Gio) |
-| Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
+| Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · **façade OpenAI 26/11** : `GET /v1/models` + `POST /v1/chat/completions` (JSON et SSE — §6c) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
 | Auto-guérison | engine muet → `docker start voltron-harness` (un seul partagé entre threads, puis ≤1/30 s pendant l'attente) + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente ; `returncode`/`stderr` sont rapportés dans le résultat et journalisés seulement au changement d'erreur) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
 | Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
@@ -318,6 +318,52 @@ pendant**, livrable forme fixe à la fin (contrat BG FrogNano). Depuis une
 **autre machine**, remplacer `127.0.0.1` par l'IP po-2028 — mais le service
 bind local : demander l'exposition hub au siège po-2028:vllm (§7).
 
+## 6c. Façade OpenAI (26/11) — pour les clients qui ne savent qu'appeler un modèle
+
+Beaucoup de clients ne parlent que `chat/completions` : SDK OpenAI, proxys,
+présets sk-agent. Le service expose donc ces deux routes, **sans devenir un
+chat** : une **tâche par appel**, et le résultat du harnais dans le contenu.
+
+| Route | Réponse |
+| --- | --- |
+| `GET /v1/models` | `{"object": "list", "data": [{"id": "voltron-harness", …}]}` — un seul modèle, qui est **le harnais**, pas le 1.7B nu |
+| `GET /v1/models/voltron-harness` | sa fiche ; tout autre id → **404** `model_not_found` (format d'erreur OpenAI) |
+| `POST /v1/chat/completions` | `choices[0].message.content` = **le JSON du résultat** (`{ok, stage, answer, detail, turns, dt_s}`) ; `stream: true` → SSE (rôle, contenu, fin, `[DONE]`) |
+
+La tâche se lit dans le **contenu du dernier message `user`** : l'objet JSON de
+`POST /v1/task`, seul, dans un bloc ```` ```json ````, ou imbriqué dans du texte
+(première `{` … dernière `}`). Messages `system`/assistant, historique et
+paramètres d'échantillonnage sont **ignorés** (listés dans
+`x_voltron.ignored_params`) : c'est le contrat de l'appelant qui décide, pas le
+tirage. `x_voltron.kind` dit ce qui a été compris : `task`, `batch` (un tableau
+JSON → refus actionnable renvoyant vers `/v1/jobs`), `invalid` (JSON cassé),
+`help` (rien de reconnaissable → **carte d'emploi**, aucune tâche exécutée).
+
+```python
+from openai import OpenAI
+c = OpenAI(base_url="http://127.0.0.1:5029/v1", api_key="local")  # clé non vérifiée : bind loopback
+r = c.chat.completions.create(model="voltron-harness", messages=[{"role": "user", "content":
+    '{"type": "extract", "data": "Rapport : temp 42, score 97", "fields": ["temp", "score"]}'}])
+print(r.choices[0].message.content)   # -> {"ok": true, "stage": "a", "answer": "{...}", ...}
+```
+
+```bash
+curl -s http://127.0.0.1:5029/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "voltron-harness",
+  "messages": [{"role": "user", "content": "{\"type\": \"classify\", \"data\": \"...\", \"classes\": [\"oom\",\"benign\"]}"}]}'
+```
+
+Limites vendues d'avance : pas d'outils, pas d'image, pas de chat libre ; une
+tâche par appel (un lot → `POST /v1/jobs`) ; `usage` à zéro (le service ne
+facture pas de tokens, il en dépense côté hub) ; échec **dans** la tâche =
+HTTP 200 + `ok: false` (lire `detail`), HTTP 400 seulement pour un corps
+malformé (`messages` absent ou sans message `user`). Le compteur d'adoption
+ne compte que les tâches réellement exécutées ; carte d'emploi et refus
+(`help`/`batch`/`invalid`) exclus, `X-Voltron-Probe: 1` exempte tout.
+**Le service reste en bind loopback** : une exposition via le hub claudish est
+une question ouverte (posée sur `global` et à claudish-2c le 25/11), pas un
+acquis — d'ici là, la façade sert les clients locaux de po-2028.
+
 ## 7. Feuille de route
 
 1. ✅ Service HTTP + moteur persistant + jobs background (ce document).
@@ -330,8 +376,16 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    2-étapes stage a 0,26-0,64 s (escalade coordinateur systématique avant) ;
    seuil verbatim 15→8 ; extract/numbers livrent propre (extract reparsable) ;
    jobs ×6 concurrents ; `GET /` sert les capacités.
-3. Présets sk-agent voltron (si les lanes veulent un routage hub) — à demander
-   au PO sk-agent le cas échéant.
+3. ✅ **Façade OpenAI livrée (26/11, §6c)** : `GET /v1/models` +
+   `POST /v1/chat/completions` (JSON + SSE) — le prérequis technique d'un
+   préset sk-agent ou d'un montage hub. **Reste la décision d'exposition** :
+   le service bind loopback ; la question (a fournisseur non-chat · b façade
+   livrée · c pas de place) est posée à po-2025:claudish / claudish-2c depuis
+   le 25/11, sans réponse ⇒ pause explicite datée au cycle suivant, service
+   inchangé sur loopback.
+3b. Corrigé au passage (même commit) : `POST /v1/task` avec un corps non objet
+   répond **400** (au lieu de fermer la connexion), et une tâche malformée
+   devient un résultat `stage: "error"` — même garde que les jobs (21/11).
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
    recettes compatibles.
 5. Veille capacité : le moteur est surveillé par le cron vigie 6h du siège

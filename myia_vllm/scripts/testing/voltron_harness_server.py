@@ -23,6 +23,13 @@ persistée sur disque) ; GET /v1/jobs/<id> pour suivre. Reprise : au boot, un
 job 'running' dont le thread est mort voit ses tâches restantes RELANCÉES
 (la charge est persistée) ; les jobs pré-reprise deviennent 'orphaned'.
 
+Façade OpenAI (26/11) : GET /v1/models + POST /v1/chat/completions — pour les
+clients qui ne savent qu'appeler un modèle (SDK OpenAI, proxys, présets
+sk-agent). UNE tâche par appel : l'objet JSON de /v1/task dans le contenu du
+dernier message user, le JSON du résultat dans choices[0].message.content.
+Pas de chat libre pour autant — le service n'a jamais livré de texte non gaté :
+un message sans tâche reconnaissable reçoit la carte d'emploi (FACADE_HELP).
+
 Auto-guérison : si l'engine :5028 est muet, `docker start voltron-harness`
 puis attente santé ≤240 s. Une tâche coupée par une indisponibilité TRANSITOIRE
 de l'engine est attendue puis rejouée (≤2 fois ; 1 h d'attente pour un job en
@@ -609,6 +616,19 @@ def _run_task_resilient(t, wait_s, job, retries, ctx=""):
     return res
 
 
+def _run_sync(t, ctx):
+    """Appel synchrone (/v1/task, façade chat) : le rejeu sur coupure
+    transitoire d'engine, et une exception inattendue devient un résultat
+    d'erreur — même règle qu'en job (_run_tasks.one). Sans cette garde, une
+    tâche malformée (extract avec `data` numérique) fermait la connexion sans
+    réponse."""
+    try:
+        return _run_task_resilient(t, ENGINE_WAIT_SYNC_S, {}, ENGINE_RETRIES_SYNC, ctx=ctx)
+    except Exception as exc:
+        return {"ok": False, "stage": "error", "answer": "", "transient": False,
+                "detail": f"exécution tâche: {exc!r}", "turns": 0, "dt_s": 0.0}
+
+
 def _run_tasks(job_id, idx_tasks, count_usage=True,
                wait_s=ENGINE_WAIT_JOB_S, retries=ENGINE_RETRIES):
     """Exécute un SOUS-ENSEMBLE (index, tâche) d'un job — plein ou reprise.
@@ -941,6 +961,10 @@ CAPABILITIES = {
                              "les tâches restantes d'un job interrompu sont relancées au boot)",
         "GET /v1/usage": "compteurs d'usage DURABLES (survivent aux restarts) — l'instrument d'adoption",
         "GET /health": "engine + hub + serveur",
+        "POST /v1/chat/completions": "façade OpenAI — UNE tâche par appel : l'objet JSON de /v1/task dans "
+                                     "le dernier message user ; content = JSON du résultat (ou carte "
+                                     "d'emploi) ; stream: SSE",
+        "GET /v1/models": "façade OpenAI — un seul modèle: voltron-harness",
         "GET /openapi.json": "contrat OpenAPI 3.1 du service (montage en tools)",
         "GET /v1/capabilities": "ce document"},
     "coupure_engine": "une tâche coupée par une indisponibilité transitoire du moteur est "
@@ -1018,11 +1042,48 @@ _RESULT_SCHEMA = {
                                      "re-POSTer la tâche plus tard."},
     },
 }
+
+# Façade OpenAI : la réponse chat est de forme OpenAI, son `content` reste le
+# JSON du résultat du service (ou la carte d'emploi).
+_CHAT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": ["id", "object", "created", "model", "choices", "usage"],
+    "properties": {
+        "object": {"const": "chat.completion"},
+        "model": {"type": "string"},
+        "choices": {"type": "array", "minItems": 1, "maxItems": 1, "items": {
+            "type": "object",
+            "required": ["index", "message", "finish_reason"],
+            "properties": {
+                "index": {"const": 0},
+                "message": {"type": "object", "required": ["role", "content"],
+                            "properties": {"role": {"const": "assistant"},
+                                           "content": {"type": "string"}}},
+                "finish_reason": {"const": "stop"},
+            }}},
+        "usage": {"type": "object", "description": "Des zéros : le service ne compte pas en tokens."},
+        "x_voltron": {"type": "object", "required": ["kind"],
+                      "properties": {
+                          "kind": {"type": "string",
+                                   "enum": ["task", "batch", "invalid", "help"],
+                                   "description": "task = un résultat ; help = carte d'emploi "
+                                                  "(message sans tâche) ; batch = un tableau "
+                                                  "reçu (→ /v1/jobs) ; invalid = JSON cassé."},
+                          "ignored_params": {"type": "array", "items": {"type": "string"}},
+                      }},
+    },
+}
+_ERROR_SCHEMA = {
+    "type": "object", "required": ["error"],
+    "properties": {"error": {"type": "object", "required": ["message", "type"],
+                             "properties": {"message": {"type": "string"},
+                                            "type": {"type": "string"}}}},
+}
 OPENAPI = {
     "openapi": "3.1.0",
     "info": {
         "title": "harnais voltron",
-        "version": "2026-11-24",
+        "version": "2026-11-26",
         "description": "Une requête HTTP → une réponse déjà fiabilisée. Un petit modèle "
                        "local exécute la tâche, la répare (≤2 tours) et, si le vérificateur "
                        "mécanique refuse encore, un coordinateur 27B la reprend. La réponse "
@@ -1083,8 +1144,130 @@ OPENAPI = {
             "summary": "Le contrat du service en prose : types de tâches, gates, refus",
             "responses": {"200": {"description": "Le document de capacités."}},
         }},
+        "/v1/chat/completions": {"post": {
+            "summary": "Façade OpenAI : UNE tâche par appel chat-completions (SDK, proxy, préset)",
+            "description": "Le contenu du dernier message `user` porte l'objet JSON de `/v1/task` "
+                           "(seul, en bloc ```json, ou imbriqué dans du texte). "
+                           "`choices[0].message.content` est le JSON du résultat — ou la carte "
+                           "d'emploi si rien n'est reconnaissable (`x_voltron.kind`). Messages "
+                           "system, historique et paramètres d'échantillonnage sont ignorés "
+                           "(listés dans `x_voltron.ignored_params`) : le contrat de l'appelant "
+                           "décide, pas le tirage. Pas de chat libre, pas d'outils, pas d'image. "
+                           "`stream: true` : SSE (rôle, contenu, fin, `[DONE]`).",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object",
+                "required": ["messages"],
+                "properties": {
+                    "model": {"type": "string", "description": "Ignoré — un seul modèle existe."},
+                    "messages": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+                    "stream": {"type": "boolean", "default": False},
+                }}}}},
+            "responses": {
+                "200": {"description": "Toujours 200 — lire `ok` dans le contenu.",
+                        "content": {"application/json": {"schema": _CHAT_RESPONSE_SCHEMA},
+                                    "text/event-stream": {"schema": {"type": "string"}}}},
+                "400": {"description": "`messages` absent ou sans message `user`.",
+                        "content": {"application/json": {"schema": _ERROR_SCHEMA}}},
+            },
+        }},
+        "/v1/models": {"get": {
+            "summary": "Façade OpenAI : le modèle servi — `voltron-harness` (le harnais, pas le 1.7B nu)",
+            "responses": {"200": {"description": "Un seul modèle : voltron-harness."}},
+        }},
     },
 }
+
+
+# ------------------------------------------------------- façade OpenAI chat
+# Un harnais de tâches n'est pas un modèle de chat — mais tous les clients
+# savent déjà appeler /v1/chat/completions (SDK OpenAI, proxys, présets
+# sk-agent). La façade fait tenir UNE tâche dans un appel chat : l'objet JSON
+# de POST /v1/task se lit dans le contenu du dernier message user ;
+# `choices[0].message.content` est le JSON du résultat. Pas de chat libre pour
+# autant — le service n'a jamais livré de texte non gaté : un message sans
+# tâche reconnaissable reçoit la carte d'emploi.
+FACADE_MODEL = "voltron-harness"
+FACADE_STARTED = int(time.time())
+# Clés de la requête chat que la façade lit ; toute autre est IGNORÉE et
+# signalée dans x_voltron.ignored_params (tools, temperature… : le contrat de
+# l'appelant décide, pas le tirage).
+_CHAT_KEYS_READ = {"model", "messages", "stream"}
+_FENCE_RE = re.compile(r"```[a-zA-Z]*[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.S)
+FACADE_HELP = {
+    "service": "harnais voltron — ce service exécute des tâches déjà vérifiées, "
+               "il ne fait pas de conversation",
+    "howto": "envoyer UNE tâche par appel : l'objet JSON ci-dessous (ou son bloc "
+             "```json) comme contenu du dernier message user",
+    "example": {"type": "extract", "data": "Rapport : temp 42, score 97",
+                "fields": ["temp", "score"], "verbatim": False},
+    "types": {"extract": "data + fields → JSON exact, valeurs recopiées",
+              "classify": "data + classes → classe + ligne prouvée (recopiée)",
+              "numbers": "data + report_prompt + numbers → rapport sans nombre inventé",
+              "diff": "a + b (JSON) → rapport des écarts"},
+    "result": "choices[0].message.content = JSON {ok, stage, answer, detail, turns, dt_s} ; "
+              "consommer answer quand ok=true, lire detail sinon",
+    "more": "GET /v1/capabilities (contrats, gates, refus) · plusieurs tâches ou tâche "
+            "longue : POST /v1/jobs",
+}
+
+
+def task_from_text(text):
+    """Contenu du dernier message user → (nature, tâche). 'task' : l'objet JSON
+    de POST /v1/task, seul, en bloc ```json, ou imbriqué dans du texte (première
+    `{` … dernière `}`) ; 'batch' : un tableau JSON — plusieurs tâches, un job ;
+    'invalid' : tâche annoncée mais JSON cassé, `tâche` porte l'erreur ;
+    'help' : rien de reconnaissable."""
+    text = (text or "").strip()
+    if text.startswith(("{", "[")):
+        try:
+            obj = json.loads(text)
+        except Exception as exc:
+            return ("invalid", f"JSON invalide ({exc})") if text.startswith("{") \
+                else ("help", None)
+        if isinstance(obj, dict):
+            return "task", obj
+        return ("batch", None) if isinstance(obj, list) else ("help", None)
+    fenced = [m.group(1).strip() for m in _FENCE_RE.finditer(text)]
+    embedded = [text[text.index("{"):text.rindex("}") + 1]] if "{" in text and "}" in text else []
+    for i, cand in enumerate(fenced + embedded):
+        try:
+            obj = json.loads(cand)
+        except Exception as exc:
+            if i == 0 and cand.startswith("{"):
+                return "invalid", f"JSON invalide ({exc})"
+            continue
+        if isinstance(obj, dict):
+            return "task", obj
+        if isinstance(obj, list):
+            return "batch", None
+    return "help", None
+
+
+def last_user_text(messages):
+    """Texte du dernier message user — une chaîne, ou la jointure des parties
+    `{type: text}` (une image n'est pas une entrée du harnais). None sans
+    message user."""
+    for m in reversed(messages):
+        if not (isinstance(m, dict) and m.get("role") == "user"):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return "\n".join(str(p.get("text") or "") for p in c
+                             if isinstance(p, dict) and p.get("type") == "text")
+        return ""
+    return None
+
+
+def facade_model():
+    return {"id": FACADE_MODEL, "object": "model", "created": FACADE_STARTED,
+            "owned_by": "voltron-harness"}
+
+
+def _reject(detail):
+    return {"ok": False, "stage": "reject", "answer": "", "detail": detail,
+            "turns": 0, "dt_s": 0.0}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1095,6 +1278,76 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_openai_error(self, status, message, param=None, err_code=None):
+        """Erreur au format OpenAI : un SDK affiche error.message."""
+        self._send(status, {"error": {"message": message, "type": "invalid_request_error",
+                                      "param": param, "code": err_code}})
+
+    def _sse(self, event):
+        self.wfile.write(("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
+
+    def _chat_completions(self, body):
+        """Façade OpenAI : UNE tâche par appel chat (voir FACADE_HELP)."""
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            self._send_openai_error(400, "'messages' = liste non vide de messages requise",
+                                    "messages")
+            return
+        text = last_user_text(messages)
+        if text is None:
+            self._send_openai_error(
+                400, "aucun message role=user : la tâche se lit dans le dernier message user",
+                "messages")
+            return
+        model = body["model"] if isinstance(body.get("model"), str) and body["model"] \
+            else FACADE_MODEL
+        cid, created = f"chatcmpl-{uuid.uuid4().hex}", int(time.time())
+        stream = bool(body.get("stream"))
+        head = {"id": cid, "created": created, "model": model}
+        if stream:
+            # en-têtes + premier morceau AVANT la tâche : un flux ouvert n'a pas
+            # l'air d'un appel mort pendant un long préfill
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()  # pas de Content-Length : corps délimité par la fermeture
+            self._sse({**head, "object": "chat.completion.chunk",
+                       "choices": [{"index": 0, "logprobs": None, "finish_reason": None,
+                                    "delta": {"role": "assistant", "content": ""}}]})
+
+        kind, task = task_from_text(text)
+        if kind == "task":
+            probe = self.headers.get("X-Voltron-Probe") == "1"
+            res = _run_sync(task, "appel /v1/chat/completions: ")
+            if not probe:  # trafic de test du siège : hors compteur d'adoption
+                _bump_usage(task.get("type", "?"), res.get("ok"))
+            content = res
+        elif kind == "batch":
+            content = _reject("la façade exécute UNE tâche par appel ; un lot se confie à "
+                              "POST /v1/jobs {\"tasks\": [...]} (exécution en fond)")
+        elif kind == "invalid":
+            content = _reject(f"tâche illisible: {task}")
+        else:
+            content = FACADE_HELP
+        out = json.dumps(content, ensure_ascii=False)
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        extra = {"kind": kind,
+                 "ignored_params": sorted(k for k in body if k not in _CHAT_KEYS_READ)}
+        if not stream:
+            self._send(200, {**head, "object": "chat.completion", "usage": usage,
+                             "x_voltron": extra,
+                             "choices": [{"index": 0, "logprobs": None, "finish_reason": "stop",
+                                          "message": {"role": "assistant", "content": out}}]})
+            return
+        self._sse({**head, "object": "chat.completion.chunk",
+                   "choices": [{"index": 0, "logprobs": None, "finish_reason": None,
+                                "delta": {"content": out}}]})
+        self._sse({**head, "object": "chat.completion.chunk", "usage": usage,
+                   "x_voltron": extra,
+                   "choices": [{"index": 0, "logprobs": None, "finish_reason": "stop",
+                                "delta": {}}]})
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def log_message(self, fmt, *args):
         print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%SZ')}] {fmt % args}", flush=True)
@@ -1110,6 +1363,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, CAPABILITIES)
         elif self.path == "/openapi.json":
             self._send(200, OPENAPI)
+        elif self.path == "/v1/models":
+            self._send(200, {"object": "list", "data": [facade_model()]})
+        elif self.path == f"/v1/models/{FACADE_MODEL}":
+            self._send(200, facade_model())
+        elif self.path.startswith("/v1/models/"):
+            self._send_openai_error(404, f"le service ne sert qu'un modèle: {FACADE_MODEL}",
+                                    "model", err_code="model_not_found")
         elif self.path == "/v1/usage":
             with _usage_lock:
                 self._send(200, _usage())
@@ -1155,14 +1415,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send(400, {"error": f"JSON invalide: {exc}"})
             return
-        if self.path == "/v1/task":
+        if not isinstance(body, dict):
+            # même réponse qu'une charge de job malformée — avant, un corps non
+            # objet fermait la connexion sans réponse
+            self._send(400, {"error": "objet JSON attendu (la tâche)"})
+        elif self.path == "/v1/task":
             probe = self.headers.get("X-Voltron-Probe") == "1"
             # coupure transitoire d'engine : UNE attente courte + rejeu
-            res = _run_task_resilient(body, ENGINE_WAIT_SYNC_S, {},
-                                      ENGINE_RETRIES_SYNC, ctx="appel /v1/task: ")
+            res = _run_sync(body, "appel /v1/task: ")
             if not probe:  # trafic de test du siège : hors compteur d'adoption
                 _bump_usage(body.get("type", "?"), res.get("ok"))
             self._send(200, res)
+        elif self.path == "/v1/chat/completions":
+            self._chat_completions(body)
         elif self.path == "/v1/jobs":
             tasks = body.get("tasks")
             if not isinstance(tasks, list) or not tasks:
