@@ -12,7 +12,7 @@
     ferme la breche de detection. Modele : embedding_watchdog.ps1 (ai-01).
 
     Verifie toutes les 5 min (schtask Watchdog-vLLM-API) :
-      1) Sante moteur : http://localhost:5002/health (200 = UP)
+      1) Sante moteur : http://127.0.0.1:5002/health (200 = UP)
       2) Existence du stack : au moins un conteneur nomme myia_vllm-*
          (docker ps -a) — distingue "engine qui boote / crash-loop" de
          "stack supprime". Interroge seulement moteur DOWN : sur cet hote
