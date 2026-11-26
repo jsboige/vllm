@@ -319,8 +319,10 @@ class PassBudgetTests(unittest.TestCase):
         result, elapsed, cmds = self.run_timed(
             costs={"version": 1, "inspect": 1, "restart": 10, "probe": 1},
             probe=probe, states=states)
+        # Engine first (2026-11-26 22:07Z): it is the likely culprit and the long
+        # step; the relay only follows when it is still dead afterwards.
         self.assertEqual([c[2] for c in cmds if c[:2] == ["docker", "restart"]],
-                         [guard.SIDECAR_CONTAINER, guard.ENGINE_CONTAINER])
+                         [guard.ENGINE_CONTAINER, guard.SIDECAR_CONTAINER])
         self.assertEqual(result["verdict"], "OK")
         # the engine probe taken before the restart is history, not a failure
         self.assertTrue(result["checks"][-2]["before_escalation"])
@@ -332,9 +334,9 @@ class PassBudgetTests(unittest.TestCase):
 
     # -- the rule: a restart starts only if its worst case fits -------------
     def test_restart_is_refused_while_budget_remains(self):
-        # Slow host: every probe times out. The relay restart takes 40 s and
-        # turns healthy; 167 s then remain, less than the 230 s an engine
-        # restart can cost, so it is left to the next pass.
+        # Slow host: every probe times out. The engine restart takes 40 s and
+        # fits; 167 s then remain, less than the 230 s a relay restart can cost,
+        # so the relay is left to the next pass.
         def states(name):
             return "running|none" if name == guard.SIDECAR_CONTAINER else "running|healthy"
 
@@ -342,26 +344,27 @@ class PassBudgetTests(unittest.TestCase):
             costs={"version": 45, "inspect": 25, "restart": 40, "probe": 30},
             probe=lambda tag, restarted: emb_fail(tag, None), states=states)
         self.assertEqual([c[2] for c in cmds if c[:2] == ["docker", "restart"]],
-                         [guard.SIDECAR_CONTAINER])
+                         [guard.ENGINE_CONTAINER])
         self.assertEqual(self.restarts(result), [
             "SKIP restart of %s: 167s left in this pass (< 230s) - the next pass decides"
-            % guard.ENGINE_CONTAINER])
+            % guard.SIDECAR_CONTAINER])
         # 132 s remain: that covers the whisper check, which is evaluated
         self.assertFalse(any(c.get("skipped") for c in result["checks"]), result["checks"])
         self.assertEqual(elapsed, 318)
         self.assertEqual(result["verdict"], "DEGRADED")
 
     def test_health_wait_is_clipped_to_the_budget(self):
-        # Relay capped for the hour (no restart call), engine restart slow and
-        # never healthy: the wait stops at the budget, not 90 s later (552 s).
+        # Engine restart slow and never healthy: the wait stops at the budget,
+        # not 90 s later (552 s). The relay then has nothing left and waits.
         result, elapsed, cmds = self.run_timed(
             costs={"version": 45, "inspect": 25, "restart": 170, "probe": 30},
             probe=lambda tag, restarted: emb_fail(tag, None),
-            states=lambda name: "running|starting", sidecar_capped=True)
+            states=lambda name: "running|starting")
         self.assertEqual([c[2] for c in cmds if c[:2] == ["docker", "restart"]],
                          [guard.ENGINE_CONTAINER])
-        self.assertTrue(any("restart cap reached for %s this hour" % guard.SIDECAR_CONTAINER in a
-                            for a in result["actions"]), result["actions"])
+        self.assertEqual(self.restarts(result), [
+            "SKIP restart of %s: -22s left in this pass (< 230s) - the next pass decides"
+            % guard.SIDECAR_CONTAINER])
         self.assertTrue(any("%s restarted (NOT healthy yet)" % guard.ENGINE_CONTAINER in a
                             for a in result["actions"]), result["actions"])
         self.assertLessEqual(elapsed, 480)
@@ -372,6 +375,19 @@ class PassBudgetTests(unittest.TestCase):
         self.assertIsNone(skipped[0]["ok"])
         self.assertEqual(result["verdict"], "DEGRADED")
         self.assertEqual([f.split(":")[0] for f in result["failures"]], ["embeddings"])
+
+    def test_relay_cap_is_honoured_when_only_the_relay_is_dead(self):
+        # The engine answers directly, so only the relay is restarted - and its
+        # hourly cap still bites (the cap coverage the engine-first order moved
+        # out of the "everything is down" scenario).
+        result, elapsed, cmds = self.run_timed(
+            costs={"version": 1, "inspect": 1, "restart": 1, "probe": 1},
+            probe=lambda tag, restarted: emb_ok(tag) if tag == "engine" else emb_fail(tag, None),
+            states=lambda name: "running|none", sidecar_capped=True)
+        self.assertEqual([c for c in cmds if c[:2] == ["docker", "restart"]], [])
+        self.assertTrue(any("restart cap reached for %s this hour" % guard.SIDECAR_CONTAINER in a
+                            for a in result["actions"]), result["actions"])
+        self.assertEqual(result["verdict"], "DEGRADED")
 
     def test_engine_mute_path_returns_well_within_the_task_limit(self):
         result, elapsed, cmds = self.run_timed(
