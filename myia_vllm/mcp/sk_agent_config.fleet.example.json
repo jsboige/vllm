@@ -1,63 +1,146 @@
 {
-  "_comment": "Exemple SANITISÉ de config sk-agent pour une machine hors ai-01 consommant Swift. (1) Copier, renommer, remplir SWIFT_BASE_URL (hub models.myia.io/v1 ou LAN http://192.168.0.47:5002/v1 pour exception documentée) et fournir la clé via la variable d'environnement VLLM_API_KEY_SWIFT — JAMAIS en clair ici, ni dans un dépôt, ni sur un dashboard ; distribution uniquement par DM privé à destruction, vérification par empreinte sha256[:12]. (2) Enregistrer : claude mcp add sk-agent --transport stdio -e SK_AGENT_CONFIG=<chemin de ce fichier> -e VLLM_API_KEY_SWIFT=<clé> -- python <repo>/myia_vllm/mcp/sk_agent.py. Presets alignés sur la table de routage de .claude/agents/swift-worker.md. Presets voltron-* (harnais voltron, po-2028) : le modèle à demander au hub est voltron-harness ; le message utilisateur est UN objet JSON de tâche (type extract, classify, numbers ou diff) et le service rend un JSON déjà gaté. PRÉCONDITION : l'entrée voltron-harness doit exister dans le hub (demande ouverte du 26/11 à po-2025:claudish) ; d'ici là, consommer par le driver loopback du §6b de myia_vllm/docs/voltron-harness-adoption.md, sur po-2028.",
-  "model": {
-    "base_url": "https://models.myia.io/v1",
-    "api_key_env": "VLLM_API_KEY_SWIFT",
-    "default_model": "swift-1.5-27b",
-    "vision": true,
-    "sampling": { "temperature": 0.7, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5, "max_tokens": 4096 }
-  },
+  "config_version": 2,
+  "max_recursion_depth": 2,
+  "default_agent": "analyst",
+  "default_vision_agent": "vision-local",
+
+  "_comment": "Exemple SANITISÉ de config sk-agent **v2** pour le serveur FLEET (jsboige-mcp-servers/servers/sk-agent). Forme v2 obligatoire : un fichier sans config_version est traité comme v1, et la migration v1 remplace agents[] par un unique agent 'default' (mesuré par myia-web2 le 26/11 sur la première version de ce fichier : 1 preset survivant sur 10). (1) Copier, renommer en sk_agent_config.json, remplir la clé via la variable d'environnement nommée dans api_key_env — JAMAIS en clair ici, ni dans un dépôt, ni sur un dashboard ; distribution uniquement par DM privé à destruction, vérification par empreinte sha256[:12]. (2) Enregistrer le serveur fleet en pointant SK_AGENT_CONFIG sur ce fichier ; le serveur ne relit la config qu'au démarrage (un fichier édité à chaud n'est pas rechargé). (3) Le sampling est GLOBAL ici (bloc sampling en bas) : un preset ne porte pas de sampling propre — l'appelant calibre par agent_spec.sampling (température 0.7 / max_tokens 4096 par défaut). Presets alignés sur la table de routage de .claude/agents/swift-worker.md. Presets voltron-* (harnais voltron, po-2028) : le modèle à demander au hub est voltron-harness ; le message utilisateur est UN objet JSON de tâche (type extract, classify, numbers ou diff) et le service rend un JSON déjà gaté. PRÉCONDITION : l'entrée voltron-harness doit exister dans le hub (demande ouverte du 26/11 à po-2025:claudish) ; d'ici là, consommer par le driver loopback du §6b de myia_vllm/docs/voltron-harness-adoption.md, sur po-2028.",
+
+  "models": [
+    {
+      "_comment": "=== Modèles Swift (hub claudish, défaut fleet) === La clé est le porteur du hub (x-proxy-key / bearer), distribuée par DM privé ; elle n'apparaît jamais ici.",
+      "id": "swift-1.5-27b",
+      "enabled": true,
+      "base_url": "https://models.myia.io/v1",
+      "api_key_env": "VLLM_API_KEY_SWIFT",
+      "model_id": "swift-1.5-27b",
+      "vision": true,
+      "thinking": true,
+      "description": "Swift-1.5-27B (Qwen3.8 base) servi par la prod vLLM medium, 262K ctx, vision + réflexion. Voie hub (models.myia.io) : pas d'accès direct au :5002 depuis une autre machine.",
+      "context_window": 262144
+    },
+    {
+      "id": "swift-1.5-27b-no-thinking",
+      "enabled": true,
+      "base_url": "https://models.myia.io/v1",
+      "api_key_env": "VLLM_API_KEY_SWIFT",
+      "model_id": "swift-1.5-27b",
+      "vision": true,
+      "thinking": false,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "description": "Le même Swift-1.5-27B en mode sans réflexion : plus rapide sur les tâches courtes (résumé, classement, formatage). enable_thinking=false est aussi déclaré via extra_body pour tenir sur le chemin conversation, pas seulement call_agent.",
+      "context_window": 262144
+    },
+    {
+      "_comment": "=== Harnais voltron (po-2028) === Le service :5029 expose les contrats gatés extract/classify/numbers/diff. Précondition d'usage par ce fichier : une entrée voltron-harness dans le hub (demande du 26/11 à po-2025:claudish) — sans elle, ces presets sont déclarés mais non résolvables côté hub.",
+      "id": "voltron-harness",
+      "enabled": true,
+      "base_url": "https://models.myia.io/v1",
+      "api_key_env": "VLLM_API_KEY_SWIFT",
+      "model_id": "voltron-harness",
+      "vision": false,
+      "thinking": false,
+      "description": "Harnais voltron (LFM3-1.7B + façade gatée, po-2028). UNE tâche JSON par appel ; le service exécute et rend un JSON déjà gaté (ok, stage, answer, detail). Pas de chat libre. Débit mesuré sur le siège : ~95 tok/s de décode, contrats extract/classify/numbers/diff.",
+      "context_window": 32768
+    }
+  ],
+
   "agents": [
     {
       "id": "analyst",
       "model": "swift-1.5-27b",
-      "system_prompt": "Analyste local. Tu cites tes sources (chemin, ligne, extrait verbatim) et tu marques ce qui est supposé vs vérifié. Sortie en français, structurée, sans remplissage."
+      "description": "Analyste généraliste (défaut fleet), Swift-1.5-27B avec réflexion.",
+      "system_prompt": "Analyste local. Tu cites tes sources (chemin, ligne, extrait verbatim) et tu marques ce qui est supposé vs vérifié. Sortie en français, structurée, sans remplissage.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "fast",
       "model": "swift-1.5-27b-no-thinking",
-      "system_prompt": "Réponds vite et court, en français. Pas de préambule, pas de réserve générique."
+      "description": "Réponses rapides, sans outils (Swift no-thinking).",
+      "system_prompt": "Réponds vite et court, en français. Pas de préambule, pas de réserve générique.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "classifier-local",
       "model": "swift-1.5-27b-no-thinking",
-      "system_prompt": "Tu classes des items dans les labels fournis par l'appelant. Tu réponds UNIQUEMENT en JSON strict, sans texte autour. Température basse."
+      "description": "Classement d'items dans les labels fournis par l'appelant ; sortie JSON strict.",
+      "system_prompt": "Tu classes des items dans les labels fournis par l'appelant. Tu réponds UNIQUEMENT en JSON strict, sans texte autour. Température basse.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "summarizer-local",
       "model": "swift-1.5-27b-no-thinking",
-      "system_prompt": "Tu condenses en français dans la forme EXACTE demandée par l'appelant (sections, longueur). Tu ne rajoutes aucune interprétation au-delà de ce qui est demandé."
+      "description": "Condensation dans une forme imposée par l'appelant ; aucune interprétation ajoutée.",
+      "system_prompt": "Tu condenses en français dans la forme EXACTE demandée par l'appelant (sections, longueur). Tu ne rajoutes aucune interprétation au-delà de ce qui est demandé.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "formatter-local",
       "model": "swift-1.5-27b-no-thinking",
-      "system_prompt": "Tu normalises et reformatte (markdown, dumps) sans changer le sens. Tu signales toute ambiguïté au lieu de trancher."
+      "description": "Normalisation et reformatage (markdown, dumps) sans changement de sens.",
+      "system_prompt": "Tu normalises et reformattes (markdown, dumps) sans changer le sens. Tu signales toute ambiguïté au lieu de trancher.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "vision-local",
       "model": "swift-1.5-27b",
-      "system_prompt": "Analyse d'image et OCR : décris précisément, structure ta réponse, indique ton niveau de certitude sur les éléments peu lisibles."
+      "description": "Analyse d'image et OCR (défaut vision fleet), Swift-1.5-27B avec vision.",
+      "system_prompt": "Analyse d'image et OCR : décris précisément, structure ta réponse, indique ton niveau de certitude sur les éléments peu lisibles.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "voltron-extract",
       "model": "voltron-harness",
-      "system_prompt": "Extraction structurée verbatim par le harnais voltron (po-2028). Le message utilisateur est UN objet JSON de tâche : {\"type\": \"extract\", \"data\": \"<texte de 20 000 caractères maxi>\", \"fields\": [\"score\", \"duree_s\"], \"verbatim\": true}. Il passe tel quel : le service exécute UNE tâche par appel et rend un JSON déjà gaté (ok, stage, answer, detail). answer est le livrable ; detail dit pourquoi ok=false. Pas de chat libre, pas de lot (un lot passe par POST /v1/jobs)."
+      "description": "Extraction structurée verbatim par le harnais voltron (po-2028). Contrat : une tâche JSON par appel, livrable dans answer, refus expliqué dans detail.",
+      "system_prompt": "Extraction structurée verbatim par le harnais voltron (po-2028). Le message utilisateur est UN objet JSON de tâche : {\"type\": \"extract\", \"data\": \"<texte de 20 000 caractères maxi>\", \"fields\": [\"score\", \"duree_s\"], \"verbatim\": true}. Il passe tel quel : le service exécute UNE tâche par appel et rend un JSON déjà gaté (ok, stage, answer, detail). answer est le livrable ; detail dit pourquoi ok=false. Pas de chat libre, pas de lot (un lot passe par POST /v1/jobs).",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "voltron-classify",
       "model": "voltron-harness",
-      "system_prompt": "Classification avec preuve citée par le harnais voltron (po-2028). Tâche : {\"type\": \"classify\", \"data\": \"<fenêtre de log>\", \"classes\": [\"oom\", \"engine-init\", \"benign-boot\"], \"class_definitions\": {\"oom\": \"mémoire épuisée\"}}. Gate : classe dans TA taxonomie + ligne_cle recopiée mot pour mot (8 caractères mini). Fournir class_definitions aide les cas courts (4/6 contre 3/6, mesuré) ; les cas ambigus restent à ton jugement. Une tâche par appel."
+      "description": "Classification avec preuve citée par le harnais voltron (po-2028) ; gate = classe de la taxonomie + ligne citée mot pour mot.",
+      "system_prompt": "Classification avec preuve citée par le harnais voltron (po-2028). Tâche : {\"type\": \"classify\", \"data\": \"<fenêtre de log>\", \"classes\": [\"oom\", \"engine-init\", \"benign-boot\"], \"class_definitions\": {\"oom\": \"mémoire épuisée\"}}. Gate : classe dans TA taxonomie + ligne_cle recopiée mot pour mot (8 caractères mini). Fournir class_definitions aide les cas courts (4/6 contre 3/6, mesuré) ; les cas ambigus restent à ton jugement. Une tâche par appel.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "voltron-numbers",
       "model": "voltron-harness",
-      "system_prompt": "Rapport chiffré fidèle par le harnais voltron (po-2028). Tâche : {\"type\": \"numbers\", \"data\": \"<source>\", \"report_prompt\": \"Rapport d'une phrase citant mémoire GPU et température.\", \"numbers\": [\"455\", \"44\"]}. Gate : chaque nombre fourni est cité, aucun nombre absent de la source. Le modèle ne calcule jamais : pour compter, l'appelant compte. Une tâche par appel."
+      "description": "Rapport chiffré fidèle par le harnais voltron (po-2028) ; gate = chaque nombre cité existe dans la source, le modèle ne calcule jamais.",
+      "system_prompt": "Rapport chiffré fidèle par le harnais voltron (po-2028). Tâche : {\"type\": \"numbers\", \"data\": \"<source>\", \"report_prompt\": \"Rapport d'une phrase citant mémoire GPU et température.\", \"numbers\": [\"455\", \"44\"]}. Gate : chaque nombre fourni est cité, aucun nombre absent de la source. Le modèle ne calcule jamais : pour compter, l'appelant compte. Une tâche par appel.",
+      "mcps": [],
+      "memory": { "enabled": false }
     },
     {
       "id": "voltron-diff",
       "model": "voltron-harness",
-      "system_prompt": "Rapport de divergence entre deux configs JSON par le harnais voltron (po-2028). Tâche : {\"type\": \"diff\", \"a\": \"{...}\", \"b\": \"{...}\"}. Le diff de premier niveau est CALCULÉ par l'outil ; le modèle rédige le rapport (chaque clé divergente et ses deux valeurs). Gate : zéro clé inventée. Une tâche par appel."
+      "description": "Rapport de divergence entre deux configs JSON par le harnais voltron (po-2028) ; le diff est calculé par l'outil, le modèle le rédige.",
+      "system_prompt": "Rapport de divergence entre deux configs JSON par le harnais voltron (po-2028). Tâche : {\"type\": \"diff\", \"a\": \"{...}\", \"b\": \"{...}\"}. Le diff de premier niveau est CALCULÉ par l'outil ; le modèle rédige le rapport (chaque clé divergente et ses deux valeurs). Gate : zéro clé inventée. Une tâche par appel.",
+      "mcps": [],
+      "memory": { "enabled": false }
     }
   ],
+
+  "sampling": {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 20,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+    "min_p": 0.0,
+    "max_tokens": 4096
+  },
+
   "mcps": []
 }
