@@ -381,15 +381,27 @@ def build_tasks():
 
 # ---------------------------------------------------------------- runner (même trame que quality_bench)
 
-def chat(url, model, prompt, timeout=120):
-    payload = json.dumps({"model": model,
-                          "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": 400, "temperature": 0.0}).encode()
-    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=payload,
+def chat(url, model, prompt, timeout=120, thinking="default", max_tokens=400):
+    """Appelle le modèle et rend (contenu, finish_reason, usage).
+
+    `thinking` reflète l'interrupteur du template : "default" n'envoie pas de
+    chat_template_kwargs (le template décide), "on"/"off" le forcent. Sans ce
+    réglage, un A/B contre un modèle dont le template réfléchit par défaut
+    compare deux régimes sans le dire.
+    """
+    payload = {"model": model,
+               "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": max_tokens, "temperature": 0.0}
+    if thinking in ("on", "off"):
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking == "on"}
+    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions",
+                                 data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
-    return d["choices"][0]["message"]["content"] or ""
+    choice = d["choices"][0]
+    return (choice["message"]["content"] or "", choice.get("finish_reason"),
+            d.get("usage") or {})
 
 
 def main():
@@ -399,6 +411,10 @@ def main():
     ap.add_argument("--model", default="voltron-1-mini")
     ap.add_argument("--label", required=True)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--thinking", choices=("default", "on", "off"), default="default",
+                    help="chat_template_kwargs enable_thinking ; 'default' = le template décide")
+    ap.add_argument("--max-tokens", type=int, default=400,
+                    help="budget de génération ; une réponse coupée est comptée (finish_reason=length)")
     args = ap.parse_args()
 
     tasks = build_tasks()
@@ -409,13 +425,17 @@ def main():
     for i, t in enumerate(tasks):
         t0 = time.time()
         out, ok, detail, e = "", False, "appel en échec", None
+        finish, usage = None, {}
         try:
-            out = chat(args.url, args.model, t["prompt"])
+            out, finish, usage = chat(args.url, args.model, t["prompt"],
+                                      thinking=args.thinking, max_tokens=args.max_tokens)
             ok, detail = CHECKERS[t["checker"]](out, t["oracle"])
         except Exception as exc:  # pas `as e` : le del implicite délierait e
             out, ok, detail, e = "", False, f"appel en échec: {exc!r}", repr(exc)
         results.append(dict(i=i, cat=t["cat"], ok=ok, detail=detail, err=e,
-                            out=out[:400], dt=round(time.time() - t0, 2)))
+                            out=out[:400], dt=round(time.time() - t0, 2),
+                            finish_reason=finish,
+                            completion_tokens=usage.get("completion_tokens")))
         print(f"[{i}/{len(tasks)}] {t['cat']:<13} {'OK ' if ok else 'FAIL'} {detail[:110]}", flush=True)
 
     cats = {}
@@ -427,6 +447,9 @@ def main():
     ok_total = sum(int(r["ok"]) for r in results)
     summary = {
         "label": args.label, "url": args.url, "model": args.model,
+        "thinking": args.thinking, "max_tokens": args.max_tokens,
+        # réponses arrêtées par le budget : non interprétables telles quelles
+        "truncated": sum(1 for r in results if r["finish_reason"] == "length"),
         "at": datetime.now(timezone.utc).isoformat(),
         "elapsed_s": round(time.time() - t_start, 1), "n": total, "ok": ok_total,
         "acc": round(ok_total / total, 4) if total else None,
@@ -439,7 +462,9 @@ def main():
     path = os.path.join(LOG_DIR, f"real_bench_{args.label}_{stamp}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
-    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s")
+    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s "
+          f"(thinking={args.thinking}, max_tokens={args.max_tokens}, "
+          f"coupées={summary['truncated']}/{total})")
     for k, v in summary["by_cat"].items():
         print(f"   {k:<13} {v['ok']}/{v['n']} = {v['acc']:.3f}")
     print(f"-> {path}")
