@@ -404,6 +404,18 @@ def chat(url, model, prompt, timeout=120, thinking="default", max_tokens=400):
             d.get("usage") or {})
 
 
+def strip_thinking(text):
+    """Coupe la trace de réflexion et ne garde que la réponse finale.
+
+    Sans ça, un modèle qui réfléchit est jugé sur son brouillon : la trace
+    reste dans `content` quand le serveur n'a pas de reasoning parser, et un
+    oracle strict (égalité JSON, nombre exact) échoue sur du texte correct.
+    """
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1]
+    return text.lstrip()
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -415,6 +427,8 @@ def main():
                     help="chat_template_kwargs enable_thinking ; 'default' = le template décide")
     ap.add_argument("--max-tokens", type=int, default=400,
                     help="budget de génération ; une réponse coupée est comptée (finish_reason=length)")
+    ap.add_argument("--strip-thinking", action="store_true",
+                    help="juge la réponse finale seule (coupe jusqu'à </think>)")
     args = ap.parse_args()
 
     tasks = build_tasks()
@@ -429,6 +443,8 @@ def main():
         try:
             out, finish, usage = chat(args.url, args.model, t["prompt"],
                                       thinking=args.thinking, max_tokens=args.max_tokens)
+            if args.strip_thinking:
+                out = strip_thinking(out)
             ok, detail = CHECKERS[t["checker"]](out, t["oracle"])
         except Exception as exc:  # pas `as e` : le del implicite délierait e
             out, ok, detail, e = "", False, f"appel en échec: {exc!r}", repr(exc)
@@ -448,6 +464,7 @@ def main():
     summary = {
         "label": args.label, "url": args.url, "model": args.model,
         "thinking": args.thinking, "max_tokens": args.max_tokens,
+        "strip_thinking": args.strip_thinking,
         # réponses arrêtées par le budget : non interprétables telles quelles
         "truncated": sum(1 for r in results if r["finish_reason"] == "length"),
         "at": datetime.now(timezone.utc).isoformat(),
