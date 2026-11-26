@@ -9,7 +9,9 @@ passerelle, pas l'archive -- c'est la distinction qui a manque le 26/11
 
 Historique : la premiere version vivait dans
 `D:\\dev\\wt-po2028-vllm-599\\.tmp\\` et a disparu avec le retrait de ce
-worktree (acteur non identifie, 26/11). Celle-ci ne vit dans AUCUN depot ;
+worktree (acteur non identifie, 26/11). Cette version est commitee dans le
+depot (myia_vllm/scripts/monitoring/) et doublee hors depot pour rester
+utilisable sans checkout :
 
     D:\\vllm-data\\bench\\seat-po2028\\gateway_probe.py
 
@@ -27,9 +29,15 @@ import os
 import sys
 import time
 
-DIAG = r"D:\dev\roo-extensions\scripts\diagnostic"
+# surchargeable par ROO_EXTENSIONS_DIAG (defaut : chemin de ce siege)
+DIAG = (os.environ.get("ROO_EXTENSIONS_DIAG")
+        or r"D:\dev\roo-extensions\scripts\diagnostic")
 ENV_FILE = os.path.join(os.path.expanduser("~"), ".roo-state-manager", "stall-detector.env")
 
+# Lecture d'un appel : ok=true = sert ; fail=tools-call/... = MUET (le defaut
+# mesure) ; ok=false avec fail='-' = la passerelle a repondu et le tool a
+# refuse (archive absente, store-absent) -- ce n'est pas un muet.
+#
 # Archives de reference, choisies parce qu'elles ont ete MUETTES puis SERVIES
 # (elles ne distinguent donc pas "archive perdue" de "passerelle qui dort").
 CASES = [
