@@ -5,6 +5,12 @@ description: Surveillance 12h du service d'embeddings (vLLM + Qdrant + indexatio
 
 # Skill : Surveillance Embeddings (12h)
 
+> **Périmètre historique.** Ce skill a été écrit pour le siège po-2026. Depuis le
+> 2026-10-20 le service tourne sur **po-2023** : les chemins `C:\Production\Embeddings`
+> ci-dessous s'y traduisent en `D:\Production\Embeddings` (référence à jour :
+> `../../docs/seats/po2023-embeddings.md`). Les procédures, seuils et pièges restent
+> valables ; seuls les chemins changent.
+
 Surveillance sémantique et équilibrée du service d'embeddings myia-po-2026, exécutée
 depuis le siège vllm (`myia_vllm/`). **Source unique de vérité** : ce skill, invoqué
 manuellement (`/surveillance-embeddings`) ou par le cron 12h.

@@ -27,10 +27,17 @@ Classifier (thresholds from measured prod behaviour, 2026-11):
   GREEN  otherwise
   kv_gpu_perc is reported for information only: with the RAM/fs tiers active a
   high GPU-KV gauge means spilling, not failure — it does not classify.
+  + HOST COMMIT (24/11): when the probed engine runs on THIS host, a commit charge at or
+    above SWIFT_GATE_HOST_COMMIT_MAX_PCT (default 90; 0 disables) caps any verdict above to
+    red with reason "host-commit". It is the operator ceiling for nb_coder on this host
+    (user, 19/11: operate around 90 %, failures were seen above 95 %). The reading is the
+    Task Manager "Committed" figure; it is not taken for a remote engine (another host's
+    charge says nothing about the engine's), and off Windows it is not taken at all.
 
 State: %LOCALAPPDATA%/vllm-capacity-gate/state.json (last probe, 10-min window).
 Overrides: SWIFT_GATE_URL, SWIFT_GATE_RED_RUNNING, SWIFT_GATE_YELLOW_RUNNING,
-           SWIFT_GATE_STATE, SWIFT_GATE_WINDOW_S.
+           SWIFT_GATE_STATE, SWIFT_GATE_WINDOW_S, SWIFT_GATE_TIMEOUTS,
+           SWIFT_GATE_HOST_COMMIT_MAX_PCT.
 
 Self-test: python swift_capacity_gate.py --selftest   (offline, no engine call)
 """
@@ -40,12 +47,24 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 
-DEFAULT_URL = os.environ.get("SWIFT_GATE_URL", "http://localhost:5002/metrics")
+# 25/11 11:50:33Z, measured on ai-01: the IPv6 leg of the published port HANGS while IPv4 serves.
+#   http://127.0.0.1:5002/health -> 200 in 5 ms
+#   http://[::1]:5002/health     -> no answer (timeout)
+#   http://localhost:5002/health -> no answer (the name is tried on ::1 first)
+# With `localhost` the gate burned its whole timeout ladder and answered gate-unknown (exit 3)
+# at 11:48:40Z while the engine was healthy: instrument artefact, not a capacity verdict.
+DEFAULT_URL = os.environ.get("SWIFT_GATE_URL", "http://127.0.0.1:5002/metrics")
 RED_RUNNING = float(os.environ.get("SWIFT_GATE_RED_RUNNING", "12"))
 YELLOW_RUNNING = float(os.environ.get("SWIFT_GATE_YELLOW_RUNNING", "8"))
 WINDOW_S = float(os.environ.get("SWIFT_GATE_WINDOW_S", "600"))
+# 24/11 (user ceiling, 19/11): nb_coder may run "around 90 %" of host commit; failures were seen
+# above 95 %. The gate read engine capacity only, so that rule lived in the operator's memory.
+# Measured 23:36Z on the same instant: the gate answered green (running 2, exit 0) while the
+# host stood at 95.96 % commit, free to launch.
+HOST_COMMIT_MAX_PCT = float(os.environ.get("SWIFT_GATE_HOST_COMMIT_MAX_PCT", "90"))
 DEFAULT_STATE = os.path.join(
     os.environ.get("LOCALAPPDATA", os.environ.get("TEMP", "/tmp")),
     "vllm-capacity-gate", "state.json")
@@ -114,6 +133,55 @@ def classify(running, waiting, preempt_delta, waiting_prev, age_s):
     return "green"
 
 
+def engine_is_local(url):
+    """True when the probed engine runs on this host: only then is this host's commit charge
+    the engine host's. A remote engine leaves this host's charge out of the verdict."""
+    host = (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    return host in ("", "localhost", "127.0.0.1", "::1")
+
+
+def host_commit_perc():
+    """Host commit charge in percent (Task Manager's "Committed"), or None when not measurable.
+
+    GetPerformanceInfo reads the system-wide figure. GlobalMemoryStatusEx agrees on this host
+    (368.1 / 383.5 GB = 96.0 % by both at 23:35Z) but reports page-file figures capped at the
+    CALLER's job limit when it runs inside one — not a host reading. None off Windows and on
+    API failure.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _PerformanceInformation(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_uint32)] + [(n, ctypes.c_size_t) for n in (
+                "CommitTotal", "CommitLimit", "CommitPeak", "PhysicalTotal", "PhysicalAvailable",
+                "SystemCache", "KernelTotal", "KernelPaged", "KernelNonpaged", "PageSize")] + [
+                ("HandleCount", ctypes.c_uint32), ("ProcessCount", ctypes.c_uint32),
+                ("ThreadCount", ctypes.c_uint32)]
+
+        pi = _PerformanceInformation()
+        pi.cb = ctypes.sizeof(_PerformanceInformation)
+        if not ctypes.windll.psapi.GetPerformanceInfo(ctypes.byref(pi), pi.cb) or not pi.CommitLimit:
+            return None
+        return 100.0 * pi.CommitTotal / pi.CommitLimit
+    except Exception:
+        return None
+
+
+def with_host_commit(verdict, commit, max_pct=None):
+    """Cap a verdict to red when a measured commit charge reached the ceiling.
+
+    Returns (verdict, reason). The reason is "host-commit" when the cap applied, else None.
+    The ceiling defaults to HOST_COMMIT_MAX_PCT, read at call time like the other overrides;
+    a ceiling of 0 disables the cap; an unmeasurable charge never caps.
+    """
+    max_pct = HOST_COMMIT_MAX_PCT if max_pct is None else max_pct
+    if max_pct > 0 and commit is not None and commit >= max_pct:
+        return "red", "host-commit"
+    return verdict, None
+
+
 def probe(url=DEFAULT_URL, state_path=None):
     state_path = state_path or os.environ.get("SWIFT_GATE_STATE", DEFAULT_STATE)
     text, tries = read_metrics_retry(url)
@@ -139,10 +207,21 @@ def probe(url=DEFAULT_URL, state_path=None):
         age_s = now - prev.get("ts", 0)
 
     verdict = classify(running, waiting, preempt_delta, waiting_prev, age_s or 0)
+    local = engine_is_local(url)
+    commit = host_commit_perc() if local else None
+    if local and commit is None and sys.platform == "win32":
+        # The engine is on this host and its charge cannot be read: an instrument failure, not a
+        # verdict (same contract as an unreachable /metrics).
+        return {"verdict": "unknown", "host_commit_perc": None,
+                "error": "host commit charge unreadable (GetPerformanceInfo)"}, 3
+    verdict, reason = with_host_commit(verdict, commit)
     out = {"verdict": verdict, "running": running, "waiting": waiting,
            "preemptions": preempt,
            "preempt_delta": preempt_delta, "kv_gpu_perc": kv, "tries": tries,
+           "host_commit_perc": round(commit, 2) if commit is not None else None,
            "age_s": round(age_s, 1) if age_s else None}
+    if reason:
+        out["reason"] = reason
     save_state(state_path, {"ts": now, "preemptions": preempt, "waiting": waiting})
     return out, {"green": 0, "yellow": 1, "red": 2}[verdict]
 
@@ -193,6 +272,39 @@ def selftest():
                        ("ladder: no rung answers -> error, not a verdict", ladder_dead)):
         print("%s (%s)" % (name, "ok" if good else "FAIL"))
         ok = ok and good
+    # 24/11: the host commit ceiling caps any verdict once reached; just under it, an
+    # unmeasurable charge or a ceiling of 0 leaves the verdict alone.
+    host_cases = [
+        # (verdict, commit %, ceiling %, expected verdict)
+        ("green", 95.98, 90.0, "red"),    # measured charge (23:35Z) over the ceiling
+        ("yellow", 95.98, 90.0, "red"),
+        ("red", 95.98, 90.0, "red"),
+        ("green", 89.99, 90.0, "green"),  # just under
+        ("green", 90.0, 90.0, "red"),     # at the ceiling
+        ("green", None, 90.0, "green"),   # unmeasurable never caps
+        ("green", 95.98, 0.0, "green"),   # ceiling disabled
+    ]
+    for verdict, commit, ceiling, exp in host_cases:
+        got, reason = with_host_commit(verdict, commit, ceiling)
+        # The reason names the ceiling whenever it is reached, even when the verdict was red already.
+        reached = commit is not None and ceiling > 0 and commit >= ceiling
+        good = got == exp and (reason == "host-commit") == reached
+        ok = ok and good
+        print("host commit %s over %s, ceiling %s -> %s reason=%s (%s)"
+              % (commit, verdict, ceiling, got, reason, "ok" if good else "FAIL"))
+    locality = (engine_is_local("http://localhost:5002/metrics")
+                and engine_is_local("http://127.0.0.1:5002/metrics")
+                and engine_is_local(DEFAULT_URL)
+                and not engine_is_local("http://192.168.0.50:5002/metrics")
+                and not engine_is_local("https://models.example.io/v1/metrics"))
+    print("host commit: read only for an engine on this host (%s)" % ("ok" if locality else "FAIL"))
+    ok = ok and locality
+    if sys.platform == "win32":
+        live = host_commit_perc()
+        live_ok = live is not None and 0.0 <= live <= 100.0
+        print("host commit: live read on this host = %s (%s)"
+              % ("%.2f %%" % live if live is not None else "None", "ok" if live_ok else "FAIL"))
+        ok = ok and live_ok
     print("SELFTEST", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

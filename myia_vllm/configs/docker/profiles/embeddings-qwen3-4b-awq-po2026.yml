@@ -1,6 +1,11 @@
-# Docker Compose profile — Qwen3-Embedding-4B W4A16-AWQ (service d'embeddings flotte, po-2026, PROD)
+# Docker Compose profile — Qwen3-Embedding-4B W4A16-AWQ (service d'embeddings flotte, PROD)
 # ============================================================================
-# Siège : po-2026 (RTX 3080 Ti Laptop 16 Go VRAM, 64 Go RAM, cap vmmem WSL 16 Go
+# SIÈGE D'EXÉCUTION DEPUIS 2026-10-20 : po-2023 (GPU 0 = RTX 3080 Ti interne 16 Go).
+# po-2026 est HS (panne matérielle) ; ce profil y est né et les chemins C:\... plus
+# bas sont les siens. Sur po-2023 le dépôt prod est D:\Production\Embeddings — voir
+# myia_vllm/docs/seats/po2023-embeddings.md, seule référence de chemins à jour.
+# ============================================================================
+# Siège historique : po-2026 (RTX 3080 Ti Laptop 16 Go VRAM, 64 Go RAM, cap vmmem WSL 16 Go
 # depuis 2026-10-05). Ce service est l'embedder de TOUTE la flotte : Roo Code
 # (indexation sémantique multi-machines) + Open WebUI 7 tenants (RAG).
 # Chaîne publique : https://embeddings.myia.io (IIS ARR po-2023) → sidecar
@@ -29,20 +34,29 @@
 # Rollback image v0.21.0 PURGÉE 2026-10-06 (48,4 Go, mandat disque
 # jsboige/Maintenance#70) : re-pull via skopeo (keyring Docker Hub HS, procédure
 # au runbook) si retour arrière un jour nécessaire. Image courante : 29,8 Go.
-# Backups compose par version : dépôt local po-2026 C:\Production\Embeddings
-# (docker-archives/).
+# Backups compose par version : dépôt local du siège — po-2026 : C:\Production\Embeddings,
+# po-2023 (siège actuel) : D:\Production\Embeddings (docker-archives/).
 #
 # Secrets : ${VLLM_API_KEY} / ${HUGGING_FACE_HUB_TOKEN} via .env LOCAL au siège
 # (gitignored) — jamais dans un commit (incident rotation clé 09/2026).
 #
 # Sidecar :8004 (re-création, siège local uniquement, Git Bash avec
-# MSYS_NO_PATHCONV=1) :
+# MSYS_NO_PATHCONV=1). Commande VÉRIFIÉE contre le conteneur vivant du siège
+# po-2023 (docker inspect 2026-11-25 : Entrypoint/Cmd/WorkingDir/Env/Binds/
+# Memory/MemorySwap/PidsLimit/RestartPolicy identiques) :
 #   docker run -d --name embedding-proxy-logger -p 8004:8004 \
-#     -v "C:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
-#     -v "C:\Production\Embeddings\logs\capture-20260906:/app/logs" -w /app/logs \
+#     --memory 256m --memory-swap 256m --pids-limit 128 \
+#     -v "D:\Production\Embeddings\scripts\embedding-proxy-logger.py:/app/proxy.py:ro" \
+#     -v "D:\Production\Embeddings\logs\capture-20261013:/app/logs" -w /app/logs \
 #     -e LISTEN_PORT=8004 -e TARGET_URL=http://host.docker.internal:8005 \
-#     -e MAX_LOG=100000 --restart unless-stopped \
+#     -e MAX_LOG=100000 -e PYTHONUNBUFFERED=1 --restart unless-stopped \
 #     --entrypoint python3 vllm/vllm-openai:v0.23.0 /app/proxy.py
+#   (--memory/--memory-swap/--pids-limit added 2026-11-07, Maintenance#303:
+#    the sidecar is a docker run with no compose file, so these flags ARE its
+#    source of truth and must survive any re-creation verbatim.
+#    PYTHONUNBUFFERED=1 set 2026-11-04: without it the [N/100000] seq counter
+#    is buffered and the cadence reading is wrong.
+#    Po-2026 (historique) utilisait C:\Production\Embeddings + capture-20260906.)
 # TOUJOURS en container (python host direct = firewall bloque LAN + ARR 503
 # collant ~19 min — leçon 2026-08-14).
 # ----------------------------------------------------------------------------
@@ -78,6 +92,16 @@ services:
 
     ipc: host
 
+    # --- Maintenance#303 bounds (2026-11-07, lane vllm po-2023) ---
+    # mem_limit = memswap_limit = 8g (swap disabled: the engine must fail
+    # loudly instead of ballooning the host through swap), pids_limit 512.
+    # Measured before bounding (docker stats, 2026-11-07): 2.87 GiB / 165 PIDs
+    # at rest; ~2.8x headroom covers CUDA-graph compilation and batch bursts
+    # without risking the host (31 GiB total, shared with the whole bench).
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 512
+
     # NOTE (leçon boot-blocking) : JAMAIS de ligne # dans le scalaire replié
     # command:> — elle devient du TEXTE de commande (compose: "invalid command
     # line string"). Les commentaires restent ici, au-dessus.
@@ -90,6 +114,24 @@ services:
     # demandé, sans réponse) — risque runtime pour leurs jobs futurs, marge
     # boot ~5 Go. Si l'incident se répète (contexts étrangers > ~4 Go), le
     # pallier d'urgence reste 0.90 (KV ~9 504 tok = 4,6x la fenêtre 2 048).
+    #
+    # REDÉMARRABILITÉ (2026-11-25, lu dans le code v0.23.0 —
+    # vllm/v1/worker/utils.py:405 request_memory) : à l'init le moteur exige
+    # mémoire libre >= gpu-memory-utilization x total, soit >= 12,3 GiB ici ;
+    # sinon ValueError "Free memory on device ... is less than desired GPU
+    # memory utilization" et le conteneur crash-loop. Traduction : <= ~4 Go
+    # tenus par des TIERS (bureau Windows compris) au moment du boot. Aucune
+    # valeur de gpu-memory-utilization ne s'en sort — sous 0,75 le KV devient
+    # négatif (besoin propre du moteur ≈ 9,2 GiB : poids + pic d'activation +
+    # non-torch + graphs) ; au-dessus, l'exigence de mémoire libre monte. Le
+    # pallier 0,90 ci-dessus ne vaut que pour de la mémoire étrangère qui
+    # arrive PENDANT le profil, pas pour celle déjà présente à l'init.
+    # CONTRÔLE avant tout redémarrage délibéré, moteur tournant :
+    #   nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv
+    # GPU 0 memory.used <= ~10,3 Go (moteur ≈ 6,7 + <= 4 de tiers). Au-delà :
+    # faire libérer la carte d'abord, sinon le démarrage échoue (25/11 c177 :
+    # 15 671 MiB, ~9 Go de tiers résidents, embedder non redémarrable).
+    # Détail : myia_vllm/docs/seats/po2023-embeddings.md.
     #
     # --api-key RETIRÉ (Q-P2023-10 (a), arbitrage user 01/11) : la clé vit déjà
     # dans l'env VLLM_API_KEY du conteneur — plus de duplication en ligne de

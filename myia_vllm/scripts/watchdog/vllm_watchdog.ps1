@@ -76,7 +76,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$HealthUrl         = 'http://localhost:5002/health',
+    [string]$HealthUrl         = 'http://127.0.0.1:5002/health',
     [string]$ContainerGlob     = 'myia_vllm-',
     [string]$StateDir          = 'C:\ProgramData\maint-scripts\logs',
     [string]$RsmRoot           = '',
