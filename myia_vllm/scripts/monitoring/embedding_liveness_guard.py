@@ -47,9 +47,14 @@ ESCALATION LADDER (least invasive first)
 Safety rails, because an operator window is not an outage:
   * Engine unreachable AND the Docker Desktop process is not running -> someone
     stopped it deliberately: SKIP, no action.
-  * Engine unreachable AND Docker Desktop is running -> this is the "bricked
-    Docker" case covered by the user mandate of 2026-10-24: one
-    `docker desktop restart`, loudly logged.
+  * "Engine unreachable" is decided by the SERVICE, not by `docker version`. A
+    CLI timeout while a real POST still honours the contract is a slow CLI:
+    nothing is restarted. (2026-11-26: six Desktop restarts were issued on CLI
+    timeouts under host load; one of them opened a 32-minute outage.)
+  * Engine unreachable AND the service silent AND Docker Desktop is running ->
+    the "bricked Docker" case covered by the user mandate of 2026-10-24: one
+    `docker desktop restart`, loudly logged - at most 2 per hour, never two
+    within 15 minutes, and the pass returns at once instead of blocking.
   * Per-container restart cap (default 2/hour, state file) so a persistent fault
     cannot turn into a restart storm.
 
@@ -94,6 +99,11 @@ RETRY_DELAY = 3.0
 HEALTH_TIMEOUT = 90
 RESTART_CAP_PER_HOUR = 2
 BOOT_RAIL = 300  # seconds; a container younger than this is booting, not broken
+ENGINE_CLI_TIMEOUT = 45  # seconds; 25 s read as "engine mute" under host load on 2026-11-26
+DESKTOP_RESTART_CAP_PER_HOUR = 2
+DESKTOP_RESTART_MIN_GAP = 900  # seconds between two `docker desktop restart`
+DESKTOP_RESTART_CLI_TIMEOUT = 120  # seconds; the backend completes the restart on its own
+DESKTOP_RESTART_KEY = "__docker_desktop__"  # budget entry, not a container
 
 
 def now():
@@ -188,7 +198,7 @@ def engine_status():
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
             text=True,
-            timeout=25,
+            timeout=ENGINE_CLI_TIMEOUT,
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip(), None
@@ -276,10 +286,16 @@ class RestartBudget:
         except (OSError, ValueError):
             self.data = {}
 
-    def allow(self, name):
+    def allow(self, name, cap=None):
+        cap = self.cap if cap is None else cap
         hist = [t for t in self.data.get(name, []) if time.time() - t < 3600]
         self.data[name] = hist
-        return len(hist) < self.cap
+        return len(hist) < cap
+
+    def elapsed(self, name):
+        """Seconds since the last recorded restart of `name`, or None if never."""
+        hist = self.data.get(name) or []
+        return (time.time() - max(hist)) if hist else None
 
     def record(self, name):
         self.data.setdefault(name, []).append(time.time())
@@ -334,6 +350,14 @@ def log_record(path, record):
 def one_pass(args):
     key = read_key(args.env)
     result = {"ts": now(), "actions": [], "checks": [], "verdict": "UNKNOWN"}
+    # Set when `docker version` stays mute while the service answers: every
+    # docker-driven gesture is skipped for the rest of the pass.
+    cli_mute = False
+
+    def restart(name):
+        if cli_mute:
+            return "SKIP restart of %s: docker CLI mute this pass" % name
+        return restart_container(name, args.budget, args.dry_run)
 
     if not key:
         result["verdict"] = "NO_KEY"
@@ -342,30 +366,63 @@ def one_pass(args):
 
     version, engine_err = engine_status()
     if not version:
-        if not docker_desktop_running():
-            result["verdict"] = "SKIP_ENGINE_STOPPED"
+        # 2026-11-26 (cycle 182): a `docker version` timeout is NOT an engine
+        # failure. Under host load the daemon answered right after six CLI
+        # timeouts, and each Desktop restart issued on that reading cut the
+        # service (one of them opened a 32-minute outage). The service is the
+        # truth: a real POST that honours the contract means the engine is up.
+        service = probe_embeddings(SIDECAR_URL, key, "sidecar")
+        if not service["ok"]:
+            time.sleep(RETRY_DELAY)
+            service = probe_embeddings(SIDECAR_URL, key, "sidecar")
+        if service["ok"]:
+            cli_mute = True
             result["checks"].append(
-                {"check": "engine", "ok": False, "skipped": True,
-                 "note": "Docker Desktop not running -> deliberate stop, no action"}
+                {"check": "engine", "ok": True, "version": None,
+                 "note": "docker CLI mute (%s) but the service answers: no restart"
+                         % (engine_err or "no output")[:120]}
             )
-            return result
-        result["actions"].append("engine mute with Docker Desktop running -> mandate 2026-10-24: docker desktop restart")
-        if not args.dry_run:
-            try:
-                subprocess.run(["docker", "desktop", "restart"], capture_output=True, timeout=300)
-            except Exception as exc:
-                result["actions"].append("docker desktop restart raised %s" % type(exc).__name__)
-            for _ in range(40):
-                time.sleep(5)
-                version, engine_err = engine_status()
-                if version:
-                    break
-        if not version:
+        else:
+            if not docker_desktop_running():
+                result["verdict"] = "SKIP_ENGINE_STOPPED"
+                result["checks"].append(
+                    {"check": "engine", "ok": False, "skipped": True,
+                     "note": "Docker Desktop not running -> deliberate stop, no action"}
+                )
+                return result
+            # The failing POST is the evidence; keep it in the record.
+            result["checks"].append(service)
+            # Rails on the mandate gesture (2026-11-26: six Desktop restarts in
+            # 78 minutes, with neither rail nor cap): spacing, hourly cap, and
+            # no blocking wait - the next pass re-measures instead.
+            last = args.budget.elapsed(DESKTOP_RESTART_KEY)
+            if last is not None and last < DESKTOP_RESTART_MIN_GAP:
+                result["actions"].append(
+                    "SKIP docker desktop restart: last one %ds ago (< %ds)"
+                    % (last, DESKTOP_RESTART_MIN_GAP)
+                )
+            elif not args.budget.allow(DESKTOP_RESTART_KEY, DESKTOP_RESTART_CAP_PER_HOUR):
+                result["actions"].append("docker desktop restart cap reached this hour")
+            elif args.dry_run:
+                result["actions"].append("would docker desktop restart (dry-run)")
+            else:
+                args.budget.record(DESKTOP_RESTART_KEY)
+                args.budget.save()
+                result["actions"].append(
+                    "engine mute, service silent, Docker Desktop running -> mandate 2026-10-24: docker desktop restart"
+                )
+                try:
+                    # The backend completes the restart on its own; the CLI only waits.
+                    subprocess.run(["docker", "desktop", "restart"], capture_output=True,
+                                   timeout=DESKTOP_RESTART_CLI_TIMEOUT)
+                except Exception as exc:
+                    result["actions"].append("docker desktop restart raised %s" % type(exc).__name__)
             result["verdict"] = "ENGINE_DOWN"
             result["checks"].append({"check": "engine", "ok": False, "error": engine_err})
             return result
-    result["checks"].append({"check": "engine", "ok": True, "version": version})
-    result["engine_version"] = version
+    else:
+        result["checks"].append({"check": "engine", "ok": True, "version": version})
+        result["engine_version"] = version
 
     # --- embeddings, fleet path then direct engine -------------------------
     fleet = probe_embeddings(SIDECAR_URL, key, "sidecar")
@@ -391,7 +448,7 @@ def one_pass(args):
             else:
                 targets = [SIDECAR_CONTAINER, ENGINE_CONTAINER]
             for name in targets:
-                result["actions"].append(restart_container(name, args.budget, args.dry_run))
+                result["actions"].append(restart(name))
             if not args.dry_run:
                 time.sleep(5)
                 fleet = probe_embeddings(SIDECAR_URL, key, "sidecar")
@@ -409,7 +466,7 @@ def one_pass(args):
     if not whisper["ok"]:
         # Only act if the app answers nothing at all; a 502/500 means the
         # container needs a restart, a dead port means the same.
-        result["actions"].append(restart_container(WHISPER_CONTAINER, args.budget, args.dry_run))
+        result["actions"].append(restart(WHISPER_CONTAINER))
         if not args.dry_run:
             time.sleep(5)
             whisper = probe_whisper(args.deep_whisper, key)
