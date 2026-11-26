@@ -16,7 +16,7 @@ Tout ce qui suit décrit la prod **ai-01** : `127.0.0.1:5002`, les conteneurs `m
 
 - ne pas en poster d'escalade ;
 - ne pas demander de GO pour « recréer » un service que ce siège ne porte pas ;
-- exécuter le wrapper du siège au lieu de cette spec : po-2028 → `vigie-vllm-po2028` (moteur `voltron-harness` sur `127.0.0.1:5028` derrière le service `:5029`, loopback, sans clé) ; po-2025 → `vigie` (FrogNano sur `:5003`).
+- exécuter le wrapper du siège au lieu de cette spec : po-2028 → `vigie-vllm-po2028` (moteur `voltron-harness` sur `127.0.0.1:5028` derrière le service `:5029`, loopback, sans clé) ; po-2025 → `vigie` (FrogNano sur `:5003`) ; service d'embeddings → `myia_vllm:surveillance-embeddings` (12 h, écrit pour le siège po-2026 ; le service tourne sur po-2023 depuis le 20/10). La liste n'est pas exhaustive : `vigie` est versionné dans ce dépôt (`.claude/commands/`), `vigie-vllm-po2028` vit hors dépôt, dans le `~/.claude/commands/` du siège po-2028.
 
 Si le doute subsiste, la question à se poser avant tout signalement est : **ce siège est-il censé porter cet objet ?** Deux fausses escalades « `:5002` attendu, indisponible » ont été postées depuis po-2028 (25/11 05:57Z, 26/11 11:49Z) ; la lane du siège les a fermées sans rien réparer — rien n'était cassé. Déclencheur probable, non établi : cette spec exécutée hors d'ai-01.
 
