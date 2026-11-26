@@ -1,5 +1,5 @@
 {
-  "_comment": "Exemple SANITISÉ de config sk-agent pour une machine hors ai-01 consommant Swift. (1) Copier, renommer, remplir SWIFT_BASE_URL (hub models.myia.io/v1 ou LAN http://192.168.0.47:5002/v1 pour exception documentée) et fournir la clé via la variable d'environnement VLLM_API_KEY_SWIFT — JAMAIS en clair ici, ni dans un dépôt, ni sur un dashboard ; distribution uniquement par DM privé à destruction, vérification par empreinte sha256[:12]. (2) Enregistrer : claude mcp add sk-agent --transport stdio -e SK_AGENT_CONFIG=<chemin de ce fichier> -e VLLM_API_KEY_SWIFT=<clé> -- python <repo>/myia_vllm/mcp/sk_agent.py. Presets alignés sur la table de routage de .claude/agents/swift-worker.md.",
+  "_comment": "Exemple SANITISÉ de config sk-agent pour une machine hors ai-01 consommant Swift. (1) Copier, renommer, remplir SWIFT_BASE_URL (hub models.myia.io/v1 ou LAN http://192.168.0.47:5002/v1 pour exception documentée) et fournir la clé via la variable d'environnement VLLM_API_KEY_SWIFT — JAMAIS en clair ici, ni dans un dépôt, ni sur un dashboard ; distribution uniquement par DM privé à destruction, vérification par empreinte sha256[:12]. (2) Enregistrer : claude mcp add sk-agent --transport stdio -e SK_AGENT_CONFIG=<chemin de ce fichier> -e VLLM_API_KEY_SWIFT=<clé> -- python <repo>/myia_vllm/mcp/sk_agent.py. Presets alignés sur la table de routage de .claude/agents/swift-worker.md. Presets voltron-* (harnais voltron, po-2028) : le modèle à demander au hub est voltron-harness ; le message utilisateur est UN objet JSON de tâche (type extract, classify, numbers ou diff) et le service rend un JSON déjà gaté. PRÉCONDITION : l'entrée voltron-harness doit exister dans le hub (demande ouverte du 26/11 à po-2025:claudish) ; d'ici là, consommer par le driver loopback du §6b de myia_vllm/docs/voltron-harness-adoption.md, sur po-2028.",
   "model": {
     "base_url": "https://models.myia.io/v1",
     "api_key_env": "VLLM_API_KEY_SWIFT",
@@ -37,6 +37,26 @@
       "id": "vision-local",
       "model": "swift-1.5-27b",
       "system_prompt": "Analyse d'image et OCR : décris précisément, structure ta réponse, indique ton niveau de certitude sur les éléments peu lisibles."
+    },
+    {
+      "id": "voltron-extract",
+      "model": "voltron-harness",
+      "system_prompt": "Extraction structurée verbatim par le harnais voltron (po-2028). Le message utilisateur est UN objet JSON de tâche : {\"type\": \"extract\", \"data\": \"<texte de 20 000 caractères maxi>\", \"fields\": [\"score\", \"duree_s\"], \"verbatim\": true}. Il passe tel quel : le service exécute UNE tâche par appel et rend un JSON déjà gaté (ok, stage, answer, detail). answer est le livrable ; detail dit pourquoi ok=false. Pas de chat libre, pas de lot (un lot passe par POST /v1/jobs)."
+    },
+    {
+      "id": "voltron-classify",
+      "model": "voltron-harness",
+      "system_prompt": "Classification avec preuve citée par le harnais voltron (po-2028). Tâche : {\"type\": \"classify\", \"data\": \"<fenêtre de log>\", \"classes\": [\"oom\", \"engine-init\", \"benign-boot\"], \"class_definitions\": {\"oom\": \"mémoire épuisée\"}}. Gate : classe dans TA taxonomie + ligne_cle recopiée mot pour mot (8 caractères mini). Fournir class_definitions aide les cas courts (4/6 contre 3/6, mesuré) ; les cas ambigus restent à ton jugement. Une tâche par appel."
+    },
+    {
+      "id": "voltron-numbers",
+      "model": "voltron-harness",
+      "system_prompt": "Rapport chiffré fidèle par le harnais voltron (po-2028). Tâche : {\"type\": \"numbers\", \"data\": \"<source>\", \"report_prompt\": \"Rapport d'une phrase citant mémoire GPU et température.\", \"numbers\": [\"455\", \"44\"]}. Gate : chaque nombre fourni est cité, aucun nombre absent de la source. Le modèle ne calcule jamais : pour compter, l'appelant compte. Une tâche par appel."
+    },
+    {
+      "id": "voltron-diff",
+      "model": "voltron-harness",
+      "system_prompt": "Rapport de divergence entre deux configs JSON par le harnais voltron (po-2028). Tâche : {\"type\": \"diff\", \"a\": \"{...}\", \"b\": \"{...}\"}. Le diff de premier niveau est CALCULÉ par l'outil ; le modèle rédige le rapport (chaque clé divergente et ses deux valeurs). Gate : zéro clé inventée. Une tâche par appel."
     }
   ],
   "mcps": []
