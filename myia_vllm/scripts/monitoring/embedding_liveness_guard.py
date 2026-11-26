@@ -479,7 +479,14 @@ def one_pass(args):
             if direct is not None and direct["ok"]:
                 targets = [SIDECAR_CONTAINER]          # engine fine -> relay dead
             else:
-                targets = [SIDECAR_CONTAINER, ENGINE_CONTAINER]
+                # Engine first, relay second (2026-11-26 22:07Z). The engine is
+                # both the likely culprit and the long step (restart + health
+                # wait); the relay takes ~1 s and is usually only a victim. The
+                # old order spent 180 s of the pass on a relay `docker restart`
+                # CLI timeout and then had to defer the engine restart to the
+                # next pass - 12 min of outage for a 2 min repair. A relay that
+                # is still dead afterwards gets its turn in this same loop.
+                targets = [ENGINE_CONTAINER, SIDECAR_CONTAINER]
             for name in targets:
                 result["actions"].append(restart(name))
             if not args.dry_run:
