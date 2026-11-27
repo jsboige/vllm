@@ -71,8 +71,10 @@ for _stream in (sys.stdout, sys.stderr):
         pass  # flux redirigé sans reconfigure : on garde le comportement d'avant
 
 ENGINE_URL = "http://127.0.0.1:5028"
-ENGINE_MODEL = "voltron-1-mini"
-ENGINE_CONTAINER = "voltron-harness"
+# Modèle et conteneur surchargeables par l'environnement : une bascule de
+# modèle (voltron 1.0 -> 1.1, 27/11) ne touche pas au code.
+ENGINE_MODEL = os.environ.get("VOLTRON_ENGINE_MODEL", "voltron-1-mini")
+ENGINE_CONTAINER = os.environ.get("VOLTRON_ENGINE_CONTAINER", "voltron-harness")
 # CHANGES_REQUESTED ai-01 §7-8 : aucune adresse LAN ni chemin machine versionnés
 # — tout par environnement, le lanceur local fournit les valeurs (exemple
 # documenté dans docs/voltron-harness-adoption.md §1).
@@ -140,32 +142,133 @@ def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None, prefil
     return d["choices"][0]["message"]["content"] or ""
 
 
+_ALIVE_TTL_S = 10.0  # un verdict VRAI est réutilisé 10 s : les sondes de
+                     # surveillance ne facturent pas un forward chacune
+_alive_lock = threading.Lock()
+_engine_state = {"status": None, "detail": "", "at": 0.0}
+
+
+def _probe_generation(timeout):
+    """UNE génération d'un jeton : la seule preuve de vie du moteur.
+
+    Mesuré 27/11 21:08Z : `/health` rendait 200 sur un moteur au contexte
+    CUDA déjà perdu ; la première génération a rendu 500 (`EngineDeadError`).
+    Retourne (constat, détail) :
+      - "ok"     : le moteur génère ;
+      - "down"   : rien n'écoute, ou sonde sans réponse sous `timeout`
+                   (surcharge possible) -> start et attente, jamais restart ;
+      - "dead"   : l'API répond mais la sonde rend 5xx ou est coupée ->
+                   `docker restart` est le geste (`start` est un no-op) ;
+      - "config" : 4xx (nom de modèle inconnu) -> restart inutile, le
+                   détail est exposé par /health.
+    """
+    payload = {"model": ENGINE_MODEL, "max_tokens": 1, "temperature": 0.0,
+               "ignore_eos": True,
+               "messages": [{"role": "user", "content": "ok"}]}
+    req = urllib.request.Request(ENGINE_URL + "/v1/chat/completions",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return "ok", ""
+    except urllib.error.HTTPError as exc:
+        try:
+            body = (exc.read() or b"")[:200].decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        kind = "dead" if 500 <= exc.code < 600 else "config"
+        return kind, f"génération HTTP {exc.code}: {body}"
+    except Exception as exc:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        if isinstance(reason, TimeoutError):
+            return "down", f"génération sans réponse sous {timeout} s: {exc!r}"[:200]
+        return "dead", f"génération coupée: {exc!r}"[:200]
+
+
 def engine_healthy(timeout=2):
+    """Vivacité REELLE : `/health` puis une génération d'un jeton.
+
+    Un verdict VRAI est mémorisé _ALIVE_TTL_S ; un verdict FAUX ne l'est
+    jamais — une décision de soin ou un échec de tâche ne se prennent pas
+    sur un cache. Le dernier constat reste lisible dans _engine_state."""
+    with _alive_lock:
+        if (_engine_state["status"] == "ok"
+                and time.monotonic() - _engine_state["at"] < _ALIVE_TTL_S):
+            return True
+    prev = _engine_state["status"]
+    status, detail = "down", ""
     try:
         with urllib.request.urlopen(ENGINE_URL + "/health", timeout=timeout) as r:
-            return r.status == 200
-    except Exception:
-        return False
+            if r.status == 200:
+                status, detail = _probe_generation(max(timeout, 10))
+            else:
+                detail = f"/health {r.status}"
+    except Exception as exc:
+        detail = repr(exc)[:200]
+    with _alive_lock:
+        _engine_state.update(status=status, detail=detail, at=time.monotonic())
+    if status != "ok" and status != prev:
+        print(f"[engine] vivacité {status}: {detail}", flush=True)
+    return status == "ok"
 
 
 def _docker_start():
-    """`docker start` du conteneur de l'engine, sans attendre. Retourne
-    (tentative, message) : faux seulement si la CLI est absente — plus rien à
-    tenter de ce côté. Une CLI bloquée ou un daemon injoignable (VM WSL en
-    cours de recyclage) n'est PAS une raison de renoncer : la politique de
-    restart du conteneur peut le ramener seule."""
+    """Relance le conteneur de l'engine, sans attendre. Le verbe suit le
+    dernier constat de vivacité (`_engine_state`) :
+      - rien n'écoute -> `docker start` : un conteneur arrêté ou en boot
+        n'est jamais redémarré (un restart tuerait le boot en cours) ;
+      - l'API répond mais la génération de sonde rend 5xx -> `docker restart` :
+        `start` est un no-op sur un conteneur en marche ;
+      - conteneur démarré depuis moins de ENGINE_BOOT_WAIT_S -> rien : le
+        boot n'est pas fini.
+    Retourne (tentative, message) : faux seulement si la CLI est absente —
+    plus rien à tenter de ce côté. Une CLI bloquée ou un daemon injoignable
+    (VM WSL en cours de recyclage) n'est PAS une raison de renoncer : la
+    politique de restart du conteneur peut le ramener seule."""
+    with _alive_lock:
+        dead = _engine_state["status"] == "dead"
+    verb = "start"
+    if dead:
+        try:
+            p = subprocess.run(
+                ["docker", "inspect", "--format",
+                 "{{.State.Running}} {{.State.StartedAt}}", ENGINE_CONTAINER],
+                capture_output=True, timeout=20)
+            fields = (p.stdout or b"").decode("utf-8", errors="replace").split()
+            running = p.returncode == 0 and bool(fields) and fields[0] == "true"
+            age = None
+            if running and len(fields) > 1:
+                try:
+                    started = datetime.strptime(
+                        fields[1][:19], "%Y-%m-%dT%H:%M:%S").replace(
+                        tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - started).total_seconds()
+                except Exception:
+                    age = None
+            if running and (age is None or age < ENGINE_BOOT_WAIT_S):
+                return True, (f"{ENGINE_CONTAINER} démarré depuis moins de "
+                              f"{ENGINE_BOOT_WAIT_S} s ou date illisible — pas "
+                              f"de restart, boot en cours")
+            if running:
+                verb = "restart"
+        except FileNotFoundError as exc:
+            return False, f"docker inspect échoué: {exc!r}"
+        except Exception as exc:
+            # inspect illisible : on ne redémarre pas à l'aveugle
+            return True, f"docker restart non tenté ({exc!r})"
     try:
-        p = subprocess.run(["docker", "start", ENGINE_CONTAINER],
-                           capture_output=True, timeout=30)
+        p = subprocess.run(["docker", verb, ENGINE_CONTAINER],
+                           capture_output=True,
+                           timeout=120 if verb == "restart" else 30)
         if p.returncode != 0:
             # Un refus (conteneur inconnu, daemon indisponible) n'est pas un
             # succès : le diagnostic accompagne le retry, sans journal à 30 s.
             err = (p.stderr or b"").decode("utf-8", errors="replace").strip()
-            return True, f"docker start returncode={p.returncode}: {err[:400]}"
+            return True, f"docker {verb} returncode={p.returncode}: {err[:400]}"
     except FileNotFoundError as exc:
-        return False, f"docker start échoué: {exc!r}"
+        return False, f"docker {verb} échoué: {exc!r}"
     except Exception as exc:
-        return True, f"docker start sans effet ({exc!r})"
+        return True, f"docker {verb} sans effet ({exc!r})"
     return True, ""
 
 
@@ -1354,7 +1457,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send(200, {"server": "up", "engine": engine_healthy(),
+            alive = engine_healthy()
+            with _alive_lock:
+                engine_detail = _engine_state["detail"]
+            self._send(200, {"server": "up", "engine": alive,
+                             "engine_detail": engine_detail,
                              "hub_key": bool(HUB_KEY), "jobs": len(_jobs),
                              "engine_url": ENGINE_URL})
         elif self.path in ("/", "/v1/capabilities"):
