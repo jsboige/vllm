@@ -8102,3 +8102,45 @@ Boot 02:18:44Z inchangé (13 h), health 200/7 ms, RC=0, OOM 0, **CUDA error 0 �
 **Leçon.** Un organe purement Linux n'a pas à dépendre du shell Windows. La chaîne `wscript`→`pwsh`→`wsl.exe` ajoutait trois points de panne pour rien, et le plus faible a tout emporté. Le cycle de surveillance de 09:13Z avait vu PowerShell figé mais n'a pas relié cela à l'élagueur : la spec ne lisait pas son fichier d'état. Elle le lit désormais en §1 : âge > 35 min ou disque invité < 40 GiB libres = organe mort.
 
 **À instruire.** Le disque invité s'est rempli de nouveau d'environ 11 Go en 8 min après la purge (113,4 → 102,4 Go entre 12:23 et 12:31Z). Une part revient au tier, qui reste borné à 250 Gio par l'élagueur ; le reste vient d'autres occupants du disque, en particulier les runners CI qui reprenaient. L'attribution par occupant n'est pas faite.
+
+
+## 27/11 06:4x→07:1xZ — refonte amont #63551 publiée, tests rejoués dans l'image (sans GPU)
+
+**Objet.** Tenir la promesse du 05/11 à `orozery` : refaire le correctif de la course de tiering sous la forme qu'il a demandée. L'issue de suivi `#607` (24/11) ne tenait que sur un blocage : « tests jamais exécutés ».
+
+**Environnement de test (réutilisable).** L'hôte Windows n'a aucun venv vllm, et aucun conteneur `--gpus` ne démarre depuis le 26/11 15:58:57Z (hook GPU cassé, Q73). Chemin mesuré : l'image `vllm/vllm-openai:nightly-647a76866b4559a74e27d1c6b55fbffe85c07ce4` (vllm 0.34.0rc1.dev1133, Python 3.14) **sans `--gpus`**. On pose par-dessus le paquet installé les seuls `.py` qui diffèrent entre le commit de l'image et la base de la branche (597 fichiers, `build_stage.sh`), puis on lance `pytest` sur un arbre de tests réduit (`run_tests.sh`). Preuve dans chaque journal : `sha256` installé == `sha256` stagé, et les deux overlays (patché, base) ne diffèrent que par `tiering/manager.py` et `tiering/base.py`. Scripts et journaux : `D:/vllm/.tmp/rev/evidence-63551/` (`logs/` = session productrice, `logs-replay/` = rejeu de la lane).
+
+Deux limites de cet environnement :
+
+- L'évidence vient des `.py` de la branche posés sur les **extensions compilées de `647a76866`** (22/11), pas d'une build de `main` : ce n'est pas la CI amont.
+- L'image de prod `vllm-openai-v0340-fsadmit:v1` ne convient pas : son API est plus ancienne que la base de la branche (RAPPORTÉ par la session productrice, non revérifié).
+
+**Branche.** `rework/63551` = `690be84853`, parent `8c97cff059` = `upstream/main` du 27/11 ; `range-diff` avec le commit d'avant rebase (`5338cdf484`) : `=`. Poussée sur la tête de la PR (`jsboige:kv-offload-protect-step-hits`, `--force-with-lease` sur `ccd42d273c` ; l'ancienne tête reste sur la branche locale et dans `refs/pull/63551/head`).
+
+⚠ **`git rebase origin/main` est une mauvaise cible pour une PR amont.** `origin` est le fork : merge-base au 25/10, **2 615 commits** à rejouer (`origin/main..HEAD` mesuré le 27/11). La bonne cible est `upstream/main`.
+
+**Résultats — deux rejeux indépendants (session productrice, puis lane), mêmes comptes.**
+
+| Suite | Sans le correctif | Avec |
+|---|---|---|
+| `tests/v1/kv_offload/tiering/test_lookup_hit_pinning.py` (8 tests neufs) | 7 failed, 1 passed | **8 passed** |
+| autres `tiering/test_*.py` | 7 failed, 318 passed, 1 skipped, 2 errors | **325 passed**, 1 skipped, 2 errors |
+| `tiering/p2p/` (session productrice seul) | 438 passed | 438 passed |
+
+- Le skip (`kvcr` non importable) et les 2 errors (fixture `vllm_runner`, `test_p2p_lifecycle_e2e.py`) sont identiques des deux côtés. Différentiel exact : 318 + 7 = 325.
+- La reproduction échoue sans correctif sur l'assert de production, verbatim : `AssertionError: Chunk b'0\x00\x00\x00\x00' not found in cache`.
+
+**Publié.** Titre et description de la PR mis à jour (07:07:19Z, pied codesmith conservé). Réponse à `orozery` : [issuecomment-7212180073](https://github.com/vllm-project/vllm/pull/63551#issuecomment-7212180073) — tête, ce qui change sur ses quatre points, commande et tableaux. `#607` close (`completed`, 07:09:43Z).
+
+**Écart nommé en amont, non corrigé.** Un chargement KV asynchrone **différé** (`defer_load` dans `v1/core/sched/scheduler.py` : `load_kv_async` + `defer_async_loads`) déclare les lectures de cache dans un step et les consomme dans un step ultérieur. Les pins libérées dans `on_schedule_end()` ne couvrent donc pas ce cas. L'exposition précède la refonte (la variante « step-set » l'avait aussi) ; la couvrir demande une pin par requête qui survive au step, autre forme, laissée à l'arbitrage du mainteneur.
+
+**Vérifié par lecture.** La région de verrou du connecteur (`kv_connector/v1/offloading/scheduler.py`, note « Manager exclusion ») tient le verrou du manager pour tout le step, et le fil `tier-poll` ne l'obtient qu'entre deux steps : la libération en fin de `poll_tiers()` ne peut pas couper un step en cours.
+
+**Non fait.** La refonte n'est pas dans l'overlay de prod, qui porte encore la variante « step-set » portée sur v0.34.0 : aucune validation par le trafic.
+
+**Pièges d'opérateur (mesurés).**
+
+- Les numéros de ligne cités par la session productrice (`scheduler.py:1070`, `1161`, `1419`, `1522`, `1536`) ne correspondaient pas au fichier du worktree ; le bon fichier était `kv_connector/v1/offloading/scheduler.py`. Ne citer que des symboles, et relire avant de publier.
+- `build_stage.sh` n'accepte un chemin de scène qu'absolu et **POSIX** (`/d/...`). Une valeur `D:/...` atterrit sous `<worktree>/.tmp/D:/...` : 1 221 fichiers, 36 Mo, supprimés après preuve. `MSYS_NO_PATHCONV=1` ne se met que sur les arguments de `docker run`.
+- Le `.gitignore` d'amont n'ignore pas `.tmp/` (celui du fork si) : un scratch dans le worktree apparaît en `?? .tmp/`.
+- Sous `%` en Python, « % d » est un format (drapeau espace + entier), d'où « not enough arguments for format string » : écrire `%%`.
