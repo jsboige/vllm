@@ -89,6 +89,7 @@ Driver : `D:\vllm-data\bench\seat-po2028\bench_ab_voltron11.py` ; relevés dans
   **un** passage de 40 (la veille, 1.0 donnait 29 puis 30) et surtout 4 réponses
   tronquées contre 11 au même plafond de jetons. Tendance sur un seul passage, pas une
   preuve.
+- **Changement de forme des extractions** (10 échantillons sur 1.1, 27/11 : 1 à 22:20Z, 9 à 22:34Z) : à deux champs, 1.0 rendait des chaînes (`{"temperature": "46", "memoire": "7 Go"}`) et 1.1 rend des **nombres** (`{"temperature": 46, "memoire": 7}`), sur deux formulations différentes ; à un seul champ (`data` « memoire 7 Go »), 1.1 rend une liste (`{"memoire": ["Memoire 7 Go"]}`) — 1.0 n'a pas été mesuré sur cette entrée. Reproductible sur 3 passages chacun, pas un accident d'échantillon. Le socle ne le voit pas (extraction verbatim 15/15 aux deux versions) ; un consommateur qui attend une chaîne avec unité doit convertir.
 - **Vitesse : parité, mesurée le 27/11 à 22:26→22:29Z sur hôte dégagé.** Le décode de la
   colonne 1.1 lu à 21:53Z (48,4 tok/s) était **invalide** : un rendu `gource` en 4K d'une
   autre lane tournait dans la VM WSL depuis 21:52:12Z, 31 s avant la batterie (933 % de
