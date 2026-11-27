@@ -283,7 +283,7 @@ def ensure_engine():
         return False, msg
     if _wait_engine(ENGINE_BOOT_WAIT_S):
         return True, ""
-    return False, f"engine {ENGINE_CONTAINER} muet après docker start " \
+    return False, f"engine {ENGINE_CONTAINER} muet après relance docker " \
                   f"({ENGINE_BOOT_WAIT_S} s)" + (f" ; {msg}" if msg else "")
 
 
