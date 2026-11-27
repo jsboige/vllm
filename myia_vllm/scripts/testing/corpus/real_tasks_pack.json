@@ -1,0 +1,858 @@
+{
+ "format": "voltron-real-task-pack",
+ "version": 1,
+ "built_at": "2026-11-27T11:51:34+00:00",
+ "n": 40,
+ "corpus_manifest": {
+  "bench_2xmerge.json": "efa83fd7aa59",
+  "bench_coder.json": "b6217022023d",
+  "bench_fable51.json": "4ff5cb261726",
+  "bench_voltron.json": "31b99525b420",
+  "boot_msys_fail.log": "a6703e6903ca",
+  "cfg_2xmerge.json": "3ab2b0b3e2b1",
+  "cfg_coder.json": "aeaee4c8ef68",
+  "cfg_fable51.json": "969bcfb5773f",
+  "cfg_voltron.json": "3f7b67525355",
+  "diag_lfm3-coder.log": "a623fa2e1eb6",
+  "docker_ps_now.txt": "61b630484f17",
+  "gitlog_vllm.txt": "bb372790df8b",
+  "nvidia_smi_now.txt": "605d4a273b1f",
+  "socle_run.log": "5f388e8e1a26"
+ },
+ "tasks": [
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/utils.py\", line 355, in _load_param\nProcess EngineCore:\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     weight_loader(param, weight_data)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/linear.py\", line 617, in weight_loader_v2\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     param.load_column_parallel_weight(loaded_weight=loaded_weight)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py\", line 145, in load_column_parallel_weight\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     assert self.data.shape == loaded_weight.shape\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764] AssertionError",
+   "checker": "classify",
+   "oracle": {
+    "famille": "weight-shape",
+    "markers": [
+     "load_column_parallel_weight",
+     "AssertionError"
+    ],
+    "source": "(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/utils.py\", line 355, in _load_param\nProcess EngineCore:\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     weight_loader(param, weight_data)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/linear.py\", line 617, in weight_loader_v2\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     param.load_column_parallel_weight(loaded_weight=loaded_weight)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py\", line 145, in load_column_parallel_weight\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     assert self.data.shape == loaded_weight.shape\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764] AssertionError"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n    yield from self._load_param(\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/utils.py\", line 355, in _load_param\n    weight_loader(param, weight_data)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/linear.py\", line 617, in weight_loader_v2\n    param.load_column_parallel_weight(loaded_weight=loaded_weight)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py\", line 145, in load_column_parallel_weight\n    assert self.data.shape == loaded_weight.shape\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError",
+   "checker": "classify",
+   "oracle": {
+    "famille": "weight-shape",
+    "markers": [
+     "load_column_parallel_weight",
+     "AssertionError"
+    ],
+    "source": "    yield from self._load_param(\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/utils.py\", line 355, in _load_param\n    weight_loader(param, weight_data)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/linear.py\", line 617, in weight_loader_v2\n    param.load_column_parallel_weight(loaded_weight=loaded_weight)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py\", line 145, in load_column_parallel_weight\n    assert self.data.shape == loaded_weight.shape\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n    with launch_core_engines(\n  File \"/usr/lib/python3.12/contextlib.py\", line 144, in __exit__\n    next(self.gen)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py\", line 1393, in launch_core_engines\n    wait_for_engine_startup(\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py\", line 1477, in wait_for_engine_startup\n    raise RuntimeError(",
+   "checker": "classify",
+   "oracle": {
+    "famille": "engine-init",
+    "markers": [
+     "Engine core initialization failed",
+     "EngineCore failed to start"
+    ],
+    "source": "    with launch_core_engines(\n  File \"/usr/lib/python3.12/contextlib.py\", line 144, in __exit__\n    next(self.gen)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py\", line 1393, in launch_core_engines\n    wait_for_engine_startup(\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py\", line 1477, in wait_for_engine_startup\n    raise RuntimeError("
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n7bcf988ed4339faa43d599b4f9c303602336b475e68bd991f6040e7d5a6df5a6\nCONTAINER-DIED lfm3-coder after 60s — last logs:\n    return cls(\n           ^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py\", line 194, in __init__\n    self.engine_core = EngineCoreClient.make_async_mp_client(",
+   "checker": "classify",
+   "oracle": {
+    "famille": "container-died",
+    "markers": [
+     "CONTAINER-DIED"
+    ],
+    "source": "7bcf988ed4339faa43d599b4f9c303602336b475e68bd991f6040e7d5a6df5a6\nCONTAINER-DIED lfm3-coder after 60s — last logs:\n    return cls(\n           ^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py\", line 194, in __init__\n    self.engine_core = EngineCoreClient.make_async_mp_client("
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 595, in cached_files\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\nBOOT-FAIL lfm3-2xmerge 12:52:41Z\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\n",
+   "checker": "classify",
+   "oracle": {
+    "famille": "path-mangling",
+    "markers": [
+     "Repo id must be"
+    ],
+    "source": "    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 595, in cached_files\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\nBOOT-FAIL lfm3-2xmerge 12:52:41Z\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\n"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 370, in cached_file\n    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 595, in cached_files\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\nBOOT-FAIL lfm3-fable51 12:53:12Z\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.",
+   "checker": "classify",
+   "oracle": {
+    "famille": "path-mangling",
+    "markers": [
+     "Repo id must be"
+    ],
+    "source": "  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 370, in cached_file\n    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 595, in cached_files\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\nBOOT-FAIL lfm3-fable51 12:53:12Z\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed."
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n(EngineCore pid=100) INFO 11-18 13:06:01 [weight_utils.py:1091] Filesystem type for checkpoints: 9P. Checkpoint size: 3.22 GiB. Available RAM: 19.57 GiB.\n(EngineCore pid=100) INFO 11-18 13:06:01 [weight_utils.py:1114] Auto-prefetch is disabled because the filesystem (9P) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.\n\nLoading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764] EngineCore failed to start.",
+   "checker": "classify",
+   "oracle": {
+    "famille": "engine-init",
+    "markers": [
+     "Engine core initialization failed",
+     "EngineCore failed to start"
+    ],
+    "source": "(EngineCore pid=100) INFO 11-18 13:06:01 [weight_utils.py:1091] Filesystem type for checkpoints: 9P. Checkpoint size: 3.22 GiB. Available RAM: 19.57 GiB.\n(EngineCore pid=100) INFO 11-18 13:06:01 [weight_utils.py:1114] Auto-prefetch is disabled because the filesystem (9P) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.\n\nLoading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764] EngineCore failed to start."
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n\n############ lfm3-2xmerge : boot 12:54:49Z\nc30b43cd2c8de7362620f039b4f93f87df3a80085f0c0fb8c9d5ea08b25281f7\n############ lfm3-2xmerge : health OK 12:57:02Z — bench start",
+   "checker": "classify",
+   "oracle": {
+    "famille": "benign-boot",
+    "markers": [
+     "Initializing",
+     "Loading safetensors",
+     "health OK"
+    ],
+    "source": "\n############ lfm3-2xmerge : boot 12:54:49Z\nc30b43cd2c8de7362620f039b4f93f87df3a80085f0c0fb8c9d5ea08b25281f7\n############ lfm3-2xmerge : health OK 12:57:02Z — bench start"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n[112/120] sort       OK  attendu 19,28,39,68,93 / lu 19,28,39,68,93\n[113/120] sort       FAIL attendu 21,27,34,66,92 / lu 27,34,66,92,21\n[114/120] sort       OK  attendu 13,35,59,80,97 / lu 13,35,59,80,97\n[115/120] sort       OK  attendu 11,19,37,44,75 / lu 11,19,37,44,75",
+   "checker": "classify",
+   "oracle": {
+    "famille": "bench-fail",
+    "markers": [
+     "FAIL"
+    ],
+    "source": "[112/120] sort       OK  attendu 19,28,39,68,93 / lu 19,28,39,68,93\n[113/120] sort       FAIL attendu 21,27,34,66,92 / lu 27,34,66,92,21\n[114/120] sort       OK  attendu 13,35,59,80,97 / lu 13,35,59,80,97\n[115/120] sort       OK  attendu 11,19,37,44,75 / lu 11,19,37,44,75"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n764bb13b7d1f021628e743227c04156db02bab3bd2cecae307e00849980ec21e\n############ lfm3-fable51 : health OK 13:00:12Z — bench start\n[112/120] sort       OK  attendu 19,28,39,68,93 / lu 19,28,39,68,93\n[113/120] sort       FAIL attendu 21,27,34,66,92 / lu 27,34,66,92,21\n[114/120] sort       OK  attendu 13,35,59,80,97 / lu 13,35,59,80,97",
+   "checker": "classify",
+   "oracle": {
+    "famille": "bench-fail",
+    "markers": [
+     "FAIL"
+    ],
+    "source": "764bb13b7d1f021628e743227c04156db02bab3bd2cecae307e00849980ec21e\n############ lfm3-fable51 : health OK 13:00:12Z — bench start\n[112/120] sort       OK  attendu 19,28,39,68,93 / lu 19,28,39,68,93\n[113/120] sort       FAIL attendu 21,27,34,66,92 / lu 27,34,66,92,21\n[114/120] sort       OK  attendu 13,35,59,80,97 / lu 13,35,59,80,97"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n[120/120] sort       FAIL attendu 12,15,46,58,73 / lu 12,46,58,73,15\n\n== lfm3-2xmerge : 84/120 = 0.700 en 23.4 s\n   arith      2/15 = 0.133\n   constraint 9/15 = 0.600",
+   "checker": "classify",
+   "oracle": {
+    "famille": "bench-fail",
+    "markers": [
+     "FAIL"
+    ],
+    "source": "[120/120] sort       FAIL attendu 12,15,46,58,73 / lu 12,46,58,73,15\n\n== lfm3-2xmerge : 84/120 = 0.700 en 23.4 s\n   arith      2/15 = 0.133\n   constraint 9/15 = 0.600"
+   }
+  },
+  {
+   "cat": "err-classify",
+   "prompt": "Voici une fenêtre de log d'infrastructure. Classifie l'incident en UNE famille parmi : weight-shape, engine-init, path-mangling, benign-boot, bench-fail, container-died.\n- weight-shape : écart de forme de tenseurs au chargement des poids\n- engine-init : le moteur n'a pas démarré (échec d'initialisation)\n- path-mangling : un chemin Unix réécrit en chemin Windows\n- benign-boot : démarrage/opération normale, PAS un incident\n- bench-fail : échec d'une tâche de banc (fonctionnement normal du banc)\n- container-died : conteneur mort pendant le boot\n\nRéponds en JSON exactement : {\"famille\": \"...\", \"ligne_cle\": \"<la ligne du log la plus diagnostique, recopiée>\"}}\n\nLOG:\n\n############ lfm3-2xmerge : boot 12:52:10Z\n4234afcd83c911e86e0951e38328fa243632a34173004f99394258da9fa18c3d\nCONTAINER-DIED lfm3-2xmerge after 30s — last logs:\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py\", line 60, in build_async_engine_client",
+   "checker": "classify",
+   "oracle": {
+    "famille": "container-died",
+    "markers": [
+     "CONTAINER-DIED"
+    ],
+    "source": "\n############ lfm3-2xmerge : boot 12:52:10Z\n4234afcd83c911e86e0951e38328fa243632a34173004f99394258da9fa18c3d\nCONTAINER-DIED lfm3-2xmerge after 30s — last logs:\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py\", line 60, in build_async_engine_client"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : GPU mémoire (MiB) et température (°C). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\nname, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "500",
+     "45.53"
+    ],
+    "source": "name, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : GPU utilisation (%) et température (°C). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\nname, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "0",
+     "45.53"
+    ],
+    "source": "name, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : GPU mémoire (MiB) et utilisation (%). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\nname, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "500",
+     "0"
+    ],
+    "source": "name, memory.used [MiB], temperature.gpu, utilization.gpu [%]\nNVIDIA GeForce RTX 3070 Ti Laptop GPU, 500 MiB, 45.53, 0 %\n"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : score lfm3-2xmerge (score total, acc, durée s). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n== lfm3-2xmerge : 84/120 = 0.700 en 23.4 s",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "84",
+     "0.700",
+     "23.4"
+    ],
+    "source": "== lfm3-2xmerge : 84/120 = 0.700 en 23.4 s"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : score lfm3-fable51 (score total, acc, durée s). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n== lfm3-fable51 : 73/120 = 0.608 en 24.1 s",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "73",
+     "0.608",
+     "24.1"
+    ],
+    "source": "== lfm3-fable51 : 73/120 = 0.608 en 24.1 s"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : pour lfm3-2xmerge : le NOM de la catégorie de plus basse accuracy, puis l'accuracy de cette catégorie, puis le total ok et le total n. Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n{\"by_cat\": {\"arith\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}}, \"ok\": 84, \"n\": 120}",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "arith",
+     "0.1333",
+     "84",
+     "120"
+    ],
+    "source": "{\"by_cat\": {\"arith\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}}, \"ok\": 84, \"n\": 120}"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : pour lfm3-fable51 : le NOM de la catégorie de plus basse accuracy, puis l'accuracy de cette catégorie, puis le total ok et le total n. Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n{\"by_cat\": {\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}}, \"ok\": 73, \"n\": 120}",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "arith",
+     "0.0",
+     "73",
+     "120"
+    ],
+    "source": "{\"by_cat\": {\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}}, \"ok\": 73, \"n\": 120}"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : pour voltron : le NOM de la catégorie de plus basse accuracy, puis l'accuracy de cette catégorie, puis le total ok et le total n. Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n{\"by_cat\": {\"count\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}}, \"ok\": 88, \"n\": 120}",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "count",
+     "0.1333",
+     "88",
+     "120"
+    ],
+    "source": "{\"by_cat\": {\"count\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}}, \"ok\": 88, \"n\": 120}"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : le hash du commit le plus récent et celui du 3ᵉ commit. Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n3b220c0b44 fix(nb_coder): refuse unaddressable creation plans\n497bb71d36 Merge pull request #465 from jsboige/nb-coder/svg-display-gate\n47035196a9 Merge pull request #461 from jsboige/nb-coder/verifier-scope\n7ee6319040 feat(nb_coder): svg-display gate catches SVG-as-text figure cells (#464)\ne791cbe018 fix(nb_coder): verifier judges the deliverable, not the chain's procedure\n8a37c8433c Merge pull request #481 from jsboige/nb-coder/grain-prev\n86f3f74240 Merge pull request #462 from jsboige/nb-coder/grain-tier-med\n95bb59bbad fix(nb_coder): le tag Grain declare son predecesseur, lu dans l'historique de la lane (#459)\nf8fee9a23c test(nb_coder): pin the parser side of --grain-tier — the call-site pin cannot see a missing add_argument (vllm-c2 review of #481)\n1523b8cf78 fix(nb_coder): le tag Grain vient d'un tier reel, plus jamais de `auto`\n1129cdda12 Merge pull request #480 from jsboige/nb-coder/403-model-unresolved\n20ab4acf16 fix(nb_coder): un 403 unknown model se lit model-unresolved, et la cause survit a la troncature\n5f8fb64a2a Merge pull request #479 from jsboige/nb-coder/wave1c-failure-classes\naa8b9ff3fb fix(nb_coder): wave-1c failure classes — bisect truncated builds, defer gate refusals, retry empty verifies\n0472d0dbfc Merge pull request #478 from jsboige/nb-coder/scratch-persist-error-outputs\n",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "3b220c0b44",
+     "47035196a9"
+    ],
+    "source": "3b220c0b44 fix(nb_coder): refuse unaddressable creation plans\n497bb71d36 Merge pull request #465 from jsboige/nb-coder/svg-display-gate\n47035196a9 Merge pull request #461 from jsboige/nb-coder/verifier-scope\n7ee6319040 feat(nb_coder): svg-display gate catches SVG-as-text figure cells (#464)\ne791cbe018 fix(nb_coder): verifier judges the deliverable, not the chain's procedure\n8a37c8433c Merge pull request #481 from jsboige/nb-coder/grain-prev\n86f3f74240 Merge pull request #462 from jsboige/nb-coder/grain-tier-med\n95bb59bbad fix(nb_coder): le tag Grain declare son predecesseur, lu dans l'historique de la lane (#459)\nf8fee9a23c test(nb_coder): pin the parser side of --grain-tier — the call-site pin cannot see a missing add_argument (vllm-c2 review of #481)\n1523b8cf78 fix(nb_coder): le tag Grain vient d'un tier reel, plus jamais de `auto`\n1129cdda12 Merge pull request #480 from jsboige/nb-coder/403-model-unresolved\n20ab4acf16 fix(nb_coder): un 403 unknown model se lit model-unresolved, et la cause survit a la troncature\n5f8fb64a2a Merge pull request #479 from jsboige/nb-coder/wave1c-failure-classes\naa8b9ff3fb fix(nb_coder): wave-1c failure classes — bisect truncated builds, defer gate refusals, retry empty verifies\n0472d0dbfc Merge pull request #478 from jsboige/nb-coder/scratch-persist-error-outputs\n"
+   }
+  },
+  {
+   "cat": "num-fidelity",
+   "prompt": "Rédige un rapport d'UNE à deux phrases, en français, citant ces champs : les 3 premiers hashes (3b220c0b44, 497bb71d36, 47035196a9). Recopie les valeurs EXACTEMENT (verbatim). N'invente aucun autre nombre.\n\nDONNÉES:\n3b220c0b44 fix(nb_coder): refuse unaddressable creation plans\n497bb71d36 Merge pull request #465 from jsboige/nb-coder/svg-display-gate\n47035196a9 Merge pull request #461 from jsboige/nb-coder/verifier-scope\n7ee6319040 feat(nb_coder): svg-display gate catches SVG-as-text figure cells (#464)\ne791cbe018 fix(nb_coder): verifier judges the deliverable, not the chain's procedure\n8a37c8433c Merge pull request #481 from jsboige/nb-coder/grain-prev\n86f3f74240 Merge pull request #462 from jsboige/nb-coder/grain-tier-med\n95bb59bbad fix(nb_coder): le tag Grain declare son predecesseur, lu dans l'historique de la lane (#459)\nf8fee9a23c test(nb_coder): pin the parser side of --grain-tier — the call-site pin cannot see a missing add_argument (vllm-c2 review of #481)\n1523b8cf78 fix(nb_coder): le tag Grain vient d'un tier reel, plus jamais de `auto`\n1129cdda12 Merge pull request #480 from jsboige/nb-coder/403-model-unresolved\n20ab4acf16 fix(nb_coder): un 403 unknown model se lit model-unresolved, et la cause survit a la troncature\n5f8fb64a2a Merge pull request #479 from jsboige/nb-coder/wave1c-failure-classes\naa8b9ff3fb fix(nb_coder): wave-1c failure classes — bisect truncated builds, defer gate refusals, retry empty verifies\n0472d0dbfc Merge pull request #478 from jsboige/nb-coder/scratch-persist-error-outputs\n",
+   "checker": "num_fidelity",
+   "oracle": {
+    "must_contain": [
+     "3b220c0b44",
+     "497bb71d36",
+     "47035196a9"
+    ],
+    "source": "3b220c0b44 fix(nb_coder): refuse unaddressable creation plans\n497bb71d36 Merge pull request #465 from jsboige/nb-coder/svg-display-gate\n47035196a9 Merge pull request #461 from jsboige/nb-coder/verifier-scope\n7ee6319040 feat(nb_coder): svg-display gate catches SVG-as-text figure cells (#464)\ne791cbe018 fix(nb_coder): verifier judges the deliverable, not the chain's procedure\n8a37c8433c Merge pull request #481 from jsboige/nb-coder/grain-prev\n86f3f74240 Merge pull request #462 from jsboige/nb-coder/grain-tier-med\n95bb59bbad fix(nb_coder): le tag Grain declare son predecesseur, lu dans l'historique de la lane (#459)\nf8fee9a23c test(nb_coder): pin the parser side of --grain-tier — the call-site pin cannot see a missing add_argument (vllm-c2 review of #481)\n1523b8cf78 fix(nb_coder): le tag Grain vient d'un tier reel, plus jamais de `auto`\n1129cdda12 Merge pull request #480 from jsboige/nb-coder/403-model-unresolved\n20ab4acf16 fix(nb_coder): un 403 unknown model se lit model-unresolved, et la cause survit a la troncature\n5f8fb64a2a Merge pull request #479 from jsboige/nb-coder/wave1c-failure-classes\naa8b9ff3fb fix(nb_coder): wave-1c failure classes — bisect truncated builds, defer gate refusals, retry empty verifies\n0472d0dbfc Merge pull request #478 from jsboige/nb-coder/scratch-persist-error-outputs\n"
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "extrais les scores de chaque modèle en JSON {modele: {score, acc, duree_s}} (acc et durée en nombres)\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n[120/120] sort       FAIL attendu 12,15,46,58,73 / lu 12,46,58,73,15\n\n== lfm3-2xmerge : 84/120 = 0.700 en 23.4 s\n   arith      2/15 = 0.133\n   constraint 9/15 = 0.600\n   count      3/15 = 0.200\n   extract    15/15 = 1.000\n   grounded   15/15 = 1.000\n   json       15/15 = 1.000\n   sort       12/15 = 0.800\n   transform  13/15 = 0.867\n-> d:\\dev\\wt-po2028-vllm\\myia_vllm\\_logs\\quality_bench_lfm3-2xmerge_20261118T125725Z.json\n############ lfm3-2xmerge : teardown 12:57:25Z\n\n############ lfm3-fable51 : boot 12:57:39Z\n764bb13b7d1f021628e743227c04156db02bab3bd2cecae307e00849980ec21e\n############ lfm3-fable51 : health OK 13:00:12Z — bench start\n[112/120] sort       OK  attendu 19,28,39,68,93 / lu 19,28,39,68,93\n[113/120] sort       FAIL attendu 21,27,34,66,92 / lu 27,34,66,92,21\n[114/120] sort       OK  attendu 13,35,59,80,97 / lu 13,35,59,80,97\n[115/120] sort       FAIL attendu 11,19,37,44,75 / lu 11,37,44,75\n[116/120] sort       FAIL attendu 31,71,82,90,94 / lu 31,71,82,94,90\n[117/120] sort       OK  attendu 12,23,36,41,57 / lu 12,23,36,41,57\n[118/120] sort       OK  attendu 19,40,53,59,67 / lu 19,40,53,59,67\n[119/120] sort       OK  attendu 11,21,46,68,81 / lu 11,21,46,68,81\n[120/120] sort       FAIL attendu 12,15,46,58,73 / lu 12,46,58,73,15\n\n== lfm3-fable51 : 73/120 = 0.608 en 24.1 s\n   arith      0/15 = 0.000\n   constraint 7/15 = 0.467",
+   "checker": "json_eq",
+   "oracle": {
+    "lfm3-2xmerge": {
+     "score": 84,
+     "acc": 0.7,
+     "duree_s": 23.4
+    },
+    "lfm3-fable51": {
+     "score": 73,
+     "acc": 0.608,
+     "duree_s": 24.1
+    }
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "catégorie avec la plus basse accuracy -> JSON {\"cat\": ..., \"acc\": ...}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 3, \"acc\": 0.2}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 12, \"acc\": 0.8}, \"transform\": {\"n\": 15, \"ok\": 13, \"acc\": 0.8667}}",
+   "checker": "json_eq",
+   "oracle": {
+    "cat": "arith",
+    "acc": 0.1333
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "liste TRIÉE des catégories à 100 % (ok == n) -> JSON {\"parfaites\": [...]}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 3, \"acc\": 0.2}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 12, \"acc\": 0.8}, \"transform\": {\"n\": 15, \"ok\": 13, \"acc\": 0.8667}}",
+   "checker": "json_eq",
+   "oracle": {
+    "parfaites": [
+     "extract",
+     "grounded",
+     "json"
+    ]
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "catégorie avec la plus basse accuracy -> JSON {\"cat\": ..., \"acc\": ...}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}, \"constraint\": {\"n\": 15, \"ok\": 7, \"acc\": 0.4667}, \"count\": {\"n\": 15, \"ok\": 1, \"acc\": 0.0667}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 7, \"acc\": 0.4667}, \"transform\": {\"n\": 15, \"ok\": 13, \"acc\": 0.8667}}",
+   "checker": "json_eq",
+   "oracle": {
+    "cat": "arith",
+    "acc": 0.0
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "liste TRIÉE des catégories à 100 % (ok == n) -> JSON {\"parfaites\": [...]}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}, \"constraint\": {\"n\": 15, \"ok\": 7, \"acc\": 0.4667}, \"count\": {\"n\": 15, \"ok\": 1, \"acc\": 0.0667}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 7, \"acc\": 0.4667}, \"transform\": {\"n\": 15, \"ok\": 13, \"acc\": 0.8667}}",
+   "checker": "json_eq",
+   "oracle": {
+    "parfaites": [
+     "extract",
+     "grounded",
+     "json"
+    ]
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "catégorie avec la plus basse accuracy -> JSON {\"cat\": ..., \"acc\": ...}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 1, \"acc\": 0.0667}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 12, \"acc\": 0.8}, \"transform\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}}",
+   "checker": "json_eq",
+   "oracle": {
+    "cat": "arith",
+    "acc": 0.0
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "liste TRIÉE des catégories à 100 % (ok == n) -> JSON {\"parfaites\": [...]}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 0, \"acc\": 0.0}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 1, \"acc\": 0.0667}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 12, \"acc\": 0.8}, \"transform\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}}",
+   "checker": "json_eq",
+   "oracle": {
+    "parfaites": [
+     "extract",
+     "grounded",
+     "json"
+    ]
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "catégorie avec la plus basse accuracy -> JSON {\"cat\": ..., \"acc\": ...}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 4, \"acc\": 0.2667}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}, \"transform\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}}",
+   "checker": "json_eq",
+   "oracle": {
+    "cat": "count",
+    "acc": 0.1333
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "liste TRIÉE des catégories à 100 % (ok == n) -> JSON {\"parfaites\": [...]}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n{\"arith\": {\"n\": 15, \"ok\": 4, \"acc\": 0.2667}, \"constraint\": {\"n\": 15, \"ok\": 9, \"acc\": 0.6}, \"count\": {\"n\": 15, \"ok\": 2, \"acc\": 0.1333}, \"extract\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"grounded\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"json\": {\"n\": 15, \"ok\": 15, \"acc\": 1.0}, \"sort\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}, \"transform\": {\"n\": 15, \"ok\": 14, \"acc\": 0.9333}}",
+   "checker": "json_eq",
+   "oracle": {
+    "parfaites": [
+     "extract",
+     "grounded",
+     "json"
+    ]
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "quel fichier Python contient la fonction `load_column_parallel_weight` qui échoue -> JSON {\"fichier\": \"<nom du fichier .py>\"}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/utils.py\", line 355, in _load_param\nProcess EngineCore:\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     weight_loader(param, weight_data)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/linear.py\", line 617, in weight_loader_v2\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     param.load_column_parallel_weight(loaded_weight=loaded_weight)\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]   File \"/usr/local/lib/python3.12/dist-packages/vllm/model_executor/parameter.py\", line 145, in load_column_parallel_weight\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]     assert self.data.shape == loaded_weight.shape\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=100) ERROR 11-18 13:06:06 [core.py:1764] AssertionError",
+   "checker": "json_eq",
+   "oracle": {
+    "fichier": "parameter.py"
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "quel chemin Windows erroné a été passé à la place de /model -> JSON {\"chemin\": \"...\"}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py\", line 595, in cached_files\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\nBOOT-FAIL lfm3-2xmerge 12:52:41Z\n    raise OSError(f\"{e}\") from e\nOSError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'C:/Program Files/Git/model'. Use `repo_type` argument if needed.\n",
+   "checker": "json_eq",
+   "oracle": {
+    "chemin": "C:/Program Files/Git/model"
+   }
+  },
+  {
+   "cat": "fail-extract",
+   "prompt": "pour chaque config, indique si la clé quantization_config est présente -> JSON {modele: true/false}\n\nRéponds en JSON exact, sans texte autour.\n\nDONNÉES:\n--- voltron ---\n{\n  \"architectures\": [\n    \"Lfm3ForCausalLM\"\n  ],\n  \"bos_token_id\": 124894,\n  \"conv_L_cache\": 7,\n  \"conv_bias\": false,\n  \"dtype\": \"bfloat16\",\n  \"eos_token_id\": 124900,\n  \"head_dim\": 128,\n  \"hidden_size\": 2048,\n  \"initializer_range\": 0.02,\n  \"intermediate_size\": 7680,\n  \"layer_types\": [\n    \"conv\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\"\n  ],\n  \"max_position_embeddings\": 262144,\n  \"model_type\": \"lfm3\",\n  \"norm_eps\": 1e-05,\n  \"num_attention_heads\": 16,\n  \"num_hidden_layers\": 24,\n  \"num_key_value_heads\": 4,\n  \"pad_token_id\": 124893,\n  \"rope_parameters\": {\n    \"full_attention\": {\n      \"partial_rotary_factor\": 0.5,\n      \"rope_theta\": 1000000.0,\n      \"rope_type\": \"default\"\n    },\n    \"sliding_attention\": {\n      \"rope_theta\": 10000,\n      \"rope_type\": \"default\"\n    }\n  },\n  \"sliding_window\": 256,\n  \"tie_word_embeddings\": true,\n  \"transformers_version\": \"5.20.2\",\n  \"use_cache\": false,\n  \"use_sandwich_norm\": true,\n  \"vocab_size\": 128000,\n  \"auto_map\": {\n    \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n    \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n    \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n  }\n}\n\n--- lfm3-2xmerge ---\n{\n  \"architectures\": [\n    \"Lfm3ForCausalLM\"\n  ],\n  \"auto_map\": {\n    \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n    \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n    \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n  },\n  \"bos_token_id\": 124894,\n  \"conv_L_cache\": 7,\n  \"conv_bias\": false,\n  \"dtype\": \"float16\",\n  \"eos_token_id\": 124900,\n  \"head_dim\": 128,\n  \"hidden_size\": 2048,\n  \"initializer_range\": 0.02,\n  \"intermediate_size\": 7680,\n  \"layer_types\": [\n    \"conv\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\",\n    \"sliding_attention\",\n    \"conv\",\n    \"full_attention\",\n    \"conv\"\n  ],\n  \"max_position_embeddings\": 262144,\n  \"model_type\": \"lfm3\",\n  \"norm_eps\": 1e-05,\n  \"num_attention_heads\": 16,\n  \"num_hidden_layers\": 24,\n  \"num_key_value_heads\": 4,\n  \"pad_token_id\": 124893,\n  \"rope_parameters\": {\n    \"full_attention\": {\n      \"partial_rotary_factor\": 0.5,\n      \"rope_theta\": 1000000.0,\n      \"rope_type\": \"default\"\n    },\n    \"sliding_attention\": {\n      \"rope_theta\": 10000,\n      \"rope_type\": \"default\"\n    }\n  },\n  \"sliding_window\": 256,\n  \"tie_word_embeddings\": true,\n  \"transformers_version\": \"5.21.1\",\n  \"use_cache\": false,\n  \"use_sandwich_norm\": true,\n  \"vocab_size\": 128000\n}\n\n\n--- lfm3-coder ---\n{\n    \"architectures\": [\n        \"Lfm3ForCausalLM\"\n    ],\n    \"auto_map\": {\n        \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n        \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n        \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n    },\n    \"bos_token_id\": 124894,\n    \"conv_L_cache\": 7,\n    \"conv_bias\": false,\n    \"do_sample\": true,\n    \"dtype\": \"bfloat16\",\n    \"eos_token_id\": [\n        124900\n    ],\n    \"generation_config\": {\n        \"_from_model_config\": true,\n        \"bos_token_id\": 124894,\n        \"do_sample\": true,\n        \"eos_token_id\": [\n            124900\n        ],\n        \"output_attentions\": false,\n        \"output_hidden_states\": false,\n        \"pad_token_id\": 124893,\n        \"repetition_penalty\": 1.1,\n        \"temperature\": 0.1,\n        \"top_k\": 50,\n        \"transformers_version\": \"5.12.1\",\n        \"use_cache\": true\n    },\n    \"head_dim\": 128,\n    \"hidden_size\": 2048,\n    \"intermediate_size\": 7680,\n    \"layer_types\": [\n        \"conv\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\",\n        \"sliding_attention\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\",\n        \"sliding_attention\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\",\n        \"sliding_attention\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\",\n        \"sliding_attention\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\",\n        \"sliding_attention\",\n        \"conv\",\n        \"full_attention\",\n        \"conv\"\n    ],\n    \"max_position_embeddings\": 262144,\n    \"model_type\": \"lfm3\",\n    \"norm_eps\": 1e-05,\n    \"num_attention_heads\": 16,\n    \"num_hidden_layers\": 24,\n    \"num_key_value_heads\": 4,\n    \"pad_token_id\": 124893,\n    \"rope_parameters\": {\n        \"full_attention\": {\n            \"partial_rotary_factor\": 0.5,\n            \"rope_theta\": 1000000.0,\n            \"rope_type\": \"default\"\n        },\n        \"sliding_attention\": {\n            \"rope_theta\": 10000,\n            \"rope_type\": \"default\"\n        }\n    },\n    \"sliding_window\": 256,\n    \"temperature\": 0.1,\n    \"tie_word_embeddings\": true,\n    \"top_k\": 50,\n    \"transformers_version\": \"5.12.1\",\n    \"use_cache\": true,\n    \"use_sandwich_norm\": true,\n    \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "voltron": false,
+    "lfm3-2xmerge": false,
+    "lfm3-coder": false
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre voltron et lfm3-2xmerge.\nRéponds en JSON : {\"<cle>\": [<valeur dans voltron>, <valeur dans lfm3-2xmerge>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}\n\n=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "dtype": [
+     "bfloat16",
+     "float16"
+    ],
+    "transformers_version": [
+     "5.20.2",
+     "5.21.1"
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs voltron et lfm3-2xmerge. Voici son diff exact :\n\n- dtype: \"bfloat16\" (voltron) vs \"float16\" (lfm3-2xmerge)\n- transformers_version: \"5.20.2\" (voltron) vs \"5.21.1\" (lfm3-2xmerge)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "dtype": [
+      "bfloat16",
+      "float16"
+     ],
+     "transformers_version": [
+      "5.20.2",
+      "5.21.1"
+     ]
+    },
+    "source": "=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}\n\n=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}"
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre lfm3-2xmerge et lfm3-coder.\nRéponds en JSON : {\"<cle>\": [<valeur dans lfm3-2xmerge>, <valeur dans lfm3-coder>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "do_sample": [
+     null,
+     true
+    ],
+    "dtype": [
+     "float16",
+     "bfloat16"
+    ],
+    "eos_token_id": [
+     124900,
+     [
+      124900
+     ]
+    ],
+    "generation_config": [
+     null,
+     {
+      "_from_model_config": true,
+      "bos_token_id": 124894,
+      "do_sample": true,
+      "eos_token_id": [
+       124900
+      ],
+      "output_attentions": false,
+      "output_hidden_states": false,
+      "pad_token_id": 124893,
+      "repetition_penalty": 1.1,
+      "temperature": 0.1,
+      "top_k": 50,
+      "transformers_version": "5.12.1",
+      "use_cache": true
+     }
+    ],
+    "initializer_range": [
+     0.02,
+     null
+    ],
+    "temperature": [
+     null,
+     0.1
+    ],
+    "top_k": [
+     null,
+     50
+    ],
+    "transformers_version": [
+     "5.21.1",
+     "5.12.1"
+    ],
+    "use_cache": [
+     false,
+     true
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs lfm3-2xmerge et lfm3-coder. Voici son diff exact :\n\n- do_sample: null (lfm3-2xmerge) vs true (lfm3-coder)\n- dtype: \"float16\" (lfm3-2xmerge) vs \"bfloat16\" (lfm3-coder)\n- eos_token_id: 124900 (lfm3-2xmerge) vs [124900] (lfm3-coder)\n- generation_config: null (lfm3-2xmerge) vs {\"_from_model_config\": true, \"bos_token_id\": 124894, \"do_sample\": true, \"eos_token_id\": [124900], \"output_attentions\": false, \"output_hidden_states\": false, \"pad_token_id\": 124893, \"repetition_penalty\": 1.1, \"temperature\": 0.1, \"top_k\": 50, \"transformers_version\": \"5.12.1\", \"use_cache\": true} (lfm3-coder)\n- initializer_range: 0.02 (lfm3-2xmerge) vs null (lfm3-coder)\n- temperature: null (lfm3-2xmerge) vs 0.1 (lfm3-coder)\n- top_k: null (lfm3-2xmerge) vs 50 (lfm3-coder)\n- transformers_version: \"5.21.1\" (lfm3-2xmerge) vs \"5.12.1\" (lfm3-coder)\n- use_cache: false (lfm3-2xmerge) vs true (lfm3-coder)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "do_sample": [
+      null,
+      true
+     ],
+     "dtype": [
+      "float16",
+      "bfloat16"
+     ],
+     "eos_token_id": [
+      124900,
+      [
+       124900
+      ]
+     ],
+     "generation_config": [
+      null,
+      {
+       "_from_model_config": true,
+       "bos_token_id": 124894,
+       "do_sample": true,
+       "eos_token_id": [
+        124900
+       ],
+       "output_attentions": false,
+       "output_hidden_states": false,
+       "pad_token_id": 124893,
+       "repetition_penalty": 1.1,
+       "temperature": 0.1,
+       "top_k": 50,
+       "transformers_version": "5.12.1",
+       "use_cache": true
+      }
+     ],
+     "initializer_range": [
+      0.02,
+      null
+     ],
+     "temperature": [
+      null,
+      0.1
+     ],
+     "top_k": [
+      null,
+      50
+     ],
+     "transformers_version": [
+      "5.21.1",
+      "5.12.1"
+     ],
+     "use_cache": [
+      false,
+      true
+     ]
+    },
+    "source": "=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}"
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre lfm3-2xmerge et lfm3-fable51.\nRéponds en JSON : {\"<cle>\": [<valeur dans lfm3-2xmerge>, <valeur dans lfm3-fable51>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "dtype": [
+     "float16",
+     "bfloat16"
+    ],
+    "transformers_version": [
+     "5.21.1",
+     "5.22.1"
+    ],
+    "use_cache": [
+     false,
+     true
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs lfm3-2xmerge et lfm3-fable51. Voici son diff exact :\n\n- dtype: \"float16\" (lfm3-2xmerge) vs \"bfloat16\" (lfm3-fable51)\n- transformers_version: \"5.21.1\" (lfm3-2xmerge) vs \"5.22.1\" (lfm3-fable51)\n- use_cache: false (lfm3-2xmerge) vs true (lfm3-fable51)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "dtype": [
+      "float16",
+      "bfloat16"
+     ],
+     "transformers_version": [
+      "5.21.1",
+      "5.22.1"
+     ],
+     "use_cache": [
+      false,
+      true
+     ]
+    },
+    "source": "=== config lfm3-2xmerge ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"float16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.21.1\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}"
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre lfm3-coder et voltron.\nRéponds en JSON : {\"<cle>\": [<valeur dans lfm3-coder>, <valeur dans voltron>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "do_sample": [
+     true,
+     null
+    ],
+    "eos_token_id": [
+     [
+      124900
+     ],
+     124900
+    ],
+    "generation_config": [
+     {
+      "_from_model_config": true,
+      "bos_token_id": 124894,
+      "do_sample": true,
+      "eos_token_id": [
+       124900
+      ],
+      "output_attentions": false,
+      "output_hidden_states": false,
+      "pad_token_id": 124893,
+      "repetition_penalty": 1.1,
+      "temperature": 0.1,
+      "top_k": 50,
+      "transformers_version": "5.12.1",
+      "use_cache": true
+     },
+     null
+    ],
+    "initializer_range": [
+     null,
+     0.02
+    ],
+    "temperature": [
+     0.1,
+     null
+    ],
+    "top_k": [
+     50,
+     null
+    ],
+    "transformers_version": [
+     "5.12.1",
+     "5.20.2"
+    ],
+    "use_cache": [
+     true,
+     false
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs lfm3-coder et voltron. Voici son diff exact :\n\n- do_sample: true (lfm3-coder) vs null (voltron)\n- eos_token_id: [124900] (lfm3-coder) vs 124900 (voltron)\n- generation_config: {\"_from_model_config\": true, \"bos_token_id\": 124894, \"do_sample\": true, \"eos_token_id\": [124900], \"output_attentions\": false, \"output_hidden_states\": false, \"pad_token_id\": 124893, \"repetition_penalty\": 1.1, \"temperature\": 0.1, \"top_k\": 50, \"transformers_version\": \"5.12.1\", \"use_cache\": true} (lfm3-coder) vs null (voltron)\n- initializer_range: null (lfm3-coder) vs 0.02 (voltron)\n- temperature: 0.1 (lfm3-coder) vs null (voltron)\n- top_k: 50 (lfm3-coder) vs null (voltron)\n- transformers_version: \"5.12.1\" (lfm3-coder) vs \"5.20.2\" (voltron)\n- use_cache: true (lfm3-coder) vs false (voltron)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "do_sample": [
+      true,
+      null
+     ],
+     "eos_token_id": [
+      [
+       124900
+      ],
+      124900
+     ],
+     "generation_config": [
+      {
+       "_from_model_config": true,
+       "bos_token_id": 124894,
+       "do_sample": true,
+       "eos_token_id": [
+        124900
+       ],
+       "output_attentions": false,
+       "output_hidden_states": false,
+       "pad_token_id": 124893,
+       "repetition_penalty": 1.1,
+       "temperature": 0.1,
+       "top_k": 50,
+       "transformers_version": "5.12.1",
+       "use_cache": true
+      },
+      null
+     ],
+     "initializer_range": [
+      null,
+      0.02
+     ],
+     "temperature": [
+      0.1,
+      null
+     ],
+     "top_k": [
+      50,
+      null
+     ],
+     "transformers_version": [
+      "5.12.1",
+      "5.20.2"
+     ],
+     "use_cache": [
+      true,
+      false
+     ]
+    },
+    "source": "=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}"
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre lfm3-fable51 et lfm3-coder.\nRéponds en JSON : {\"<cle>\": [<valeur dans lfm3-fable51>, <valeur dans lfm3-coder>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "do_sample": [
+     null,
+     true
+    ],
+    "eos_token_id": [
+     124900,
+     [
+      124900
+     ]
+    ],
+    "generation_config": [
+     null,
+     {
+      "_from_model_config": true,
+      "bos_token_id": 124894,
+      "do_sample": true,
+      "eos_token_id": [
+       124900
+      ],
+      "output_attentions": false,
+      "output_hidden_states": false,
+      "pad_token_id": 124893,
+      "repetition_penalty": 1.1,
+      "temperature": 0.1,
+      "top_k": 50,
+      "transformers_version": "5.12.1",
+      "use_cache": true
+     }
+    ],
+    "initializer_range": [
+     0.02,
+     null
+    ],
+    "temperature": [
+     null,
+     0.1
+    ],
+    "top_k": [
+     null,
+     50
+    ],
+    "transformers_version": [
+     "5.22.1",
+     "5.12.1"
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs lfm3-fable51 et lfm3-coder. Voici son diff exact :\n\n- do_sample: null (lfm3-fable51) vs true (lfm3-coder)\n- eos_token_id: 124900 (lfm3-fable51) vs [124900] (lfm3-coder)\n- generation_config: null (lfm3-fable51) vs {\"_from_model_config\": true, \"bos_token_id\": 124894, \"do_sample\": true, \"eos_token_id\": [124900], \"output_attentions\": false, \"output_hidden_states\": false, \"pad_token_id\": 124893, \"repetition_penalty\": 1.1, \"temperature\": 0.1, \"top_k\": 50, \"transformers_version\": \"5.12.1\", \"use_cache\": true} (lfm3-coder)\n- initializer_range: 0.02 (lfm3-fable51) vs null (lfm3-coder)\n- temperature: null (lfm3-fable51) vs 0.1 (lfm3-coder)\n- top_k: null (lfm3-fable51) vs 50 (lfm3-coder)\n- transformers_version: \"5.22.1\" (lfm3-fable51) vs \"5.12.1\" (lfm3-coder)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "do_sample": [
+      null,
+      true
+     ],
+     "eos_token_id": [
+      124900,
+      [
+       124900
+      ]
+     ],
+     "generation_config": [
+      null,
+      {
+       "_from_model_config": true,
+       "bos_token_id": 124894,
+       "do_sample": true,
+       "eos_token_id": [
+        124900
+       ],
+       "output_attentions": false,
+       "output_hidden_states": false,
+       "pad_token_id": 124893,
+       "repetition_penalty": 1.1,
+       "temperature": 0.1,
+       "top_k": 50,
+       "transformers_version": "5.12.1",
+       "use_cache": true
+      }
+     ],
+     "initializer_range": [
+      0.02,
+      null
+     ],
+     "temperature": [
+      null,
+      0.1
+     ],
+     "top_k": [
+      null,
+      50
+     ],
+     "transformers_version": [
+      "5.22.1",
+      "5.12.1"
+     ]
+    },
+    "source": "=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}\n\n=== config lfm3-coder ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"do_sample\": true,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": [\n  124900\n ],\n \"generation_config\": {\n  \"_from_model_config\": true,\n  \"bos_token_id\": 124894,\n  \"do_sample\": true,\n  \"eos_token_id\": [\n   124900\n  ],\n  \"output_attentions\": false,\n  \"output_hidden_states\": false,\n  \"pad_token_id\": 124893,\n  \"repetition_penalty\": 1.1,\n  \"temperature\": 0.1,\n  \"top_k\": 50,\n  \"transformers_version\": \"5.12.1\",\n  \"use_cache\": true\n },\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"temperature\": 0.1,\n \"tie_word_embeddings\": true,\n \"top_k\": 50,\n \"transformers_version\": \"5.12.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}"
+   }
+  },
+  {
+   "cat": "cfg-diff",
+   "prompt": "Compare les DEUX configs suivantes. Liste les clés de PREMIER niveau dont la valeur diffère entre voltron et lfm3-fable51.\nRéponds en JSON : {\"<cle>\": [<valeur dans voltron>, <valeur dans lfm3-fable51>]} pour chaque clé divergente (clé absente = null). JSON exact, rien d'autre.\n\n=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}\n\n=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}",
+   "checker": "json_eq",
+   "oracle": {
+    "transformers_version": [
+     "5.20.2",
+     "5.22.1"
+    ],
+    "use_cache": [
+     false,
+     true
+    ]
+   },
+   "report_prompt": "Un outil a comparé les configs voltron et lfm3-fable51. Voici son diff exact :\n\n- transformers_version: \"5.20.2\" (voltron) vs \"5.22.1\" (lfm3-fable51)\n- use_cache: false (voltron) vs true (lfm3-fable51)\n\nRédige un rapport en français de 2 à 5 phrases qui cite CHAQUE clé divergente avec ses deux valeurs. Pas de clé absente du diff, pas de valeur inventée.",
+   "report_oracle": {
+    "diff": {
+     "transformers_version": [
+      "5.20.2",
+      "5.22.1"
+     ],
+     "use_cache": [
+      false,
+      true
+     ]
+    },
+    "source": "=== config voltron ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.20.2\",\n \"use_cache\": false,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000,\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n }\n}\n\n=== config lfm3-fable51 ===\n{\n \"architectures\": [\n  \"Lfm3ForCausalLM\"\n ],\n \"auto_map\": {\n  \"AutoConfig\": \"configuration_lfm3.Lfm3Config\",\n  \"AutoModel\": \"modeling_lfm3.Lfm3Model\",\n  \"AutoModelForCausalLM\": \"modeling_lfm3.Lfm3ForCausalLM\"\n },\n \"bos_token_id\": 124894,\n \"conv_L_cache\": 7,\n \"conv_bias\": false,\n \"dtype\": \"bfloat16\",\n \"eos_token_id\": 124900,\n \"head_dim\": 128,\n \"hidden_size\": 2048,\n \"initializer_range\": 0.02,\n \"intermediate_size\": 7680,\n \"layer_types\": [\n  \"conv\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\",\n  \"sliding_attention\",\n  \"conv\",\n  \"full_attention\",\n  \"conv\"\n ],\n \"max_position_embeddings\": 262144,\n \"model_type\": \"lfm3\",\n \"norm_eps\": 1e-05,\n \"num_attention_heads\": 16,\n \"num_hidden_layers\": 24,\n \"num_key_value_heads\": 4,\n \"pad_token_id\": 124893,\n \"rope_parameters\": {\n  \"full_attention\": {\n   \"partial_rotary_factor\": 0.5,\n   \"rope_theta\": 1000000.0,\n   \"rope_type\": \"default\"\n  },\n  \"sliding_attention\": {\n   \"rope_theta\": 10000,\n   \"rope_type\": \"default\"\n  }\n },\n \"sliding_window\": 256,\n \"tie_word_embeddings\": true,\n \"transformers_version\": \"5.22.1\",\n \"use_cache\": true,\n \"use_sandwich_norm\": true,\n \"vocab_size\": 128000\n}"
+   }
+  }
+ ]
+}

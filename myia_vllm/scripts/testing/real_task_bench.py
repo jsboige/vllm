@@ -11,7 +11,15 @@ avec oracles mécaniques calculés au build. Familles:
   cfg-diff      : diff de configs -> JSON des clés divergentes
 
 Même interface/schéma de sortie que quality_bench_po2025.py (--url --model --label).
+
+Portabilité : le corpus brut (D:\vllm-data\bench\real_corpus) n'est pas dans le
+dépôt, mais les tâches sont des données pures. `--freeze corpus/real_tasks_pack.json`
+écrit les 40 prompts + oracles (+ manifeste sha256 du corpus d'origine), et
+`--pack corpus/real_tasks_pack.json` les rejoue sur un autre siège sans corpus.
+Re-geler après tout changement de prompt ou d'oracle, et comparer les scores
+d'un pack à l'autre — pas à travers.
 """
+import hashlib
 import json
 import os
 import re
@@ -20,7 +28,9 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-CORPUS = r"D:\vllm-data\bench\real_corpus"
+CORPUS = os.environ.get("REAL_BENCH_CORPUS", r"D:\vllm-data\bench\real_corpus")
+PACK_FORMAT = "voltron-real-task-pack"
+PACK_VERSION = 1
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))), "myia_vllm", "_logs")
 
@@ -256,7 +266,8 @@ def build_fidelity():
         worst = min(bc, key=lambda k: bc[k]["acc"])
         block = json.dumps({"by_cat": {worst: bc[worst]}, "ok": d["ok"], "n": d["n"]},
                            ensure_ascii=False)
-        tasks.append((f"{model} : pire catégorie (nom + acc) et total ok/n",
+        tasks.append((f"pour {model} : le NOM de la catégorie de plus basse accuracy, "
+                      f"puis l'accuracy de cette catégorie, puis le total ok et le total n",
                       [worst, str(bc[worst]["acc"]), str(d["ok"]), str(d["n"])], block))
     # git log
     gl = read_text("gitlog_vllm.txt")
@@ -379,17 +390,81 @@ def build_tasks():
     return build_classify() + build_fidelity() + build_extract() + build_cfgdiff()
 
 
+# ---------------------------------------------------------------- pack gelé
+
+def _corpus_manifest():
+    """sha256[:12] de chaque fichier du corpus, trié par nom."""
+    out = {}
+    for name in sorted(os.listdir(CORPUS)):
+        p = os.path.join(CORPUS, name)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                out[name] = hashlib.sha256(f.read()).hexdigest()[:12]
+    return out
+
+
+def freeze_pack(path, tasks):
+    """Écrit les tâches telles que build_tasks() les produit : prompts et
+    oracles seuls, rejouables sans le corpus local (`--pack`)."""
+    pack = {"format": PACK_FORMAT, "version": PACK_VERSION,
+            "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "n": len(tasks), "corpus_manifest": _corpus_manifest(),
+            "tasks": tasks}
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(pack, f, ensure_ascii=False, indent=1)
+    return pack
+
+
+def load_pack(path):
+    """Relit un pack gelé ; refuse un format inconnu ou un oracle sans checker."""
+    with open(path, encoding="utf-8") as f:
+        pack = json.load(f)
+    if pack.get("format") != PACK_FORMAT or pack.get("version") != PACK_VERSION:
+        raise SystemExit(f"pack {path} : format/version inattendu "
+                         f"({pack.get('format')!r} v{pack.get('version')!r})")
+    unknown = sorted({t["checker"] for t in pack["tasks"]} - set(CHECKERS))
+    if unknown or len(pack["tasks"]) != pack["n"]:
+        raise SystemExit(f"pack {path} : {len(pack['tasks'])} tâches pour n={pack['n']}, "
+                         f"checkers inconnus {unknown}")
+    return pack["tasks"]
+
+
 # ---------------------------------------------------------------- runner (même trame que quality_bench)
 
-def chat(url, model, prompt, timeout=120):
-    payload = json.dumps({"model": model,
-                          "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": 400, "temperature": 0.0}).encode()
-    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=payload,
+def chat(url, model, prompt, timeout=120, thinking="default", max_tokens=400):
+    """Appelle le modèle et rend (contenu, finish_reason, usage).
+
+    `thinking` reflète l'interrupteur du template : "default" n'envoie pas de
+    chat_template_kwargs (le template décide), "on"/"off" le forcent. Sans ce
+    réglage, un A/B contre un modèle dont le template réfléchit par défaut
+    compare deux régimes sans le dire.
+    """
+    payload = {"model": model,
+               "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": max_tokens, "temperature": 0.0}
+    if thinking in ("on", "off"):
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking == "on"}
+    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions",
+                                 data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
-    return d["choices"][0]["message"]["content"] or ""
+    choice = d["choices"][0]
+    return (choice["message"]["content"] or "", choice.get("finish_reason"),
+            d.get("usage") or {})
+
+
+def strip_thinking(text):
+    """Coupe la trace de réflexion et ne garde que la réponse finale.
+
+    Sans ça, un modèle qui réfléchit est jugé sur son brouillon : la trace
+    reste dans `content` quand le serveur n'a pas de reasoning parser, et un
+    oracle strict (égalité JSON, nombre exact) échoue sur du texte correct.
+    """
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1]
+    return text.lstrip()
 
 
 def main():
@@ -397,11 +472,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:5028")
     ap.add_argument("--model", default="voltron-1-mini")
-    ap.add_argument("--label", required=True)
+    ap.add_argument("--label", help="étiquette du run ; requis sauf pour --freeze")
+    ap.add_argument("--freeze", metavar="PATH",
+                    help="écrit le pack gelé des tâches (prompts + oracles) et sort")
+    ap.add_argument("--pack", metavar="PATH",
+                    help="rejoue un pack gelé au lieu de reconstruire depuis le corpus")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--thinking", choices=("default", "on", "off"), default="default",
+                    help="chat_template_kwargs enable_thinking ; 'default' = le template décide")
+    ap.add_argument("--max-tokens", type=int, default=400,
+                    help="budget de génération ; une réponse coupée est comptée (finish_reason=length)")
+    ap.add_argument("--strip-thinking", action="store_true",
+                    help="juge la réponse finale seule (coupe jusqu'à </think>)")
     args = ap.parse_args()
 
-    tasks = build_tasks()
+    if args.freeze:
+        pack = freeze_pack(args.freeze, build_tasks())
+        print(f"pack écrit : {args.freeze} ({pack['n']} tâches, "
+              f"{len(pack['corpus_manifest'])} fichiers de corpus)")
+        return 0
+    if not args.label:
+        ap.error("--label est requis pour un run")
+    tasks = load_pack(args.pack) if args.pack else build_tasks()
     if args.limit:
         tasks = tasks[:args.limit]
     results = []
@@ -409,13 +501,19 @@ def main():
     for i, t in enumerate(tasks):
         t0 = time.time()
         out, ok, detail, e = "", False, "appel en échec", None
+        finish, usage = None, {}
         try:
-            out = chat(args.url, args.model, t["prompt"])
+            out, finish, usage = chat(args.url, args.model, t["prompt"],
+                                      thinking=args.thinking, max_tokens=args.max_tokens)
+            if args.strip_thinking:
+                out = strip_thinking(out)
             ok, detail = CHECKERS[t["checker"]](out, t["oracle"])
         except Exception as exc:  # pas `as e` : le del implicite délierait e
             out, ok, detail, e = "", False, f"appel en échec: {exc!r}", repr(exc)
         results.append(dict(i=i, cat=t["cat"], ok=ok, detail=detail, err=e,
-                            out=out[:400], dt=round(time.time() - t0, 2)))
+                            out=out[:400], dt=round(time.time() - t0, 2),
+                            finish_reason=finish,
+                            completion_tokens=usage.get("completion_tokens")))
         print(f"[{i}/{len(tasks)}] {t['cat']:<13} {'OK ' if ok else 'FAIL'} {detail[:110]}", flush=True)
 
     cats = {}
@@ -427,6 +525,10 @@ def main():
     ok_total = sum(int(r["ok"]) for r in results)
     summary = {
         "label": args.label, "url": args.url, "model": args.model,
+        "thinking": args.thinking, "max_tokens": args.max_tokens,
+        "strip_thinking": args.strip_thinking, "pack": args.pack,
+        # réponses arrêtées par le budget : non interprétables telles quelles
+        "truncated": sum(1 for r in results if r["finish_reason"] == "length"),
         "at": datetime.now(timezone.utc).isoformat(),
         "elapsed_s": round(time.time() - t_start, 1), "n": total, "ok": ok_total,
         "acc": round(ok_total / total, 4) if total else None,
@@ -439,7 +541,9 @@ def main():
     path = os.path.join(LOG_DIR, f"real_bench_{args.label}_{stamp}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
-    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s")
+    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s "
+          f"(thinking={args.thinking}, max_tokens={args.max_tokens}, "
+          f"coupées={summary['truncated']}/{total})")
     for k, v in summary["by_cat"].items():
         print(f"   {k:<13} {v['ok']}/{v['n']} = {v['acc']:.3f}")
     print(f"-> {path}")

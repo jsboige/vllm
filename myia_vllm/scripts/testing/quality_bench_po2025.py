@@ -171,21 +171,42 @@ def score(cat: str, out: str, oracle: str):
     return False, "catégorie inconnue"
 
 
-def ask(base: str, key: str, model: str, prompt: str) -> str:
-    payload = {"model": model, "max_tokens": MAX_TOKENS, "temperature": 0.0,
-               "chat_template_kwargs": {"enable_thinking": False},
+def ask(base: str, key: str, model: str, prompt: str,
+        thinking: str = "off", max_tokens: int = MAX_TOKENS):
+    """Appelle le modèle et rend (contenu, finish_reason, usage).
+
+    `thinking` reflète l'interrupteur du template : "default" n'envoie pas de
+    chat_template_kwargs (le template décide), "on"/"off" le forcent. Le
+    défaut du banc reste "off" (les scores publiés l'ont été dans ce régime).
+    """
+    payload = {"model": model, "max_tokens": max_tokens, "temperature": 0.0,
                "messages": [{"role": "user", "content": prompt}]}
+    if thinking in ("on", "off"):
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking == "on"}
     req = urllib.request.Request(base + "/v1/chat/completions",
                                  data=json.dumps(payload).encode(),
                                  headers={"Authorization": f"Bearer {key}",
                                           "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
         body = json.loads(r.read())
-    msg = body["choices"][0]["message"]
+    choice = body["choices"][0]
+    msg = choice["message"]
     content = msg.get("content") or ""
     if not content and msg.get("reasoning_content"):
         content = msg["reasoning_content"]
-    return content
+    return content, choice.get("finish_reason"), body.get("usage") or {}
+
+
+def strip_thinking(text: str) -> str:
+    """Coupe la trace de réflexion et ne garde que la réponse finale.
+
+    Sans ça, un modèle qui réfléchit est jugé sur son brouillon : la trace
+    reste dans `content` quand le serveur n'a pas de reasoning parser, et un
+    oracle strict (égalité JSON, nombre exact) échoue sur du texte correct.
+    """
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1]
+    return text.lstrip()
 
 
 def main() -> None:
@@ -194,6 +215,12 @@ def main() -> None:
     ap.add_argument("--model", default="frognano-4b")
     ap.add_argument("--label", required=True, help="étiquette du run (nvfp4, bf16, ...)")
     ap.add_argument("--limit", type=int, default=0, help="0 = tout")
+    ap.add_argument("--thinking", choices=("default", "on", "off"), default="off",
+                    help="chat_template_kwargs enable_thinking ; 'default' = le template décide")
+    ap.add_argument("--max-tokens", type=int, default=MAX_TOKENS,
+                    help="budget de génération ; une réponse coupée est comptée (finish_reason=length)")
+    ap.add_argument("--strip-thinking", action="store_true",
+                    help="juge la réponse finale seule (coupe jusqu'à </think>)")
     args = ap.parse_args()
 
     key = load_key()
@@ -205,14 +232,20 @@ def main() -> None:
     t_start = time.time()
     for i, t in enumerate(tasks, 1):
         t0 = time.time()
+        finish, usage = None, {}
         try:
-            out = ask(args.url, key, args.model, t["prompt"])
+            out, finish, usage = ask(args.url, key, args.model, t["prompt"],
+                                     thinking=args.thinking, max_tokens=args.max_tokens)
+            if args.strip_thinking:
+                out = strip_thinking(out)
             ok, detail = score(t["cat"], out, t["oracle"])
             err = None
         except Exception as e:  # un échec d'appel est noté, jamais masqué
             out, ok, detail, err = "", False, "appel en échec", repr(e)
         results.append(dict(i=i, cat=t["cat"], ok=ok, detail=detail, err=err,
-                            out=out[:400], dt=round(time.time() - t0, 2)))
+                            out=out[:400], dt=round(time.time() - t0, 2),
+                            finish_reason=finish,
+                            completion_tokens=usage.get("completion_tokens")))
         print(f"[{i}/{len(tasks)}] {t['cat']:<10} {'OK ' if ok else 'FAIL'} {detail[:110]}", flush=True)
 
     cats = {}
@@ -227,6 +260,11 @@ def main() -> None:
         "label": args.label,
         "url": args.url,
         "model": args.model,
+        "thinking": args.thinking,
+        "max_tokens": args.max_tokens,
+        "strip_thinking": args.strip_thinking,
+        # réponses arrêtées par le budget : non interprétables telles quelles
+        "truncated": sum(1 for r in results if r["finish_reason"] == "length"),
         "at": datetime.now(timezone.utc).isoformat(),
         "elapsed_s": round(time.time() - t_start, 1),
         "n": total,
@@ -242,7 +280,9 @@ def main() -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
 
-    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s")
+    print(f"\n== {args.label} : {ok_total}/{total} = {summary['acc']:.3f} en {summary['elapsed_s']} s "
+          f"(thinking={args.thinking}, max_tokens={args.max_tokens}, "
+          f"coupées={summary['truncated']}/{total})")
     for k, v in summary["by_cat"].items():
         print(f"   {k:<10} {v['ok']}/{v['n']} = {v['acc']:.3f}")
     print(f"-> {path}")
