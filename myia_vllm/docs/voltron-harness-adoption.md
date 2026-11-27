@@ -346,7 +346,7 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    2-étapes stage a 0,26-0,64 s (escalade coordinateur systématique avant) ;
    seuil verbatim 15→8 ; extract/numbers livrent propre (extract reparsable) ;
    jobs ×6 concurrents ; `GET /` sert les capacités.
-3. ✅ **Présets sk-agent `voltron-*` livrés le 26/11** — quatre presets dans `myia_vllm/mcp/sk_agent_config.fleet.example.json` (modèle `voltron-harness`, une tâche JSON par message utilisateur). Précondition : l'entrée `voltron-harness` dans le hub claudish — demande du 26/11 (global `[ASK] po2028-vllm-ask-voltron-exposure-20261126`, DM à po-2025:claudish ; GO user donné le 26/11).
+3. ✅ **Présets sk-agent `voltron-*` livrés en exemple le 26/11** — quatre presets dans `myia_vllm/mcp/sk_agent_config.fleet.example.json` (modèle `voltron-harness`, une tâche JSON par message utilisateur). Disponibles **sur un siège** seulement après l'étape d'**ajout additif** au gabarit fleet (modèle + 4 presets : 48/48 résolus, 0 erreur, mesuré au chargeur réel ; une fusion en bloc perd des MCP en silence) **et** l'entrée hub — pas avant. Précondition : l'entrée `voltron-harness` dans le hub claudish — demande du 26/11 (global `[ASK] po2028-vllm-ask-voltron-exposure-20261126`, DM à po-2025:claudish ; GO user donné le 26/11).
    D'ici là les présets échouent au hub ; consommer par le §6b sur po-2028.
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
    recettes compatibles.
