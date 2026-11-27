@@ -188,3 +188,21 @@ SM8x) + fp8 KV, batch 1024, async scheduling off, extensible KV off. `MAXLEN=163
   `web_search` without its `query` argument, and calls `get_weather` although the weather is given.
 - **Not established**: context above 16,384 (prod serves 262,144); capacity and throughput at TP=2
   on GPUs 0/1 at gpu-util 0.71 with 48 streams; code quality (LiveCodeBench missing).
+
+## Upstream watch — 2026-11-27 06:1xZ (REST, one call per artifact)
+
+- **`vllm#69165` (SM8x kernels) MERGED 2026-11-27T04:12:08Z**, after 32 comments (third-party
+  validation on RTX 4090, then SM120, SM80 and SM86). Our `inkling-sm89-test:v2` was built as
+  nightly `647a76866` + #69165 + #69141 + #69181, so **the SM8x layer is now upstream**: the next
+  release that carries it removes that local patch. Nothing to rebuild for a bench that is already
+  planned — the existing image stays valid.
+- **New third-party measurement on `#69181`** (`LDD19`, 2026-11-26T17:01:34Z): SM86, TP2 on
+  2×RTX 3080 20 GB, DSpark, run on #69165's head at 32K, with the tail-only gate widened to SM8x
+  (RAPPORTÉ, not measured by us). It points the same way as the SM89 and XPU datapoints.
+- `#69444`: mergify conflict only (2026-11-26T15:13:59Z), no new content; `mgaruccio`'s XPU
+  +22.0 % capacity is already recorded above.
+- **GPU-2 slot status**: granted (a), undated. Its condition — host commit ≤ 90 % — is **met**
+  (55.1 % at 2026-11-27T06:05Z) and GPU 2 is free (0 MiB), **but the bench cannot run**: the
+  host's GPU prestart hook has been broken since 2026-11-26T15:58Z (NVIDIA driver installed under
+  the running WSL VM), so **no `--gpus` container starts at all**. The slot now waits on the same
+  repair as the production engine, not on capacity.
