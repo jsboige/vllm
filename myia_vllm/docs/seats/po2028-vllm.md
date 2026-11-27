@@ -110,9 +110,7 @@ Driver : `D:\vllm-data\bench\seat-po2028\bench_ab_voltron11.py` ; relevés dans
   reste armé (`voltron-harness-10` conservé arrêté).
 - Relevés du verdict : `summary_v11quiet.json` (22:27:47Z) et, hors du dossier de batterie
   (le sondeur de décode écrit à côté de lui), `D:\vllm-data\bench\ab_decode_v11quiet9-decode.json`
-  (22:28:48Z) ; charge échantillonnée toutes les 5 s dans
-  `.tmp/loadavg_during_v11quiet.log` du worktree facade (`gource` = 0 et `ffmpeg` = 0
-  pendant la batterie, charge 1 min 6,2-6,7 puis une rafale à 13,6 sur le second essai).
+  (22:28:48Z) ; charge échantillonnée toutes les 5 s dans `D:\vllm-data\bench\voltron11_swap_20261127\loadavg_during_v11quiet.log` (72 relevés, sha12 `9dba64de4f1e`) — `gource` = 0 du début à la fin, `ffmpeg` présent 22:27:48→22:28:26Z et à 22:33:49Z, charge 1 min 6,2-6,7 puis une rafale à 13,6 sur le second essai).
 - **Ce qui change entre les deux checkpoints** (`config.json` lus côte à côte) : même
   architecture (24 couches, mêmes `layer_types`, 2 048 caché, 7 680 intermédiaire,
   16 têtes / 4 KV, vocabulaire 128 000) ; 1.1 **détache la tête**
