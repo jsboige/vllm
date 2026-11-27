@@ -82,24 +82,39 @@ Driver : `D:\vllm-data\bench\seat-po2028\bench_ab_voltron11.py` ; relevés dans
 | Socle 120 tâches, sans réflexion | 88/120 | 87/120 |
 | Pack réel 40, sans réflexion | 16/40 | 18/40 |
 | Pack réel 40, réflexion 2 048 + strip | 30/40, 11 troncatures | 33/40, 4 troncatures |
-| Décode mono-flux, médiane de 3 | 94,3 tok/s | 48,4 tok/s — **invalide** |
+| Décode mono-flux, passage le plus rapide (256 jetons) | 2,652 s → 96,5 tok/s | 2,658 s → 96,3 tok/s |
 
 - **Précision** : 1.1 n'est en dessous nulle part. Socle : un seul écart (arithmétique
   4 → 3), les sept autres catégories identiques. Pack avec réflexion : +3 tâches sur
   **un** passage de 40 (la veille, 1.0 donnait 29 puis 30) et surtout 4 réponses
   tronquées contre 11 au même plafond de jetons. Tendance sur un seul passage, pas une
   preuve.
-- **Vitesse : non mesurée.** Les temps et le décode de la colonne 1.1 ne valent pas.
-  Un rendu `gource` en 4K d'une autre lane tourne dans la VM WSL depuis 21:52:12Z,
-  soit 31 s **avant** la batterie 1.1 (933 % de CPU plus `ffmpeg` 265 %, charge 27,7
-  pour 20 threads) ; le contrôle 1.0 l'a précédée. Pendant le décode la carte GPU n'est
-  qu'à 20-44 % d'utilisation : elle attend le CPU. Aucune erreur ni timeout dans les
-  journaux, donc les scores restent valables.
-- **Verdict de vitesse en attente d'un hôte calme.** Critère annoncé : 1.1 reste
-  seulement si son décode est au niveau de 1.0 (92,1 tok/s le 26/11, 94,3 le 27/11).
+- **Vitesse : parité, mesurée le 27/11 à 22:26→22:29Z sur hôte dégagé.** Le décode de la
+  colonne 1.1 lu à 21:53Z (48,4 tok/s) était **invalide** : un rendu `gource` en 4K d'une
+  autre lane tournait dans la VM WSL depuis 21:52:12Z, 31 s avant la batterie (933 % de
+  CPU plus `ffmpeg` 265 %, charge 27,7 pour 20 threads) ; le contrôle 1.0 l'a précédée.
+  Ce rendu terminé (vers 22:23Z), la même mesure refaite donne **85,5 tok/s en médiane de
+  3** (80,8 / 93,8 / 85,5) puis 82,4 en médiane de 9 — les trois premières passes de ce
+  second essai tombent sous une rafale (49,7 / 50,0 / 61,0) et les trois dernières
+  consécutives donnent **96,0 / 94,3 / 96,3**. Le statisticien robuste est le passage le
+  plus rapide : une charge étrangère ne peut que ralentir. **1.1 = 2,658 s pour 256
+  jetons (96,3 tok/s), 1.0 = 2,652 s (96,5 tok/s) : écart 0,2 %. Aucun coût de vitesse.**
+  Mon attente « ≈81 tok/s » était un mauvais raisonnement, corrigé : détacher la tête coûte
+  de la **mémoire** (0,49 Gio), pas de la bande passante par jeton — les octets du `lm_head`
+  sont lus une fois par pas dans les deux cas.
+- **Verdict (critère annoncé) : 1.1 reste.** Socle 87 contre 88 et pack réel 18 contre 16
+  (bruit), décode à parité, et **4 réponses tronquées au lieu de 11** avec réflexion. Le
+  prix est la **capacité KV : 111 542 jetons au lieu de 159 248** (3,40× au lieu de 4,86×
+  la fenêtre de 32K) — à savoir avant un job à plusieurs flux longs ; le retour arrière
+  reste armé (`voltron-harness-10` conservé arrêté).
+- Relevés du verdict : `summary_v11quiet.json` (22:27:47Z) et, hors du dossier de batterie
+  (le sondeur de décode écrit à côté de lui), `D:\vllm-data\bench\ab_decode_v11quiet9-decode.json`
+  (22:28:48Z) ; charge échantillonnée toutes les 5 s dans
+  `.tmp/loadavg_during_v11quiet.log` du worktree facade (`gource` = 0 et `ffmpeg` = 0
+  pendant la batterie, charge 1 min 6,2-6,7 puis une rafale à 13,6 sur le second essai).
 - **Ce qui change entre les deux checkpoints** (`config.json` lus côte à côte) : même
   architecture (24 couches, mêmes `layer_types`, 2 048 caché, 7 680 intermédiaire,
-  16 têtes / 4 KV, vocabulaire 128 000) ; 1.1 **détache la tête** 
+  16 têtes / 4 KV, vocabulaire 128 000) ; 1.1 **détache la tête**
   (`tie_word_embeddings: false`) : +0,49 Gio au chargement (3,36 → 3,85 Gio, mesuré).
   La KV réservée est réduite d'autant (`--kv-cache-memory` 1 750 432 666 →
   1 226 144 666 octets) pour garder l'empreinte validée sur 1.0 sur une carte de 8 Gio.

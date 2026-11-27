@@ -41,8 +41,8 @@ if (-not $NoEngine) {
             # (1 750 432 666 -> 1 226 144 666 octets) pour garder la marge hors-KV
             # validée sur 1.0. `voltron-1-mini` reste un NOM SERVI (alias) : les
             # instruments qui l'appellent ne cassent pas.
-            # Vitesse de 1.1 : NON mesurée le 27/11 (hôte saturé par une autre lane).
-            # Verdict en attente d'un hôte calme : docs/seats/po2028-vllm.md.
+            # Vitesse de 1.1 : à parité avec 1.0, mesurée le 27/11 22:28Z sur hôte dégagé
+            # (2,658 s contre 2,652 s pour 256 jetons, écart 0,2 %). Verdict : 1.1 reste.
             # Retour arrière (serveur arrêté d'abord) : docker stop voltron-harness ;
             # docker rm voltron-harness ; docker rename voltron-harness-10 voltron-harness ;
             # docker start voltron-harness — le conteneur 1.0 est conservé, arrêté.
