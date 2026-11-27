@@ -23,22 +23,32 @@ if (-not $NoEngine) {
         Write-Host "[engine] conteneur présent -> docker start"
         docker start voltron-harness | Out-Null
     } else {
-        Write-Host "[engine] docker run -d --restart unless-stopped (config fp8 validée)"
+        Write-Host "[engine] docker run -d --restart unless-stopped (voltron-1.1-mini, fp8 validée)"
         docker run -d --name voltron-harness --restart unless-stopped `
             --gpus all --shm-size 6g `
             -p 127.0.0.1:5028:8000 `
-            -v D:\vllm-data\models\voltron-1-mini:/model:ro `
+            -v D:\vllm-data\models\voltron-1.1-mini:/model:ro `
             vllm/vllm-openai@sha256:b6d1cfc60cce1f6405d37ea77645a36a46065230fb643abc2eeb93a5dc8fb79b `
-            --model /model --served-model-name voltron-1-mini `
+            --model /model --served-model-name voltron-1.1-mini voltron-1-mini `
             --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype auto `
-            --kv-cache-dtype fp8 --kv-cache-memory 1750432666 `
+            --kv-cache-dtype fp8 --kv-cache-memory 1226144666 `
             --max-num-seqs 64
             # Tier RAM retiré 24/11 : --kv-offloading-size 4 --kv-offloading-backend native
             # = 4 Gio de shm pour 0 octet relu sur ~24 h (métriques kv_offload_*). Rollback :
             # rajouter les deux drapeaux à la ligne ci-dessus et recréer le conteneur.
+            # MAJ 27/11 : voltron-1.1-mini = 1.0 + tête lm_head détachée (+0,49 Gio au
+            # chargement, mesuré : 3,36 -> 3,85 Gio). La KV est réduite d'autant
+            # (1 750 432 666 -> 1 226 144 666 octets) pour garder la marge hors-KV
+            # validée sur 1.0. `voltron-1-mini` reste un NOM SERVI (alias) : les
+            # instruments qui l'appellent ne cassent pas.
+            # Vitesse de 1.1 : à parité avec 1.0, mesurée le 27/11 22:28Z sur hôte dégagé
+            # (2,658 s contre 2,652 s pour 256 jetons, écart 0,2 %). Verdict : 1.1 reste.
+            # Retour arrière (serveur arrêté d'abord) : docker stop voltron-harness ;
+            # docker rm voltron-harness ; docker rename voltron-harness-10 voltron-harness ;
+            # docker start voltron-harness — le conteneur 1.0 est conservé, arrêté.
         if ($LASTEXITCODE -ne 0) { throw "docker run a échoué" }
     }
-    Write-Host "[engine] boot en cours (115-150 s mesuré) — le serveur l'attend de lui-même"
+    Write-Host "[engine] boot en cours (1 min 25 à chaud, ~4 min au 1er démarrage — mesuré sur 1.1) — le serveur l'attend de lui-même"
 }
 
 # ---- 2. clé hub : mémoire uniquement ---------------------------------------

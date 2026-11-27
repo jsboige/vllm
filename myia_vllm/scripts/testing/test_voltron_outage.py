@@ -27,7 +27,13 @@ recycle la VM WSL, le moteur revient 2 à 9 min plus tard) :
  11. moteur muet : l'attente RELANCE son conteneur, puis le relance toutes les
      30 s (un conteneur tué ne revient pas par sa politique de restart) ;
  12. `ensure_engine` partage son premier start et rapporte le retour Docker
-     (#599 D2/D3).
+     (#599 D2/D3) ;
+ 13. la vivacité est prouvée par une GÉNÉRATION, pas par `/health` (mesuré
+     27/11 21:08Z : 200 sur un moteur au contexte CUDA perdu) ; un verdict
+     FAUX n'est jamais en cache, un verdict VRAI 10 s ;
+ 14. sonde en 5xx sur une API qui répond : `docker restart`, jamais sous
+     ENGINE_BOOT_WAIT_S ni sur un conteneur arrêté ; timeout de sonde ou
+     rien n'écoute : `docker start`.
 
 Exécution : python -m pytest myia_vllm/scripts/testing/test_voltron_outage.py -v
             (ou directement : python test_voltron_outage.py)
@@ -50,6 +56,7 @@ import types
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.environ.get("VOLTRON_SERVER_SRC") or os.path.join(HERE, "voltron_harness_server.py")
@@ -96,6 +103,7 @@ def load_module(scratch, run_task=None):
     spec.loader.exec_module(mod)  # __name__ != __main__ -> pas de serveur
     mod.JOBS_DIR = os.path.join(scratch, "jobs")
     mod.USAGE_PATH = os.path.join(scratch, "usage.json")
+    mod._real_engine_healthy = mod.engine_healthy  # la vraie sonde, pour le test 13
     mod.engine_healthy = lambda timeout=2: True
     mod.subprocess = types.SimpleNamespace(run=_no_docker)
     mod.HUB_KEY = None
@@ -492,6 +500,127 @@ def test_statut_job_instantane_sous_verrou():
         if srv is not None:
             srv.shutdown()
             srv.server_close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_vivacite_exige_une_generation():
+    """13. `/health` 200 ne prouve rien (mesuré 27/11 21:08Z). Un verdict FAUX
+    n'est jamais en cache, un verdict VRAI est réutilisé 10 s."""
+    scratch = tempfile.mkdtemp(prefix="vho_alive_")
+    try:
+        mod = load_module(scratch)
+        mod.engine_healthy = mod._real_engine_healthy  # la vraie sonde, appels factices
+        calls = []
+        fail = {"gen": None, "health": False}
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def raising(exc):
+            def f(url):
+                raise exc
+            return f
+
+        def urlopen(req, timeout=None):
+            url = getattr(req, "full_url", str(req))
+            calls.append(url.rsplit("/", 1)[-1])
+            if url.endswith("/health"):
+                if fail["health"]:
+                    raise urllib.error.URLError(ConnectionRefusedError(111, "refusé"))
+                return Resp()
+            out = fail["gen"](url)
+            if isinstance(out, Resp):
+                return out
+            raise out
+
+        def gen500(url):
+            raise urllib.error.HTTPError(url, 500, "engine dead", {},
+                                         io.BytesIO(b"EngineDeadError"))
+
+        cases = [
+            (gen500, "dead"),
+            (raising(urllib.error.HTTPError("http://x", 404, "bad", {},
+                                        io.BytesIO(b"no model"))), "config"),
+            (raising(TimeoutError("timed out")), "down"),
+            (raising(http.client.RemoteDisconnected("closed")), "dead"),
+            (raising(urllib.error.URLError(TimeoutError("t"))), "down"),
+        ]
+        with patched(mod.urllib.request, "urlopen", urlopen):
+            for make, want in cases:
+                fail["gen"] = make
+                n = len(calls)
+                assert mod.engine_healthy() is False, want
+                assert mod._engine_state["status"] == want, (want, mod._engine_state)
+                again = mod.engine_healthy() is False and len(calls) > n + 1
+                assert again, f"{want} : un verdict FAUX ne se met pas en cache"
+
+            # rien n'écoute : "down", et aucune génération n'est tentée
+            fail["health"] = True
+            n = len(calls)
+            assert mod.engine_healthy() is False
+            assert mod._engine_state["status"] == "down", mod._engine_state
+            assert calls[n:] == ["health"], calls[n:]
+            fail["health"] = False
+
+            def gen_ok(url):
+                return Resp()
+            fail["gen"] = gen_ok
+            assert mod.engine_healthy() is True
+            n = len(calls)
+            assert mod.engine_healthy() is True
+            assert len(calls) == n, "un verdict VRAI est réutilisé (TTL)"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_soin_restart_un_moteur_qui_repond_mais_ne_genere_pas():
+    """14. API en marche, sonde en 5xx : `docker restart` ; jamais sur un
+    conteneur encore en boot ; conteneur arrêté ou rien n'écoute : `start`."""
+    scratch = tempfile.mkdtemp(prefix="vho_heal_")
+    try:
+        mod = load_module(scratch)
+        verbs = []
+
+        def stamp(age_s):
+            t = datetime.now(timezone.utc) - timedelta(seconds=age_s)
+            return t.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+
+        def runner(state, started):
+            def run(cmd, **kw):
+                if cmd[1] == "inspect":
+                    return types.SimpleNamespace(
+                        returncode=0, stdout=f"{state} {started}".encode(),
+                        stderr=b"")
+                verbs.append(cmd[1])
+                return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+            return run
+
+        def heal(status, state, started):
+            verbs.clear()
+            mod._engine_state.update(status=status, detail="", at=0.0)
+            mod.subprocess = types.SimpleNamespace(run=runner(state, started))
+            attempted, msg = mod._docker_start()
+            assert attempted is True, msg
+            return msg
+
+        heal("dead", "true", stamp(3600))
+        assert verbs == ["restart"], verbs
+        msg = heal("dead", "true", stamp(30))
+        assert verbs == [] and "boot en cours" in msg, (verbs, msg)
+        msg = heal("dead", "true", "date illisible")
+        assert verbs == [] and "boot en cours" in msg, (verbs, msg)
+        heal("dead", "false", stamp(3600))
+        assert verbs == ["start"], verbs
+        for status in ("down", "config", None):
+            heal(status, "true", stamp(3600))
+            assert verbs == ["start"], (status, verbs)
+    finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
