@@ -395,7 +395,7 @@ def test_openapi_et_options_sans_cors_ni_adresse():
             task["properties"]["type"]["enum"]), task
         result = doc["paths"]["/v1/task"]["post"]["responses"]["200"]["content"][
             "application/json"]["schema"]
-        assert {"a", "c", "reject", "error", "engine-down", "engine-error"} == set(
+        assert {"a", "b", "c", "reject", "error", "engine-down", "engine-error"} == set(
             result["properties"]["stage"]["enum"]), result
 
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)

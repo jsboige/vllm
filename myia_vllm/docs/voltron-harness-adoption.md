@@ -2,8 +2,9 @@
 
 **Le produit** : une requête HTTP → une réponse **déjà fiabilisée**. La chaîne
 worker (voltron-1.7B, po-2028, moteur local) + réparation dirigée (≤2 tours,
-delta signé du gate — jamais la réponse) + coordinateur (swift-1.5-27b via hub
-claudish, prompt sec) tourne **dans le service** ; chaque sortie est re-gatée
+delta signé du gate — jamais la réponse) + second lecteur mini (frognano-4b de
+la flotte, via hub claudish — étage `b`, 28/11) + coordinateur (swift-1.5-27b
+via hub claudish, prompt sec) tourne **dans le service** ; chaque sortie est re-gatée
 par le **contrat que l'appelant fournit**. L'appelant lit `ok`/`detail` — le
 coût de vérification est déjà payé (critère d'adoption FrogNano : coût de
 vérification ≪ coût de refaire soi-même).
@@ -24,12 +25,13 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 | Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · **façade OpenAI 26/11** : `GET /v1/models` + `POST /v1/chat/completions` (JSON et SSE — §6c) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
 | Auto-guérison | engine muet → `docker start voltron-harness` (un seul partagé entre threads, puis ≤1/30 s pendant l'attente) + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente ; `returncode`/`stderr` sont rapportés dans le résultat et journalisés seulement au changement d'erreur) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
-| Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée |
+| Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` / `VOLTRON_DUO_MODEL` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée ; `VOLTRON_DUO_MODEL` vide = étage `b` absent (§4bis) |
 | Rollback | **arrêter d'abord le process python :5029**, puis `docker stop voltron-harness` — sinon le service relance son moteur ; aucune donnée perdue |
 | Logs | `D:\vllm-data\bench\v2_server.log` · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
 
-Réponse type : `{"ok": true, "stage": "a"|"c", "answer": "...", "detail": "",
-"turns": 2, "dt_s": 8.4}`. `stage=c` signale que le coordinateur 27B a fini
+Réponse type : `{"ok": true, "stage": "a"|"b"|"c", "answer": "...", "detail": "",
+"turns": 2, "dt_s": 8.4}`. `stage=b` : le second lecteur mini a fini (§4bis) ;
+`stage=c` signale que le coordinateur 27B a fini
 la tâche (worker insuffisant) ; `ok=false` rend le **meilleur effort + le
 détail du gate** — un échec est actionnable, pas un aveuglement.
 **Coupures d'engine (24/11)** : un résultat coupé porte `stage="engine-error"`
@@ -229,11 +231,83 @@ réparation dirigée du banc ferme (json_eq à valeur d'égalité). **Le contrat
 appelant est tenu à 40/40 sur les 4 passes** — un `ok=false` du service est
 toujours accompagné du détail actionnable, jamais d'un échec muet.
 
-La phase B (critique sibling 2xmerge) nécessite un deuxième engine 1.7B —
-impossible en simultané sur la GPU 8 Gio (contrainte mesurée) ; elle reste un
-outil de mesure hors-ligne du banc. Le service exécute A→C et **rend son
+La phase B du BANC (critique sibling 2xmerge) nécessitait un deuxième engine
+1.7B — impossible en simultané sur la GPU 8 Gio (contrainte mesurée) : elle
+reste un outil de mesure hors-ligne. L'étage `b` du SERVICE (28/11, §4bis) est
+autre chose : un second LECTEUR pris sur la flotte (`frognano-4b`, po-2025, par
+le hub), donc sans second engine local. Le service exécute A→B→C et **rend son
 propre verdict** : `ok` + `detail` = l'appelant sait exactement quoi refaire
 ou escalader.
+
+## 4bis. Le duo : second lecteur pris sur la flotte (28/11, mandat user)
+
+Mandat user (28/11 09:12Z) : « s'il est trop faible pour être utile, essayer de
+caler un harnais sk-agent avec le modèle de po-2025, peut-être qu'à deux ils
+seront meilleurs ». L'étage `b` met ce second modèle **dans la chaîne du
+service** : quand le worker local et ses deux réparations échouent, le mini de
+la flotte (`frognano-4b`, po-2025) relit le **prompt sec** de l'appelant — même
+prompt que le coordinateur, même gate, `enable_thinking: false`, 400 jetons —
+puis le 27B ne reprend que ce que le mini a aussi raté. Le mini se consomme
+**par le hub claudish** (jamais l'endpoint vLLM direct de po-2025 : la clé de
+transport du hub resterait sur le client).
+
+Activation : `VOLTRON_DUO_MODEL=frognano-4b` dans
+`D:\vllm-data\bench\v2_service.env` (hors dépôt) ; variable vide = chaîne a→c
+d'avant. `VOLTRON_DUO_MAX_TOKENS` (400) et `VOLTRON_DUO_TIMEOUT_S` (120) règlent
+le budget. Nouveau `stage: "b"`, et un compteur durable `by_stage` dans
+`GET /v1/usage` (`{"a": {"n", "ok"}, "b": …}`) : c'est l'effet mesurable du duo
+en trafic réel. Un échec du hub en `b` n'est jamais `transient` (le rejeu
+redonnerait le même résultat) et retombe sur `c`.
+
+**Mesure hors-ligne, tâche à tâche** (`duo_bench.py` + `duo_analyze.py`, mêmes
+bancs gelés, un bras par modèle, porte = celle du banc — plus proche de la
+vérité que la porte du service ; relevés dans
+`D:\vllm-data\bench\duo_20261128\`) :
+
+| Banc | voltron | frog | les deux | cascade gâtée a→b | plafond de l'union |
+| --- | --- | --- | --- | --- | --- |
+| Socle 120 (arith, extract, count, json, grounded, constraint, sort, transform) | 87 | 82 | 76 | **93/120** | 93 |
+| Pack réel 40 (classify, fidelity, fail-extract, cfg-diff) | 18 | 28 | 14 | **32/40** | 32 |
+
+La cascade en ordre inverse rend le même chiffre, et un routeur par type de
+contrat n'apporte rien de plus : **pas de table de routage à maintenir**. Le
+mini est plus fort que le local sur la classification réelle et l'extraction
+(12/12 vs 7/12, 10/12 vs 3/12), le local sur la fidélité numérique (8/10 vs
+5/10) — d'où la cascade, qui prend le premier qui passe le gate de l'appelant.
+Accord des deux réponses : 79/120 au socle (76 justes) contre 6/40 au pack
+(6 justes) ⇒ l'accord est fiable mais trop rare sur les tâches réelles pour
+servir de règle ; la cascade reste la seule règle mesurée.
+
+**Mesure au niveau du SERVICE** (28/11, 40 tâches réelles, `duo_service_eval.py`
+— serveur patché chargé en processus, même moteur, même hub, compteur et jobs
+en répertoire jetable, Docker interdit ; bras l'un après l'autre) :
+
+| Bras | Service (`ok`) | Vérité banc | Étages | Appels moteur / mini / 27B | Somme des appels 27B |
+| --- | --- | --- | --- | --- | --- |
+| a→c (d'avant) | 40/40 | 32/40 | a 36, c 4 | 66 / 0 / 4 | 754 s |
+| a→b→c (duo) | 40/40 | 32/40 | a 36, **b 3**, c 1 | 64 / 4 / **1** | 146 s |
+
+Les 3 tâches reprises par `b` (2 classify, 1 diff) sont justes à l'oracle, et
+`c` les avait aussi dans l'autre bras : **aucune perte, aucun court-circuit** —
+le risque réel (un `b` qui passe le gate en étant faux et prive `c` de la tâche)
+ne s'est pas matérialisé sur ce banc. La 4ᵉ tâche que `b` n'a pas close (un
+rapport chiffré) revient au 27B, qui la résout. Coût : 4 appels mini (3,6 s
+cumulés) contre 3 appels 27B évités (−608 s de temps de coordinateur sur ces
+40 tâches ; une part de l'écart vient du cache de préfixe, le second bras
+tournant après le premier). `duo` sans coordinateur (dérivé, non rejoué) :
+39/40 tâches rentrées, 31 justes — le 27B gagne encore 1 tâche.
+
+**La limite, mesurée, et le levier qui suit** : le second lecteur ne se
+déclenche que là où la porte du service échoue, et cette porte est **bien plus
+faible que la vérité** sur `extract` sans `verbatim` — elle ne vérifie que les
+clés du JSON. Sur les 12 tâches `fail-extract` du pack, le service répond 12/12
+`ok` et la vérité n'en valide que 6 : **6 erreurs de valeurs sont invisibles
+pour la chaîne** (ni réparation, ni `b`, ni `c` ne peuvent les voir ni les
+corriger). Le duo paye donc là où le gate refuse (classify à preuve
+invérifiable, numbers, diff) et reste muet ailleurs. Le levier suivant n'est pas
+un troisième modèle mais un **gate plus fort** : type attendu par champ,
+`verbatim: true` quand l'appelant peut le déclarer, énumérations. Chaque point
+de gate gagné est un point que la chaîne sait ensuite réparer.
 
 ## 5. Ce que le service REFUSE (limites vendues d'avance)
 
@@ -289,8 +363,8 @@ function VTask($type, $data, $extra) {
 #   report_prompt = "Rapport une phrase citant mémoire GPU et température." }
 ```
 
-Résultat : `$r.ok` (bool), `$r.stage` (`a` worker seul · `c` coordinateur
-27B), `$r.answer` (le livrable **déjà gaté**), `$r.detail` (pourquoi pas si
+Résultat : `$r.ok` (bool), `$r.stage` (`a` worker seul · `b` second lecteur
+mini · `c` coordinateur 27B), `$r.answer` (le livrable **déjà gaté**), `$r.detail` (pourquoi pas si
 `ok=false`), `$r.turns`, `$r.dt_s`. **C'est `answer` qu'on consomme, pas un
 texte à re-lire** — le service a déjà payé la vérification.
 
@@ -469,3 +543,15 @@ acquis — d'ici là, la façade sert les clients locaux de po-2028.
    tâche non persistée peut être ré-exécutée, sans double comptage ni double
    livraison (§3). Tests : `test_voltron_recovery.py` **7/7**, `test_voltron_outage.py`
    **12/12** ; les deux nouveaux scénarios étaient rouges sur `main` avant correctif.
+11. ✅ **Étage b : le duo avec le mini de la flotte (28/11, mandat user)** —
+   §4bis. Le second lecteur (`frognano-4b`, po-2025, par le hub) s'insère entre
+   les réparations du worker et le coordinateur 27B, sur le prompt sec et derrière
+   le même gate. Hors-ligne, la cascade gâtée atteint le plafond de l'union
+   (socle 93/120, pack 32/40). Au niveau du service, sur 40 tâches réelles :
+   même service (40/40) et même vérité banc (32/40), **3 appels de coordinateur
+   sur 4 évités** (somme des appels 27B 754 s → 146 s), aucune tâche gagnée ni
+   perdue. Activation `VOLTRON_DUO_MODEL=frognano-4b` (env, hors dépôt).
+   Limite mesurée : le gate `extract` sans `verbatim` ne voit pas les erreurs de
+   valeur (12/12 `ok` contre 6/12 à la vérité sur le pack) — le levier suivant
+   est un gate plus fort, pas un troisième modèle. Tests : `test_voltron_duo.py`
+   11/11 (preuve rouge 10/11 sur le serveur d'avant).

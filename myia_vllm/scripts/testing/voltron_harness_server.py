@@ -9,8 +9,9 @@ coût de vérification est déjà payé (critère d'adoption FrogNano : vérific
 ≪ refaire soi-même).
 
 Types de tâches (familles mesurées, banc real_task_bench 40/40 en chaîne
-complète ; le service exécute A→C, la phase B sibling restant un outil de
-mesure hors-ligne — cf. docs/voltron-harness-adoption.md) :
+complète ; le service exécute a → réparation → b (second lecteur mini, si
+VOLTRON_DUO_MODEL) → c, chaque étage re-gaté — cf.
+docs/voltron-harness-adoption.md) :
 
   extract  {data, fields[, verbatim=True]}   → JSON exact, valeurs verbatim
   classify {data, classes}                   → {"classe","ligne_cle"} preuve verbatim
@@ -39,7 +40,8 @@ d'éval (keyless, boucle locale).
 
 Clé hub : env ZAI_API_KEY au lancement du serveur (résolue en mémoire par
 start_voltron_service.ps1 depuis ~/.claude.json, jamais écrite sur disque).
-Absent → phase C sautée, la réponse porte stage="a" + note.
+Absent → phase C sautée, la réponse porte stage="a" + note. VOLTRON_DUO_MODEL
+(phase B) exige la même clé : vide (défaut) = chaîne a→c d'avant.
 """
 import concurrent.futures
 import http.client
@@ -114,13 +116,29 @@ ENGINE_WAIT_SYNC_S = 120  # borne d'ATTENTE du rejeu synchrone ; s'ajoute aux
 PREFILLS = {"extract": "{", "numbers": "Rapport : "}
 HUB_KEY = os.environ.get("ZAI_API_KEY")  # figé au démarrage du serveur
 
+# --- phase B : second lecteur, le mini tier de la flotte (frognano-4b, po-2025)
+# par le hub claudish, inséré entre le worker local (a) et le coordinateur 27B
+# (c). Mesuré le 28/11 sur les deux bancs gelés, tâche à tâche : la cascade
+# GÂTÉE a→b atteint le plafond de l'union — socle 93/120 (voltron 87, frog
+# 82), pack réel 32/40 (18, 28) — pour un appel mini par échec de a, et sans
+# coordinateur sur les tâches que b résout. Vide = étage absent (chaîne
+# d'avant). Jamais l'endpoint vLLM direct de po-2025 (:5003) : le mini se
+# consomme par le hub, qui porte l'attribution et garde sa clé de transport.
+DUO_MODEL = os.environ.get("VOLTRON_DUO_MODEL", "")
+DUO_MAX_TOKENS = int(os.environ.get("VOLTRON_DUO_MAX_TOKENS", "400"))
+DUO_TIMEOUT_S = float(os.environ.get("VOLTRON_DUO_TIMEOUT_S", "120"))
+# thinking coupé : mesuré sur le hub — réponse directe (36 jetons), sans trace
+# de raisonnement à extraire ; chat_template_kwargs est un corps de requête.
+DUO_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+
 _jobs_lock = threading.Lock()
 _jobs = {}  # id -> dict(status, name, total, done, results)
 
 
 # ---------------------------------------------------------------- transport
 
-def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None, prefill=None):
+def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None, prefill=None,
+         extra_body=None):
     msgs = list(messages)
     if prefill:
         msgs.append({"role": "assistant", "content": prefill})
@@ -132,6 +150,9 @@ def chat(url, model, messages, max_tokens=400, timeout=120, api_key=None, prefil
         # concatène prefill + complétion pour reconstituer le JSON complet.
         payload["continue_final_message"] = True
         payload["add_generation_prompt"] = False
+    if extra_body:
+        # corps propre au lecteur (ex. chat_template_kwargs du mini)
+        payload.update(extra_body)
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -464,6 +485,18 @@ def clean_answer(out):
     return out.split("</think>")[-1].strip() if "</think>" in out else out.strip()
 
 
+def duo_ready():
+    return bool(DUO_MODEL and HUB_URL and HUB_KEY)
+
+
+def ask_duo(prompt):
+    """Phase B : prompt SEC (jamais les brouillons de a), réponse nettoyée ;
+    le gate de l'appelant juge. Lève si le hub échoue — l'appelant continue."""
+    return clean_answer(chat(HUB_URL, DUO_MODEL, [{"role": "user", "content": prompt}],
+                            max_tokens=DUO_MAX_TOKENS, timeout=DUO_TIMEOUT_S,
+                            api_key=HUB_KEY, extra_body=DUO_EXTRA_BODY))
+
+
 def run_classify(t):
     """Classify en DEUX appels préremplis, un champ chacun. Sur un prompt
     combiné, le 1.7B délibère en prose et n'émet jamais le JSON (mesuré 20/11 :
@@ -571,6 +604,28 @@ def run_classify(t):
         return {"ok": True, "stage": "a", "answer": combined, "detail": "",
                 "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
+    # --- phase B : second lecteur mini par le hub, même contrat, re-gaté. Un
+    # seul prompt (le mini ne délibère pas en prose comme le 1.7B) ; les
+    # définitions du consommateur restent APRÈS la taxonomie, comme en a.
+    duo_trace = ""
+    if duo_ready():
+        stage = "b"
+        turns += 1
+        detail_a = detail
+        p_duo = prompt
+        if defs_ctx:
+            p_duo = prompt.replace(f"{classes}. Renvoie", f"{classes}.\n{defs_ctx}Renvoie", 1)
+        try:
+            out = ask_duo(p_duo)
+            ok, detail = gate(out)
+        except Exception as exc:
+            ok, detail = False, f"appel hub échoué: {exc!r}"
+        if ok:
+            return {"ok": True, "stage": stage, "answer": clean_answer(out), "detail": "",
+                    "turns": turns, "dt_s": round(time.time() - t0, 2)}
+        duo_trace = f"; second lecteur {DUO_MODEL} échoué: {detail}"
+        detail = detail_a
+
     # --- phase C : coordinateur hub sur le prompt combiné original, re-gaté.
     # stage/turns ne marquent QUE si l'appel a réellement eu lieu (complément
     # relecture ai-01 : posés avant le test de clé, ils étiquetaient "c" une
@@ -586,14 +641,14 @@ def run_classify(t):
                                     max_tokens=3000, timeout=300, api_key=HUB_KEY))
             ok, detail = gate(out)
             return {"ok": ok, "stage": stage, "answer": clean_answer(out),
-                    "detail": detail, "turns": turns,
+                    "detail": detail + duo_trace, "turns": turns,
                     "dt_s": round(time.time() - t0, 2)}
         except Exception as exc:
-            detail = f"worker 2-étapes échoué ({detail}); coordinateur hub échoué: {exc!r}"
+            detail = f"worker 2-étapes échoué ({detail}){duo_trace}; coordinateur hub échoué: {exc!r}"
     else:
         coord_note = " (coordinateur indisponible: ZAI_API_KEY ou VOLTRON_HUB_URL absent au démarrage)"
     return {"ok": False, "stage": stage, "answer": combined,
-            "detail": detail + coord_note, "turns": turns,
+            "detail": detail + duo_trace + coord_note, "turns": turns,
             "dt_s": round(time.time() - t0, 2)}
 
 
@@ -640,6 +695,22 @@ def run_task(t):
         ok, detail = gate((pre or "") + out)
         turns += 1
 
+    # --- phase B : second lecteur mini par le hub, même prompt SEC que le
+    # coordinateur, réponse re-gatée comme les autres (jamais préremplie).
+    duo_trace = ""
+    if not ok and duo_ready():
+        stage = "b"
+        turns += 1
+        detail_a = detail
+        try:
+            out = ask_duo(prompt)
+            ok, detail = gate(out)
+        except Exception as exc:
+            ok, detail = False, f"appel hub échoué: {exc!r}"
+        if not ok:
+            duo_trace = f"; second lecteur {DUO_MODEL} échoué: {detail}"
+            detail = detail_a
+
     # --- phase C : coordinateur hub, prompt SEC (mesuré : les brouillons du 1.7B
     # polluent le 27B), réponse re-gatée comme les autres.
     coord_note = ""
@@ -652,7 +723,7 @@ def run_task(t):
                                     max_tokens=3000, timeout=300, api_key=HUB_KEY))
             ok, detail = gate(out)
         except Exception as exc:
-            detail = f"résiduel après worker (phase A échouée: {detail}); coordinateur hub échoué: {exc!r}"
+            detail = f"résiduel après worker (phase A échouée: {detail}){duo_trace}; coordinateur hub échoué: {exc!r}"
     elif not ok:
         coord_note = " (coordinateur indisponible: ZAI_API_KEY ou VOLTRON_HUB_URL absent au démarrage du serveur)"
 
@@ -666,7 +737,7 @@ def run_task(t):
         if objs:
             ans = json.dumps(objs[0], ensure_ascii=False)
     return {"ok": ok, "stage": stage, "answer": ans,
-            "detail": detail + coord_note,
+            "detail": detail + duo_trace + coord_note,
             "turns": turns, "dt_s": round(time.time() - t0, 2)}
 
 
@@ -783,7 +854,7 @@ def _run_tasks(job_id, idx_tasks, count_usage=True,
         # écrire ne doit pas changer une tâche réussie en « stage: error ».
         _persist_safe(job_id)
         if count_usage and isinstance(t, dict):
-            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True)
+            _bump_usage(t.get("type", "?"), res.get("ok"), via_job=True, stage=res.get("stage"))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=JOB_CONCURRENCY) as ex:
         list(ex.map(one, idx_tasks))
@@ -975,7 +1046,7 @@ def _usage():
     survit aux restarts serveur ET engine). Lecture tolérante (affichage)."""
     u, _ = _load_usage()
     if u is None:
-        return {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+        return {"tasks_total": 0, "ok": 0, "by_type": {}, "by_stage": {}, "jobs_total": 0,
                 "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
                 "last": None}
     return u
@@ -1002,14 +1073,14 @@ def _load_usage():
         return None, False
 
 
-def _bump_usage(ttype, ok, job=False, via_job=False):
+def _bump_usage(ttype, ok, job=False, via_job=False, stage=None):
     """+1 tâche (ou +1 job si job=True) — écriture atomique tmp+fsync+replace."""
     with _usage_lock:
         u, writable = _load_usage()
         if not writable:
             return None
         if u is None:
-            u = {"tasks_total": 0, "ok": 0, "by_type": {}, "jobs_total": 0,
+            u = {"tasks_total": 0, "ok": 0, "by_type": {}, "by_stage": {}, "jobs_total": 0,
                  "job_tasks": 0, "first": datetime.now(timezone.utc).isoformat(),
                  "last": None}
         if job:
@@ -1021,6 +1092,10 @@ def _bump_usage(ttype, ok, job=False, via_job=False):
             bt = u["by_type"].setdefault(str(ttype), {"n": 0, "ok": 0})
             bt["n"] += 1
             bt["ok"] += int(bool(ok))
+            if stage:  # distribution par étage : l'effet mesurable du duo
+                bs = u.setdefault("by_stage", {}).setdefault(str(stage), {"n": 0, "ok": 0})
+                bs["n"] += 1
+                bs["ok"] += int(bool(ok))
             u["ok"] = u.get("ok", 0) + int(bool(ok))
         u["last"] = datetime.now(timezone.utc).isoformat()
         # Même refus transitoire que sur les jobs (voir _persist_safe) : un
@@ -1055,7 +1130,8 @@ def _bump_usage(ttype, ok, job=False, via_job=False):
 
 CAPABILITIES = {
     "service": "harnais voltron — une requête, une réponse déjà gatée",
-    "chain": "A worker voltron-1.7B (réparation ≤2 tours, delta signé) → C coordinateur swift-1.5-27b (hub) ; "
+    "chain": "A worker voltron-1.7B (réparation ≤2 tours, delta signé) → B second lecteur "
+             "mini (hub, si VOLTRON_DUO_MODEL) → C coordinateur swift-1.5-27b (hub) ; "
              "chaque sortie re-gatée par le contrat de l'appelant",
     "endpoints": {
         "POST /v1/task": {"type": "extract|classify|numbers|diff", "...": "voir types"},
@@ -1080,7 +1156,8 @@ CAPABILITIES = {
                               "instruction (la sémantique de l'extraction, ex. « la catégorie "
                               "à la PLUS BASSE accuracy » — mesuré : sans elle, valeurs "
                               "verbatim mais hors-sujet)",
-                    "gate": "JSON exact à ces clés ; valeurs chaînes verbatim de la source"},
+                    "gate": "JSON exact à ces clés ; verbatim=true exige en plus des "
+                            "valeurs chaînes recopiées de la source"},
         "classify": {"champs": "data, classes [str] ; class_definitions {classe: definition} "
                                "OPTIONNEL (désambiguïsation fine — axe consommateur 20/11)",
                      "gate": "classe dans la taxonomie ; ligne_cle verbatim ≥8 chars"},
@@ -1091,7 +1168,9 @@ CAPABILITIES = {
                          "rédige le rapport (chaque clé divergente + deux valeurs ; valeurs "
                          ">60 chars exemptées de citation verbatim)"}},
     "refuse": "verdicts/jugements, sorties non gatées, data >20000 chars — cf. docs/voltron-harness-adoption.md",
-    "mesures": "banc real_task_bench : chaîne complète 40/40 ; service A→C documenté dans docs/voltron-harness-adoption.md",
+    "mesures": "banc real_task_bench : chaîne complète 40/40 ; service a→b→c mesuré "
+               "le 28/11 sur 40 tâches réelles : service 40/40, vérité 32/40, 3 appels "
+               "27B évités sur 4, aucune perte (docs/voltron-harness-adoption.md §4bis)",
 }
 
 # Contrat OpenAPI 3.1 du service — le contrat doit être découvrable par un
@@ -1132,10 +1211,11 @@ _RESULT_SCHEMA = {
     "properties": {
         "ok": {"type": "boolean", "description": "Le contrat de l'appelant est tenu."},
         "stage": {"type": "string",
-                  "enum": ["a", "c", "reject", "error", "engine-down", "engine-error"],
-                  "description": "a = worker local seul ; c = coordinateur 27B ; reject = "
-                                 "contrat d'entrée invalide ; error = tâche non exécutable "
-                                 "(job) ; engine-* = moteur indisponible."},
+                  "enum": ["a", "b", "c", "reject", "error", "engine-down", "engine-error"],
+                  "description": "a = worker local seul ; b = second lecteur mini (hub) ; "
+                                 "c = coordinateur 27B ; reject = contrat d'entrée invalide ; "
+                                 "error = tâche non exécutable (job) ; engine-* = moteur "
+                                 "indisponible."},
         "answer": {"type": "string", "description": "Le livrable, déjà gaté (vide si ok=false)."},
         "detail": {"type": "string", "description": "Pourquoi ok=false — actionnable."},
         "turns": {"type": "integer", "description": "Appels modèle effectués."},
@@ -1200,7 +1280,7 @@ OPENAPI = {
                        "avec preuve citée, rédiger un rapport de nombres fidèle, ou comparer "
                        "deux configs JSON",
             "description": "0,3 à 30 s. `stage` dit qui a fini la tâche (a : modèle local ; "
-                           "c : coordinateur 27B).",
+                           "b : second lecteur mini ; c : coordinateur 27B).",
             "requestBody": {"required": True,
                             "content": {"application/json": {"schema": _TASK_SCHEMA}}},
             "responses": {"200": {"description": "Toujours 200 — lire `ok`.",
@@ -1424,7 +1504,7 @@ class Handler(BaseHTTPRequestHandler):
             probe = self.headers.get("X-Voltron-Probe") == "1"
             res = _run_sync(task, "appel /v1/chat/completions: ")
             if not probe:  # trafic de test du siège : hors compteur d'adoption
-                _bump_usage(task.get("type", "?"), res.get("ok"))
+                _bump_usage(task.get("type", "?"), res.get("ok"), stage=res.get("stage"))
             content = res
         elif kind == "batch":
             content = _reject("la façade exécute UNE tâche par appel ; un lot se confie à "
@@ -1531,7 +1611,7 @@ class Handler(BaseHTTPRequestHandler):
             # coupure transitoire d'engine : UNE attente courte + rejeu
             res = _run_sync(body, "appel /v1/task: ")
             if not probe:  # trafic de test du siège : hors compteur d'adoption
-                _bump_usage(body.get("type", "?"), res.get("ok"))
+                _bump_usage(body.get("type", "?"), res.get("ok"), stage=res.get("stage"))
             self._send(200, res)
         elif self.path == "/v1/chat/completions":
             self._chat_completions(body)
@@ -1573,7 +1653,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     print(f"harnais serveur sur 127.0.0.1:{PORT} — engine {ENGINE_URL}, "
           f"hub {HUB_URL or '(VOLTRON_HUB_URL absent)'} "
-          f"({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'})",
+          f"({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'}), "
+          f"second lecteur {DUO_MODEL or '(VOLTRON_DUO_MODEL vide)'}",
           flush=True)
     # BIND AVANT REPRISE (complément relecture ai-01) : le bind qui échoue
     # garantit l'instance unique — un second lancement meurt ici au lieu de
