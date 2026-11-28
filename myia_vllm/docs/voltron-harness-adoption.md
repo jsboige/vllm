@@ -235,6 +235,22 @@ outil de mesure hors-ligne du banc. Le service exécute A→C et **rend son
 propre verdict** : `ok` + `detail` = l'appelant sait exactement quoi refaire
 ou escalader.
 
+## 4bis. Carte de confiance (26/11) — ce qui est mesuré, ce qui ne l'est pas
+
+Pour un consommateur qui doit décider s'il confie du travail : photographie du compteur durable `GET /v1/usage`, relevé le 26/11 vers 12:3xZ (baseline 0 du 19/11 05:50Z).
+
+| Contrat | Appels réels depuis le 19/11 | Débit / latence mesurés |
+| --- | ---: | --- |
+| `classify` | 5 709 | **un seul chiffre réel** : 5 586 tâches à 6 jobs concurrents ≈ 65 tâches/min, 85 min de mur, 99,5 % ok, 75 % servis en stage a (0,26-0,64 s/tâche) — job claudish-cd du 20/11 |
+| `extract` | 20 | **aucun sous charge** — une sonde à 0,43 s (26/11 12:11Z) |
+| `numbers` | 5 | aucun |
+| `diff` | 1 | aucun |
+| façade OpenAI `/v1/chat/completions` | 0 | aucun (déployée le 26/11, PR #617 non fusionnée) |
+
+Capacité du moteur connue **sur charge générique seulement** (banc 17/11, prompts distincts ~200 tokens, 256 générés, `ignore_eos`) : N=1 91 · 16 1 185 · 32 2 141 · 48 2 849 · **64 3 673 tok/s agrégés**, mono-flux ~64 tok/s, prefill ~6 500 tok/s. **Le genou au-delà de N=64, le mélange de contrats et le comportement de la façade ne sont pas mesurés** — trois issues ouvertes les tracent : [jsboige/vllm#624](https://github.com/jsboige/vllm/issues/624) (débit/latence par contrat), [#625](https://github.com/jsboige/vllm/issues/625) (les preuves ne tournent pas en CI), [#626](https://github.com/jsboige/vllm/issues/626) (adoption : un consommateur le 20/11, aucun depuis).
+
+Ce qu'un consommateur peut tenir pour acquis sans le revérifier : le service rend `ok`/`detail` sur chaque tâche (§4, contrat appelant 40/40), une coupure d'engine est taguée `transient` et rejouée (§3bis), un job survit au restart du serveur (§3). Ce qu'il doit vérifier sur SON corpus : la qualité fine de la classification — mesurée à ~60-75 % de précision fine sur les cellules de fondations du 20/11, donc un accélérateur de brouillon, pas un verdict.
+
 ## 5. Ce que le service REFUSE (limites vendues d'avance)
 
 - **Verdicts et jugements** (décisions, merges, priorisations de fond) — règle
@@ -330,8 +346,8 @@ bind local : demander l'exposition hub au siège po-2028:vllm (§7).
    2-étapes stage a 0,26-0,64 s (escalade coordinateur systématique avant) ;
    seuil verbatim 15→8 ; extract/numbers livrent propre (extract reparsable) ;
    jobs ×6 concurrents ; `GET /` sert les capacités.
-3. Présets sk-agent voltron (si les lanes veulent un routage hub) — à demander
-   au PO sk-agent le cas échéant.
+3. ✅ **Présets sk-agent `voltron-*` livrés en exemple le 26/11** — quatre presets dans `myia_vllm/mcp/sk_agent_config.fleet.example.json` (modèle `voltron-harness`, une tâche JSON par message utilisateur). Disponibles **sur un siège** seulement après l'étape d'**ajout additif** au gabarit fleet (modèle + 4 presets : 48/48 résolus, 0 erreur, mesuré au chargeur réel ; une fusion en bloc perd des MCP en silence) **et** l'entrée hub — pas avant. Précondition : l'entrée `voltron-harness` dans le hub claudish — demande du 26/11 (global `[ASK] po2028-vllm-ask-voltron-exposure-20261126`, DM à po-2025:claudish ; GO user donné le 26/11).
+   D'ici là les présets échouent au hub ; consommer par le §6b sur po-2028.
 4. Coordination migration po-2025 (flambeau FrogNano) : consommateurs hérités,
    recettes compatibles.
 5. Veille capacité : le moteur est surveillé par le cron vigie 6h du siège
