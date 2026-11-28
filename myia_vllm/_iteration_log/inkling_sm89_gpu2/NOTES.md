@@ -207,12 +207,14 @@ SM8x) + fp8 KV, batch 1024, async scheduling off, extensible KV off. `MAXLEN=163
   the running WSL VM), so **no `--gpus` container starts at all**. The slot now waits on the same
   repair as the production engine, not on capacity.
 
-## Window 2 on GPU 2 - launched 2026-11-28 06:19Z (RESULTS: read at the next cycle)
+## Window 2 on GPU 2 - REFUSED by the guard (2026-11-28 06:19Z), nothing ran
 
 The slot granted on 24/11 (option a, undated, `myia-ai-01:CoursIA-2`) is now consumable: the
 host's GPU prestart hook was repaired by the 27/11 host reboot (empty `--gpus` probe -> `hook-ok`,
 rc=0), host commit is **68.0 %** at 05:5xZ (<= 90 %), GPU 2 free (137 MiB), no `lean.exe`.
 Preavis of 25 min to CoursIA-2: `msg-20261128T055509-ozkeow` (depart 06:19:25Z, end 08:44:25Z).
+**The window was launched and then refused by the guard before any bench ran** - see
+"What actually happened" below. **No result to read here: the bench never started.**
 
 What runs (scripts: `.tmp/inkling_bench/window/launch_20261128.sh` and
 `bench_window_20261128.sh`, derived from the 23/11 window - the originals are untouched):
@@ -231,3 +233,52 @@ files, `updated_at` 2026-11-28T04:26:08Z, 5 comments, no new content). Its two c
 lever measured by `josephkaiser` on **our exact GPU** (RTX 4090 SM89): KV for one 32K request
 **4.81 -> 1.90 GiB** at batch 2048. `#69165` merged (27/11), `#69141` / `#69181` open, `#69715` and
 `#69280` open issues. Merging another lane's PR is out of mandate: report, do not merge.
+
+## What actually happened (28/11 06:19:52Z -> 06:31:19Z, repaired 06:46Z)
+
+The launcher started on time (host commit 70 %, no `lean.exe`, GPU 2 isolated at pci 72:00.0). The
+guard admitted the run (commit charge 69 % <= 90 %, GPU verdict `RELEASED` at 06:21:18Z) and wrote
+the reservation locally (06:21:19Z, `obs-82a3f94e273f8631`) **before any CUDA call**, as intended.
+Then the publication of that reservation to the fleet ledger (`ops/gpu-ledger` on
+`jsboige/coursia-gpu-ledger`) **exceeded the 300 s budget** and the guard **refused fail-closed**
+(`rc=5`): no container, no bench, GPU 2 at 137 MiB before and after, no lock and no marker left.
+The release written locally at 06:26:19Z (`obs-da8c7b4fb451a19d`) hit the same delay (06:31:19Z),
+so the remote branch carried the **hold without its release** (measured ~06:35Z): the fleet read
+GPU 2 as held until 08:54:25Z while nothing had run. Repaired at 06:46Z - a publication without
+the budget landed (`PUBLISHED 1 observation(s)`), verified by `git ls-remote` (head `ccf99236...`
+= the pushed sha) and by the presence of `obs-da8c7b4fb451a19d` in
+`gpu-reservation/myia-ai-01.jsonl`. CoursIA-2 was warned twice (06:37:34Z, 06:46:59Z).
+
+### Root cause, measured (it is not the network)
+
+| measurement | value |
+| --- | --- |
+| GitHub smart-HTTP endpoint (git protocol) | 0.70 s (401 without credentials) |
+| `api.github.com` | 0.53 s (DNS 0.12 s) |
+| trivial local git (`--version`, `rev-parse`, `status`) | 0.07-0.14 s |
+| `git show-ref` / `for-each-ref` **in the host clone** | **29.71 s / 29.59 s** |
+| `git fetch origin main` in the host clone | 65.5 s |
+| host clone refs / worktrees | **35,378 refs** / 28 worktrees |
+
+The push of a ledger commit triggers the clone's local `pre-push` hook (git-lfs), which calls
+`git show-ref`: with 35k refs that scan takes ~30 s, and the push then spends minutes inside the
+hook - observed on our push (06:39:30Z onwards) and on another lane's push on the same host
+(started 06:37:15Z, still inside the hook at 06:40:10Z). `debt_ledger.py`'s `_git()` has **no
+timeout** (L2461-2474); the binding constraint is the guard's outer 300 s budget, hence the
+fail-closed refusal.
+
+### Fix proposed (PR on `jsboige/CoursIA`, the guard's owner merges it)
+
+`git push --no-verify` for the ledger push: a ledger commit cannot carry an LFS object, so the
+hook has nothing to do there - its cost was its only measured effect. Reproduced locally: the new
+test `test_publish_never_runs_the_host_repository_pre_push_hook` **fails on the unpatched module**
+(the hook runs, the marker exists) and **passes with the fix**; the three existing fakes match on
+`args[0] == "push"`, so no existing test needed changing. Merging another lane's PR is out of
+mandate: the guard's owner merges, we relaunch the window afterwards.
+
+**Not addressed**: the 35,378 refs of the clone (21,095 under `refs/remotes/pr/`, 5,870 under
+`refs/preserved/tmp-20261127/`) and the absence of a timeout in `_git()`.
+
+**Relaunch**: blocked on that merge. The scripts are ready and unchanged (`launch_20261128.sh`,
+`bench_window_20261128.sh`), the 25 min preavis will be redone. Until the fix is merged, every
+guarded GPU window on this seat is refused the same way.
