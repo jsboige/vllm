@@ -20,12 +20,12 @@ et le **gain de temps** (le service gère réparation + escalade tout seul).
 
 | | |
 | --- | --- |
-| URL | `http://127.0.0.1:5029` (po-2028, bind local machine) |
+| URL | `http://127.0.0.1:5029` par défaut (po-2028, bind local). `VOLTRON_BIND` non-loopback = écoute LAN **avec clé entrante obligatoire** (§4ter) |
 | Moteur | `voltron-harness` (docker, `--restart unless-stopped`, config fp8 validée : KV 159K tok, ~7,1/8 Gio VRAM ; **tier RAM retiré 24/11** — 4 Gio de shm pour 0 octet relu sur ~24 h, conteneur ~7 Gio → ~3 Gio) |
 | Endpoints | `GET /health` · `GET /v1/capabilities` · `GET /openapi.json` (24/11 — découverte OpenAPI 3.1, sans `servers` : le chargeur d'outils ne montait pas le service, 404 mesurés 23/11) · `POST /v1/task` · `POST /v1/jobs` + `GET /v1/jobs/<id>` (reprise au restart serveur, 21/11) · `GET /v1/usage` (compteurs durables — l'instrument d'adoption) · **façade OpenAI 26/11** : `GET /v1/models` + `POST /v1/chat/completions` (JSON et SSE — §6c) · `OPTIONS` sur chaque route (204 + `Allow`, **aucun en-tête CORS** : service sans clé qui dépense des tokens hub, une page web ne doit pas pouvoir l'appeler) |
 | Auto-guérison | engine muet → `docker start voltron-harness` (un seul partagé entre threads, puis ≤1/30 s pendant l'attente) + attente ≤240 s (boot mesuré 115-150 s ; un `docker start` bloqué ne fait plus renoncer — la politique de restart du conteneur ramène l'engine pendant l'attente ; `returncode`/`stderr` sont rapportés dans le résultat et journalisés seulement au changement d'erreur) |
 | Démarrage | `pwsh -File myia_vllm/scripts/testing/start_voltron_service.ps1` (résout la clé hub en mémoire depuis `~/.claude.json`) |
-| Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` / `VOLTRON_DUO_MODEL` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée ; `VOLTRON_DUO_MODEL` vide = étage `b` absent (§4bis) |
+| Config locale | `VOLTRON_HUB_URL` / `VOLTRON_JOBS_DIR` / `VOLTRON_USAGE_PATH` / `VOLTRON_DUO_MODEL` / `VOLTRON_BIND` / `VOLTRON_INBOUND_KEY` (env ; sur po-2028 via `D:\vllm-data\bench\v2_service.env`, hors dépôt — aucune adresse LAN ni chemin machine dans le code). Sans eux : `~/.voltron_harness/`, phase C désactivée ; `VOLTRON_DUO_MODEL` vide = étage `b` absent (§4bis) |
 | Rollback | **arrêter d'abord le process python :5029**, puis `docker stop voltron-harness` — sinon le service relance son moteur ; aucune donnée perdue |
 | Logs | `D:\vllm-data\bench\v2_server.log` · jobs persistés `D:\vllm-data\bench\v2_jobs\` |
 
@@ -309,6 +309,37 @@ un troisième modèle mais un **gate plus fort** : type attendu par champ,
 `verbatim: true` quand l'appelant peut le déclarer, énumérations. Chaque point
 de gate gagné est un point que la chaîne sait ensuite réparer.
 
+## 4ter. Écoute LAN et clé entrante (28/11) — la garde passe avant l'écoute
+
+Le hub claudish (`192.168.0.50`) ne peut pas joindre le loopback d'une autre
+machine : sans écoute LAN, une entrée d'endpoint au hub ne servirait qu'un 502
+(constat du propriétaire du hub, 28/11). L'écoute est donc ouverte — jamais nue.
+
+| Réglage | Défaut | Effet |
+| --- | --- | --- |
+| `VOLTRON_BIND` | `127.0.0.1` | adresse d'écoute. Toute valeur non-loopback **exige** une clé : sans elle, `REFUS DE DEMARRAGE` + exit 1 — le service ne s'ouvre pas |
+| `VOLTRON_INBOUND_KEY` | vide | clé entrante. Les appels distants la portent en `Authorization: Bearer <clé>` (convention OpenAI, ce que le hub sait déjà envoyer) ou en `X-Voltron-Key` ; comparaison `hmac.compare_digest` |
+
+Règles fixées par `test_voltron_inbound.py` (6 tests, **preuve rouge 6/6** sur
+le serveur d'avant le 28/11) :
+
+- **loopback = toujours servi**, clé configurée ou non : les sondes de vigie du
+  siège n'ont pas changé d'un octet ;
+- `GET /health` reste ouvert même à distance (sonde de vivacité, aucun
+  identifiant) ; toute autre route distante sans clé juste rend **401 sans lire
+  le corps** — le moteur n'est jamais atteint (testé : zéro appel) ;
+- la clé ne s'écrit jamais dans le dépôt : elle vit dans
+  `D:\vllm-data\bench\v2_service.env` (hors dépôt) ou dans l'environnement du
+  lanceur. La bannière de démarrage n'imprime que l'empreinte `sha256[:12]`,
+  qui est exactement ce qu'on publie — la valeur ne sort pas du siège.
+
+**Ordre tenu, et pourquoi** : (1) la garde (code + tests) ; (2) la règle de
+pare-feu entrante TCP 5029 — geste Windows élevé, donc dry-run publié avant et
+fenêtre unique ; (3) `VOLTRON_BIND` non-loopback + clé, sans élévation ; (4)
+l'annonce (adresse, port, empreinte). Tant que (2) n'est pas fait, (3) ne
+change rien vu du LAN : le pare-feu refuse en amont — aucun état intermédiaire
+n'expose le service.
+
 ## 5. Ce que le service REFUSE (limites vendues d'avance)
 
 - **Verdicts et jugements** (décisions, merges, priorisations de fond) — règle
@@ -555,3 +586,10 @@ acquis — d'ici là, la façade sert les clients locaux de po-2028.
    valeur (12/12 `ok` contre 6/12 à la vérité sur le pack) — le levier suivant
    est un gate plus fort, pas un troisième modèle. Tests : `test_voltron_duo.py`
    11/11 (preuve rouge 10/11 sur le serveur d'avant).
+12. ✅ **Écoute LAN gardée par clé entrante (28/11)** — §4ter. Le prérequis
+   nommé par le propriétaire du hub : `VOLTRON_BIND` hors loopback avec
+   `VOLTRON_INBOUND_KEY`, garde du démarrage (refus sans clé), 401 distant sans
+   lecture du corps, `/health` ouvert, `Bearer` ou `X-Voltron-Key`, empreinte
+   `sha256[:12]` seule publiée. Tests : `test_voltron_inbound.py` 6/6 (preuve
+   rouge 6/6 sur `main`). Reste le geste élevé (règle de pare-feu TCP 5029),
+   puis l'annonce.

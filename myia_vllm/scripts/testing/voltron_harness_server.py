@@ -35,7 +35,10 @@ Auto-guérison : si l'engine :5028 est muet, `docker start voltron-harness`
 puis attente santé ≤240 s. Une tâche coupée par une indisponibilité TRANSITOIRE
 de l'engine est attendue puis rejouée (≤2 fois ; 1 h d'attente pour un job en
 fond, 2 min pour un appel synchrone) — elle n'est plus livrée en échec.
-Bind 127.0.0.1:5029 — usage local machine, même politique que l'engine
+Bind par défaut 127.0.0.1:5029 (usage local machine, même politique que l'engine d'éval :
+keyless en boucle locale). VOLTRON_BIND hors loopback (hub claudish, 28/11) exige
+VOLTRON_INBOUND_KEY : sans clé le démarrage est REFUSÉ, et les appels distants
+portent `Authorization: Bearer <clé>` ou `X-Voltron-Key`. /health reste ouvert.
 d'éval (keyless, boucle locale).
 
 Clé hub : env ZAI_API_KEY au lancement du serveur (résolue en mémoire par
@@ -44,6 +47,8 @@ Absent → phase C sautée, la réponse porte stage="a" + note. VOLTRON_DUO_MODE
 (phase B) exige la même clé : vide (défaut) = chaîne a→c d'avant.
 """
 import concurrent.futures
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -83,6 +88,58 @@ ENGINE_CONTAINER = os.environ.get("VOLTRON_ENGINE_CONTAINER", "voltron-harness")
 HUB_URL = os.environ.get("VOLTRON_HUB_URL", "")  # chat() ajoute /v1/chat/completions
 HUB_MODEL = os.environ.get("VOLTRON_HUB_MODEL", "swift-1.5-27b")
 PORT = 5029
+# --- exposition reseau (28/11) : le hub claudish ne peut pas joindre le
+# loopback d'une AUTRE machine. Le proprietaire du hub a donc nomme le
+# prerequis : ecoute LAN sur ce siege AVEC garde de cle entrante. La garde
+# passe en premier — un bind non-loopback sans cle refuse le demarrage.
+BIND = os.environ.get("VOLTRON_BIND", "127.0.0.1")
+INBOUND_KEY = os.environ.get("VOLTRON_INBOUND_KEY", "")
+INBOUND_HEADER = "X-Voltron-Key"
+
+
+def _is_loopback(ip):
+    """127.0.0.1/::1 (et la forme mappee ::ffff:127.0.0.1) = le siege lui-meme."""
+    ip = (ip or "").strip()
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip in ("127.0.0.1", "::1") or ip.startswith("127.")
+
+
+def validate_bind(bind, key):
+    """None si l'exposition demandee est sure, message d'erreur sinon.
+
+    Loopback : aucune cle requise (comportement d'avant, service local).
+    Toute autre adresse : cle entrante OBLIGATOIRE — un bind LAN sans garde
+    ouvrirait a tout le reseau un service qui depense des jetons hub.
+    """
+    if _is_loopback(bind) or key:
+        return None
+    return ("VOLTRON_BIND=%r sans VOLTRON_INBOUND_KEY : exposition reseau refusee "
+            "(un service sans cle ne sort pas du loopback)" % bind)
+
+
+def inbound_authorized(client_ip, headers, key=None):
+    """True si la requete peut etre servie.
+
+    - aucune cle configuree : le service ne doit ecouter qu'en loopback
+      (validate_bind le garantit) ;
+    - requete du siege (loopback) : toujours servie — sondes de vigie inchangees ;
+    - sinon : cle exigee, en `Authorization: Bearer` (convention OpenAI, ce que
+      le hub sait deja envoyer) ou en en-tete `X-Voltron-Key`.
+
+    Comparaison a temps constant : une cle ne se devine pas au chronometre.
+    """
+    key = INBOUND_KEY if key is None else key
+    if not key or _is_loopback(client_ip):
+        return True
+    given = headers.get(INBOUND_HEADER) or ""
+    if not given:
+        auth = headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            given = auth[7:].strip()
+    return hmac.compare_digest(given, key)
+
+
 _data_root = os.path.join(os.path.expanduser("~"), ".voltron_harness")
 JOBS_DIR = os.environ.get("VOLTRON_JOBS_DIR") or os.path.join(_data_root, "jobs")
 USAGE_PATH = os.environ.get("VOLTRON_USAGE_PATH") or os.path.join(_data_root, "usage.json")
@@ -1462,6 +1519,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _denied(self):
+        """401 si la cle entrante manque ou differe (corps non lu, ferme)."""
+        if inbound_authorized(self.client_address[0], self.headers):
+            return False
+        self.close_connection = True
+        self._send(401, {"error": {
+            "message": "cle entrante requise : Authorization: Bearer <cle> ou "
+                       "en-tete X-Voltron-Key (empreinte a demander au siege)",
+            "type": "invalid_request_error", "param": None, "code": "unauthorized"}})
+        return True
+
     def _send_openai_error(self, status, message, param=None, err_code=None):
         """Erreur au format OpenAI : un SDK affiche error.message."""
         self._send(status, {"error": {"message": message, "type": "invalid_request_error",
@@ -1536,6 +1604,11 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%SZ')}] {fmt % args}", flush=True)
 
     def do_GET(self):
+        # /health reste ouvert : c'est la sonde de vivacite (hub,
+        # surveillance). Toute autre route exige la cle entrante
+        # quand le service ecoute hors loopback.
+        if self.path != "/health" and self._denied():
+            return
         if self.path == "/health":
             alive = engine_healthy()
             with _alive_lock:
@@ -1590,6 +1663,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "route inconnue"})
 
     def do_POST(self):
+        if self._denied():  # avant le corps : rien n'est lu, la
+            return           # connexion se ferme sur le 401
         length = int(self.headers.get("Content-Length", 0))
         if length < 0:  # re-review 22/11 : read(-1) lit jusqu'à l'EOF
             self._send(400, {"error": "Content-Length négatif"})
@@ -1651,15 +1726,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"harnais serveur sur 127.0.0.1:{PORT} — engine {ENGINE_URL}, "
+    err = validate_bind(BIND, INBOUND_KEY)
+    if err:  # la garde d'abord : jamais d'ecoute nue
+        print("REFUS DE DEMARRAGE : " + err, flush=True)
+        raise SystemExit(1)
+    _fp = hashlib.sha256(INBOUND_KEY.encode()).hexdigest()[:12] if INBOUND_KEY else "-"
+    print(f"harnais serveur sur {BIND}:{PORT} — engine {ENGINE_URL}, "
           f"hub {HUB_URL or '(VOLTRON_HUB_URL absent)'} "
           f"({'clé OK' if HUB_KEY else 'SANS clé → phase C désactivée'}), "
-          f"second lecteur {DUO_MODEL or '(VOLTRON_DUO_MODEL vide)'}",
+          f"second lecteur {DUO_MODEL or '(VOLTRON_DUO_MODEL vide)'}, "
+          f"clé entrante {('empreinte ' + _fp) if INBOUND_KEY else 'aucune (loopback)'}",
           flush=True)
     # BIND AVANT REPRISE (complément relecture ai-01) : le bind qui échoue
     # garantit l'instance unique — un second lancement meurt ici au lieu de
     # relancer les jobs 'running' du disque en double exécution.
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
     _recover_orphans()  # instance unique acquise : reprendre, puis servir
     srv.serve_forever()
 
