@@ -337,7 +337,7 @@ le serveur d'avant le 28/11) :
 (3) `VOLTRON_BIND` non-loopback + clé ; (4) l'annonce (adresse, port,
 empreinte).
 
-**Le geste élevé prévu s'est révélé inutile — mesuré le 28/11 11:4xZ** : ce
+**Le geste élevé prévu s'est révélé inutile — mesuré le 28/11 10:19Z** : ce
 siège porte déjà deux règles entrantes `Allow` pour l'interpréteur même du
 service (`C:\Users\jsboi\miniconda3\envs\mcp-jupyter\python.exe`, TCP **port
 quelconque**, `RemoteAddress: Any`, profils Private+Public), posées par un autre
@@ -346,7 +346,7 @@ n'exige donc **aucune** fenêtre UAC. C'est aussi une limite, et elle est plus
 large que ce service : tout processus de cet interpréteur est déjà joignable.
 Constat, pas modification — rien n'a été touché au pare-feu.
 
-**Mesures après bascule (28/11 11:4xZ, `0.0.0.0:5029`)** : loopback sans clé
+**Mesures après bascule (28/11 10:19Z, `0.0.0.0:5029`)** : loopback sans clé
 **200** (47 sondes, dont 30 d'affilée), adresse LAN sans clé **401**, `Bearer`
 **200**, `X-Voltron-Key` **200**, `Bearer` faux **401**, `/health` distant
 **200**, `POST /v1/task` distant sans clé **401**, génération réelle en loopback
