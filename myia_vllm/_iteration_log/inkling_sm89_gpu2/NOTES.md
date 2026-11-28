@@ -206,3 +206,28 @@ SM8x) + fp8 KV, batch 1024, async scheduling off, extensible KV off. `MAXLEN=163
   host's GPU prestart hook has been broken since 2026-11-26T15:58Z (NVIDIA driver installed under
   the running WSL VM), so **no `--gpus` container starts at all**. The slot now waits on the same
   repair as the production engine, not on capacity.
+
+## Window 2 on GPU 2 - launched 2026-11-28 06:19Z (RESULTS: read at the next cycle)
+
+The slot granted on 24/11 (option a, undated, `myia-ai-01:CoursIA-2`) is now consumable: the
+host's GPU prestart hook was repaired by the 27/11 host reboot (empty `--gpus` probe -> `hook-ok`,
+rc=0), host commit is **68.0 %** at 05:5xZ (<= 90 %), GPU 2 free (137 MiB), no `lean.exe`.
+Preavis of 25 min to CoursIA-2: `msg-20261128T055509-ozkeow` (depart 06:19:25Z, end 08:44:25Z).
+
+What runs (scripts: `.tmp/inkling_bench/window/launch_20261128.sh` and
+`bench_window_20261128.sh`, derived from the 23/11 window - the originals are untouched):
+- **LiveCodeBench, the one missing bench on the Inkling side** (mmlu_pro / ifeval / tools were
+  produced on 23/11 and are resumed, not redone; the Swift side already has `results/swift/lcb.jsonl`).
+- **Capacity probe**: reboot at `MAXLEN 131072`, then 262144 if 131072 boots, recording the KV pool
+  and the concurrency vLLM announces, or vLLM's own `estimated maximum model length` when the boot
+  fails. That number is the authoritative capacity, and it is what G2 (service) needs.
+- Guards unchanged: isolation proven first (one device, pci 72:00.0) else abort; host commit >= 93 %
+  during boot -> abort; hard stop at STOP_AT; container `inkling-eval-v3` (the 23/11 name is never
+  touched) removed only if this run started it; GPUs 0/1 never used; GPU 2 back to 0 MiB at teardown.
+
+Upstream watch 28/11 05:5xZ (REST, one call per artifact): **`#69444` is mergeable again** - the
+author rebased it (head `03e1d36a4`, `mergeable=true`, `mergeable_state=blocked`, 2 commits, 20
+files, `updated_at` 2026-11-28T04:26:08Z, 5 comments, no new content). Its two commits are the
+lever measured by `josephkaiser` on **our exact GPU** (RTX 4090 SM89): KV for one 32K request
+**4.81 -> 1.90 GiB** at batch 2048. `#69165` merged (27/11), `#69141` / `#69181` open, `#69715` and
+`#69280` open issues. Merging another lane's PR is out of mandate: report, do not merge.
