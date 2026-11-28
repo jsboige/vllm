@@ -333,12 +333,29 @@ le serveur d'avant le 28/11) :
   lanceur. La bannière de démarrage n'imprime que l'empreinte `sha256[:12]`,
   qui est exactement ce qu'on publie — la valeur ne sort pas du siège.
 
-**Ordre tenu, et pourquoi** : (1) la garde (code + tests) ; (2) la règle de
-pare-feu entrante TCP 5029 — geste Windows élevé, donc dry-run publié avant et
-fenêtre unique ; (3) `VOLTRON_BIND` non-loopback + clé, sans élévation ; (4)
-l'annonce (adresse, port, empreinte). Tant que (2) n'est pas fait, (3) ne
-change rien vu du LAN : le pare-feu refuse en amont — aucun état intermédiaire
-n'expose le service.
+**Ordre tenu** : (1) la garde (code + tests) ; (2) **mesure du pare-feu** ;
+(3) `VOLTRON_BIND` non-loopback + clé ; (4) l'annonce (adresse, port,
+empreinte).
+
+**Le geste élevé prévu s'est révélé inutile — mesuré le 28/11 11:4xZ** : ce
+siège porte déjà deux règles entrantes `Allow` pour l'interpréteur même du
+service (`C:\Users\jsboi\miniconda3\envs\mcp-jupyter\python.exe`, TCP **port
+quelconque**, `RemoteAddress: Any`, profils Private+Public), posées par un autre
+usage de cet interpréteur. Aucune règle 5029 ne les restreint : ouvrir l'écoute
+n'exige donc **aucune** fenêtre UAC. C'est aussi une limite, et elle est plus
+large que ce service : tout processus de cet interpréteur est déjà joignable.
+Constat, pas modification — rien n'a été touché au pare-feu.
+
+**Mesures après bascule (28/11 11:4xZ, `0.0.0.0:5029`)** : loopback sans clé
+**200** (47 sondes, dont 30 d'affilée), adresse LAN sans clé **401**, `Bearer`
+**200**, `X-Voltron-Key` **200**, `Bearer` faux **401**, `/health` distant
+**200**, `POST /v1/task` distant sans clé **401**, génération réelle en loopback
+`stage=a` en 0,7 s. Une seule occurrence non reproduite : la toute première
+sonde loopback d'un script de mesure a rendu 401, puis 47 sondes loopback ont
+rendu 200 — cause non établie, à surveiller si elle revient. **Non mesuré
+ici** : l'appel depuis une AUTRE machine (le chemin local vers sa propre adresse
+LAN ne traverse pas le pare-feu) — demandé au propriétaire du hub en même temps
+que l'annonce.
 
 ## 5. Ce que le service REFUSE (limites vendues d'avance)
 
