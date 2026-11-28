@@ -350,12 +350,17 @@ Constat, pas modification — rien n'a été touché au pare-feu.
 **200** (47 sondes, dont 30 d'affilée), adresse LAN sans clé **401**, `Bearer`
 **200**, `X-Voltron-Key` **200**, `Bearer` faux **401**, `/health` distant
 **200**, `POST /v1/task` distant sans clé **401**, génération réelle en loopback
-`stage=a` en 0,7 s. Une seule occurrence non reproduite : la toute première
-sonde loopback d'un script de mesure a rendu 401, puis 47 sondes loopback ont
-rendu 200 — cause non établie, à surveiller si elle revient. **Non mesuré
-ici** : l'appel depuis une AUTRE machine (le chemin local vers sa propre adresse
-LAN ne traverse pas le pare-feu) — demandé au propriétaire du hub en même temps
-que l'annonce.
+`stage=a` en 0,7 s. **Non mesuré ici** : l'appel depuis une AUTRE machine (le
+chemin local vers sa propre adresse LAN ne traverse pas le pare-feu) — demandé
+au propriétaire du hub en même temps que l'annonce.
+
+**Fausse piste, notée pour ne pas la relancer** : une première lecture de ce
+relevé a vu un « 401 loopback ». Il n'y en a eu aucun — la ligne loopback du
+relevé imprimait 200. L'échec venait du script de mesure : sa boucle
+d'impression (`for name, st in rows`) réutilisait le nom `st` de la première
+sonde, donc l'assertion finale comparait le statut de la **dernière** ligne
+(`Bearer` faux = 401) à celui attendu du loopback. Les 47 sondes ont cherché
+une anomalie qui n'existait pas.
 
 ## 5. Ce que le service REFUSE (limites vendues d'avance)
 
