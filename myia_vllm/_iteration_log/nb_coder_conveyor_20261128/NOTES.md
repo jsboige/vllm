@@ -67,7 +67,7 @@ l'occupation IMPLICITE). Épreuves rejouées **sur cet arbre** avant la relance 
 3 skips, 3 erreurs préexistantes** (`test_nb_coder_window_replay` — `semantic_kernel`
 incompatible Python 3.14, sans rapport avec le park) et **12/12** sur les tests ciblés
 (occupation / implicit / attempts / park).
-Deux gestes appriss ce cycle, tous deux rejoués tels quels :
+Deux gestes appris ce cycle, tous deux rejoués tels quels :
 
 * **Le noyau Rust doit être chauffé une fois avec un budget long avant d'appeler le lanceur.**
   Le premier lancement a été refusé par sa propre garde (`Kernel didn't respond in 30 seconds`,
@@ -88,6 +88,81 @@ consécutives (5 requêtes en file depuis 13:00Z, `kv_gpu_perc` 65-99 %, préemp
 soit du trafic de failover réel. Le ramp `4,6,8` borne le **total** des requêtes moteur : le
 tapis ne consomme que le mou, et il n'y en a pas à cet instant. Rien à forcer ; le gate
 rouvrira seul.
+
+### 6. Le lot #27133 est gelé par un verrou que ce siège ne peut pas lever (13:4x→14:2xZ)
+
+po-2028 répond : ni le quota d'installation ni le garde ne bloquent **#28852** ; le verrou est
+un `CHANGES_REQUESTED` de **`myia-ai-01`** sur #28852 comme sur #28861. #28861 a été levée à
+12:50:03Z (APPROVED à `0587dab441`) ; #28852 n'a pas eu sa re-revue. Tant qu'elle reste, la
+jambe IMPLICIT du garde occupe le lot **entier** : mon MGS-24 et leurs MGS-25/MGS-28 gèlent.
+
+**Rejeu de #28852 à la tête `594aaa7afc` — par exécution, clone sparse séparé (`D:/CoursIA`
+intact), review COMMENT `6097984703`.** Les quatre points de ma revue du 27/11 sont verts :
+
+* `check_rust_conformance --entry "MGS-28-BareBonesPSO-vs-Mealpy"` → **1 conforme, 0
+  divergence, rc=0, 22 mesures**. `c13_entete` est arrivé dans la cellule 13 Rust (c'était le
+  manque) ; `c13_rapport_python_csharp` est déclaré **`absent` avec motif écrit** (le carnet
+  Rust compare deux voies Rust, il n'exécute ni C# ni Python) — honnête, même doctrine que
+  `c11_rapport` de #28861.
+* Les grandeurs du troisième moteur passent **sous tolérance** (29 vs 24, 30,5 vs 35,0). J'ai
+  vérifié l'origine de la tolérance : `const CONFLICT_TOLERANCE: usize = 12;` est dans le
+  **code du carnet lui-même** (cellules 4/10/12) et ses sorties impriment `(tolérance 12) ->
+  CONFORME` — ce n'est pas une invention du registre. Le body déclare d'ailleurs honnêtement
+  que le 12 a été **choisi au portage**, et le soutient par l'étalement mesuré de la source.
+* Garde markdown : `detect_markdown_rendering --report` → **0 violation** ;
+  `scan_md_hierarchy` → **0/1 signalé, 0 `HINT-AS`** (cellule 21 démotée en citation).
+* `Grain:` en tête du body ; carnet exécuté : 10 cellules de code, **0 `execution_count`
+  nulle, 0 sortie d'erreur**.
+* **Un seul défaut, non bloquant** : le body écrit « le plus grand écart Rust − source est de
+  **7** » alors que la sortie de la cellule 12 imprime un écart de **8** (noyau, graine 1 :
+  `[39, 37, 37, 37]` contre `[31, 31, 31, 31]`, écarts `[8, 6, 6, 6]`). La conclusion tient
+  (8 < 12), le chiffre est faux. Correction demandée.
+
+**Le verrou n'est pas levable d'ici** : `gh auth status` sur ce siège rend `Failed to log in
+to github.com account myia-ai-01`. Un `CHANGES_REQUESTED` ne se lève que par la **même
+identité**, et je ne révoque pas la revue d'une autre identité sur la PR d'une autre lane.
+Demande portée au coordinateur `myia-ai-01:CoursIA` (msg `vllm-ask-28852-rereview-20261128T1325Z`,
+HIGH) : poster la re-revue sous `myia-ai-01`, ou refuser en le disant.
+
+**Correction de ma part, vérifiée dans le code.** Mon message de 12:38Z affirmait qu'un
+`retry` purge le park d'un grain garé. Faux : `_apply_retry` (`nb_coder_scheduler.py:946-976`)
+fait `if status != "failed": retry-ignored; return` — un grain garé est `deferred`, donc le
+`retry` est **absorbé** et le park survit (`occupation_wait` n'est purgé que dans la branche
+`failed`). Le commentaire de la fonction promet pourtant « the operator's retry clears the
+wait on another lane's PR » : il décrit un cas que la garde au-dessus rend inatteignable en
+`--watch`. Incohérence commentaire/portée, à trancher en PR de suivi avec un témoin — le grain
+est à po-2028, c'est son harnais.
+
+### 7. Câblage du siège : le code du serveur sk-agent venait du mauvais arbre (mesuré, corrigé)
+
+po-2028 signale avoir perdu 2 grains sur un orphelin parce que le **serveur** sk-agent de ses
+lots partait du checkout roo-extensions, qui n'avait pas le correctif. **Mon lanceur avait le
+même défaut** : `NBCODER_SK_DIR=D:/roo-extensions/mcps/internal/servers/sk-agent`, alors que
+le **driver** vient de `D:/vllm/.tmp/mcps-sched`. Mesure : les 7 modules `sk_agent*.py` sont
+**identiques** des deux côtés aujourd'hui (`sk_agent.py` = `e0cd2e9dcd9a` sur les deux), donc
+rien n'est cassé — mais la dérive était armée pour le premier correctif fusionné d'un seul
+côté.
+
+Corrigé par le câblage surchargeable que le driver documente (`nb_coder_driver.py:83-100`) :
+
+```text
+NBCODER_SK_DIR=D:/vllm/.tmp/mcps-sched/servers/sk-agent      # le CODE, meme arbre que le driver
+NBCODER_SK_PY=<seat>/venv/Scripts/python.exe                # l'interpreteur du siege
+NBCODER_SK_CONFIG=<seat>/sk_agent_config.json               # la config du siege (gitignoree)
+```
+
+* L'arbre épinglé n'a **ni venv ni `sk_agent_config.json`** (l'un est un artefact local,
+  l'autre porte des clés) : ils restent lus chez le siège, **jamais dupliqués**.
+* Les chemins **relatifs** des MCP (`../open-terminal-mcp/…`, `../roo-state-manager/build/index.js`)
+  ne bougent pas : `sk_agent.py:1363` lance les sous-processus avec `cwd = parent de la
+  CONFIG`, pas du module. Vérifié utile : `roo-state-manager/build/index.js` **n'existe pas**
+  dans l'arbre épinglé (artefact de build) — un `cwd` pris sur le module aurait cassé les
+  outils RSM sans le dire.
+* **Poignée de main à blanc** des deux câblages (`handshake_sk_wiring.py`) : **sk-agent 1.26.0,
+  protocole 2024-11-05, 10 outils, listes identiques**. Le driver garde sa prévol
+  (`refused-wiring-unresolved` avant toute dépense si un chemin ne résout pas).
+* Scheduler relancé sur ce câblage à **13:20:14Z** (0 grain en vol au moment du geste, porte
+  rouge), ticks repris `held gate-red`, 4 en attente.
 
 ## Amont (veille, 1 appel REST par artefact)
 
