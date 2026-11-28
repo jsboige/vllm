@@ -8,8 +8,8 @@ Run vivant : `D:/vllm/.tmp/nbcoder/conveyor-20261128` (scheduler PID 9036, harna
 
 ### 1. La file du tapis était VIDE — le feeder était mort depuis 5 jours
 
-| | |
-|---|---|
+| Lecture | Valeur |
+| --- | --- |
 | `feeder/feeder.log` (lane-local) | dernière ligne **2026-11-23T19:35:03Z** ⇒ feeder arrêté |
 | `conveyor-20261128/queue.jsonl` | **2 lignes** (#28880, MGS-24) |
 | grains | #28880 `deferred` (quarantaine RELACHEE, `[CLAIMED]` DEEP de `myia-po-2028:CoursIA` depuis 06:12:53Z) · MGS-24 `deferred` · MGS-27 `withdrawn` |
@@ -48,7 +48,7 @@ Le feeder mutualisé (`nb_coder_feeder.py`, dans l'arbre épinglé) n'était jam
 à la charge, pas au run. Le feeder revalide chaque ligne sur données vivantes avant de la
 pousser (trap 5) : une ligne fausse est **supprimée**, jamais rejouée.
 
-### 4. Mesures moteur du cycle (13:0xZ)
+### 4. Mesures moteur du cycle (12:50→12:55Z)
 
 `health 200` en 4,1 ms · `RC=0`, `StartedAt 2026-11-28T02:03:40Z` (aucun redémarrage) ·
 3 conteneurs Up · VRAM 22 483 / 21 404 / 46 MiB (GPU 2 libre) · `/dev/shm` 33/63 Go (le tier
@@ -59,6 +59,35 @@ lui-même, pas d'orphelin) · 5 000 lignes de journal moteur, **OOM 0** · watch
 élagueur du tier fs : âge **1 min**, tier 151,3 Go, cap 268,4 Go, 0 erreur, C: 15,3 % libre ·
 G: sonde d'écriture **OK** · watchdog hôte : UP, `LastTaskResult 0`, 0 bloc non livré ·
 nbaudit : `ok:true`, 0 échec consécutif (dernier passage 12:14:18Z).
+
+### 5. Relance — le tapis est de nouveau nourri, et il attend la place (13:04→13:06Z)
+
+Le harnais est épinglé sur `jsboige-mcp-servers` **`150c2e9`** (fusion de ms#1981, park de
+l'occupation IMPLICITE). Épreuves rejouées **sur cet arbre** avant la relance : **1454 passés,
+3 skips, 3 erreurs préexistantes** (`test_nb_coder_window_replay` — `semantic_kernel`
+incompatible Python 3.14, sans rapport avec le park) et **12/12** sur les tests ciblés
+(occupation / implicit / attempts / park).
+Deux gestes appriss ce cycle, tous deux rejoués tels quels :
+
+* **Le noyau Rust doit être chauffé une fois avec un budget long avant d'appeler le lanceur.**
+  Le premier lancement a été refusé par sa propre garde (`Kernel didn't respond in 30 seconds`,
+  `exit 3`, rien n'a démarré) ; chauffé à 180 s il répond en **16,7 s**, puis 6,3 s à la
+  deuxième tentative. La garde est correcte, elle est fail-closed par construction.
+* **`TaskStop` sur le shell ne tue pas le python** : un `nb_coder_scheduler` orphelin a survécu
+  au premier arrêt ; l'arrêt se fait sur la **ligne de commande** (`Get-CimInstance` filtré sur
+  `nb_coder_scheduler`, `Stop-Process` sur le PID vérifié), puis un recomptage.
+
+État après relance : scheduler **PID 73332** (13:04:04Z) sur l'arbre `150c2e9`, feeder mutualisé
+**PID 10492** (13:05:36Z, `--cap 4 --poll-s 60 --bound-s 259200`), file à **5 grains**
+(#28880, #27133 MGS-24 génération 3, #27722, #28875, #28944), 0 en vol.
+Le feeder a été essayé en **`--once` d'abord** (il a poussé #27722, inflight 1) puis laissé en
+daemon ; il a poussé #28875 et #28944 dans le même cycle de 60 s. `drift-sweep 0 PRs`.
+
+**Le tapis tient sur `gate-red`, et c'est la bonne raison** : `waiting > 0` sur deux sondes
+consécutives (5 requêtes en file depuis 13:00Z, `kv_gpu_perc` 65-99 %, préemptions **delta 0**),
+soit du trafic de failover réel. Le ramp `4,6,8` borne le **total** des requêtes moteur : le
+tapis ne consomme que le mou, et il n'y en a pas à cet instant. Rien à forcer ; le gate
+rouvrira seul.
 
 ## Amont (veille, 1 appel REST par artefact)
 
