@@ -8,7 +8,9 @@
 #
 # Le moteur est le CONTENEUR d'éval validé (fp8 KV, SANS tier RAM depuis le 24/11 :
 # mesuré inerte — 0 octet relu sur ~24 h, 4 Gio de shm inutiles dans la VM WSL 24 Gio)
-# passé en régime permanent : --restart unless-stopped. Le serveur bind 127.0.0.1:5029.
+# passé en régime permanent : --restart unless-stopped. Le serveur bind 127.0.0.1:5029 par
+# défaut ; VOLTRON_BIND hors loopback (écoute LAN) exige VOLTRON_INBOUND_KEY — le serveur
+# REFUSE de démarrer sans clé. Les deux se posent dans le fichier d'env ci-dessous.
 # La clé hub (ZAI_API_KEY) est résolue en MÉMOIRE depuis ~/.claude.json — jamais écrite.
 
 param([switch]$NoEngine, [string]$Python = 'python')
@@ -83,5 +85,5 @@ if ($existing) {
     $p = Start-Process $Python -ArgumentList "`"$root\voltron_harness_server.py`"" `
         -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $log -RedirectStandardError $err
-    Write-Host "[serveur] PID $($p.Id) -> 127.0.0.1:5029 (log $log)"
+    Write-Host "[serveur] PID $($p.Id) -> :5029 sur $($env:VOLTRON_BIND) (log $log)"
 }

@@ -45,7 +45,8 @@ vérifier la marge commit hôte (< 85 %) avant tout boot lourd.
 3. **Promotion du harnais** (mandat user du 18/11) : le faire adopter par les autres
    lanes. Livré : presets sk-agent `voltron-*` (PR #627), façade OpenAI (PR #617),
    en-tête `X-Voltron-Caller` (PR #618), banc commun (#628), banc en régime
-   `--thinking` / `--max-tokens` / `--strip-thinking` (PR #629).
+   `--thinking` / `--max-tokens` / `--strip-thinking` (PR #629), étage `b` en
+   cascade (PR #646), écoute LAN gardée par une clé entrante (PR #647).
 
 ## Service voltron — état servi (2026-11-27)
 
@@ -60,16 +61,58 @@ vérifier la marge commit hôte (< 85 %) avant tout boot lourd.
   lancement est `myia_vllm/scripts/testing/start_voltron_service.ps1`** — elles se
   relèvent dans le script, jamais ne se reconstruisent de mémoire (boot raté du 26/11
   16:31Z : `--kv-cache-memory` oublié).
-- Serveur : `myia_vllm/scripts/testing/voltron_harness_server.py` sur `127.0.0.1:5029`
-  (sans CORS, sans clé, boucle locale), lancé par le même script. Il prouve le moteur
-  par **une génération d'un jeton** (pas par `/health` seul) et relance seul un moteur
-  arrêté (`docker start`) ou qui répond sans générer (`docker restart`, jamais pendant
-  les 240 s qui suivent son démarrage).
+- Serveur : `myia_vllm/scripts/testing/voltron_harness_server.py` sur le port 5029,
+  lancé par le même script. **Écoute `0.0.0.0:5029` depuis le 2026-11-28 10:19Z**
+  (variable `VOLTRON_BIND` ; par défaut `127.0.0.1`, sans clé ni CORS en boucle
+  locale). Un bind hors loopback **exige** `VOLTRON_INBOUND_KEY` : sans elle le
+  démarrage est **refusé** (exit 1), et un appel distant sans clé reçoit **401 sans
+  que son corps soit lu**. La clé passe en `Authorization: Bearer <clé>` ou
+  `X-Voltron-Key` (comparaison en temps constant) ; la bannière du serveur ne montre
+  que l'empreinte `sha256[:12]`, jamais la valeur. `/health` reste ouvert (vivacité
+  seule, aucun contenu). Il prouve le moteur par **une génération d'un jeton** (pas
+  par `/health` seul) et relance seul un moteur arrêté (`docker start`) ou qui
+  répond sans générer (`docker restart`, jamais pendant les 240 s qui suivent son
+  démarrage).
 - Boot mesuré sur 1.1 : premier démarrage ≈4 min (21:45:51Z → 21:49:48Z : chargement
   des poids par le montage 9P 64 s, `torch.compile` à froid 33,8 s, capture des graphes
   4 s) ; redémarrage à chaud 1 min 24 s (21:50:39Z → 21:52:03Z).
 - KV : **111 542 jetons (3,40× la fenêtre de 32 768)**, contre 159 248 (4,86×) sur 1.0 —
   voir pourquoi ci-dessous.
+
+## Câbler un client distant (2026-11-28)
+
+Le hub claudish ne peut pas joindre le loopback d'une autre machine ; son
+propriétaire a nommé le prérequis (écoute LAN **avec** garde de clé), livré le 28/11.
+
+- **Adresse : `http://192.168.0.54:5029`** (Ethernet, **DHCP** : bail de 24 h). Le
+  siège porte aussi un Wi-Fi sur le même sous-réseau : une bascule d'interface change
+  l'adresse sans redémarrage. L'adresse est relevée à chaque cycle de vigie et
+  réannoncée si elle change — **ne pas la coder en dur sans cette réserve**.
+- **Authentification** : `Authorization: Bearer <clé>` (ce qu'un proxy sait déjà
+  envoyer) ou `X-Voltron-Key`. `/health` seul est ouvert. La valeur vit hors dépôt
+  (`D:\vllm-data\bench\v2_service.env`) et se transmet par message à destruction
+  automatique ; seul son empreinte `sha256[:12]` se publie.
+- **Ce que le service accepte** :
+
+  | Appel | Usage |
+  |---|---|
+  | `POST /v1/task` | contrat natif : une tâche gatée (`classify`, `extract`, `numbers`, `diff`, …) |
+  | `POST /v1/jobs` | lot en arrière-plan, persisté et repris au redémarrage |
+  | `POST /v1/chat/completions` | façade OpenAI — **une tâche par appel** : l'objet JSON de `/v1/task` dans le contenu du dernier message `user` ; `choices[0].message.content` = JSON du résultat |
+  | `GET /v1/models` | un seul id : `voltron-harness` |
+  | `GET /health`, `GET /v1/capabilities`, `GET /openapi.json` | vivacité, contrat humain, contrat machine |
+
+  **La façade n'est pas un chat libre** : le service n'a jamais livré de texte non
+  gaté, et un message sans tâche reconnaissable reçoit la carte d'emploi. Un routeur
+  qui lui enverrait du dialogue général n'obtiendra pas de conversation.
+- **Qui répond** (`stage` du résultat) : `a` = modèle local ; `b` = second lecteur
+  `frognano-4b` du hub, appelé seulement si le gate de `a` échoue ; `c` =
+  coordinateur du hub, seulement si `b` échoue aussi. Les étages `b` et `c` passent
+  par le hub : ils coûtent un appel vers lui, mesuré à 4 pour 40 tâches.
+- **Usage** : un appel marqué `X-Voltron-Probe: 1` est exclu du compteur
+  d'adoption ; tout le reste compte dans `GET /v1/usage`.
+- **Retour arrière de l'écoute** : retirer `VOLTRON_BIND` (ou le remettre à
+  `127.0.0.1`) puis redémarrer le seul serveur — le moteur ne bouge pas.
 
 ## Mesure 1.0 → 1.1 (2026-11-27, même soir, même instrument)
 
@@ -168,7 +211,7 @@ lors de l'échange) :
 
 | Quoi | Où |
 |---|---|
-| Chemin d'exécution du service :5029 | `d:/dev/wt-po2028-vllm-facade` (PR #617) — ne se retire jamais sans relancer le service depuis un autre chemin |
+| Chemin d'exécution du service :5029 | `d:/dev/wt-po2028-vllm-duo` (PR #646 + #647, depuis le 28/11 10:19Z ; avant : `…-facade`, PR #617) — ne se retire jamais sans relancer le service depuis un autre chemin |
 | Autres worktrees du siège | `…-abench` (PR #629), `…-attrib` (PR #618), `…-skagent` (PR #627) |
 | Modèles | `D:\vllm-data\models\` (`voltron-1-mini`, `voltron-1.1-mini`) |
 | Instruments et relevés | `D:\vllm-data\bench\seat-po2028\` (hors worktree : un instrument qui ne vit que dans un worktree meurt avec lui) |
